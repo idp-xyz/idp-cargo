@@ -1,0 +1,174 @@
+// Package rate assembles the RATE (Rate, Quote & Commercial Rules) bounded context. Code outside RATE
+// uses it through package api; everything under internal/ is private to RATE.
+package rate
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	bentopg "go.idp.xyz/idp-bento-go/postgres"
+	bentooutbox "go.idp.xyz/idp-bento-go/postgres/outbox"
+	bentorepo "go.idp.xyz/idp-bento-go/repository"
+	orgapi "go.idp.xyz/idp-cargo/internal/contexts/org/api"
+	"go.idp.xyz/idp-cargo/internal/contexts/rate/api"
+	orgacl "go.idp.xyz/idp-cargo/internal/contexts/rate/internal/adapters/org"
+	"go.idp.xyz/idp-cargo/internal/contexts/rate/internal/adapters/postgres"
+	"go.idp.xyz/idp-cargo/internal/contexts/rate/internal/application"
+	"go.idp.xyz/idp-cargo/internal/contexts/rate/internal/domain"
+	"go.idp.xyz/idp-cargo/internal/foundation/bento"
+	"go.idp.xyz/idp-cargo/internal/kernel"
+)
+
+// Module wires RATE's use cases to PostgreSQL through IDP-Bento-Go and to ORG's query side.
+type Module struct {
+	db      *bentopg.DB
+	outbox  *bentooutbox.Store
+	org     orgapi.Queries
+	auth    api.Authorizer
+	margins api.MarginPolicy
+	clock   bento.SystemClock
+}
+
+var (
+	_ api.Commands = (*Module)(nil)
+	_ api.Queries  = (*Module)(nil)
+)
+
+// New assembles RATE. org answers customer checks; the composition root passes ORG's module.
+func New(db *bentopg.DB, org orgapi.Queries, auth api.Authorizer, margins api.MarginPolicy) (*Module, error) {
+	if db == nil || org == nil || auth == nil || margins == nil {
+		return nil, errors.New("rate: module needs a database, ORG queries, an authorizer and a margin policy")
+	}
+	outbox, err := bentooutbox.NewStore(db)
+	if err != nil {
+		return nil, err
+	}
+	return &Module{db: db, outbox: outbox, org: org, auth: auth, margins: margins}, nil
+}
+
+func (m *Module) CreateQuote(ctx context.Context, cmd api.CreateQuote) (api.Receipt, error) {
+	lines := make([]domain.Line, len(cmd.Lines))
+	for i, l := range cmd.Lines {
+		lines[i] = domain.Line{ChargeCode: domain.ChargeCode(l.ChargeCode), Sell: l.Sell, Cost: l.Cost}
+	}
+	receipt, err := application.CreateQuote{
+		Deps: m.deps(cmd.TenantID, cmd.CommandID), Customers: orgacl.Customers{ORG: m.org}, Margins: margins{m.margins},
+	}.Handle(ctx, application.CreateQuoteCommand{
+		CommandID: cmd.CommandID, Scope: scope(cmd.TenantID, cmd.ActorID), QuoteID: domain.QuoteID(cmd.QuoteID),
+		LegalEntityID: domain.LegalEntityID(cmd.LegalEntityID), CustomerPartyID: cmd.CustomerPartyID, Currency: cmd.Currency,
+		Lines: lines, Validity: kernel.ValidityInterval{From: stored(cmd.Validity.From), Until: stored(cmd.Validity.Until)},
+		OccurredAt: stored(cmd.OccurredAt),
+	})
+	return toReceipt(receipt, err)
+}
+
+func (m *Module) ApproveQuotePrice(ctx context.Context, cmd api.ApproveQuotePrice) (api.Receipt, error) {
+	receipt, err := application.ApproveQuotePrice{Deps: m.deps(cmd.TenantID, cmd.CommandID)}.Handle(ctx, application.ApproveQuotePriceCommand{
+		CommandID: cmd.CommandID, Scope: scope(cmd.TenantID, cmd.ActorID), QuoteID: domain.QuoteID(cmd.QuoteID),
+		ExpectedRevision: cmd.ExpectedRevision, ReasonRef: cmd.ReasonRef, OccurredAt: stored(cmd.OccurredAt),
+	})
+	return toReceipt(receipt, err)
+}
+
+func (m *Module) AcceptQuote(ctx context.Context, cmd api.AcceptQuote) (api.Receipt, error) {
+	receipt, err := application.AcceptQuote{Deps: m.deps(cmd.TenantID, cmd.CommandID), Customers: orgacl.Customers{ORG: m.org}}.Handle(ctx, application.AcceptQuoteCommand{
+		CommandID: cmd.CommandID, Scope: scope(cmd.TenantID, cmd.ActorID), QuoteID: domain.QuoteID(cmd.QuoteID),
+		ExpectedRevision: cmd.ExpectedRevision, EvidenceRef: cmd.EvidenceRef, OccurredAt: stored(cmd.OccurredAt),
+	})
+	return toReceipt(receipt, err)
+}
+
+func (m *Module) GetQuoteSnapshot(ctx context.Context, q api.GetQuoteSnapshot) (api.QuoteSnapshot, error) {
+	quote, revision, err := application.GetQuoteSnapshot{
+		Tx: bento.TenantTransactor{DB: m.db, Tenant: q.TenantID}, Quotes: postgres.QuoteReader{DB: m.db},
+	}.Handle(ctx, domain.TenantID(q.TenantID), domain.QuoteID(q.QuoteID))
+	if err != nil {
+		return api.QuoteSnapshot{}, classify(err)
+	}
+	total, _, err := quote.Totals()
+	if err != nil {
+		return api.QuoteSnapshot{}, classify(err)
+	}
+	s := quote.State()
+	snapshot := api.QuoteSnapshot{
+		TenantID: string(s.TenantID), QuoteID: string(s.QuoteID), QuoteRevision: revision, LegalEntityID: string(s.LegalEntityID),
+		Customer: api.CustomerRef{PartyID: s.Customer.PartyID, PartyRevision: s.Acceptance.CustomerRevision},
+		Total:    total, Validity: s.Validity, AcceptedAt: s.Acceptance.AcceptedAt, AcceptanceEvidenceRef: s.Acceptance.EvidenceRef,
+	}
+	for _, l := range s.Lines {
+		snapshot.Lines = append(snapshot.Lines, api.SnapshotLine{ChargeCode: string(l.ChargeCode), Amount: l.Sell})
+	}
+	if s.Approval != nil {
+		snapshot.PriceApprovedBy = s.Approval.ApprovedBy
+	}
+	return snapshot, nil
+}
+
+func (m *Module) deps(tenant, commandID string) application.Deps {
+	return application.Deps{
+		Tx:       bento.TenantTransactor{DB: m.db, Tenant: tenant},
+		Quotes:   postgres.QuoteStore{DB: m.db},
+		Receipts: postgres.CommandReceipts{DB: m.db},
+		Outbox:   postgres.Outbox{Writer: m.outbox, CommandID: commandID, RecordedAt: m.clock.Now()},
+		Auth:     authorizer{m.auth},
+	}
+}
+
+func scope(tenant, actor string) application.Scope {
+	return application.Scope{TenantID: domain.TenantID(tenant), ActorID: actor}
+}
+
+// stored truncates to the microsecond precision of timestamptz, so a quote reads back exactly as it was
+// priced.
+func stored(t time.Time) time.Time {
+	if t.IsZero() {
+		return t
+	}
+	return t.UTC().Truncate(time.Microsecond)
+}
+
+func toReceipt(r application.Receipt, err error) (api.Receipt, error) {
+	if err != nil {
+		return api.Receipt{}, classify(err)
+	}
+	return api.Receipt{CommandID: r.CommandID, QuoteID: string(r.QuoteID), NewRevision: r.NewRevision}, nil
+}
+
+type authorizer struct{ api.Authorizer }
+
+func (a authorizer) RequireQuoteAction(ctx context.Context, s application.Scope, action application.QuoteAction, id domain.QuoteID) error {
+	return a.AuthorizeQuoteAction(ctx, string(s.TenantID), s.ActorID, string(action), string(id))
+}
+
+type margins struct{ policy api.MarginPolicy }
+
+func (m margins) MarginFloorBP(ctx context.Context, tenant domain.TenantID, entity domain.LegalEntityID) (int, error) {
+	return m.policy.MarginFloorBP(ctx, string(tenant), string(entity))
+}
+
+// classify wraps known RATE, kernel and Bento causes in their api error kind and passes anything else
+// through.
+func classify(err error) error {
+	var kind error
+	switch {
+	case errors.Is(err, application.ErrUnauthenticated):
+		kind = api.ErrUnauthenticated
+	case errors.Is(err, application.ErrUnauthorized), errors.Is(err, bento.ErrTenantScopeConflict):
+		kind = api.ErrUnauthorized
+	case errors.Is(err, application.ErrIdempotencyConflict):
+		kind = api.ErrIdempotencyConflict
+	case errors.Is(err, domain.ErrConflict), errors.Is(err, bentorepo.ErrConflict), errors.Is(err, bentorepo.ErrAlreadyExists):
+		kind = api.ErrConflict
+	case errors.Is(err, bentorepo.ErrNotFound):
+		kind = api.ErrNotFound
+	case errors.Is(err, domain.ErrInvalidQuote), errors.Is(err, domain.ErrInvalidTransition), errors.Is(err, domain.ErrSelfApproval),
+		errors.Is(err, domain.ErrOutsideValidity), errors.Is(err, application.ErrCustomerNotConfirmed),
+		errors.Is(err, application.ErrQuoteNotAccepted), errors.Is(err, kernel.ErrCurrencyMismatch), errors.Is(err, kernel.ErrAmountOverflow):
+		kind = api.ErrRejected
+	default:
+		return err
+	}
+	return fmt.Errorf("%w: %w", kind, err)
+}
