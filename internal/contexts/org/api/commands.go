@@ -40,8 +40,8 @@ type Authorizer interface {
 	AuthorizeRoleApproval(ctx context.Context, tenantID, actorID, partyID, roleCode string) error
 }
 
-// Error kinds returned by Commands, wrapped around the original cause. Transports map these, not the
-// causes, to their status codes.
+// Error kinds returned by Commands and Queries, wrapped around the original cause. Transports map
+// these, not the causes, to their status codes.
 var (
 	ErrUnauthenticated     = errors.New("org: unauthenticated")
 	ErrUnauthorized        = errors.New("org: unauthorized")
