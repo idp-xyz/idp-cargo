@@ -2,3 +2,4 @@
 # Each line names a directory under migrations/; files inside are named NNNNNN_<context>_<topic>.sql.
 org
 rate
+com

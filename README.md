@@ -1,4 +1,4 @@
-# IDP-Cargo · Go + DDD + Bento-Go · V2.11 integration candidate
+# IDP-Cargo · Go + DDD + Bento-Go · V2.12 integration candidate
 
 **IDP-Cargo is one product repository and one Go module. Business code is organized by DDD bounded context; IDP-Bento-Go and IDP-Platform-Go stay separate repositories referenced as Go module versions.**
 
@@ -28,15 +28,21 @@ internal/contexts/rate/         RATE bounded context (Rate, Quote & Commercial R
   internal/adapters/org/        customer check through ORG's api (anticorruption layer)
   internal/integration/         PG16 tests with a stand-in for ORG
 internal/contexts/com/          COM bounded context (Commercial Commitment)
+  module.go                     assembles COM; ORG and RATE are passed in as query ports
   api/                          COM's contract: order commands, ObligationSnapshot v1, events, error kinds, Authorizer port
   internal/domain/              CustomerOrder: lines, fulfillment obligations, the frozen customer and quote snapshots
   internal/application/         RecordCustomerOrder, AllocateOrderToObligation, GetObligationSnapshot and their ports
+  internal/adapters/postgres/   orders, receipts and Outbox in cargo_com
+  internal/adapters/org/        customer snapshot from ORG's api (anticorruption layer)
+  internal/adapters/rate/       accepted quote and terms hash from RATE's api (anticorruption layer)
+  internal/integration/         PG16 tests with stand-ins for ORG and RATE, including concurrent allocations
 internal/bootstrap/             composition root: one connection pool, a Bento transaction owner per context and for the relay
 internal/kernel/                value objects shared by every context (ValidityInterval, Money, Quantity); standard library only
 internal/foundation/bento/      context-agnostic IDP-Bento-Go adaptation (tenant-bound transactions, clock)
 internal/foundation/messaging/  reliable messaging: Outbox relay, HTTP webhook publisher
 migrations/org/                 immutable ORG migrations 000001–000006
 migrations/rate/                RATE migrations, starting with 000001_rate_quotes
+migrations/com/                 COM migrations, starting with 000001_com_orders
 migrations/manifest/            order in which the contexts' migrations run
 tools/dependency-check/         package rules of the structure baseline; cross-context allowlist generated from the Context Map
 .github/CODEOWNERS              an owner for every context directory and the kernel
@@ -55,6 +61,11 @@ GitHub Actions, `ubuntu-24.04` runner, workflow `org-pg16-contract.yml`, on ever
 - V2.9 adds `cmd/cargo-worker` and the Outbox `Relay` (in `internal/foundation/messaging`, as the repository structure baseline V1.1 places it). PG16 tests cover a failed publish retried with backoff, abandonment after the failure budget without blocking the partition, and a process-level crash drill: the worker is killed with SIGKILL while the sink holds a delivery, a second worker re-delivers it after the lease expires, and SIGTERM stops it cleanly. Each publish is bounded by the sink timeout and a batch must fit inside its lease, so a slow sink cannot push queued deliveries past the lease and have them re-claimed while still waiting.
 - V2.10 starts S1. `internal/kernel` holds `ValidityInterval`. ORG's api gains PartyRef v1 and `ResolvePartyRole`, which confirms that an active party holds an approved role for a verified legal entity at an instant. `internal/bootstrap` gives every context and the relay its own Bento transaction owner; a PG16 test shows that ORG refuses commands and queries issued inside another context's transaction (AC4). `go run ./tools/dependency-check` runs as a step of the required check: it enforces rules D1–D6 (AC2, AC3) and CODEOWNERS coverage (AC7), and warns on D7.
 - V2.11 adds RATE, step 2 of the S1 slice. A quote is priced in one currency. If its margin is below the floor that `MarginPolicy` supplies, someone other than its author must approve the price, with a reason. It is accepted within its validity, and ORG confirms the CUSTOMER role both when the quote is created and when it is accepted. `GetQuoteSnapshot` returns QuoteSnapshot v1 for accepted quotes, without costs. `cargo_rate` keeps accepted quotes and all quote lines immutable through triggers and FORCE RLS. `cargo-migrate` applies contexts in `migrations/manifest` order, and the allowlist gains `rate org` from Context Map V1.3. A PG16 test in `internal/bootstrap` runs ORG and RATE together.
+- V2.12 adds COM, step 3 of the S1 slice.
+  - A customer order is recorded against a quote that RATE has accepted, for the quote's customer, and ORG must confirm the CUSTOMER role at that instant. The order freezes the customer's transaction snapshot and the accepted quote, including the SHA-256 of the exact terms.
+  - Allocation commits part or all of one order line to a fulfillment obligation at version 1. A line's obligations never exceed its quantity. `GetObligationSnapshot` returns ObligationSnapshot v1 for FUL.
+  - `cargo_com` freezes the commitment through triggers, grants and FORCE RLS. It also rejects any obligation that does not fit its line. One accepted quote backs at most one order.
+  - The kernel gains `Quantity`. A property test checks allocations; a PG16 test races eight allocations against one revision. A test in `internal/bootstrap` runs ORG, RATE and COM together.
 
 Bento testkit contracts:
 
@@ -67,6 +78,7 @@ Defects found by real runs and fixed:
 2. `cargo-migrate` did not create the Bento schema, so the first framework migration failed with `schema "bento" does not exist`. Bento migrations never run `CREATE SCHEMA`; that is the consumer's first migration step (bento-go `docs/design/postgres-adapter-contract.md`).
 3. `PartyStore.Save` hashed nanosecond validity times into `role_id`, while `timestamptz` keeps microseconds. After a reload the ID changed and the re-insert of an existing role violated `party_role_approved_no_overlap` (23P01). The hash and the insert now use microsecond-truncated UTC times.
 4. `PartyStore.Load` read the party row and its roles in two statements. Under READ COMMITTED each statement takes a new snapshot, so a command committing in between produced a torn aggregate (old revision, new role) and a losing handler failed with `ErrRoleOverlap` instead of a revision conflict. `Load` now locks the root row with `FOR NO KEY UPDATE`.
+5. RATE's anticorruption layer wrapped ORG's error chain with `%w`. For a party that ORG does not know, the chain carried Bento's `repository.ErrNotFound`, so RATE answered `ErrNotFound` ("no such quote") instead of `ErrRejected`. The COM slice test showed the same problem with an unknown quote, and the V2.11 code reproduces it. Anticorruption layers now keep the upstream answer as text only, so upstream error kinds never become the caller's.
 
 NOT executed:
 
@@ -79,7 +91,7 @@ NOT executed:
 1. Install Go 1.26.5 and resolve the immutable framework candidate; do not use Git `main` or a local `replace`.
 2. Set `IDP_CARGO_MIGRATOR_DSN` to a dedicated migration role in PG16.
 3. `go run ./cmd/cargo-migrate -manifest migrations/manifest/contexts.txt` to inspect; separately authorize `-apply`.
-4. Create a `cargo_app` user with no owner/superuser/BYPASSRLS/DDL rights; grant only required DML (for `cargo_rate`: SELECT, INSERT, UPDATE on `quote`; SELECT, INSERT on `quote_line` and `command_receipt`).
+4. Create a `cargo_app` user with no owner/superuser/BYPASSRLS/DDL rights; grant only required DML (for `cargo_rate`: SELECT, INSERT, UPDATE on `quote`; SELECT, INSERT on `quote_line` and `command_receipt`; for `cargo_com`: SELECT, INSERT, UPDATE on `customer_order`; SELECT, INSERT on `order_line`, `fulfillment_obligation` and `command_receipt`).
 5. Set `CI=true IDP_CARGO_POSTGRES_DSN=...`. The Bento contract tests also need `IDP_CARGO_MIGRATOR_DSN` to provision their throwaway schemas.
 6. `go test -tags integration -count=1 -v ./...`
 7. `go test -tags integration -race -count=1 ./...`
@@ -99,6 +111,8 @@ NOT executed:
 - The relay delivers at least once: a crash between publish and settle re-delivers after the lease expires. Sinks and consumers deduplicate by event ID, which the webhook sends as `Idempotency-Key`. Leases are wall-clock timestamps, so worker hosts need synchronized clocks.
 - RATE keeps customers as ORG party references only; legal names stay in ORG. Quote costs and margins never leave RATE.
 - RATE's margin floor, independent price approval and acceptance rules are a candidate design pending business review; the floor itself is supplied by `MarginPolicy`, not hard-coded.
+- COM keeps the customer's legal name and country only as the transaction snapshot frozen with the order (MD-05). ObligationSnapshot v1 carries identifiers and the quantity, not names, because FUL does not consume legal names.
+- COM's rules are a candidate design pending business review. These include one order per accepted quote, recording within the quote's validity, no allocation tolerance and one line per obligation.
 - The earliest ORG master data cannot be signed off until a Cargo business owner validates authoritative identity, legal status and partner role semantics.
 
 ## Dependency lock qualification

@@ -67,6 +67,9 @@ func TestQuoteForAnApprovedCustomer(t *testing.T) {
 	if _, err = rateModule.CreateQuote(ctx, quote("Q-2", "party-n", 100_000, 50_000)); !errors.Is(err, rateapi.ErrRejected) {
 		t.Fatalf("quote for a party without the CUSTOMER role: err = %v", err)
 	}
+	if _, err = rateModule.CreateQuote(ctx, quote("Q-5", "party-unknown", 100_000, 50_000)); !errors.Is(err, rateapi.ErrRejected) || errors.Is(err, rateapi.ErrNotFound) {
+		t.Fatalf("quote for a party ORG does not know: err = %v, want ErrRejected only", err)
+	}
 	if _, err = rateModule.CreateQuote(ctx, quote("Q-3", "party-s", 100_000, 50_000)); err != nil {
 		t.Fatal(err)
 	}

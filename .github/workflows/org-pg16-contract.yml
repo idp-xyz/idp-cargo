@@ -55,7 +55,7 @@ jobs:
           psql -h 127.0.0.1 -U postgres -d cargo_contract -v ON_ERROR_STOP=1 <<'SQL'
           CREATE ROLE cargo_app LOGIN PASSWORD 'ci-app-only' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
           GRANT CONNECT ON DATABASE cargo_contract TO cargo_app;
-          GRANT USAGE ON SCHEMA cargo_org,cargo_rate,bento TO cargo_app;
+          GRANT USAGE ON SCHEMA cargo_org,cargo_rate,cargo_com,bento TO cargo_app;
           GRANT SELECT ON ALL TABLES IN SCHEMA cargo_org TO cargo_app;
           DO $role_grant$ DECLARE tab text; BEGIN
             FOR tab IN SELECT tablename FROM pg_tables
@@ -65,6 +65,8 @@ jobs:
           END $role_grant$;
           GRANT SELECT,INSERT,UPDATE ON cargo_rate.quote TO cargo_app;
           GRANT SELECT,INSERT ON cargo_rate.quote_line,cargo_rate.command_receipt TO cargo_app;
+          GRANT SELECT,INSERT,UPDATE ON cargo_com.customer_order TO cargo_app;
+          GRANT SELECT,INSERT ON cargo_com.order_line,cargo_com.fulfillment_obligation,cargo_com.command_receipt TO cargo_app;
           GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA bento TO cargo_app;
           GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA bento TO cargo_app;
           SQL
