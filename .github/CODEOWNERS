@@ -2,6 +2,7 @@
 # Kernel changes need the chief architect and every affected context owner. Until those roles are
 # assigned, the repository maintainer owns every path.
 *                        @idpxyz
+/internal/contexts/com/  @idpxyz
 /internal/contexts/org/  @idpxyz
 /internal/contexts/rate/ @idpxyz
 /internal/kernel/        @idpxyz

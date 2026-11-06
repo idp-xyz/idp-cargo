@@ -27,8 +27,12 @@ internal/contexts/rate/         RATE bounded context (Rate, Quote & Commercial R
   internal/adapters/postgres/   quotes, receipts and Outbox in cargo_rate
   internal/adapters/org/        customer check through ORG's api (anticorruption layer)
   internal/integration/         PG16 tests with a stand-in for ORG
+internal/contexts/com/          COM bounded context (Commercial Commitment)
+  api/                          COM's contract: order commands, ObligationSnapshot v1, events, error kinds, Authorizer port
+  internal/domain/              CustomerOrder: lines, fulfillment obligations, the frozen customer and quote snapshots
+  internal/application/         RecordCustomerOrder, AllocateOrderToObligation, GetObligationSnapshot and their ports
 internal/bootstrap/             composition root: one connection pool, a Bento transaction owner per context and for the relay
-internal/kernel/                value objects shared by every context (ValidityInterval, Money); standard library only
+internal/kernel/                value objects shared by every context (ValidityInterval, Money, Quantity); standard library only
 internal/foundation/bento/      context-agnostic IDP-Bento-Go adaptation (tenant-bound transactions, clock)
 internal/foundation/messaging/  reliable messaging: Outbox relay, HTTP webhook publisher
 migrations/org/                 immutable ORG migrations 000001–000006
@@ -39,7 +43,7 @@ tools/dependency-check/         package rules of the structure baseline; cross-c
 ```
 
 - Other contexts, transports, cross-context processes and the AI capability layer import `internal/contexts/org/api` only; the compiler rejects imports of `internal/contexts/org/internal/...` from outside ORG, and `tools/dependency-check` rejects the rest of what the layering and the Context Map do not allow.
-- Further contexts (COM, FUL, BOOK, …), `internal/processes/` and `internal/ai/` get directories when their first real code lands; no empty scaffolding.
+- Further contexts (FUL, BOOK, …), `internal/processes/` and `internal/ai/` get directories when their first real code lands; no empty scaffolding.
 - Design documents, review reports and evidence logs are kept in the IDP-Cargo master archive and are not published in this repository.
 
 ## Status of evidence
