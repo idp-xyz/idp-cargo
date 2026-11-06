@@ -70,7 +70,9 @@ func TestRepositoryManifestLoads(t *testing.T) {
 			ids = append(ids, m.ID)
 		}
 	}
-	if len(ids) < 7 || ids[0] != "000001_org_identity" || ids[len(ids)-1] != "000001_rate_quotes" {
-		t.Fatalf("migration order = %v", ids)
+	want := []string{"000001_org_identity", "000002_org_roles", "000003_org_merge", "000004_org_audit_reference",
+		"000005_org_tenant_rls", "000006_org_receipt_revision", "000001_rate_quotes", "000001_com_orders"}
+	if strings.Join(ids, " ") != strings.Join(want, " ") {
+		t.Fatalf("migration order = %v, want %v", ids, want)
 	}
 }

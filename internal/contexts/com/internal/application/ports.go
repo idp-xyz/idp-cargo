@@ -22,6 +22,7 @@ var (
 	ErrMissingDependency    = errors.New("com application: required dependency missing")
 	ErrQuoteNotAccepted     = errors.New("com application: RATE has no accepted quote by that id")
 	ErrCustomerNotConfirmed = errors.New("com application: ORG did not confirm the customer")
+	ErrQuoteAlreadyOrdered  = errors.New("com application: the quote already backs a customer order")
 )
 
 // Scope is the verified caller of a command.

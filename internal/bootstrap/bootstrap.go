@@ -13,6 +13,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	bentopg "go.idp.xyz/idp-bento-go/postgres"
 	bentooutbox "go.idp.xyz/idp-bento-go/postgres/outbox"
+	"go.idp.xyz/idp-cargo/internal/contexts/com"
+	comapi "go.idp.xyz/idp-cargo/internal/contexts/com/api"
 	"go.idp.xyz/idp-cargo/internal/contexts/org"
 	orgapi "go.idp.xyz/idp-cargo/internal/contexts/org/api"
 	"go.idp.xyz/idp-cargo/internal/contexts/rate"
@@ -77,6 +79,15 @@ func (p *Platform) RATE(org orgapi.Queries, auth rateapi.Authorizer, margins rat
 		return nil, err
 	}
 	return rate.New(db, org, auth, margins)
+}
+
+// COM assembles the COM bounded context. org and rate are used only through their query sides.
+func (p *Platform) COM(org orgapi.Queries, rate rateapi.Queries, auth comapi.Authorizer) (*com.Module, error) {
+	db, err := p.newDB()
+	if err != nil {
+		return nil, err
+	}
+	return com.New(db, org, rate, auth)
 }
 
 // RelayConfig configures the Outbox relay that publishes to an HTTP sink.

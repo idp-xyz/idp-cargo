@@ -24,7 +24,9 @@ func (c Customers) VerifyCustomer(ctx context.Context, tenant rate.TenantID, par
 		TenantID: string(tenant), PartyID: partyID, RoleCode: CustomerRole, LegalEntityID: string(entity), At: at,
 	})
 	if errors.Is(err, orgapi.ErrRejected) || errors.Is(err, orgapi.ErrNotFound) {
-		return rate.CustomerRef{}, fmt.Errorf("%w: %w", app.ErrCustomerNotConfirmed, err)
+		// ORG's answer is kept as text only, so its error kinds never become RATE's: a party ORG does
+		// not know rejects the quote, it does not make the quote "not found".
+		return rate.CustomerRef{}, fmt.Errorf("%w: %v", app.ErrCustomerNotConfirmed, err)
 	}
 	if err != nil {
 		return rate.CustomerRef{}, err
