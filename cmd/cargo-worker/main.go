@@ -8,7 +8,6 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -31,22 +30,23 @@ func main() {
 func run() error {
 	schema := flag.String("schema", bentopg.DefaultSchema, "Bento schema that holds the outbox")
 	sink := flag.String("sink", "", "HTTP endpoint that receives each event envelope as a JSON POST")
-	batch := flag.Int("batch", 50, "deliveries claimed per round")
-	lease := flag.Duration("lease", 30*time.Second, "lease on a claimed delivery; an unsettled delivery is re-claimed after it expires")
+	batch := flag.Int("batch", 10, "deliveries claimed per round")
+	lease := flag.Duration("lease", time.Minute, "lease on a claimed batch; an unsettled delivery is re-claimed after it expires")
 	poll := flag.Duration("poll", time.Second, "wait between claims while the outbox is idle")
 	maxAttempts := flag.Uint("max-attempts", 20, "claims of one delivery before it is abandoned")
 	maxFailures := flag.Uint("max-failures", 10, "recorded publish failures before a delivery is abandoned")
 	retryBase := flag.Duration("retry-base", time.Second, "delay after the first publish failure, doubled per failure")
 	retryMax := flag.Duration("retry-max", 5*time.Minute, "upper bound for the retry delay")
-	sinkTimeout := flag.Duration("sink-timeout", 10*time.Second, "timeout for one sink request")
+	sinkTimeout := flag.Duration("sink-timeout", 5*time.Second, "timeout for one sink request")
 	flag.Parse()
 	dsn := os.Getenv("IDP_CARGO_POSTGRES_DSN")
 	if dsn == "" || *sink == "" {
 		return errors.New("IDP_CARGO_POSTGRES_DSN and -sink are required")
 	}
-	// A lease shorter than one sink request lets a second worker claim a delivery that is still in flight.
-	if *lease <= *sinkTimeout {
-		return errors.New("-lease must be longer than -sink-timeout")
+	// A batch is sent one delivery at a time under one lease. If the lease can end before the last
+	// delivery is sent, another worker re-claims deliveries that are still queued here.
+	if time.Duration(*batch)*(*sinkTimeout) >= *lease {
+		return errors.New("-lease must be longer than -batch × -sink-timeout")
 	}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -69,17 +69,18 @@ func run() error {
 		return err
 	}
 	relay := messaging.Relay{
-		Outbox:      store,
-		Publisher:   messaging.Webhook{URL: *sink, Client: &http.Client{Timeout: *sinkTimeout}},
-		Clock:       bento.SystemClock{},
-		Batch:       *batch,
-		LeaseFor:    *lease,
-		MaxAttempts: uint32(*maxAttempts),
-		MaxFailures: uint32(*maxFailures),
-		RetryBase:   *retryBase,
-		RetryMax:    *retryMax,
-		IdleWait:    *poll,
-		Logger:      logger,
+		Outbox:         store,
+		Publisher:      messaging.Webhook{URL: *sink},
+		Clock:          bento.SystemClock{},
+		Batch:          *batch,
+		LeaseFor:       *lease,
+		PublishTimeout: *sinkTimeout,
+		MaxAttempts:    uint32(*maxAttempts),
+		MaxFailures:    uint32(*maxFailures),
+		RetryBase:      *retryBase,
+		RetryMax:       *retryMax,
+		IdleWait:       *poll,
+		Logger:         logger,
 	}
 	logger.Info("relaying outbox", "schema", *schema, "sink", *sink, "lease", *lease)
 	if err = relay.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {

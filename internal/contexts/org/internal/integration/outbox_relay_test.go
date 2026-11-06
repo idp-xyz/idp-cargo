@@ -71,7 +71,7 @@ func enqueueAll(t *testing.T, db *bentopg.DB, store *bentooutbox.Store, envelope
 func testRelay(store *bentooutbox.Store, publisher eventing.Publisher, clock application.Clock, maxFailures uint32) messaging.Relay {
 	return messaging.Relay{
 		Outbox: store, Publisher: publisher, Clock: clock,
-		Batch: 10, LeaseFor: 30 * time.Second, MaxAttempts: 10, MaxFailures: maxFailures,
+		Batch: 10, LeaseFor: 30 * time.Second, PublishTimeout: 2 * time.Second, MaxAttempts: 10, MaxFailures: maxFailures,
 		RetryBase: time.Second, RetryMax: time.Minute, IdleWait: 50 * time.Millisecond,
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
@@ -160,6 +160,7 @@ func TestWorkerCrashRecoveryDrill(t *testing.T) {
 
 	var mu sync.Mutex
 	received := map[eventing.EventID]int{}
+	var arrivals []time.Time
 	firstArrived := make(chan struct{})
 	sink := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var envelope eventing.Envelope
@@ -170,6 +171,9 @@ func TestWorkerCrashRecoveryDrill(t *testing.T) {
 		mu.Lock()
 		received[envelope.ID]++
 		n := received[envelope.ID]
+		if envelope.ID == event.ID {
+			arrivals = append(arrivals, time.Now())
+		}
 		mu.Unlock()
 		if envelope.ID == event.ID && n == 1 {
 			close(firstArrived)
@@ -186,7 +190,7 @@ func TestWorkerCrashRecoveryDrill(t *testing.T) {
 	}
 	start := func() (*exec.Cmd, *bytes.Buffer) {
 		var logs bytes.Buffer
-		cmd := exec.Command(bin, "-schema", db.Schema(), "-sink", sink.URL, "-lease", "3s", "-sink-timeout", "2s", "-poll", "100ms")
+		cmd := exec.Command(bin, "-schema", db.Schema(), "-sink", sink.URL, "-batch", "1", "-lease", "3s", "-sink-timeout", "2s", "-poll", "100ms")
 		cmd.Env = os.Environ()
 		cmd.Stdout, cmd.Stderr = &logs, &logs
 		if err := cmd.Start(); err != nil {
@@ -233,5 +237,7 @@ func TestWorkerCrashRecoveryDrill(t *testing.T) {
 	if received[event.ID] != 2 {
 		t.Fatalf("sink received the event %d times, want 2 (at-least-once redelivery)", received[event.ID])
 	}
+	// Measured on the monotonic clock: a gap well below the 3s lease means the wall clock stepped.
+	t.Logf("re-delivered %v after the first delivery (lease 3s)", arrivals[1].Sub(arrivals[0]).Round(time.Millisecond))
 	t.Logf("second worker:\n%s", secondLogs)
 }
