@@ -19,8 +19,11 @@ internal/contexts/org/          ORG bounded context
     application/                ApproveRole use case and its ports
     adapters/postgres/          tenant-scoped persistence, receipts, Outbox, Bento repository ports
     integration/                PG16 tests (build tag integration)
+internal/contexts/rate/         RATE bounded context (Rate, Quote & Commercial Rules)
+  internal/domain/              Quote: margin floor, price approval, acceptance within validity
+  internal/application/         CreateQuote, ApproveQuotePrice, AcceptQuote and their ports
 internal/bootstrap/             composition root: one connection pool, a Bento transaction owner per context and for the relay
-internal/kernel/                value objects shared by every context (ValidityInterval); standard library only
+internal/kernel/                value objects shared by every context (ValidityInterval, Money); standard library only
 internal/foundation/bento/      context-agnostic IDP-Bento-Go adaptation (tenant-bound transactions, clock)
 internal/foundation/messaging/  reliable messaging: Outbox relay, HTTP webhook publisher
 migrations/org/                 immutable ORG migrations 000001–000006
