@@ -3,4 +3,5 @@
 # assigned, the repository maintainer owns every path.
 *                        @idpxyz
 /internal/contexts/org/  @idpxyz
+/internal/contexts/rate/ @idpxyz
 /internal/kernel/        @idpxyz
