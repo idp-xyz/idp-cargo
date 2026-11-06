@@ -25,7 +25,7 @@ import (
 	"go.idp.xyz/idp-bento-go/eventing"
 	bentopg "go.idp.xyz/idp-bento-go/postgres"
 	bentooutbox "go.idp.xyz/idp-bento-go/postgres/outbox"
-	scope "go.idp.xyz/idp-cargo/internal/foundation/bento"
+	"go.idp.xyz/idp-cargo/internal/foundation/messaging"
 )
 
 type testClock struct{ now time.Time }
@@ -68,8 +68,8 @@ func enqueueAll(t *testing.T, db *bentopg.DB, store *bentooutbox.Store, envelope
 	}
 }
 
-func testRelay(store *bentooutbox.Store, publisher eventing.Publisher, clock application.Clock, maxFailures uint32) scope.Relay {
-	return scope.Relay{
+func testRelay(store *bentooutbox.Store, publisher eventing.Publisher, clock application.Clock, maxFailures uint32) messaging.Relay {
+	return messaging.Relay{
 		Outbox: store, Publisher: publisher, Clock: clock,
 		Batch: 10, LeaseFor: 30 * time.Second, MaxAttempts: 10, MaxFailures: maxFailures,
 		RetryBase: time.Second, RetryMax: time.Minute, IdleWait: 50 * time.Millisecond,
@@ -77,7 +77,7 @@ func testRelay(store *bentooutbox.Store, publisher eventing.Publisher, clock app
 	}
 }
 
-func runOnce(t *testing.T, relay scope.Relay, wantClaimed int) {
+func runOnce(t *testing.T, relay messaging.Relay, wantClaimed int) {
 	t.Helper()
 	claimed, err := relay.RunOnce(context.Background())
 	if err != nil || claimed != wantClaimed {

@@ -68,7 +68,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	relay := bento.Relay{
+	relay := messaging.Relay{
 		Outbox:      store,
 		Publisher:   messaging.Webhook{URL: *sink, Client: &http.Client{Timeout: *sinkTimeout}},
 		Clock:       bento.SystemClock{},
