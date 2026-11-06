@@ -1,6 +1,6 @@
 // cargo-migrate is an OPERATOR-ONLY migration tool. Not linked into the API.
-// It validates source digests and applies Bento migration assets first, then Cargo
-// ORG migrations, recording SHA256 in a history table. Never rewrite applied SQL.
+// It validates source digests and applies Bento migration assets first, then the Cargo
+// contexts' migrations in manifest order, recording SHA256 in a history table. Never rewrite applied SQL.
 package main
 
 import (
@@ -35,32 +35,24 @@ func main() {
 	}
 }
 func run() error {
-	dir := flag.String("directory", "migrations/org", "immutable ORG SQL migrations directory")
+	manifest := flag.String("manifest", "", "file listing the contexts' migration directories in order, such as migrations/manifest/contexts.txt")
+	dir := flag.String("directory", "migrations/org", "one context's migration directory, used when -manifest is not set")
 	apply := flag.Bool("apply", false, "explicitly apply to PostgreSQL as dedicated migrator role")
 	flag.Parse()
-	files, err := filepath.Glob(filepath.Join(*dir, "000*.sql"))
-	if err != nil {
-		return err
-	}
-	if len(files) < 6 {
-		return fmt.Errorf("only %d migrations, expected original 000001-000005 + 000006", len(files))
-	}
-	sort.Strings(files)
-	var items []migration
-	for i, file := range files {
-		id := strings.TrimSuffix(filepath.Base(file), ".sql")
-		if !strings.HasPrefix(id, fmt.Sprintf("%06d_", i+1)) {
-			return fmt.Errorf("noncontiguous migration: %s", id)
+	dirs := []string{*dir}
+	if *manifest != "" {
+		var err error
+		if dirs, err = readManifest(*manifest); err != nil {
+			return err
 		}
-		raw, err := os.ReadFile(file)
+	}
+	var items []migration
+	for _, d := range dirs {
+		loaded, err := loadDirectory(d)
 		if err != nil {
 			return err
 		}
-		if len(raw) == 0 {
-			return fmt.Errorf("empty migration %s", id)
-		}
-		body := strings.ReplaceAll(string(raw), "\r\n", "\n")
-		items = append(items, migration{ID: id, SQL: body, Checksum: checksum(body)})
+		items = append(items, loaded...)
 	}
 	framework := bentopg.Migrations()
 	for _, m := range framework {
@@ -134,6 +126,68 @@ func run() error {
 	fmt.Println("DONE: PostgreSQL 16 migration and Bento schema validation successful")
 	return nil
 }
+
+// readManifest returns the migration directories a manifest lists, in order. Entries name directories
+// under the migrations root, which is the parent of the manifest's directory.
+func readManifest(path string) ([]string, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	root := filepath.Dir(filepath.Dir(path))
+	seen := map[string]bool{}
+	var dirs []string
+	for _, line := range strings.Split(strings.ReplaceAll(string(raw), "\r\n", "\n"), "\n") {
+		name := strings.TrimSpace(line)
+		if name == "" || strings.HasPrefix(name, "#") {
+			continue
+		}
+		if seen[name] || strings.ContainsAny(name, `/\.`) {
+			return nil, fmt.Errorf("manifest %s: invalid or repeated entry %q", path, name)
+		}
+		seen[name] = true
+		dirs = append(dirs, filepath.Join(root, name))
+	}
+	if len(dirs) == 0 {
+		return nil, fmt.Errorf("manifest %s lists no migration directories", path)
+	}
+	return dirs, nil
+}
+
+// loadDirectory reads one context's migrations. Files are numbered from 000001 without gaps and named
+// NNNNNN_<context>_<topic>.sql, which keeps ledger IDs unique across contexts.
+func loadDirectory(dir string) ([]migration, error) {
+	bc := filepath.Base(dir)
+	files, err := filepath.Glob(filepath.Join(dir, "000*.sql"))
+	if err != nil {
+		return nil, err
+	}
+	if bc == "org" && len(files) < 6 {
+		return nil, fmt.Errorf("only %d migrations, expected original 000001-000005 + 000006", len(files))
+	}
+	if len(files) == 0 {
+		return nil, fmt.Errorf("no migrations in %s", dir)
+	}
+	sort.Strings(files)
+	var items []migration
+	for i, file := range files {
+		id := strings.TrimSuffix(filepath.Base(file), ".sql")
+		if !strings.HasPrefix(id, fmt.Sprintf("%06d_%s_", i+1, bc)) {
+			return nil, fmt.Errorf("noncontiguous or misnamed migration: %s", id)
+		}
+		raw, err := os.ReadFile(file)
+		if err != nil {
+			return nil, err
+		}
+		if len(raw) == 0 {
+			return nil, fmt.Errorf("empty migration %s", id)
+		}
+		body := strings.ReplaceAll(string(raw), "\r\n", "\n")
+		items = append(items, migration{ID: id, SQL: body, Checksum: checksum(body)})
+	}
+	return items, nil
+}
+
 func applyMigration(ctx context.Context, pool *pgxpool.Pool, id, sql, want string) error {
 	tx, err := pool.Begin(ctx)
 	if err != nil {

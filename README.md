@@ -1,4 +1,4 @@
-# IDP-Cargo · Go + DDD + Bento-Go · V2.10 integration candidate
+# IDP-Cargo · Go + DDD + Bento-Go · V2.11 integration candidate
 
 **IDP-Cargo is one product repository and one Go module. Business code is organized by DDD bounded context; IDP-Bento-Go and IDP-Platform-Go stay separate repositories referenced as Go module versions.**
 
@@ -9,7 +9,7 @@
 ## Layout
 
 ```
-cmd/cargo-migrate/              operator-only migrations: Bento schema, framework migration, then Cargo migrations
+cmd/cargo-migrate/              operator-only migrations: Bento schema, framework migration, then each context's migrations in manifest order
 cmd/cargo-worker/               Outbox relay: claim, publish to an HTTP sink, settle; at least once
 internal/contexts/org/          ORG bounded context
   module.go                     assembles ORG; the only constructor other code uses
@@ -20,19 +20,26 @@ internal/contexts/org/          ORG bounded context
     adapters/postgres/          tenant-scoped persistence, receipts, Outbox, Bento repository ports
     integration/                PG16 tests (build tag integration)
 internal/contexts/rate/         RATE bounded context (Rate, Quote & Commercial Rules)
+  module.go                     assembles RATE; ORG is passed in as its query port
+  api/                          RATE's contract: quote commands, QuoteSnapshot v1, events, error kinds, Authorizer and MarginPolicy ports
   internal/domain/              Quote: margin floor, price approval, acceptance within validity
-  internal/application/         CreateQuote, ApproveQuotePrice, AcceptQuote and their ports
+  internal/application/         CreateQuote, ApproveQuotePrice, AcceptQuote, GetQuoteSnapshot and their ports
+  internal/adapters/postgres/   quotes, receipts and Outbox in cargo_rate
+  internal/adapters/org/        customer check through ORG's api (anticorruption layer)
+  internal/integration/         PG16 tests with a stand-in for ORG
 internal/bootstrap/             composition root: one connection pool, a Bento transaction owner per context and for the relay
 internal/kernel/                value objects shared by every context (ValidityInterval, Money); standard library only
 internal/foundation/bento/      context-agnostic IDP-Bento-Go adaptation (tenant-bound transactions, clock)
 internal/foundation/messaging/  reliable messaging: Outbox relay, HTTP webhook publisher
 migrations/org/                 immutable ORG migrations 000001–000006
+migrations/rate/                RATE migrations, starting with 000001_rate_quotes
+migrations/manifest/            order in which the contexts' migrations run
 tools/dependency-check/         package rules of the structure baseline; cross-context allowlist generated from the Context Map
 .github/CODEOWNERS              an owner for every context directory and the kernel
 ```
 
 - Other contexts, transports, cross-context processes and the AI capability layer import `internal/contexts/org/api` only; the compiler rejects imports of `internal/contexts/org/internal/...` from outside ORG, and `tools/dependency-check` rejects the rest of what the layering and the Context Map do not allow.
-- Further contexts (COM, RATE, …), `internal/processes/` and `internal/ai/` get directories when their first real code lands; no empty scaffolding.
+- Further contexts (COM, FUL, BOOK, …), `internal/processes/` and `internal/ai/` get directories when their first real code lands; no empty scaffolding.
 - Design documents, review reports and evidence logs are kept in the IDP-Cargo master archive and are not published in this repository.
 
 ## Status of evidence
@@ -43,6 +50,7 @@ GitHub Actions, `ubuntu-24.04` runner, workflow `org-pg16-contract.yml`, on ever
 - V2.8 moves ORG into `internal/contexts/org/{module.go, api, internal}` and the Bento seam into `internal/foundation/bento`, moves migrations to `migrations/org`, drops the obsolete `bento` build tag, and adds the ORG module with api error classification. Migration files and their checksums are unchanged.
 - V2.9 adds `cmd/cargo-worker` and the Outbox `Relay` (in `internal/foundation/messaging`, as the repository structure baseline V1.1 places it). PG16 tests cover a failed publish retried with backoff, abandonment after the failure budget without blocking the partition, and a process-level crash drill: the worker is killed with SIGKILL while the sink holds a delivery, a second worker re-delivers it after the lease expires, and SIGTERM stops it cleanly. Each publish is bounded by the sink timeout and a batch must fit inside its lease, so a slow sink cannot push queued deliveries past the lease and have them re-claimed while still waiting.
 - V2.10 starts S1. `internal/kernel` holds `ValidityInterval`. ORG's api gains PartyRef v1 and `ResolvePartyRole`, which confirms that an active party holds an approved role for a verified legal entity at an instant. `internal/bootstrap` gives every context and the relay its own Bento transaction owner; a PG16 test shows that ORG refuses commands and queries issued inside another context's transaction (AC4). `go run ./tools/dependency-check` runs as a step of the required check: it enforces rules D1–D6 (AC2, AC3) and CODEOWNERS coverage (AC7), and warns on D7.
+- V2.11 adds RATE, step 2 of the S1 slice. A quote is priced in one currency. If its margin is below the floor that `MarginPolicy` supplies, someone other than its author must approve the price, with a reason. It is accepted within its validity, and ORG confirms the CUSTOMER role both when the quote is created and when it is accepted. `GetQuoteSnapshot` returns QuoteSnapshot v1 for accepted quotes, without costs. `cargo_rate` keeps accepted quotes and all quote lines immutable through triggers and FORCE RLS. `cargo-migrate` applies contexts in `migrations/manifest` order, and the allowlist gains `rate org` from Context Map V1.3. A PG16 test in `internal/bootstrap` runs ORG and RATE together.
 
 Bento testkit contracts:
 
@@ -66,8 +74,8 @@ NOT executed:
 
 1. Install Go 1.26.5 and resolve the immutable framework candidate; do not use Git `main` or a local `replace`.
 2. Set `IDP_CARGO_MIGRATOR_DSN` to a dedicated migration role in PG16.
-3. `go run ./cmd/cargo-migrate -directory migrations/org` to inspect; separately authorize `-apply`.
-4. Create a `cargo_app` user with no owner/superuser/BYPASSRLS/DDL rights; grant only required DML.
+3. `go run ./cmd/cargo-migrate -manifest migrations/manifest/contexts.txt` to inspect; separately authorize `-apply`.
+4. Create a `cargo_app` user with no owner/superuser/BYPASSRLS/DDL rights; grant only required DML (for `cargo_rate`: SELECT, INSERT, UPDATE on `quote`; SELECT, INSERT on `quote_line` and `command_receipt`).
 5. Set `CI=true IDP_CARGO_POSTGRES_DSN=...`. The Bento contract tests also need `IDP_CARGO_MIGRATOR_DSN` to provision their throwaway schemas.
 6. `go test -tags integration -count=1 -v ./...`
 7. `go test -tags integration -race -count=1 ./...`
@@ -85,6 +93,8 @@ NOT executed:
 - `internal/bootstrap` gives every context its own Bento transaction owner. A context that calls another context inside its own transaction gets `application.ErrTransactionConflict`, so cross-context queries run before the caller opens its transaction.
 - `EventID` is not a substitute for CommandID deduplication. No Exactly-Once guarantee.
 - The relay delivers at least once: a crash between publish and settle re-delivers after the lease expires. Sinks and consumers deduplicate by event ID, which the webhook sends as `Idempotency-Key`. Leases are wall-clock timestamps, so worker hosts need synchronized clocks.
+- RATE keeps customers as ORG party references only; legal names stay in ORG. Quote costs and margins never leave RATE.
+- RATE's margin floor, independent price approval and acceptance rules are a candidate design pending business review; the floor itself is supplied by `MarginPolicy`, not hard-coded.
 - The earliest ORG master data cannot be signed off until a Cargo business owner validates authoritative identity, legal status and partner role semantics.
 
 ## Dependency lock qualification

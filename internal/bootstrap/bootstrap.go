@@ -15,6 +15,8 @@ import (
 	bentooutbox "go.idp.xyz/idp-bento-go/postgres/outbox"
 	"go.idp.xyz/idp-cargo/internal/contexts/org"
 	orgapi "go.idp.xyz/idp-cargo/internal/contexts/org/api"
+	"go.idp.xyz/idp-cargo/internal/contexts/rate"
+	rateapi "go.idp.xyz/idp-cargo/internal/contexts/rate/api"
 	"go.idp.xyz/idp-cargo/internal/foundation/bento"
 	"go.idp.xyz/idp-cargo/internal/foundation/messaging"
 )
@@ -66,6 +68,15 @@ func (p *Platform) ORG(auth orgapi.Authorizer) (*org.Module, error) {
 		return nil, err
 	}
 	return org.New(db, auth)
+}
+
+// RATE assembles the RATE bounded context. org is used only through its query side.
+func (p *Platform) RATE(org orgapi.Queries, auth rateapi.Authorizer, margins rateapi.MarginPolicy) (*rate.Module, error) {
+	db, err := p.newDB()
+	if err != nil {
+		return nil, err
+	}
+	return rate.New(db, org, auth, margins)
 }
 
 // RelayConfig configures the Outbox relay that publishes to an HTTP sink.
