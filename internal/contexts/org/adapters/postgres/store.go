@@ -28,8 +28,10 @@ func (s PartyStore) Load(ctx context.Context, tenant org.TenantID, party org.Par
 	}
 	var name, country, status string
 	var rev int64
+	// Under READ COMMITTED each statement takes a new snapshot; locking the root row keeps the role
+	// query below consistent with this revision. Concurrent commands on one party serialize here.
 	err = q.QueryRow(ctx, `SELECT legal_name,registration_country,status,revision FROM cargo_org.business_party
-        WHERE tenant_id=$1 AND party_id=$2`, string(tenant), string(party)).Scan(&name, &country, &status, &rev)
+        WHERE tenant_id=$1 AND party_id=$2 FOR NO KEY UPDATE`, string(tenant), string(party)).Scan(&name, &country, &status, &rev)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, 0, bentorepo.ErrNotFound
 	}
