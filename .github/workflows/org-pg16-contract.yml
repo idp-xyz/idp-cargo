@@ -45,7 +45,7 @@ jobs:
           go mod download
           go mod verify
       - name: Apply framework + cargo migrations (operator-only tool)
-        run: go run -tags bento ./cmd/cargo-migrate -directory sql -apply
+        run: go run ./cmd/cargo-migrate -directory migrations/org -apply
       - name: Isolate application from migrator and privileged roles
         env:
           PGPASSWORD: ci-only
@@ -65,8 +65,8 @@ jobs:
           GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA bento TO cargo_app;
           SQL
       - name: Real ORG + Bento contracts (no skipped DB tests)
-        run: go test -tags 'bento integration' -count=1 -v ./...
+        run: go test -tags integration -count=1 -v ./...
       - name: Race detector
-        run: go test -tags 'bento integration' -race -count=1 ./...
+        run: go test -tags integration -race -count=1 ./...
       - name: Go vet
-        run: go vet -tags 'bento integration' ./...
+        run: go vet -tags integration ./...

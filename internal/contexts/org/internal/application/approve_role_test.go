@@ -3,7 +3,7 @@ package application
 import (
 	"context"
 	"errors"
-	org "go.idp.xyz/idp-cargo/internal/contexts/org/domain"
+	org "go.idp.xyz/idp-cargo/internal/contexts/org/internal/domain"
 	"testing"
 	"time"
 )

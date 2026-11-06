@@ -1,5 +1,3 @@
-//go:build bento
-
 package postgres
 
 import (
@@ -10,7 +8,8 @@ import (
 	"time"
 
 	"go.idp.xyz/idp-bento-go/eventing"
-	org "go.idp.xyz/idp-cargo/internal/contexts/org/domain"
+	"go.idp.xyz/idp-cargo/internal/contexts/org/api"
+	org "go.idp.xyz/idp-cargo/internal/contexts/org/internal/domain"
 )
 
 type Outbox struct {
@@ -32,16 +31,13 @@ func ORGEnvelope(commandID string, e org.Event, recordedAt time.Time) (eventing.
 	// Event ID is deterministic per immutable command ID and event type.
 	// This makes retried uncertain outcomes traceable; receipts still enforce command idempotency.
 	digest := sha256.Sum256([]byte(commandID + "\x00" + e.Type + "\x00" + string(e.TenantID) + "\x00" + e.SubjectID))
-	payload, err := json.Marshal(struct {
-		TenantID  string `json:"tenant_id"`
-		SubjectID string `json:"subject_id"`
-	}{string(e.TenantID), e.SubjectID})
+	payload, err := json.Marshal(api.EventPayload{TenantID: string(e.TenantID), SubjectID: e.SubjectID})
 	if err != nil {
 		return eventing.Envelope{}, err
 	}
 	envelope := eventing.Envelope{
 		SpecVersion: eventing.SpecVersionV1, ID: eventing.EventID(hex.EncodeToString(digest[:])),
-		Source: "idp-cargo.org", Type: eventing.EventType(e.Type), Version: 1,
+		Source: api.Source, Type: eventing.EventType(e.Type), Version: 1,
 		Scope: string(e.TenantID), Subject: e.SubjectID,
 		PartitionKey: string(e.TenantID) + ":" + e.SubjectID,
 		OccurredAt:   e.At.UTC(), RecordedAt: recordedAt.UTC(),
