@@ -1,4 +1,4 @@
-package bento
+package messaging
 
 import (
 	"context"

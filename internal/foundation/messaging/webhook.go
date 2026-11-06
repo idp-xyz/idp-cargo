@@ -1,4 +1,4 @@
-// Package messaging holds Cargo's event transport adapters.
+// Package messaging holds Cargo's reliable messaging: the Outbox relay and event transport adapters.
 package messaging
 
 import (
