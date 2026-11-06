@@ -13,11 +13,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	bentopg "go.idp.xyz/idp-bento-go/postgres"
-	bentooutbox "go.idp.xyz/idp-bento-go/postgres/outbox"
-	"go.idp.xyz/idp-cargo/internal/foundation/bento"
-	"go.idp.xyz/idp-cargo/internal/foundation/messaging"
+	"go.idp.xyz/idp-cargo/internal/bootstrap"
 )
 
 func main() {
@@ -52,26 +49,13 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	pool, err := pgxpool.New(ctx, dsn)
+	platform, err := bootstrap.Open(ctx, bootstrap.Config{PostgresDSN: dsn, BentoSchema: *schema})
 	if err != nil {
 		return err
 	}
-	defer pool.Close()
-	db, err := bentopg.NewDB(pool, bentopg.WithSchema(*schema))
-	if err != nil {
-		return err
-	}
-	if err = db.CheckSchema(ctx); err != nil {
-		return err
-	}
-	store, err := bentooutbox.NewStore(db)
-	if err != nil {
-		return err
-	}
-	relay := messaging.Relay{
-		Outbox:         store,
-		Publisher:      messaging.Webhook{URL: *sink},
-		Clock:          bento.SystemClock{},
+	defer platform.Close()
+	relay, err := platform.Relay(bootstrap.RelayConfig{
+		SinkURL:        *sink,
 		Batch:          *batch,
 		LeaseFor:       *lease,
 		PublishTimeout: *sinkTimeout,
@@ -81,6 +65,9 @@ func run() error {
 		RetryMax:       *retryMax,
 		IdleWait:       *poll,
 		Logger:         logger,
+	})
+	if err != nil {
+		return err
 	}
 	logger.Info("relaying outbox", "schema", *schema, "sink", *sink, "lease", *lease)
 	if err = relay.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
