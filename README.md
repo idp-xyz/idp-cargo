@@ -1,4 +1,4 @@
-# IDP-Cargo · Go + DDD + Bento-Go · V2.9 integration candidate
+# IDP-Cargo · Go + DDD + Bento-Go · V2.10 integration candidate
 
 **IDP-Cargo is one product repository and one Go module. Business code is organized by DDD bounded context; IDP-Bento-Go and IDP-Platform-Go stay separate repositories referenced as Go module versions.**
 
@@ -24,9 +24,11 @@ internal/kernel/                value objects shared by every context (ValidityI
 internal/foundation/bento/      context-agnostic IDP-Bento-Go adaptation (tenant-bound transactions, clock)
 internal/foundation/messaging/  reliable messaging: Outbox relay, HTTP webhook publisher
 migrations/org/                 immutable ORG migrations 000001–000006
+tools/dependency-check/         package rules of the structure baseline; cross-context allowlist generated from the Context Map
+.github/CODEOWNERS              an owner for every context directory and the kernel
 ```
 
-- Other contexts, transports, cross-context processes and the AI capability layer import `internal/contexts/org/api` and the module constructor only; the compiler rejects imports of `internal/contexts/org/internal/...` from outside ORG.
+- Other contexts, transports, cross-context processes and the AI capability layer import `internal/contexts/org/api` only; the compiler rejects imports of `internal/contexts/org/internal/...` from outside ORG, and `tools/dependency-check` rejects the rest of what the layering and the Context Map do not allow.
 - Further contexts (COM, RATE, …), `internal/processes/` and `internal/ai/` get directories when their first real code lands; no empty scaffolding.
 - Design documents, review reports and evidence logs are kept in the IDP-Cargo master archive and are not published in this repository.
 
@@ -37,6 +39,7 @@ GitHub Actions, `ubuntu-24.04` runner, workflow `org-pg16-contract.yml`, on ever
 - Runs 42201396450 (`3973a51`, failed: torn read in `PartyStore.Load`, defect 4), 42202747912 and 42203416561 (32 tests), 42204649979, 42205465991, 42205477004 and 42205609990 (35 tests plus 13 Bento testkit contract scenarios).
 - V2.8 moves ORG into `internal/contexts/org/{module.go, api, internal}` and the Bento seam into `internal/foundation/bento`, moves migrations to `migrations/org`, drops the obsolete `bento` build tag, and adds the ORG module with api error classification. Migration files and their checksums are unchanged.
 - V2.9 adds `cmd/cargo-worker` and the Outbox `Relay` (in `internal/foundation/messaging`, as the repository structure baseline V1.1 places it). PG16 tests cover a failed publish retried with backoff, abandonment after the failure budget without blocking the partition, and a process-level crash drill: the worker is killed with SIGKILL while the sink holds a delivery, a second worker re-delivers it after the lease expires, and SIGTERM stops it cleanly. Each publish is bounded by the sink timeout and a batch must fit inside its lease, so a slow sink cannot push queued deliveries past the lease and have them re-claimed while still waiting.
+- V2.10 starts S1. `internal/kernel` holds `ValidityInterval`. ORG's api gains PartyRef v1 and `ResolvePartyRole`, which confirms that an active party holds an approved role for a verified legal entity at an instant. `internal/bootstrap` gives every context and the relay its own Bento transaction owner; a PG16 test shows that ORG refuses commands and queries issued inside another context's transaction (AC4). `go run ./tools/dependency-check` runs as a step of the required check: it enforces rules D1–D6 (AC2, AC3) and CODEOWNERS coverage (AC7), and warns on D7.
 
 Bento testkit contracts:
 
@@ -67,6 +70,7 @@ NOT executed:
 7. `go test -tags integration -race -count=1 ./...`
 8. Collect signed, retained CI proof.
 9. Relay events: `IDP_CARGO_POSTGRES_DSN=... go run ./cmd/cargo-worker -sink https://...`. A claimed batch is sent one delivery at a time under one lease, so `-lease` must exceed `-batch` × `-sink-timeout` (defaults 10 × 5s under 1m); the worker refuses to start otherwise. `-max-attempts` (50) stays five times `-max-failures` (10), as Bento recommends, so the claim limit only ends publishers that crash before settling.
+10. Package rules: `go run ./tools/dependency-check`. After the Context Map changes or a context is added, regenerate the allowlist with `-generate <Context Map JSON>` from the master archive.
 
 ## Important boundaries
 
