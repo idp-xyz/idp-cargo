@@ -34,7 +34,7 @@ GitHub Actions, `ubuntu-24.04` runner, workflow `org-pg16-contract.yml`, on ever
 
 - Runs 42201396450 (`3973a51`, failed: torn read in `PartyStore.Load`, defect 4), 42202747912 and 42203416561 (32 tests), 42204649979, 42205465991, 42205477004 and 42205609990 (35 tests plus 13 Bento testkit contract scenarios).
 - V2.8 moves ORG into `internal/contexts/org/{module.go, api, internal}` and the Bento seam into `internal/foundation/bento`, moves migrations to `migrations/org`, drops the obsolete `bento` build tag, and adds the ORG module with api error classification. Migration files and their checksums are unchanged.
-- V2.9 adds `cmd/cargo-worker` and the Outbox `Relay` (in `internal/foundation/messaging`, as the repository structure baseline V1.1 places it). PG16 tests cover a failed publish retried with backoff, abandonment after the failure budget without blocking the partition, and a process-level crash drill: the worker is killed with SIGKILL while the sink holds a delivery, a second worker re-delivers it after the lease expires, and SIGTERM stops it cleanly.
+- V2.9 adds `cmd/cargo-worker` and the Outbox `Relay` (in `internal/foundation/messaging`, as the repository structure baseline V1.1 places it). PG16 tests cover a failed publish retried with backoff, abandonment after the failure budget without blocking the partition, and a process-level crash drill: the worker is killed with SIGKILL while the sink holds a delivery, a second worker re-delivers it after the lease expires, and SIGTERM stops it cleanly. Each publish is bounded by the sink timeout and a batch must fit inside its lease, so a slow sink cannot push queued deliveries past the lease and have them re-claimed while still waiting.
 
 Bento testkit contracts:
 
@@ -64,7 +64,7 @@ NOT executed:
 6. `go test -tags integration -count=1 -v ./...`
 7. `go test -tags integration -race -count=1 ./...`
 8. Collect signed, retained CI proof.
-9. Relay events: `IDP_CARGO_POSTGRES_DSN=... go run ./cmd/cargo-worker -sink https://...`. `-lease` must exceed `-sink-timeout`; the worker refuses to start otherwise.
+9. Relay events: `IDP_CARGO_POSTGRES_DSN=... go run ./cmd/cargo-worker -sink https://...`. A claimed batch is sent one delivery at a time under one lease, so `-lease` must exceed `-batch` × `-sink-timeout` (defaults 10 × 5s under 1m); the worker refuses to start otherwise.
 
 ## Important boundaries
 

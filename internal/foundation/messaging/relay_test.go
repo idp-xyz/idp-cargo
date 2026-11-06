@@ -55,7 +55,7 @@ func delivery(id string, failures uint32) eventing.Delivery {
 func testRelay(outbox *fakeOutbox, publisher eventing.PublisherFunc) Relay {
 	return Relay{
 		Outbox: outbox, Publisher: publisher, Clock: testkit.NewFixedClock(relayNow),
-		Batch: 10, LeaseFor: 30 * time.Second, MaxAttempts: 5, MaxFailures: 3,
+		Batch: 10, LeaseFor: 30 * time.Second, PublishTimeout: 2 * time.Second, MaxAttempts: 5, MaxFailures: 3,
 		RetryBase: time.Second, RetryMax: time.Minute, IdleWait: time.Millisecond,
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
@@ -89,6 +89,18 @@ func TestRelayRecordsFailureWithBackoff(t *testing.T) {
 	f := outbox.failures[0]
 	if !f.RetryAt.Equal(relayNow.Add(4*time.Second)) || f.Code != FailurePublishFailed || f.MaxFailures != 3 {
 		t.Fatalf("failure = %+v, want retry after 4s with budget 3", f)
+	}
+}
+
+func TestRelayRecordsFailureWhenPublishTimesOut(t *testing.T) {
+	outbox := &fakeOutbox{deliveries: []eventing.Delivery{delivery("a", 0)}}
+	relay := testRelay(outbox, func(ctx context.Context, _ eventing.Envelope) error { <-ctx.Done(); return ctx.Err() })
+	relay.PublishTimeout = 20 * time.Millisecond
+	if _, err := relay.RunOnce(context.Background()); err != nil {
+		t.Fatalf("a timed-out publish must not stop the relay: %v", err)
+	}
+	if len(outbox.failures) != 1 || outbox.failures[0].Code != FailurePublishFailed {
+		t.Fatalf("failures %v, want one %s", outbox.failures, FailurePublishFailed)
 	}
 }
 
@@ -144,5 +156,10 @@ func TestRelayBackoffDoublesUpToMax(t *testing.T) {
 func TestRelayRejectsMisconfiguration(t *testing.T) {
 	if _, err := (Relay{}).RunOnce(context.Background()); err == nil {
 		t.Fatal("zero Relay must not run")
+	}
+	relay := testRelay(&fakeOutbox{}, func(context.Context, eventing.Envelope) error { return nil })
+	relay.PublishTimeout = relay.LeaseFor / time.Duration(relay.Batch)
+	if _, err := relay.RunOnce(context.Background()); err == nil {
+		t.Fatal("a batch whose publishes can outlast the lease must not run")
 	}
 }

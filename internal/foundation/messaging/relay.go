@@ -19,21 +19,25 @@ const (
 // Relay moves committed Outbox deliveries to a Publisher in claim order. Delivery is at least once:
 // a crash between Publish and MarkPublished re-delivers after the lease expires, so consumers must
 // deduplicate by event ID.
+//
+// A batch shares one lease and is published one delivery at a time, so Batch × PublishTimeout must
+// be shorter than LeaseFor. Leases compare Clock readings, so workers need synchronized clocks.
 type Relay struct {
 	Outbox interface {
 		eventing.OutboxClaimer
 		eventing.OutboxFinalizer
 	}
-	Publisher   eventing.Publisher
-	Clock       application.Clock
-	Batch       int
-	LeaseFor    time.Duration
-	MaxAttempts uint32
-	MaxFailures uint32
-	RetryBase   time.Duration // delay after the first failure, doubled per recorded failure up to RetryMax
-	RetryMax    time.Duration
-	IdleWait    time.Duration
-	Logger      *slog.Logger
+	Publisher      eventing.Publisher
+	Clock          application.Clock
+	Batch          int
+	LeaseFor       time.Duration
+	PublishTimeout time.Duration // bound on one Publish; a publish cut off by it counts as a failure
+	MaxAttempts    uint32
+	MaxFailures    uint32
+	RetryBase      time.Duration // delay after the first failure, doubled per recorded failure up to RetryMax
+	RetryMax       time.Duration
+	IdleWait       time.Duration
+	Logger         *slog.Logger
 }
 
 // Run relays until ctx is canceled and then returns ctx.Err().
@@ -83,7 +87,9 @@ func (r Relay) settle(ctx context.Context, d eventing.Delivery) error {
 	if err := d.Envelope.Validate(); err != nil {
 		return r.leaseLostIsSettled(d, r.Outbox.Abandon(ctx, d.Ref, r.Clock.Now(), eventing.FailureEnvelopeInvalidOnPublish))
 	}
-	err := r.Publisher.Publish(ctx, d.Envelope)
+	publishCtx, cancel := context.WithTimeout(ctx, r.PublishTimeout)
+	err := r.Publisher.Publish(publishCtx, d.Envelope)
+	cancel()
 	switch {
 	case err == nil:
 		return r.leaseLostIsSettled(d, r.Outbox.MarkPublished(ctx, d.Ref, r.Clock.Now()))
@@ -121,8 +127,11 @@ func (r Relay) backoff(failures uint32) time.Duration {
 
 func (r Relay) validate() error {
 	if r.Outbox == nil || r.Publisher == nil || r.Clock == nil || r.Batch < 1 || r.Batch > eventing.MaxOutboxClaimLimit ||
-		r.LeaseFor <= 0 || r.MaxAttempts == 0 || r.MaxFailures == 0 || r.IdleWait <= 0 {
-		return errors.New("bento: relay misconfigured")
+		r.LeaseFor <= 0 || r.PublishTimeout <= 0 || r.MaxAttempts == 0 || r.MaxFailures == 0 || r.IdleWait <= 0 {
+		return errors.New("messaging: relay misconfigured")
+	}
+	if time.Duration(r.Batch)*r.PublishTimeout >= r.LeaseFor {
+		return errors.New("messaging: relay lease must outlast Batch × PublishTimeout")
 	}
 	return nil
 }
