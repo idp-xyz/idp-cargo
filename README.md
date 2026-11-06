@@ -64,7 +64,7 @@ NOT executed:
 6. `go test -tags integration -count=1 -v ./...`
 7. `go test -tags integration -race -count=1 ./...`
 8. Collect signed, retained CI proof.
-9. Relay events: `IDP_CARGO_POSTGRES_DSN=... go run ./cmd/cargo-worker -sink https://...`. A claimed batch is sent one delivery at a time under one lease, so `-lease` must exceed `-batch` × `-sink-timeout` (defaults 10 × 5s under 1m); the worker refuses to start otherwise.
+9. Relay events: `IDP_CARGO_POSTGRES_DSN=... go run ./cmd/cargo-worker -sink https://...`. A claimed batch is sent one delivery at a time under one lease, so `-lease` must exceed `-batch` × `-sink-timeout` (defaults 10 × 5s under 1m); the worker refuses to start otherwise. `-max-attempts` (50) stays five times `-max-failures` (10), as Bento recommends, so the claim limit only ends publishers that crash before settling.
 
 ## Important boundaries
 

@@ -33,7 +33,7 @@ func run() error {
 	batch := flag.Int("batch", 10, "deliveries claimed per round")
 	lease := flag.Duration("lease", time.Minute, "lease on a claimed batch; an unsettled delivery is re-claimed after it expires")
 	poll := flag.Duration("poll", time.Second, "wait between claims while the outbox is idle")
-	maxAttempts := flag.Uint("max-attempts", 20, "claims of one delivery before it is abandoned")
+	maxAttempts := flag.Uint("max-attempts", 50, "claims of one delivery before it is abandoned; keep well above -max-failures (Bento suggests 5x)")
 	maxFailures := flag.Uint("max-failures", 10, "recorded publish failures before a delivery is abandoned")
 	retryBase := flag.Duration("retry-base", time.Second, "delay after the first publish failure, doubled per failure")
 	retryMax := flag.Duration("retry-max", 5*time.Minute, "upper bound for the retry delay")
