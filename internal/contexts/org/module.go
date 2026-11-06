@@ -25,7 +25,10 @@ type Module struct {
 	clock  bento.SystemClock
 }
 
-var _ api.Commands = (*Module)(nil)
+var (
+	_ api.Commands = (*Module)(nil)
+	_ api.Queries  = (*Module)(nil)
+)
 
 func New(db *bentopg.DB, auth api.Authorizer) (*Module, error) {
 	if db == nil || auth == nil {
@@ -65,6 +68,30 @@ func (m *Module) ApproveRole(ctx context.Context, cmd api.ApproveRole) (api.Rece
 	return api.Receipt{CommandID: receipt.CommandID, PartyID: string(receipt.PartyID), NewRevision: receipt.NewRevision}, nil
 }
 
+func (m *Module) ResolvePartyRole(ctx context.Context, q api.ResolvePartyRole) (api.PartyRole, error) {
+	handler := application.ResolvePartyRole{
+		Tx:       bento.TenantTransactor{DB: m.db, Tenant: q.TenantID},
+		Parties:  postgres.PartyReader{DB: m.db},
+		Entities: postgres.LegalEntityStatuses{DB: m.db},
+	}
+	answer, err := handler.Handle(ctx, application.PartyRoleQuery{
+		TenantID: domain.TenantID(q.TenantID), PartyID: domain.PartyID(q.PartyID), RoleCode: domain.RoleCode(q.RoleCode),
+		LegalEntityID: domain.LegalEntityID(q.LegalEntityID), At: q.At,
+	})
+	if err != nil {
+		return api.PartyRole{}, classify(err)
+	}
+	party, role := answer.Party, answer.Role
+	return api.PartyRole{
+		Ref: api.PartyRef{
+			TenantID: string(party.Tenant()), PartyID: string(party.ID()), PartyRevision: answer.Revision,
+			IdentitySource: api.IdentitySource, LegalEntityScope: string(role.LegalEntityID),
+		},
+		LegalName: party.Name(), CountryCode: party.Country(), RoleCode: string(role.Code),
+		Validity: role.Validity(), EvidenceRef: role.EvidenceRef,
+	}, nil
+}
+
 type authorizer struct{ api.Authorizer }
 
 func (a authorizer) RequireRoleApproval(ctx context.Context, s application.Scope, p domain.PartyID, r domain.RoleCode) error {
@@ -86,7 +113,9 @@ func classify(err error) error {
 	case errors.Is(err, bentorepo.ErrNotFound):
 		kind = api.ErrNotFound
 	case errors.Is(err, domain.ErrInvalidIdentity), errors.Is(err, domain.ErrInvalidTransition),
-		errors.Is(err, domain.ErrRoleOverlap), errors.Is(err, domain.ErrMissingEvidence):
+		errors.Is(err, domain.ErrRoleOverlap), errors.Is(err, domain.ErrMissingEvidence),
+		errors.Is(err, domain.ErrPartyNotActive), errors.Is(err, domain.ErrRoleNotEffective),
+		errors.Is(err, domain.ErrLegalEntityNotVerified), errors.Is(err, application.ErrInvalidQuery):
 		kind = api.ErrRejected
 	default:
 		return err

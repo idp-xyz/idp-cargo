@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -41,6 +43,25 @@ func TestApproveRoleEventMatchesPublishedContract(t *testing.T) {
 	}
 }
 
+// The JSON field names are those of PartyRef v1; verified_at is optional there and ORG does not record it.
+func TestPartyRefMatchesPublishedContract(t *testing.T) {
+	blob, err := json.Marshal(api.PartyRef{TenantID: "T", PartyID: "P", PartyRevision: 3, IdentitySource: api.IdentitySource, LegalEntityScope: "LE"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err = json.Unmarshal(blob, &fields); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]any{"tenant_id": "T", "party_id": "P", "party_revision": float64(3), "identity_source": "ORG", "legal_entity_scope": "LE"}
+	if !reflect.DeepEqual(fields, want) {
+		t.Fatalf("PartyRef JSON = %s, want the PartyRef v1 fields %v", blob, want)
+	}
+	if blob, _ = json.Marshal(api.PartyRef{TenantID: "T", PartyID: "P", PartyRevision: 1, IdentitySource: api.IdentitySource}); strings.Contains(string(blob), "legal_entity_scope") {
+		t.Fatalf("legal_entity_scope is optional in PartyRef v1: %s", blob)
+	}
+}
+
 func TestClassifyMapsCausesToAPIKinds(t *testing.T) {
 	for _, tc := range []struct{ cause, want error }{
 		{application.ErrUnauthenticated, api.ErrUnauthenticated},
@@ -53,6 +74,10 @@ func TestClassifyMapsCausesToAPIKinds(t *testing.T) {
 		{bentorepo.ErrNotFound, api.ErrNotFound},
 		{domain.ErrRoleOverlap, api.ErrRejected},
 		{domain.ErrInvalidTransition, api.ErrRejected},
+		{fmt.Errorf("%w: party is SUSPENDED", domain.ErrPartyNotActive), api.ErrRejected},
+		{domain.ErrRoleNotEffective, api.ErrRejected},
+		{domain.ErrLegalEntityNotVerified, api.ErrRejected},
+		{application.ErrInvalidQuery, api.ErrRejected},
 	} {
 		got := classify(tc.cause)
 		if !errors.Is(got, tc.want) || !errors.Is(got, tc.cause) {

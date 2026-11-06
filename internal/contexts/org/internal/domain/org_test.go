@@ -55,6 +55,36 @@ func TestRoleOverlapAndTouchingBoundaries(t *testing.T) {
 		t.Fatal(e)
 	}
 }
+func TestEffectiveRoleIsHalfOpenAndNeedsActiveParty(t *testing.T) {
+	p := newActive(t)
+	r := Role{Code: RoleCarrier, LegalEntityID: "LE-1", ValidFrom: at, ValidUntil: at.Add(24 * time.Hour), EvidenceRef: "carrier-proof", ApprovedBy: "checker"}
+	if e := p.ApproveRole(r, at); e != nil {
+		t.Fatal(e)
+	}
+	if got, e := p.EffectiveRole(RoleCarrier, "LE-1", at); e != nil || got.EvidenceRef != "carrier-proof" {
+		t.Fatalf("EffectiveRole at the start = %+v, %v", got, e)
+	}
+	for name, tc := range map[string]struct {
+		code   RoleCode
+		entity LegalEntityID
+		at     time.Time
+	}{
+		"before the start":   {RoleCarrier, "LE-1", at.Add(-time.Nanosecond)},
+		"at the end":         {RoleCarrier, "LE-1", at.Add(24 * time.Hour)},
+		"other legal entity": {RoleCarrier, "LE-2", at},
+		"other role":         {RoleCustomer, "LE-1", at},
+	} {
+		if _, e := p.EffectiveRole(tc.code, tc.entity, tc.at); !errors.Is(e, ErrRoleNotEffective) {
+			t.Errorf("%s: err = %v, want %v", name, e, ErrRoleNotEffective)
+		}
+	}
+	if e := p.Suspend("risk", at); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := p.EffectiveRole(RoleCarrier, "LE-1", at); !errors.Is(e, ErrPartyNotActive) {
+		t.Fatalf("suspended party: err = %v, want %v", e, ErrPartyNotActive)
+	}
+}
 func TestSnapshotIsNotLiveMaster(t *testing.T) {
 	p := newActive(t)
 	s, e := p.Snapshot(5, at, "verified-copy")

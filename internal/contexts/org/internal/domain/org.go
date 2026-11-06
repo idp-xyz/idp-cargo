@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
 type TenantID string
@@ -43,6 +45,10 @@ var (
 	ErrUnapprovedMerge   = errors.New("org: unapproved merge")
 	ErrConflict          = errors.New("org: concurrent revision conflict")
 	ErrSelfApproval      = errors.New("org: independent approver required")
+
+	ErrPartyNotActive         = errors.New("org: party not active")
+	ErrRoleNotEffective       = errors.New("org: no approved role in force")
+	ErrLegalEntityNotVerified = errors.New("org: legal entity not verified")
 )
 
 type Event struct {
@@ -63,16 +69,17 @@ type Role struct {
 	ApprovedAt    time.Time // Actual approval instant, not role validity start.
 }
 
+// Validity is the half-open interval in which the role is in force.
+func (r Role) Validity() kernel.ValidityInterval {
+	return kernel.ValidityInterval{From: r.ValidFrom, Until: r.ValidUntil}
+}
+
 func (r Role) valid() bool {
-	return r.Code != "" && r.LegalEntityID != "" && !r.ValidFrom.IsZero() &&
-		(r.ValidUntil.IsZero() || r.ValidFrom.Before(r.ValidUntil)) && strings.TrimSpace(r.EvidenceRef) != "" && strings.TrimSpace(r.ApprovedBy) != ""
+	return r.Code != "" && r.LegalEntityID != "" && r.Validity().Valid() &&
+		strings.TrimSpace(r.EvidenceRef) != "" && strings.TrimSpace(r.ApprovedBy) != ""
 }
 func overlaps(a, b Role) bool {
-	if a.Code != b.Code || a.LegalEntityID != b.LegalEntityID {
-		return false
-	}
-	return (a.ValidUntil.IsZero() || b.ValidFrom.Before(a.ValidUntil)) &&
-		(b.ValidUntil.IsZero() || a.ValidFrom.Before(b.ValidUntil))
+	return a.Code == b.Code && a.LegalEntityID == b.LegalEntityID && a.Validity().Overlaps(b.Validity())
 }
 
 type BusinessParty struct {
@@ -139,6 +146,20 @@ func (p *BusinessParty) ApproveRole(role Role, at time.Time) error {
 	p.roles = append(p.roles, role)
 	p.record("PartnerRoleApproved.v1", at)
 	return nil
+}
+
+// EffectiveRole returns the approved role of the given code for a legal entity that is in force at
+// an instant. Only an active party can act in a role.
+func (p *BusinessParty) EffectiveRole(code RoleCode, entity LegalEntityID, at time.Time) (Role, error) {
+	if p.status != PartyActive {
+		return Role{}, fmt.Errorf("%w: party is %s", ErrPartyNotActive, p.status)
+	}
+	for _, r := range p.roles {
+		if r.Code == code && r.LegalEntityID == entity && r.Validity().Contains(at) {
+			return r, nil
+		}
+	}
+	return Role{}, ErrRoleNotEffective
 }
 func (p *BusinessParty) Suspend(reason string, at time.Time) error {
 	if p.status != PartyActive || at.IsZero() {

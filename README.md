@@ -13,12 +13,13 @@ cmd/cargo-migrate/              operator-only migrations: Bento schema, framewor
 cmd/cargo-worker/               Outbox relay: claim, publish to an HTTP sink, settle; at least once
 internal/contexts/org/          ORG bounded context
   module.go                     assembles ORG; the only constructor other code uses
-  api/                          ORG's contract: commands, published events, error kinds, Authorizer port
+  api/                          ORG's contract: commands, PartyRef v1 and the party-role query, published events, error kinds, Authorizer port
   internal/                     private to ORG (Go internal rule)
     domain/                     BusinessParty, LegalEntity, PartnerMergeCase
     application/                ApproveRole use case and its ports
     adapters/postgres/          tenant-scoped persistence, receipts, Outbox, Bento repository ports
     integration/                PG16 tests (build tag integration)
+internal/kernel/                value objects shared by every context (ValidityInterval); standard library only
 internal/foundation/bento/      context-agnostic IDP-Bento-Go adaptation (tenant-bound transactions, clock)
 internal/foundation/messaging/  reliable messaging: Outbox relay, HTTP webhook publisher
 migrations/org/                 immutable ORG migrations 000001–000006
