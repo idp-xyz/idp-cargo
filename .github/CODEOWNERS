@@ -1,0 +1,6 @@
+# Domain Owners per bounded context, and the shared kernel (repository structure baseline, AC7).
+# Kernel changes need the chief architect and every affected context owner. Until those roles are
+# assigned, the repository maintainer owns every path.
+*                        @idpxyz
+/internal/contexts/org/  @idpxyz
+/internal/kernel/        @idpxyz

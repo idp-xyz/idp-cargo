@@ -44,6 +44,8 @@ jobs:
           jq -e '.Sum == "h1:W9T1KsbXwuVs3lHTNwSUcEBY0Ids00hUH7I9KuBtCEo="' /tmp/bento-rc2.json
           go mod download
           go mod verify
+      - name: Package rules and CODEOWNERS (D1-D6, AC2, AC3, AC7)
+        run: go run ./tools/dependency-check
       - name: Apply framework + cargo migrations (operator-only tool)
         run: go run ./cmd/cargo-migrate -directory migrations/org -apply
       - name: Isolate application from migrator and privileged roles
