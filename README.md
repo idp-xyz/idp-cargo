@@ -19,6 +19,7 @@ internal/contexts/org/          ORG bounded context
     application/                ApproveRole use case and its ports
     adapters/postgres/          tenant-scoped persistence, receipts, Outbox, Bento repository ports
     integration/                PG16 tests (build tag integration)
+internal/bootstrap/             composition root: one connection pool, a Bento transaction owner per context and for the relay
 internal/kernel/                value objects shared by every context (ValidityInterval); standard library only
 internal/foundation/bento/      context-agnostic IDP-Bento-Go adaptation (tenant-bound transactions, clock)
 internal/foundation/messaging/  reliable messaging: Outbox relay, HTTP webhook publisher
@@ -74,6 +75,7 @@ NOT executed:
 - A missing or legacy `result_revision=0` receipt does **not** count as execution success.
 - Callers branch on the `api` error kinds (`ErrConflict`, `ErrRejected`, `ErrUnauthorized`, …), never on ORG or Bento causes; `org.ErrConflict` and Bento `repository.ErrConflict` both classify as `api.ErrConflict`.
 - No direct business writes across Cargo bounded contexts.
+- `internal/bootstrap` gives every context its own Bento transaction owner. A context that calls another context inside its own transaction gets `application.ErrTransactionConflict`, so cross-context queries run before the caller opens its transaction.
 - `EventID` is not a substitute for CommandID deduplication. No Exactly-Once guarantee.
 - The relay delivers at least once: a crash between publish and settle re-delivers after the lease expires. Sinks and consumers deduplicate by event ID, which the webhook sends as `Idempotency-Key`. Leases are wall-clock timestamps, so worker hosts need synchronized clocks.
 - The earliest ORG master data cannot be signed off until a Cargo business owner validates authoritative identity, legal status and partner role semantics.
