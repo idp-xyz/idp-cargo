@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	org "go.idp.xyz/idp-cargo/internal/contexts/org/domain"
+	org "go.idp.xyz/idp-cargo/internal/contexts/org/internal/domain"
 )
 
 var (
@@ -84,7 +84,7 @@ func (h ApproveRole) Handle(ctx context.Context, c RoleApprovalCommand) (Receipt
 		return Receipt{}, ErrUnauthenticated
 	}
 	// An explicitly scoped transaction cannot be reused for another tenant.
-	if scoped, ok := h.Tx.(interface{ TenantScope() org.TenantID }); ok && scoped.TenantScope() != c.Scope.TenantID {
+	if scoped, ok := h.Tx.(interface{ TenantScope() string }); ok && scoped.TenantScope() != string(c.Scope.TenantID) {
 		return Receipt{}, ErrUnauthorized
 	}
 	// Approval identity is derived from the trusted caller, never taken from the request body.

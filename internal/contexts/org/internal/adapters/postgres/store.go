@@ -1,5 +1,3 @@
-//go:build bento
-
 // Package postgres provides scoped, transaction-bound ORG persistence adapters.
 // It does not expose a shared MasterData entity to COM/BOOK/FIN.
 package postgres
@@ -16,8 +14,8 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	bentopg "go.idp.xyz/idp-bento-go/postgres"
 	bentorepo "go.idp.xyz/idp-bento-go/repository"
-	app "go.idp.xyz/idp-cargo/internal/contexts/org/application"
-	org "go.idp.xyz/idp-cargo/internal/contexts/org/domain"
+	app "go.idp.xyz/idp-cargo/internal/contexts/org/internal/application"
+	org "go.idp.xyz/idp-cargo/internal/contexts/org/internal/domain"
 )
 
 type PartyStore struct{ DB *bentopg.DB }

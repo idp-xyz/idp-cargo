@@ -1,4 +1,4 @@
-//go:build bento && integration
+//go:build integration
 
 package integration
 
@@ -12,10 +12,10 @@ import (
 	bentopg "go.idp.xyz/idp-bento-go/postgres"
 	bentooutbox "go.idp.xyz/idp-bento-go/postgres/outbox"
 	bentorepo "go.idp.xyz/idp-bento-go/repository"
-	"go.idp.xyz/idp-cargo/internal/contexts/org/adapters/postgres"
-	app "go.idp.xyz/idp-cargo/internal/contexts/org/application"
-	org "go.idp.xyz/idp-cargo/internal/contexts/org/domain"
-	scope "go.idp.xyz/idp-cargo/internal/platform/bento"
+	"go.idp.xyz/idp-cargo/internal/contexts/org/internal/adapters/postgres"
+	app "go.idp.xyz/idp-cargo/internal/contexts/org/internal/application"
+	org "go.idp.xyz/idp-cargo/internal/contexts/org/internal/domain"
+	scope "go.idp.xyz/idp-cargo/internal/foundation/bento"
 )
 
 func uniqueSuffix() string { return time.Now().UTC().Format("20060102T150405.000000000") }
@@ -146,7 +146,7 @@ func TestRLSWritePathsDenied(t *testing.T) {
 	seed(t, db, owned, "party-w")
 	ctx := context.Background()
 
-	err := (scope.TenantTransactor{DB: db, Tenant: other}).WithinTransaction(ctx, func(txCtx context.Context) error {
+	err := (scope.TenantTransactor{DB: db, Tenant: string(other)}).WithinTransaction(ctx, func(txCtx context.Context) error {
 		e, err := db.RequireExecutor(txCtx)
 		if err != nil {
 			return err
@@ -159,7 +159,7 @@ func TestRLSWritePathsDenied(t *testing.T) {
 		t.Errorf("wrong-tenant INSERT: want RLS violation 42501, got %v", err)
 	}
 
-	err = (scope.TenantTransactor{DB: db, Tenant: other}).WithinTransaction(ctx, func(txCtx context.Context) error {
+	err = (scope.TenantTransactor{DB: db, Tenant: string(other)}).WithinTransaction(ctx, func(txCtx context.Context) error {
 		e, err := db.RequireExecutor(txCtx)
 		if err != nil {
 			return err
@@ -208,8 +208,8 @@ func TestRLSWritePathsDenied(t *testing.T) {
 		t.Errorf("unscoped INSERT: want RLS violation 42501, got %v", err)
 	}
 
-	err = (scope.TenantTransactor{DB: db, Tenant: owned}).WithinTransaction(ctx, func(txCtx context.Context) error {
-		return (scope.TenantTransactor{DB: db, Tenant: other}).WithinTransaction(txCtx, func(context.Context) error { return nil })
+	err = (scope.TenantTransactor{DB: db, Tenant: string(owned)}).WithinTransaction(ctx, func(txCtx context.Context) error {
+		return (scope.TenantTransactor{DB: db, Tenant: string(other)}).WithinTransaction(txCtx, func(context.Context) error { return nil })
 	})
 	if !errors.Is(err, scope.ErrTenantScopeConflict) {
 		t.Errorf("nested tenant switch: want ErrTenantScopeConflict, got %v", err)

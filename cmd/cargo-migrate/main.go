@@ -1,5 +1,3 @@
-//go:build bento
-
 // cargo-migrate is an OPERATOR-ONLY migration tool. Not linked into the API.
 // It validates source digests and applies Bento migration assets first, then Cargo
 // ORG migrations, recording SHA256 in a history table. Never rewrite applied SQL.
@@ -37,7 +35,7 @@ func main() {
 	}
 }
 func run() error {
-	dir := flag.String("directory", "sql", "immutable ORG SQL migrations directory")
+	dir := flag.String("directory", "migrations/org", "immutable ORG SQL migrations directory")
 	apply := flag.Bool("apply", false, "explicitly apply to PostgreSQL as dedicated migrator role")
 	flag.Parse()
 	files, err := filepath.Glob(filepath.Join(*dir, "000*.sql"))

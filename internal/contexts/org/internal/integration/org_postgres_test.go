@@ -1,4 +1,4 @@
-//go:build bento && integration
+//go:build integration
 
 package integration
 
@@ -12,10 +12,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	bentopg "go.idp.xyz/idp-bento-go/postgres"
 	bentooutbox "go.idp.xyz/idp-bento-go/postgres/outbox"
-	"go.idp.xyz/idp-cargo/internal/contexts/org/adapters/postgres"
-	app "go.idp.xyz/idp-cargo/internal/contexts/org/application"
-	org "go.idp.xyz/idp-cargo/internal/contexts/org/domain"
-	scope "go.idp.xyz/idp-cargo/internal/platform/bento"
+	"go.idp.xyz/idp-cargo/internal/contexts/org/internal/adapters/postgres"
+	app "go.idp.xyz/idp-cargo/internal/contexts/org/internal/application"
+	org "go.idp.xyz/idp-cargo/internal/contexts/org/internal/domain"
+	scope "go.idp.xyz/idp-cargo/internal/foundation/bento"
 )
 
 type allowExplicitTestAuthorization struct{}
@@ -79,7 +79,7 @@ func testDB(t *testing.T) (*bentopg.DB, *pgxpool.Pool) {
 func seed(t *testing.T, db *bentopg.DB, tenant org.TenantID, party org.PartyID) {
 	t.Helper()
 	ctx := context.Background()
-	err := (scope.TenantTransactor{DB: db, Tenant: tenant}).WithinTransaction(ctx, func(txCtx context.Context) error {
+	err := (scope.TenantTransactor{DB: db, Tenant: string(tenant)}).WithinTransaction(ctx, func(txCtx context.Context) error {
 		e, err := db.RequireExecutor(txCtx)
 		if err != nil {
 			return err
@@ -101,7 +101,7 @@ func buildHandler(t *testing.T, db *bentopg.DB, tenant org.TenantID, commandID s
 	writer.CommandID = commandID
 	writer.RecordedAt = time.Now().UTC()
 	return app.ApproveRole{
-		Tx:      scope.TenantTransactor{DB: db, Tenant: tenant},
+		Tx:      scope.TenantTransactor{DB: db, Tenant: string(tenant)},
 		Parties: postgres.PartyStore{DB: db}, Entities: postgres.LegalEntityEligibility{DB: db},
 		Receipts: postgres.CommandReceipts{DB: db}, Auth: allowExplicitTestAuthorization{}, Outbox: writer,
 	}
@@ -153,7 +153,7 @@ func TestRoleApprovalRealPostgresAtomicAndIdempotent(t *testing.T) {
 	if roleCount != 0 {
 		t.Fatal("RLS data leaked outside tenant-scoped transaction")
 	}
-	err = (scope.TenantTransactor{DB: db, Tenant: tenant}).WithinTransaction(context.Background(), func(ctx context.Context) error {
+	err = (scope.TenantTransactor{DB: db, Tenant: string(tenant)}).WithinTransaction(context.Background(), func(ctx context.Context) error {
 		q, err := db.ReadExecutor(ctx)
 		if err != nil {
 			return err
@@ -177,13 +177,13 @@ func TestRoleApprovalRollbackOnOutboxFailure(t *testing.T) {
 	party := org.PartyID("party-b")
 	seed(t, db, tenant, party)
 	cmd := approvalCommand(tenant, party, "rollback")
-	h := app.ApproveRole{Tx: scope.TenantTransactor{DB: db, Tenant: tenant},
+	h := app.ApproveRole{Tx: scope.TenantTransactor{DB: db, Tenant: string(tenant)},
 		Parties: postgres.PartyStore{DB: db}, Entities: postgres.LegalEntityEligibility{DB: db},
 		Receipts: postgres.CommandReceipts{DB: db}, Auth: allowExplicitTestAuthorization{}, Outbox: failingOutbox{}}
 	if _, err := h.Handle(context.Background(), cmd); err == nil {
 		t.Fatal("injected failure should rollback")
 	}
-	err := (scope.TenantTransactor{DB: db, Tenant: tenant}).WithinTransaction(context.Background(), func(ctx context.Context) error {
+	err := (scope.TenantTransactor{DB: db, Tenant: string(tenant)}).WithinTransaction(context.Background(), func(ctx context.Context) error {
 		q, err := db.ReadExecutor(ctx)
 		if err != nil {
 			return err
@@ -216,7 +216,7 @@ func TestRLSMissingWrongTenantAndWriteDenied(t *testing.T) {
 	party := org.PartyID("party-hidden")
 	seed(t, db, owned, party)
 	// Same party key does not confer visibility across tenants.
-	err := (scope.TenantTransactor{DB: db, Tenant: other}).WithinTransaction(context.Background(), func(ctx context.Context) error {
+	err := (scope.TenantTransactor{DB: db, Tenant: string(other)}).WithinTransaction(context.Background(), func(ctx context.Context) error {
 		_, _, err := (postgres.PartyStore{DB: db}).Load(ctx, other, party)
 		if err == nil {
 			return errors.New("foreign party exposed")
@@ -238,7 +238,7 @@ func TestRLSMissingWrongTenantAndWriteDenied(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A deliberately mismatched tenant scope must be rejected by the command layer.
-	h := app.ApproveRole{Tx: scope.TenantTransactor{DB: db, Tenant: other},
+	h := app.ApproveRole{Tx: scope.TenantTransactor{DB: db, Tenant: string(other)},
 		Parties: postgres.PartyStore{DB: db}, Entities: postgres.LegalEntityEligibility{DB: db},
 		Receipts: postgres.CommandReceipts{DB: db}, Auth: allowExplicitTestAuthorization{}, Outbox: failingOutbox{}}
 	cmd := approvalCommand(owned, party, "wrong-tenant")
@@ -273,7 +273,7 @@ func TestConcurrentSameCommandCannotDuplicateBusinessMutation(t *testing.T) {
 	}
 	// The loser may return revision conflict or identical confirmed receipt,
 	// but neither can create duplicate role facts or Outbox messages.
-	err = (scope.TenantTransactor{DB: db, Tenant: tenant}).WithinTransaction(context.Background(), func(ctx context.Context) error {
+	err = (scope.TenantTransactor{DB: db, Tenant: string(tenant)}).WithinTransaction(context.Background(), func(ctx context.Context) error {
 		q, err := db.ReadExecutor(ctx)
 		if err != nil {
 			return err

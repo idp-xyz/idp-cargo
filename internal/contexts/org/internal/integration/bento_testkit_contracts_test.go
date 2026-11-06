@@ -1,4 +1,4 @@
-//go:build bento && integration
+//go:build integration
 
 package integration
 
@@ -18,9 +18,9 @@ import (
 	bentoinbox "go.idp.xyz/idp-bento-go/postgres/inbox"
 	bentooutbox "go.idp.xyz/idp-bento-go/postgres/outbox"
 	"go.idp.xyz/idp-bento-go/testkit"
-	"go.idp.xyz/idp-cargo/internal/contexts/org/adapters/postgres"
-	org "go.idp.xyz/idp-cargo/internal/contexts/org/domain"
-	scope "go.idp.xyz/idp-cargo/internal/platform/bento"
+	"go.idp.xyz/idp-cargo/internal/contexts/org/internal/adapters/postgres"
+	org "go.idp.xyz/idp-cargo/internal/contexts/org/internal/domain"
+	scope "go.idp.xyz/idp-cargo/internal/foundation/bento"
 )
 
 var contractSeq atomic.Uint64
@@ -137,7 +137,7 @@ func TestBentoInboxContract(t *testing.T) {
 
 func seedLegalEntity(t *testing.T, db *bentopg.DB, tenant org.TenantID) {
 	t.Helper()
-	err := (scope.TenantTransactor{DB: db, Tenant: tenant}).WithinTransaction(context.Background(), func(ctx context.Context) error {
+	err := (scope.TenantTransactor{DB: db, Tenant: string(tenant)}).WithinTransaction(context.Background(), func(ctx context.Context) error {
 		e, err := db.RequireExecutor(ctx)
 		if err != nil {
 			return err
@@ -176,7 +176,7 @@ func samePartyFacts(got, want *org.BusinessParty) bool {
 }
 
 func TestBentoRepositoryContract(t *testing.T) {
-	testkit.RunRepositoryContract(t, func(t *testing.T) testkit.RepositoryContractScenario[scope.ScopedPartyKey, *org.BusinessParty] {
+	testkit.RunRepositoryContract(t, func(t *testing.T) testkit.RepositoryContractScenario[postgres.PartyKey, *org.BusinessParty] {
 		db, _ := testDB(t)
 		tenant := org.TenantID(fmt.Sprintf("cargo-repo-contract-%s-%d", uniqueSuffix(), contractSeq.Add(1)))
 		seedLegalEntity(t, db, tenant)
@@ -196,9 +196,9 @@ func TestBentoRepositoryContract(t *testing.T) {
 		if err := updated.ApproveRole(role, at); err != nil {
 			t.Fatal(err)
 		}
-		tx := scope.TenantTransactor{DB: db, Tenant: tenant}
+		tx := scope.TenantTransactor{DB: db, Tenant: string(tenant)}
 		repo := postgres.PartyRepository{Store: postgres.PartyStore{DB: db}}
-		return testkit.RepositoryContractScenario[scope.ScopedPartyKey, *org.BusinessParty]{
+		return testkit.RepositoryContractScenario[postgres.PartyKey, *org.BusinessParty]{
 			// Cargo binds one tenant per transaction, so the "other scope" is a second party of the same
 			// tenant; cross-tenant isolation is covered by the RLS tests in this package.
 			Transactor: &scope.TransactionPort{Within: func(ctx context.Context, fn application.TxFunc) error {
@@ -207,8 +207,8 @@ func TestBentoRepositoryContract(t *testing.T) {
 			Loader:              repo,
 			Inserter:            repo,
 			Updater:             repo,
-			Key:                 scope.ScopedPartyKey{TenantID: tenant, ID: "party-a"},
-			OtherScopeKey:       scope.ScopedPartyKey{TenantID: tenant, ID: "party-b"},
+			Key:                 postgres.PartyKey{TenantID: tenant, ID: "party-a"},
+			OtherScopeKey:       postgres.PartyKey{TenantID: tenant, ID: "party-b"},
 			Aggregate:           restore("party-a", "Contract Corp", "US"),
 			UpdatedAggregate:    updated,
 			OtherScopeAggregate: restore("party-b", "Other Corp", "DE"),
