@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	bentopg "go.idp.xyz/idp-bento-go/postgres"
 	bentorepo "go.idp.xyz/idp-bento-go/repository"
 	app "go.idp.xyz/idp-cargo/internal/contexts/org/application"
@@ -86,6 +87,39 @@ func (s PartyStore) Save(ctx context.Context, p *org.BusinessParty, expected int
 	if err != nil {
 		return 0, err
 	}
+	if err = insertApprovedRoles(ctx, q, p); err != nil {
+		return 0, err
+	}
+	return newRevision, nil
+}
+
+// Insert persists a new party at revision 1 together with any approved roles it already carries.
+func (s PartyStore) Insert(ctx context.Context, p *org.BusinessParty) (int64, error) {
+	if p == nil {
+		return 0, org.ErrInvalidIdentity
+	}
+	q, err := s.DB.RequireExecutor(ctx)
+	if err != nil {
+		return 0, err
+	}
+	var revision int64
+	err = q.QueryRow(ctx, `INSERT INTO cargo_org.business_party (tenant_id,party_id,legal_name,registration_country,status)
+      VALUES ($1,$2,$3,$4,$5) RETURNING revision`,
+		string(p.Tenant()), string(p.ID()), p.Name(), p.Country(), string(p.Status())).Scan(&revision)
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "business_party_pkey" {
+		return 0, bentorepo.ErrAlreadyExists
+	}
+	if err != nil {
+		return 0, err
+	}
+	if err = insertApprovedRoles(ctx, q, p); err != nil {
+		return 0, err
+	}
+	return revision, nil
+}
+
+func insertApprovedRoles(ctx context.Context, q bentopg.Executor, p *org.BusinessParty) error {
 	for _, r := range p.ApprovedRoles() {
 		// Stable ID for immutable approved role facts. No hidden business role renaming.
 		// timestamptz keeps microseconds; hashing finer precision would change the ID after a reload.
@@ -97,16 +131,16 @@ func (s PartyStore) Save(ctx context.Context, p *org.BusinessParty, expected int
 		if !r.ValidUntil.IsZero() {
 			until = to
 		}
-		_, err = q.Exec(ctx, `INSERT INTO cargo_org.party_role
+		_, err := q.Exec(ctx, `INSERT INTO cargo_org.party_role
           (tenant_id,party_id,role_id,legal_entity_id,role_code,valid_from,valid_until,approval_state,evidence_ref,approved_by,approved_at)
           VALUES ($1,$2,$3,$4,$5,$6,$7,'APPROVED',$8,$9,$10)
           ON CONFLICT (tenant_id,party_id,role_id) DO NOTHING`,
 			string(p.Tenant()), string(p.ID()), roleID, string(r.LegalEntityID), string(r.Code), from, until, r.EvidenceRef, r.ApprovedBy, r.ApprovedAt.UTC())
 		if err != nil {
-			return 0, err
+			return err
 		}
 	}
-	return newRevision, nil
+	return nil
 }
 
 type LegalEntityEligibility struct{ DB *bentopg.DB }
