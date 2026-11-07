@@ -3,6 +3,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -17,7 +18,7 @@ import (
 )
 
 // OrderStore loads and writes orders for commands. Load locks the order row before reading, so commands
-// on one order run one after another and see every obligation committed before them.
+// on one order run one after another and see everything committed before them.
 type OrderStore struct{ DB *bentopg.DB }
 
 func (s OrderStore) Load(ctx context.Context, tenant com.TenantID, id com.OrderID) (*com.CustomerOrder, int64, error) {
@@ -35,6 +36,22 @@ func (s OrderStore) Load(ctx context.Context, tenant com.TenantID, id com.OrderI
 		return nil, 0, err
 	}
 	return readOrder(ctx, q, tenant, id)
+}
+
+// OrderOf finds the order that holds an obligation. Obligation rows never change, so the answer holds for
+// good.
+func (s OrderStore) OrderOf(ctx context.Context, tenant com.TenantID, id com.ObligationID) (com.OrderID, error) {
+	q, err := s.DB.ReadExecutor(ctx)
+	if err != nil {
+		return "", err
+	}
+	var order string
+	err = q.QueryRow(ctx, `SELECT order_id FROM cargo_com.fulfillment_obligation WHERE tenant_id=$1 AND obligation_id=$2 LIMIT 1`,
+		string(tenant), string(id)).Scan(&order)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", fmt.Errorf("%w: obligation %s", bentorepo.ErrNotFound, id)
+	}
+	return com.OrderID(order), err
 }
 
 // OrderReader reads orders for queries without locking.
@@ -64,52 +81,105 @@ type queryRower interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
-// readOrder reads an order with its lines and obligations in one statement, so all three come from one
-// snapshot even without a lock: under READ COMMITTED separate statements could see an allocation that
-// committed in between.
+// Rows of the child tables as json_agg renders them; NULL columns read as zero values.
+type lineRow struct {
+	LineNo          int    `json:"line_no"`
+	Description     string `json:"description"`
+	PackageType     string `json:"package_type"`
+	Packs           int64  `json:"packs"`
+	GrossWeightUnit string `json:"gross_weight_unit"`
+	GrossWeight     int64  `json:"gross_weight"`
+	VolumeUnit      string `json:"volume_unit"`
+	Volume          int64  `json:"volume"`
+}
+
+type obligationRow struct {
+	ObligationID      string    `json:"obligation_id"`
+	ObligationVersion int64     `json:"obligation_version"`
+	LineNo            int       `json:"line_no"`
+	Packs             int64     `json:"packs"`
+	GrossWeightUnit   string    `json:"gross_weight_unit"`
+	GrossWeight       int64     `json:"gross_weight"`
+	VolumeUnit        string    `json:"volume_unit"`
+	Volume            int64     `json:"volume"`
+	Status            string    `json:"status"`
+	AllocatedBy       string    `json:"allocated_by"`
+	AllocatedAt       time.Time `json:"allocated_at"`
+	RevokedBy         string    `json:"revoked_by"`
+	RevokedAt         time.Time `json:"revoked_at"`
+}
+
+type reservationRow struct {
+	ReservationNo     int       `json:"reservation_no"`
+	ObligationID      string    `json:"obligation_id"`
+	ObligationVersion int64     `json:"obligation_version"`
+	ShipmentID        string    `json:"shipment_id"`
+	ReservedBy        string    `json:"reserved_by"`
+	ReservedAt        time.Time `json:"reserved_at"`
+	ReleasedBy        string    `json:"released_by"`
+	ReleasedAt        time.Time `json:"released_at"`
+}
+
+func measure(packs int64, weightUnit string, weight int64, volumeUnit string, volume int64) com.Measure {
+	return com.Measure{Packs: packs, GrossWeight: kernel.Quantity{Unit: kernel.UnitCode(weightUnit), Amount: weight},
+		Volume: kernel.Quantity{Unit: kernel.UnitCode(volumeUnit), Amount: volume}}
+}
+
+// volume returns the volume columns of a measure, NULL when it declares none.
+func volume(m com.Measure) (unit, amount any) {
+	if !m.DeclaresVolume() {
+		return nil, nil
+	}
+	return string(m.Volume.Unit), m.Volume.Amount
+}
+
+// utc keeps zero times zero.
+func utc(t time.Time) time.Time {
+	if t.IsZero() {
+		return t
+	}
+	return t.UTC()
+}
+
+// readOrder reads an order with its lines, obligation versions and reservations in one statement, so all
+// come from one snapshot even without a lock: under READ COMMITTED separate statements could see a change
+// that committed in between.
 func readOrder(ctx context.Context, q queryRower, tenant com.TenantID, id com.OrderID) (*com.CustomerOrder, int64, error) {
 	s := com.OrderState{OrderDraft: com.OrderDraft{TenantID: tenant, OrderID: id}}
 	var entity, currency, status string
-	var roleUntil *time.Time
+	var roleUntil, cancelledAt *time.Time
+	var cancelledBy *string
 	var revision int64
-	var lineNo, obLineNo []int32
-	var lineText, lineUnit, obID, obUnit, obBy []string
-	var lineQty, obQty, obVersion []int64
-	var obAt []time.Time
+	var lineJSON, obligationJSON, reservationJSON []byte
 	err := q.QueryRow(ctx, `SELECT o.legal_entity_id,o.customer_party_id,o.customer_party_revision,o.customer_legal_name,
         o.customer_country_code,o.customer_role_valid_from,o.customer_role_valid_until,o.customer_role_evidence_ref,
         o.quote_id,o.quote_revision,o.quote_customer_revision,o.quote_currency,o.quote_total_minor,o.quote_valid_from,
         o.quote_valid_until,o.quote_accepted_at,o.quote_acceptance_evidence_ref,o.accepted_terms_sha256,
-        o.recorded_by,o.recorded_at,o.status,o.revision,
-        ARRAY(SELECT line_no FROM cargo_com.order_line l WHERE l.tenant_id=o.tenant_id AND l.order_id=o.order_id ORDER BY line_no),
-        ARRAY(SELECT description FROM cargo_com.order_line l WHERE l.tenant_id=o.tenant_id AND l.order_id=o.order_id ORDER BY line_no),
-        ARRAY(SELECT unit_code FROM cargo_com.order_line l WHERE l.tenant_id=o.tenant_id AND l.order_id=o.order_id ORDER BY line_no),
-        ARRAY(SELECT quantity FROM cargo_com.order_line l WHERE l.tenant_id=o.tenant_id AND l.order_id=o.order_id ORDER BY line_no),
-        ARRAY(SELECT obligation_id FROM cargo_com.fulfillment_obligation f WHERE f.tenant_id=o.tenant_id AND f.order_id=o.order_id
-              ORDER BY allocated_at,obligation_id,obligation_version),
-        ARRAY(SELECT obligation_version FROM cargo_com.fulfillment_obligation f WHERE f.tenant_id=o.tenant_id AND f.order_id=o.order_id
-              ORDER BY allocated_at,obligation_id,obligation_version),
-        ARRAY(SELECT line_no FROM cargo_com.fulfillment_obligation f WHERE f.tenant_id=o.tenant_id AND f.order_id=o.order_id
-              ORDER BY allocated_at,obligation_id,obligation_version),
-        ARRAY(SELECT unit_code FROM cargo_com.fulfillment_obligation f WHERE f.tenant_id=o.tenant_id AND f.order_id=o.order_id
-              ORDER BY allocated_at,obligation_id,obligation_version),
-        ARRAY(SELECT quantity FROM cargo_com.fulfillment_obligation f WHERE f.tenant_id=o.tenant_id AND f.order_id=o.order_id
-              ORDER BY allocated_at,obligation_id,obligation_version),
-        ARRAY(SELECT allocated_by FROM cargo_com.fulfillment_obligation f WHERE f.tenant_id=o.tenant_id AND f.order_id=o.order_id
-              ORDER BY allocated_at,obligation_id,obligation_version),
-        ARRAY(SELECT allocated_at FROM cargo_com.fulfillment_obligation f WHERE f.tenant_id=o.tenant_id AND f.order_id=o.order_id
-              ORDER BY allocated_at,obligation_id,obligation_version)
+        o.recorded_by,o.recorded_at,o.status,o.revision,o.cancelled_by,o.cancelled_at,
+        (SELECT coalesce(json_agg(l ORDER BY l.line_no), '[]') FROM cargo_com.order_line l
+          WHERE l.tenant_id=o.tenant_id AND l.order_id=o.order_id),
+        (SELECT coalesce(json_agg(f ORDER BY f.allocated_at, f.obligation_id, f.obligation_version), '[]')
+          FROM cargo_com.fulfillment_obligation f WHERE f.tenant_id=o.tenant_id AND f.order_id=o.order_id),
+        (SELECT coalesce(json_agg(r ORDER BY r.reservation_no), '[]') FROM cargo_com.obligation_reservation r
+          WHERE r.tenant_id=o.tenant_id AND r.order_id=o.order_id)
       FROM cargo_com.customer_order o WHERE o.tenant_id=$1 AND o.order_id=$2`, string(tenant), string(id)).Scan(
 		&entity, &s.Customer.PartyID, &s.Customer.PartyRevision, &s.Customer.LegalName,
 		&s.Customer.CountryCode, &s.Customer.RoleValidity.From, &roleUntil, &s.Customer.RoleEvidenceRef,
 		&s.Quote.QuoteID, &s.Quote.QuoteRevision, &s.Quote.CustomerRevision, &currency, &s.Quote.Total.Minor, &s.Quote.Validity.From,
 		&s.Quote.Validity.Until, &s.Quote.AcceptedAt, &s.Quote.EvidenceRef, &s.Quote.TermsHash,
-		&s.RecordedBy, &s.RecordedAt, &status, &revision,
-		&lineNo, &lineText, &lineUnit, &lineQty, &obID, &obVersion, &obLineNo, &obUnit, &obQty, &obBy, &obAt)
+		&s.RecordedBy, &s.RecordedAt, &status, &revision, &cancelledBy, &cancelledAt,
+		&lineJSON, &obligationJSON, &reservationJSON)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, 0, bentorepo.ErrNotFound
 	}
 	if err != nil {
+		return nil, 0, err
+	}
+	var lines []lineRow
+	var obligations []obligationRow
+	var reservations []reservationRow
+	if err = errors.Join(json.Unmarshal(lineJSON, &lines), json.Unmarshal(obligationJSON, &obligations),
+		json.Unmarshal(reservationJSON, &reservations)); err != nil {
 		return nil, 0, err
 	}
 	s.Quote.LegalEntityID, s.Quote.CustomerPartyID, s.Status = com.LegalEntityID(entity), s.Customer.PartyID, com.OrderStatus(status)
@@ -117,14 +187,23 @@ func readOrder(ctx context.Context, q queryRower, tenant com.TenantID, id com.Or
 	if roleUntil != nil {
 		s.Customer.RoleValidity.Until = *roleUntil
 	}
-	for i := range lineNo {
-		s.Lines = append(s.Lines, com.OrderLine{LineNo: int(lineNo[i]), Description: lineText[i],
-			Quantity: kernel.Quantity{Unit: kernel.UnitCode(lineUnit[i]), Amount: lineQty[i]}})
+	if cancelledAt != nil && cancelledBy != nil {
+		s.CancelledBy, s.CancelledAt = *cancelledBy, cancelledAt.UTC()
 	}
-	for i := range obID {
-		s.Obligations = append(s.Obligations, com.Obligation{ObligationID: com.ObligationID(obID[i]), Version: obVersion[i],
-			LineNo: int(obLineNo[i]), Quantity: kernel.Quantity{Unit: kernel.UnitCode(obUnit[i]), Amount: obQty[i]},
-			AllocatedBy: obBy[i], AllocatedAt: obAt[i]})
+	for _, l := range lines {
+		s.Lines = append(s.Lines, com.OrderLine{LineNo: l.LineNo, Description: l.Description, PackageType: com.PackageType(l.PackageType),
+			Measure: measure(l.Packs, l.GrossWeightUnit, l.GrossWeight, l.VolumeUnit, l.Volume)})
+	}
+	for _, f := range obligations {
+		s.Obligations = append(s.Obligations, com.Obligation{ObligationID: com.ObligationID(f.ObligationID), Version: f.ObligationVersion,
+			LineNo: f.LineNo, Measure: measure(f.Packs, f.GrossWeightUnit, f.GrossWeight, f.VolumeUnit, f.Volume),
+			Status: com.ObligationStatus(f.Status), AllocatedBy: f.AllocatedBy, AllocatedAt: utc(f.AllocatedAt),
+			RevokedBy: f.RevokedBy, RevokedAt: utc(f.RevokedAt)})
+	}
+	for _, r := range reservations {
+		s.Reservations = append(s.Reservations, com.Reservation{No: r.ReservationNo, ObligationID: com.ObligationID(r.ObligationID),
+			ObligationVersion: r.ObligationVersion, ShipmentID: r.ShipmentID, ReservedBy: r.ReservedBy, ReservedAt: utc(r.ReservedAt),
+			ReleasedBy: r.ReleasedBy, ReleasedAt: utc(r.ReleasedAt)})
 	}
 	order, err := com.RestoreOrder(s)
 	return order, revision, err
@@ -167,25 +246,33 @@ func (s OrderStore) Insert(ctx context.Context, order *com.CustomerOrder) (int64
 		return 0, err
 	}
 	for _, l := range st.Lines {
-		if _, err = q.Exec(ctx, `INSERT INTO cargo_com.order_line (tenant_id,order_id,line_no,description,unit_code,quantity)
-          VALUES ($1,$2,$3,$4,$5,$6)`, string(st.TenantID), string(st.OrderID), l.LineNo, l.Description, string(l.Quantity.Unit), l.Quantity.Amount); err != nil {
+		volumeUnit, volumeAmount := volume(l.Measure)
+		if _, err = q.Exec(ctx, `INSERT INTO cargo_com.order_line (tenant_id,order_id,line_no,description,package_type,packs,
+            gross_weight_unit,gross_weight,volume_unit,volume) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+			string(st.TenantID), string(st.OrderID), l.LineNo, l.Description, string(l.PackageType), l.Measure.Packs,
+			string(l.Measure.GrossWeight.Unit), l.Measure.GrossWeight.Amount, volumeUnit, volumeAmount); err != nil {
 			return 0, err
 		}
 	}
 	return revision, nil
 }
 
-// Save writes the order's status and the obligations it added, if the stored revision is still expected.
+// Save writes the order's status and cancellation, the obligation versions and reservations it added and
+// the reservations it released, if the stored revision is still the expected one.
 func (s OrderStore) Save(ctx context.Context, order *com.CustomerOrder, expected int64) (int64, error) {
 	q, err := s.DB.RequireExecutor(ctx)
 	if err != nil {
 		return 0, err
 	}
 	st := order.State()
+	var cancelledBy, cancelledAt any
+	if !st.CancelledAt.IsZero() {
+		cancelledBy, cancelledAt = st.CancelledBy, st.CancelledAt
+	}
 	var revision int64
-	err = q.QueryRow(ctx, `UPDATE cargo_com.customer_order SET status=$3,revision=revision+1,updated_at=now()
+	err = q.QueryRow(ctx, `UPDATE cargo_com.customer_order SET status=$3,cancelled_by=$5,cancelled_at=$6,revision=revision+1,updated_at=now()
       WHERE tenant_id=$1 AND order_id=$2 AND revision=$4 RETURNING revision`,
-		string(st.TenantID), string(st.OrderID), string(st.Status), expected).Scan(&revision)
+		string(st.TenantID), string(st.OrderID), string(st.Status), expected, cancelledBy, cancelledAt).Scan(&revision)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, bentorepo.ErrConflict
 	}
@@ -193,16 +280,46 @@ func (s OrderStore) Save(ctx context.Context, order *com.CustomerOrder, expected
 		return 0, err
 	}
 	for _, ob := range order.Added() {
-		_, err = q.Exec(ctx, `INSERT INTO cargo_com.fulfillment_obligation (tenant_id,obligation_id,obligation_version,order_id,
-            line_no,unit_code,quantity,allocated_by,allocated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-			string(st.TenantID), string(ob.ObligationID), ob.Version, string(st.OrderID),
-			ob.LineNo, string(ob.Quantity.Unit), ob.Quantity.Amount, ob.AllocatedBy, ob.AllocatedAt)
+		volumeUnit, volumeAmount := volume(ob.Measure)
+		var revokedBy, revokedAt any
+		if ob.Status == com.ObligationRevoked {
+			revokedBy, revokedAt = ob.RevokedBy, ob.RevokedAt
+		}
+		_, err = q.Exec(ctx, `INSERT INTO cargo_com.fulfillment_obligation (tenant_id,obligation_id,obligation_version,order_id,line_no,
+            packs,gross_weight_unit,gross_weight,volume_unit,volume,status,allocated_by,allocated_at,revoked_by,revoked_at)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+			string(st.TenantID), string(ob.ObligationID), ob.Version, string(st.OrderID), ob.LineNo,
+			ob.Measure.Packs, string(ob.Measure.GrossWeight.Unit), ob.Measure.GrossWeight.Amount, volumeUnit, volumeAmount,
+			string(ob.Status), ob.AllocatedBy, ob.AllocatedAt, revokedBy, revokedAt)
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "fulfillment_obligation_pkey" {
 			return 0, fmt.Errorf("%w: obligation %s", bentorepo.ErrAlreadyExists, ob.ObligationID)
 		}
 		if err != nil {
 			return 0, err
+		}
+	}
+	for _, r := range order.AddedReservations() {
+		var releasedBy, releasedAt any
+		if !r.Held() {
+			releasedBy, releasedAt = r.ReleasedBy, r.ReleasedAt
+		}
+		if _, err = q.Exec(ctx, `INSERT INTO cargo_com.obligation_reservation (tenant_id,order_id,reservation_no,obligation_id,
+            obligation_version,shipment_id,reserved_by,reserved_at,released_by,released_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+			string(st.TenantID), string(st.OrderID), r.No, string(r.ObligationID), r.ObligationVersion, r.ShipmentID,
+			r.ReservedBy, r.ReservedAt, releasedBy, releasedAt); err != nil {
+			return 0, err
+		}
+	}
+	for _, r := range order.ReleasedReservations() {
+		tag, err := q.Exec(ctx, `UPDATE cargo_com.obligation_reservation SET released_by=$4,released_at=$5
+          WHERE tenant_id=$1 AND order_id=$2 AND reservation_no=$3 AND released_at IS NULL`,
+			string(st.TenantID), string(st.OrderID), r.No, r.ReleasedBy, r.ReleasedAt)
+		if err != nil {
+			return 0, err
+		}
+		if tag.RowsAffected() != 1 {
+			return 0, fmt.Errorf("%w: reservation %d of order %s", bentorepo.ErrConflict, r.No, st.OrderID)
 		}
 	}
 	return revision, nil

@@ -27,14 +27,18 @@ func (o Outbox) EnqueueCOMEvent(ctx context.Context, e com.Event) error {
 	return o.Writer.Enqueue(ctx, envelope)
 }
 
-// COMEnvelope maps a COM domain event to its Bento envelope. The event ID is derived from the command and
-// the obligation, so a retried command yields the same event ID. All events of an order share its
-// partition.
+// COMEnvelope maps a COM domain event to its Bento envelope. The event ID is derived from the command, the
+// obligation and the shipment, so a retried command yields the same event ID. All events of an order share
+// its partition.
 func COMEnvelope(commandID string, e com.Event, recordedAt time.Time) (eventing.Envelope, error) {
-	digest := sha256.Sum256([]byte(commandID + "\x00" + e.Type + "\x00" + string(e.TenantID) + "\x00" + e.SubjectID +
-		"\x00" + string(e.ObligationID) + "\x00" + strconv.FormatInt(e.ObligationVersion, 10)))
+	key := commandID + "\x00" + e.Type + "\x00" + string(e.TenantID) + "\x00" + e.SubjectID +
+		"\x00" + string(e.ObligationID) + "\x00" + strconv.FormatInt(e.ObligationVersion, 10)
+	if e.ShipmentID != "" {
+		key += "\x00" + e.ShipmentID
+	}
+	digest := sha256.Sum256([]byte(key))
 	payload, err := json.Marshal(api.EventPayload{TenantID: string(e.TenantID), SubjectID: e.SubjectID,
-		ObligationID: string(e.ObligationID), ObligationVersion: e.ObligationVersion})
+		ObligationID: string(e.ObligationID), ObligationVersion: e.ObligationVersion, ShipmentID: e.ShipmentID})
 	if err != nil {
 		return eventing.Envelope{}, err
 	}
