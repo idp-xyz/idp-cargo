@@ -1,6 +1,7 @@
 // Package domain is the model of COM (Commercial Commitment): a customer order recorded against an
-// accepted quote, the customer's transaction snapshot, and the fulfillment obligations its lines are
-// allocated to. It depends on the standard library and the kernel only.
+// accepted quote, the customer's transaction snapshot, the fulfillment obligations its lines are allocated
+// to, their revocation, and the reservations FUL shipments hold on them. It depends on the standard
+// library and the kernel only.
 package domain
 
 import (
@@ -45,22 +46,13 @@ type AcceptedQuote struct {
 	TermsHash        string
 }
 
-// OrderLine is one goods or service requirement. Lines are numbered from 1.
+// OrderLine is one goods requirement: packs of one package type with their declared gross weight and,
+// optionally, volume (C3). Lines are numbered from 1.
 type OrderLine struct {
 	LineNo      int
 	Description string
-	Quantity    kernel.Quantity
-}
-
-// Obligation is a fulfillment obligation: part or all of one line's quantity that COM commits to fulfil.
-// It never changes; a change will need a new version.
-type Obligation struct {
-	ObligationID ObligationID
-	Version      int64
-	LineNo       int
-	Quantity     kernel.Quantity
-	AllocatedBy  string
-	AllocatedAt  time.Time
+	PackageType PackageType
+	Measure     Measure
 }
 
 type OrderStatus string
@@ -69,6 +61,7 @@ const (
 	OrderRecorded           OrderStatus = "RECORDED"
 	OrderPartiallyAllocated OrderStatus = "PARTIALLY_ALLOCATED"
 	OrderAllocated          OrderStatus = "ALLOCATED"
+	OrderCancelled          OrderStatus = "CANCELLED"
 )
 
 var (
@@ -76,9 +69,24 @@ var (
 	ErrQuoteMismatch        = errors.New("com: the order does not match the accepted quote")
 	ErrOutsideQuoteValidity = errors.New("com: instant outside the accepted quote's validity")
 	ErrInvalidAllocation    = errors.New("com: invalid allocation")
-	ErrOverAllocation       = errors.New("com: allocation exceeds the line's remaining quantity")
+	ErrOverAllocation       = errors.New("com: allocation exceeds what the line has left")
 	ErrInvalidTransition    = errors.New("com: invalid state transition")
+	ErrInvalidChange        = errors.New("com: invalid change to the order")
+	ErrUnknownObligation    = errors.New("com: the order holds no such obligation version")
+	ErrObligationNotActive  = errors.New("com: the obligation version is revoked or superseded")
+	ErrObligationReserved   = errors.New("com: a shipment holds the obligation")
+	ErrNotReserved          = errors.New("com: the shipment does not hold the obligation version")
 	ErrConflict             = errors.New("com: concurrent revision conflict")
+)
+
+// Event types, as package api publishes them.
+const (
+	eventOrderRecorded       = "CustomerOrderRecorded.v1"
+	eventOrderCancelled      = "CustomerOrderCancelled.v1"
+	eventObligationAllocated = "FulfillmentObligationAllocated.v1"
+	eventObligationRevoked   = "FulfillmentObligationRevoked.v1"
+	eventObligationReserved  = "ObligationReserved.v1"
+	eventReservationReleased = "ObligationReservationReleased.v1"
 )
 
 // Event carries identifiers only; the Outbox adapter maps it to a Bento envelope.
@@ -89,6 +97,7 @@ type Event struct {
 	SubjectID         string
 	ObligationID      ObligationID
 	ObligationVersion int64
+	ShipmentID        string
 }
 
 // OrderDraft is what a new order is recorded from. Lines are numbered in the order given.
@@ -101,23 +110,32 @@ type OrderDraft struct {
 	RecordedBy string
 }
 
-// OrderState is a stored order, for persistence.
+// OrderState is a stored order, for persistence. Obligations holds every version of every obligation and
+// Reservations every reservation, released ones included, so the order keeps its whole history (C6).
 type OrderState struct {
 	OrderDraft
-	RecordedAt  time.Time
-	Status      OrderStatus
-	Obligations []Obligation
+	RecordedAt   time.Time
+	Status       OrderStatus
+	Obligations  []Obligation
+	Reservations []Reservation
+	CancelledBy  string
+	CancelledAt  time.Time
 }
 
-// CustomerOrder is the aggregate root. Its commitment never changes; allocation only adds obligations.
+// CustomerOrder is the aggregate root. Its commitment never changes. Obligation versions and reservations
+// are only added, and a reservation is released at most once.
 type CustomerOrder struct {
-	state   OrderState
-	stored  int // obligations already persisted
-	pending []Event
+	state    OrderState
+	stored   int   // obligation versions already persisted
+	reserved int   // reservations already persisted
+	released []int // persisted reservations released since, by index
+	pending  []Event
 }
 
-// maxText matches the longest legal name ORG accepts.
-const maxText = 500
+const (
+	maxText = 500 // the longest legal name ORG accepts
+	maxID   = 128 // the longest identifier cargo_com stores
+)
 
 // RecordOrder records an order against an accepted quote, for the quote's customer as ORG confirmed it
 // at the instant.
@@ -134,7 +152,7 @@ func RecordOrder(d OrderDraft, at time.Time) (*CustomerOrder, error) {
 		return nil, err
 	}
 	o := &CustomerOrder{state: s}
-	o.record("CustomerOrderRecorded.v1", at, nil)
+	o.record(eventOrderRecorded, at, nil, "")
 	return o, nil
 }
 
@@ -162,7 +180,7 @@ func (s OrderState) validateCommitment() error {
 		return fmt.Errorf("%w: no lines", ErrInvalidOrder)
 	}
 	for i, l := range s.Lines {
-		if l.LineNo != i+1 || !text(l.Description) || !l.Quantity.Unit.Valid() || l.Quantity.Amount <= 0 {
+		if l.LineNo != i+1 || !text(l.Description) || !l.PackageType.Valid() || !l.Measure.valid() {
 			return fmt.Errorf("%w: line %d", ErrInvalidOrder, i+1)
 		}
 	}
@@ -172,110 +190,30 @@ func (s OrderState) validateCommitment() error {
 // RestoreOrder rebuilds a stored order without emitting events.
 func RestoreOrder(s OrderState) (*CustomerOrder, error) {
 	switch s.Status {
-	case OrderRecorded, OrderPartiallyAllocated, OrderAllocated:
+	case OrderRecorded, OrderPartiallyAllocated, OrderAllocated, OrderCancelled:
 	default:
 		return nil, fmt.Errorf("%w: status %q", ErrInvalidOrder, s.Status)
 	}
 	if err := s.validateCommitment(); err != nil {
 		return nil, err
 	}
+	if cancelled := !s.CancelledAt.IsZero(); cancelled == blank(s.CancelledBy) || (cancelled && s.CancelledAt.Before(s.RecordedAt)) {
+		return nil, fmt.Errorf("%w: cancellation", ErrInvalidOrder)
+	}
 	s.Lines = append([]OrderLine(nil), s.Lines...)
 	s.Obligations = append([]Obligation(nil), s.Obligations...)
-	o := &CustomerOrder{state: s, stored: len(s.Obligations)}
-	seen := map[ObligationID]bool{}
-	for _, ob := range s.Obligations {
-		if blank(string(ob.ObligationID)) || seen[ob.ObligationID] || ob.Version < 1 || ob.LineNo < 1 || ob.LineNo > len(s.Lines) ||
-			ob.Quantity.Amount <= 0 || blank(ob.AllocatedBy) || ob.AllocatedAt.Before(s.RecordedAt) {
-			return nil, fmt.Errorf("%w: obligation %q", ErrInvalidOrder, ob.ObligationID)
-		}
-		seen[ob.ObligationID] = true
+	s.Reservations = append([]Reservation(nil), s.Reservations...)
+	o := &CustomerOrder{state: s, stored: len(s.Obligations), reserved: len(s.Reservations)}
+	if err := o.validateObligations(); err != nil {
+		return nil, err
 	}
-	for no := 1; no <= len(s.Lines); no++ {
-		if remaining, err := o.Remaining(no); err != nil || remaining.Amount < 0 {
-			return nil, fmt.Errorf("%w: line %d is over-allocated", ErrInvalidOrder, no)
-		}
+	if err := o.validateReservations(); err != nil {
+		return nil, err
 	}
 	if derived := o.derivedStatus(); s.Status != derived {
-		return nil, fmt.Errorf("%w: status %s, but the allocations make it %s", ErrInvalidOrder, s.Status, derived)
+		return nil, fmt.Errorf("%w: status %s, but the obligations make it %s", ErrInvalidOrder, s.Status, derived)
 	}
 	return o, nil
-}
-
-// Allocate commits part or all of a line's remaining quantity to a new obligation at version 1.
-func (o *CustomerOrder) Allocate(lineNo int, id ObligationID, qty kernel.Quantity, by string, at time.Time) error {
-	if o.state.Status == OrderAllocated {
-		return ErrInvalidTransition
-	}
-	if at.IsZero() || at.Before(o.state.RecordedAt) || blank(string(id)) || blank(by) || qty.Amount <= 0 {
-		return ErrInvalidAllocation
-	}
-	if o.holds(id) {
-		return fmt.Errorf("%w: obligation %q already exists", ErrInvalidAllocation, id)
-	}
-	remaining, err := o.Remaining(lineNo)
-	if err != nil {
-		return err
-	}
-	if qty.Unit != remaining.Unit {
-		return fmt.Errorf("%w: %w", ErrInvalidAllocation, kernel.ErrUnitMismatch)
-	}
-	if qty.Amount > remaining.Amount {
-		return ErrOverAllocation
-	}
-	ob := Obligation{ObligationID: id, Version: 1, LineNo: lineNo, Quantity: qty, AllocatedBy: by, AllocatedAt: at.UTC()}
-	o.state.Obligations = append(o.state.Obligations, ob)
-	o.state.Status = o.derivedStatus()
-	o.record("FulfillmentObligationAllocated.v1", at, &ob)
-	return nil
-}
-
-// Remaining returns the quantity of a line not yet allocated to obligations.
-func (o *CustomerOrder) Remaining(lineNo int) (kernel.Quantity, error) {
-	if lineNo < 1 || lineNo > len(o.state.Lines) {
-		return kernel.Quantity{}, fmt.Errorf("%w: no line %d", ErrInvalidAllocation, lineNo)
-	}
-	remaining := o.state.Lines[lineNo-1].Quantity
-	for _, ob := range o.state.Obligations {
-		if ob.LineNo != lineNo {
-			continue
-		}
-		var err error
-		if remaining, err = remaining.Sub(ob.Quantity); err != nil {
-			return kernel.Quantity{}, err
-		}
-	}
-	return remaining, nil
-}
-
-// Obligation returns one version of an obligation of the order.
-func (o *CustomerOrder) Obligation(id ObligationID, version int64) (Obligation, bool) {
-	for _, ob := range o.state.Obligations {
-		if ob.ObligationID == id && ob.Version == version {
-			return ob, true
-		}
-	}
-	return Obligation{}, false
-}
-
-func (o *CustomerOrder) holds(id ObligationID) bool {
-	for _, ob := range o.state.Obligations {
-		if ob.ObligationID == id {
-			return true
-		}
-	}
-	return false
-}
-
-func (o *CustomerOrder) derivedStatus() OrderStatus {
-	if len(o.state.Obligations) == 0 {
-		return OrderRecorded
-	}
-	for no := 1; no <= len(o.state.Lines); no++ {
-		if remaining, err := o.Remaining(no); err != nil || remaining.Amount != 0 {
-			return OrderPartiallyAllocated
-		}
-	}
-	return OrderAllocated
 }
 
 // State returns a copy of the order for persistence and read models.
@@ -283,6 +221,7 @@ func (o *CustomerOrder) State() OrderState {
 	s := o.state
 	s.Lines = append([]OrderLine(nil), s.Lines...)
 	s.Obligations = append([]Obligation(nil), s.Obligations...)
+	s.Reservations = append([]Reservation(nil), s.Reservations...)
 	return s
 }
 
@@ -291,16 +230,18 @@ func (o *CustomerOrder) Tenant() TenantID    { return o.state.TenantID }
 func (o *CustomerOrder) Status() OrderStatus { return o.state.Status }
 func (o *CustomerOrder) Pending() []Event    { return append([]Event(nil), o.pending...) }
 
-// Added returns the obligations allocated since the order was recorded or restored, for persistence.
+// Added returns the obligation versions written since the order was recorded or restored, for persistence.
 func (o *CustomerOrder) Added() []Obligation {
 	return append([]Obligation(nil), o.state.Obligations[o.stored:]...)
 }
 
 // Acknowledge is permitted only after the transaction holding the order and its Outbox events commits.
-func (o *CustomerOrder) Acknowledge() { o.pending, o.stored = nil, len(o.state.Obligations) }
+func (o *CustomerOrder) Acknowledge() {
+	o.pending, o.stored, o.reserved, o.released = nil, len(o.state.Obligations), len(o.state.Reservations), nil
+}
 
-func (o *CustomerOrder) record(kind string, at time.Time, ob *Obligation) {
-	e := Event{Type: kind, At: at.UTC(), TenantID: o.state.TenantID, SubjectID: string(o.state.OrderID)}
+func (o *CustomerOrder) record(kind string, at time.Time, ob *Obligation, shipment string) {
+	e := Event{Type: kind, At: at.UTC(), TenantID: o.state.TenantID, SubjectID: string(o.state.OrderID), ShipmentID: shipment}
 	if ob != nil {
 		e.ObligationID, e.ObligationVersion = ob.ObligationID, ob.Version
 	}
@@ -310,6 +251,8 @@ func (o *CustomerOrder) record(kind string, at time.Time, ob *Obligation) {
 func blank(s string) bool { return strings.TrimSpace(s) == "" }
 
 func text(s string) bool { return !blank(s) && utf8.RuneCountInString(s) <= maxText }
+
+func identifier(s string) bool { return !blank(s) && utf8.RuneCountInString(s) <= maxID }
 
 func countryCode(s string) bool {
 	return len(s) == 2 && s[0] >= 'A' && s[0] <= 'Z' && s[1] >= 'A' && s[1] <= 'Z'

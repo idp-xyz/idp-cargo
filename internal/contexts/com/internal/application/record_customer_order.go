@@ -27,21 +27,15 @@ type RecordCustomerOrder struct {
 }
 
 func (h RecordCustomerOrder) Handle(ctx context.Context, c RecordCustomerOrderCommand) (Receipt, error) {
-	if err := h.check(ctx, c.Scope, c.CommandID, c.OccurredAt); err != nil {
-		return Receipt{}, err
-	}
 	if h.Quotes == nil || h.Customers == nil {
 		return Receipt{}, ErrMissingDependency
 	}
-	hash, err := requestHash(c)
-	if err != nil {
+	hash, stored, replayed, err := h.begin(ctx, c.Scope, c.CommandID, c.OccurredAt, c)
+	if err != nil || replayed {
+		return stored, err
+	}
+	if err = h.authorize(ctx, c.Scope, ActionRecordCustomerOrder, c.OrderID); err != nil {
 		return Receipt{}, err
-	}
-	if r, ok, err := h.replay(ctx, c.Scope.TenantID, c.CommandID, hash); err != nil || ok {
-		return r, err
-	}
-	if err = h.Auth.RequireOrderAction(ctx, c.Scope, ActionRecordCustomerOrder, c.OrderID); err != nil {
-		return Receipt{}, fmt.Errorf("%w: %v", ErrUnauthorized, err)
 	}
 	quote, err := h.Quotes.AcceptedQuote(ctx, c.Scope.TenantID, c.QuoteID)
 	if err != nil {

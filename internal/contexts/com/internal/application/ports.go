@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -34,8 +35,13 @@ type Scope struct {
 type OrderAction string
 
 const (
-	ActionRecordCustomerOrder       OrderAction = "RecordCustomerOrder"
-	ActionAllocateOrderToObligation OrderAction = "AllocateOrderToObligation"
+	ActionRecordCustomerOrder             OrderAction = "RecordCustomerOrder"
+	ActionAllocateOrderToObligation       OrderAction = "AllocateOrderToObligation"
+	ActionRevokeObligation                OrderAction = "RevokeObligation"
+	ActionAmendObligation                 OrderAction = "AmendObligation"
+	ActionCancelCustomerOrder             OrderAction = "CancelCustomerOrder"
+	ActionReserveObligationForFulfillment OrderAction = "ReserveObligationForFulfillment"
+	ActionReleaseObligationReservation    OrderAction = "ReleaseObligationReservation"
 )
 
 type Receipt struct {
@@ -49,12 +55,14 @@ type TxRunner interface {
 	WithinTransaction(context.Context, func(context.Context) error) error
 }
 
-// OrderStore loads and writes orders for commands. Save writes the order's status and the obligations
-// it added since it was loaded.
+// OrderStore loads and writes orders for commands. Save writes the order's status and what the order
+// added since it was loaded: obligation versions, reservations and releases. OrderOf finds the order that
+// holds an obligation.
 type OrderStore interface {
 	Load(context.Context, com.TenantID, com.OrderID) (*com.CustomerOrder, int64, error)
 	Insert(context.Context, *com.CustomerOrder) (int64, error)
 	Save(context.Context, *com.CustomerOrder, int64) (int64, error)
+	OrderOf(context.Context, com.TenantID, com.ObligationID) (com.OrderID, error)
 }
 
 type Receipts interface {
@@ -104,6 +112,52 @@ func (d Deps) check(ctx context.Context, s Scope, commandID string, occurredAt t
 		return ErrUnauthorized
 	}
 	return nil
+}
+
+// begin checks a command and returns its stored receipt if the command was already committed.
+func (d Deps) begin(ctx context.Context, s Scope, commandID string, occurredAt time.Time, command any) (hash string, stored Receipt, replayed bool, err error) {
+	if err = d.check(ctx, s, commandID, occurredAt); err != nil {
+		return "", Receipt{}, false, err
+	}
+	if hash, err = requestHash(command); err != nil {
+		return "", Receipt{}, false, err
+	}
+	stored, replayed, err = d.replay(ctx, s.TenantID, commandID, hash)
+	return hash, stored, replayed, err
+}
+
+func (d Deps) authorize(ctx context.Context, s Scope, action OrderAction, id com.OrderID) error {
+	if err := d.Auth.RequireOrderAction(ctx, s, action, id); err != nil {
+		return fmt.Errorf("%w: %v", ErrUnauthorized, err)
+	}
+	return nil
+}
+
+// orderOf finds the order that holds an obligation, for the commands FUL addresses to an obligation.
+func (d Deps) orderOf(ctx context.Context, tenant com.TenantID, id com.ObligationID) (com.OrderID, error) {
+	var order com.OrderID
+	err := d.Tx.WithinTransaction(ctx, func(txCtx context.Context) error {
+		var err error
+		order, err = d.Orders.OrderOf(txCtx, tenant, id)
+		return err
+	})
+	return order, err
+}
+
+// change commits one change to a stored order with its Outbox events and the command receipt. apply gets
+// the order, locked, and the revision it was stored at.
+func (d Deps) change(ctx context.Context, s Scope, commandID, hash string, id com.OrderID, apply func(*com.CustomerOrder, int64) error) (Receipt, error) {
+	return d.write(ctx, s, commandID, hash, func(txCtx context.Context) (*com.CustomerOrder, int64, error) {
+		order, revision, err := d.Orders.Load(txCtx, s.TenantID, id)
+		if err != nil {
+			return nil, 0, err
+		}
+		if err = apply(order, revision); err != nil {
+			return nil, 0, err
+		}
+		newRevision, err := d.Orders.Save(txCtx, order, revision)
+		return order, newRevision, err
+	})
 }
 
 // replay returns the stored receipt of a command whose payload is unchanged.

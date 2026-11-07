@@ -34,8 +34,9 @@ type Module struct {
 }
 
 var (
-	_ api.Commands = (*Module)(nil)
-	_ api.Queries  = (*Module)(nil)
+	_ api.Commands               = (*Module)(nil)
+	_ api.ObligationReservations = (*Module)(nil)
+	_ api.Queries                = (*Module)(nil)
 )
 
 // New assembles COM. org answers customer checks and rate returns accepted quotes; the composition root
@@ -54,7 +55,8 @@ func New(db *bentopg.DB, org orgapi.Queries, rate rateapi.Queries, auth api.Auth
 func (m *Module) RecordCustomerOrder(ctx context.Context, cmd api.RecordCustomerOrder) (api.Receipt, error) {
 	lines := make([]domain.OrderLine, len(cmd.Lines))
 	for i, l := range cmd.Lines {
-		lines[i] = domain.OrderLine{Description: l.Description, Quantity: l.Quantity}
+		lines[i] = domain.OrderLine{Description: l.Description, PackageType: domain.PackageType(l.PackageType),
+			Measure: domain.Measure{Packs: l.Packs, GrossWeight: l.GrossWeight, Volume: l.Volume}}
 	}
 	receipt, err := application.RecordCustomerOrder{
 		Deps: m.deps(cmd.TenantID, cmd.CommandID), Quotes: rateacl.Quotes{RATE: m.rate}, Customers: orgacl.Customers{ORG: m.org},
@@ -69,25 +71,104 @@ func (m *Module) AllocateOrderToObligation(ctx context.Context, cmd api.Allocate
 	receipt, err := application.AllocateOrderToObligation{Deps: m.deps(cmd.TenantID, cmd.CommandID)}.Handle(ctx, application.AllocateOrderToObligationCommand{
 		CommandID: cmd.CommandID, Scope: scope(cmd.TenantID, cmd.ActorID), OrderID: domain.OrderID(cmd.OrderID),
 		ExpectedRevision: cmd.ExpectedRevision, LineNo: cmd.LineNo, ObligationID: domain.ObligationID(cmd.ObligationID),
-		Quantity: cmd.Quantity, OccurredAt: stored(cmd.OccurredAt),
+		Measure: domain.Measure{Packs: cmd.Packs, GrossWeight: cmd.GrossWeight, Volume: cmd.Volume}, OccurredAt: stored(cmd.OccurredAt),
 	})
 	return toReceipt(receipt, err)
 }
 
+func (m *Module) RevokeObligation(ctx context.Context, cmd api.RevokeObligation) (api.Receipt, error) {
+	receipt, err := application.RevokeObligation{Deps: m.deps(cmd.TenantID, cmd.CommandID)}.Handle(ctx, application.RevokeObligationCommand{
+		CommandID: cmd.CommandID, Scope: scope(cmd.TenantID, cmd.ActorID), OrderID: domain.OrderID(cmd.OrderID),
+		ExpectedRevision: cmd.ExpectedRevision, ObligationID: domain.ObligationID(cmd.ObligationID), OccurredAt: stored(cmd.OccurredAt),
+	})
+	return toReceipt(receipt, err)
+}
+
+func (m *Module) AmendObligation(ctx context.Context, cmd api.AmendObligation) (api.Receipt, error) {
+	receipt, err := application.AmendObligation{Deps: m.deps(cmd.TenantID, cmd.CommandID)}.Handle(ctx, application.AmendObligationCommand{
+		CommandID: cmd.CommandID, Scope: scope(cmd.TenantID, cmd.ActorID), OrderID: domain.OrderID(cmd.OrderID),
+		ExpectedRevision: cmd.ExpectedRevision, ObligationID: domain.ObligationID(cmd.ObligationID),
+		NewObligationID: domain.ObligationID(cmd.NewObligationID),
+		Measure:         domain.Measure{Packs: cmd.Packs, GrossWeight: cmd.GrossWeight, Volume: cmd.Volume}, OccurredAt: stored(cmd.OccurredAt),
+	})
+	return toReceipt(receipt, err)
+}
+
+func (m *Module) CancelCustomerOrder(ctx context.Context, cmd api.CancelCustomerOrder) (api.Receipt, error) {
+	receipt, err := application.CancelCustomerOrder{Deps: m.deps(cmd.TenantID, cmd.CommandID)}.Handle(ctx, application.CancelCustomerOrderCommand{
+		CommandID: cmd.CommandID, Scope: scope(cmd.TenantID, cmd.ActorID), OrderID: domain.OrderID(cmd.OrderID),
+		ExpectedRevision: cmd.ExpectedRevision, OccurredAt: stored(cmd.OccurredAt),
+	})
+	return toReceipt(receipt, err)
+}
+
+func (m *Module) ReserveObligationForFulfillment(ctx context.Context, cmd api.ReserveObligationForFulfillment) (api.Receipt, error) {
+	receipt, err := application.ReserveObligationForFulfillment{Deps: m.deps(cmd.TenantID, cmd.CommandID)}.Handle(ctx,
+		application.ReserveObligationForFulfillmentCommand{
+			CommandID: cmd.CommandID, Scope: scope(cmd.TenantID, cmd.ActorID), ObligationID: domain.ObligationID(cmd.ObligationID),
+			ObligationVersion: cmd.ObligationVersion, ShipmentID: cmd.ShipmentID, OccurredAt: stored(cmd.OccurredAt),
+		})
+	return toReceipt(receipt, err)
+}
+
+func (m *Module) ReleaseObligationReservation(ctx context.Context, cmd api.ReleaseObligationReservation) (api.Receipt, error) {
+	receipt, err := application.ReleaseObligationReservation{Deps: m.deps(cmd.TenantID, cmd.CommandID)}.Handle(ctx,
+		application.ReleaseObligationReservationCommand{
+			CommandID: cmd.CommandID, Scope: scope(cmd.TenantID, cmd.ActorID), ObligationID: domain.ObligationID(cmd.ObligationID),
+			ObligationVersion: cmd.ObligationVersion, ShipmentID: cmd.ShipmentID, OccurredAt: stored(cmd.OccurredAt),
+		})
+	return toReceipt(receipt, err)
+}
+
 func (m *Module) GetObligationSnapshot(ctx context.Context, q api.GetObligationSnapshot) (api.ObligationSnapshot, error) {
+	order, ob, err := m.obligation(ctx, q)
+	if err != nil {
+		return api.ObligationSnapshot{}, err
+	}
+	if ob.Status != domain.ObligationActive {
+		return api.ObligationSnapshot{}, classify(fmt.Errorf("%w: version %d of obligation %s records its revocation, which ObligationSnapshot v1 does not show",
+			bentorepo.ErrNotFound, ob.Version, ob.ObligationID))
+	}
+	s := order.State()
+	l := s.Lines[ob.LineNo-1]
+	return api.ObligationSnapshot{
+		TenantID: string(s.TenantID), ObligationID: string(ob.ObligationID), ObligationVersion: ob.Version,
+		OrderID: string(s.OrderID), OrderLineNo: ob.LineNo, Description: l.Description,
+		Quantity:      kernel.Quantity{Unit: kernel.UnitCode("X" + string(l.PackageType)), Amount: ob.Measure.Packs},
+		LegalEntityID: string(s.Quote.LegalEntityID), Customer: api.CustomerRef{PartyID: s.Customer.PartyID, PartyRevision: s.Customer.PartyRevision},
+		QuoteID: s.Quote.QuoteID, QuoteRevision: s.Quote.QuoteRevision, AllocatedAt: ob.AllocatedAt,
+	}, nil
+}
+
+func (m *Module) GetObligationSnapshotV2(ctx context.Context, q api.GetObligationSnapshot) (api.ObligationSnapshotV2, error) {
+	order, ob, err := m.obligation(ctx, q)
+	if err != nil {
+		return api.ObligationSnapshotV2{}, err
+	}
+	s := order.State()
+	l := s.Lines[ob.LineNo-1]
+	latest, _ := order.Latest(ob.ObligationID)
+	snapshot := api.ObligationSnapshotV2{
+		TenantID: string(s.TenantID), ObligationID: string(ob.ObligationID), ObligationVersion: ob.Version, LatestVersion: latest.Version,
+		Status: string(ob.Status), OrderID: string(s.OrderID), OrderLineNo: ob.LineNo, Description: l.Description,
+		Packs: ob.Measure.Packs, PackageType: string(l.PackageType), GrossWeight: ob.Measure.GrossWeight, Volume: ob.Measure.Volume,
+		LegalEntityID: string(s.Quote.LegalEntityID), Customer: api.CustomerRef{PartyID: s.Customer.PartyID, PartyRevision: s.Customer.PartyRevision},
+		QuoteID: s.Quote.QuoteID, QuoteRevision: s.Quote.QuoteRevision, AllocatedAt: ob.AllocatedAt, RevokedAt: ob.RevokedAt,
+	}
+	if r, held := order.Held(ob.ObligationID); held && r.ObligationVersion == ob.Version {
+		snapshot.HeldByShipmentID = r.ShipmentID
+	}
+	return snapshot, nil
+}
+
+func (m *Module) obligation(ctx context.Context, q api.GetObligationSnapshot) (*domain.CustomerOrder, domain.Obligation, error) {
 	order, ob, err := application.GetObligationSnapshot{
 		Tx: bento.TenantTransactor{DB: m.db, Tenant: q.TenantID}, Orders: postgres.OrderReader{DB: m.db},
 	}.Handle(ctx, domain.TenantID(q.TenantID), domain.ObligationID(q.ObligationID), q.Version)
 	if err != nil {
-		return api.ObligationSnapshot{}, classify(err)
+		return nil, domain.Obligation{}, classify(err)
 	}
-	s := order.State()
-	return api.ObligationSnapshot{
-		TenantID: string(s.TenantID), ObligationID: string(ob.ObligationID), ObligationVersion: ob.Version,
-		OrderID: string(s.OrderID), OrderLineNo: ob.LineNo, Description: s.Lines[ob.LineNo-1].Description, Quantity: ob.Quantity,
-		LegalEntityID: string(s.Quote.LegalEntityID), Customer: api.CustomerRef{PartyID: s.Customer.PartyID, PartyRevision: s.Customer.PartyRevision},
-		QuoteID: s.Quote.QuoteID, QuoteRevision: s.Quote.QuoteRevision, AllocatedAt: ob.AllocatedAt,
-	}, nil
+	return order, ob, nil
 }
 
 func (m *Module) deps(tenant, commandID string) application.Deps {
@@ -140,11 +221,12 @@ func classify(err error) error {
 	case errors.Is(err, domain.ErrConflict), errors.Is(err, bentorepo.ErrConflict), errors.Is(err, bentorepo.ErrAlreadyExists),
 		errors.Is(err, application.ErrQuoteAlreadyOrdered):
 		kind = api.ErrConflict
-	case errors.Is(err, bentorepo.ErrNotFound):
+	case errors.Is(err, bentorepo.ErrNotFound), errors.Is(err, domain.ErrUnknownObligation):
 		kind = api.ErrNotFound
 	case errors.Is(err, domain.ErrInvalidOrder), errors.Is(err, domain.ErrQuoteMismatch), errors.Is(err, domain.ErrOutsideQuoteValidity),
 		errors.Is(err, domain.ErrInvalidAllocation), errors.Is(err, domain.ErrOverAllocation), errors.Is(err, domain.ErrInvalidTransition),
-		errors.Is(err, application.ErrQuoteNotAccepted), errors.Is(err, application.ErrCustomerNotConfirmed),
+		errors.Is(err, domain.ErrInvalidChange), errors.Is(err, domain.ErrObligationNotActive), errors.Is(err, domain.ErrObligationReserved),
+		errors.Is(err, domain.ErrNotReserved), errors.Is(err, application.ErrQuoteNotAccepted), errors.Is(err, application.ErrCustomerNotConfirmed),
 		errors.Is(err, application.ErrInvalidQuery), errors.Is(err, kernel.ErrUnitMismatch), errors.Is(err, kernel.ErrAmountOverflow):
 		kind = api.ErrRejected
 	default:

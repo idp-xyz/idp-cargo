@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,12 +21,18 @@ func TestOrderEventsMatchPublishedContract(t *testing.T) {
 	at := time.Date(2026, 11, 6, 8, 0, 0, 0, time.UTC)
 	recorded := domain.Event{Type: api.CustomerOrderRecorded, At: at, TenantID: "T", SubjectID: "O-1"}
 	allocated := domain.Event{Type: api.FulfillmentObligationAllocated, At: at, TenantID: "T", SubjectID: "O-1", ObligationID: "OB-1", ObligationVersion: 1}
+	revoked := domain.Event{Type: api.FulfillmentObligationRevoked, At: at, TenantID: "T", SubjectID: "O-1", ObligationID: "OB-1", ObligationVersion: 2}
+	reserved := domain.Event{Type: api.ObligationReserved, At: at, TenantID: "T", SubjectID: "O-1", ObligationID: "OB-1", ObligationVersion: 1, ShipmentID: "S-1"}
+	cancelled := domain.Event{Type: api.CustomerOrderCancelled, At: at, TenantID: "T", SubjectID: "O-1"}
 	for _, tc := range []struct {
 		event domain.Event
 		want  string
 	}{
 		{recorded, `{"tenant_id":"T","subject_id":"O-1"}`},
 		{allocated, `{"tenant_id":"T","subject_id":"O-1","obligation_id":"OB-1","obligation_version":1}`},
+		{revoked, `{"tenant_id":"T","subject_id":"O-1","obligation_id":"OB-1","obligation_version":2}`},
+		{reserved, `{"tenant_id":"T","subject_id":"O-1","obligation_id":"OB-1","obligation_version":1,"shipment_id":"S-1"}`},
+		{cancelled, `{"tenant_id":"T","subject_id":"O-1"}`},
 	} {
 		envelope, err := postgres.COMEnvelope("cmd-1", tc.event, at)
 		if err != nil {
@@ -48,6 +55,53 @@ func TestOrderEventsMatchPublishedContract(t *testing.T) {
 	if first.ID != again.ID || first.ID == second.ID {
 		t.Fatalf("event ids: retried %s vs %s, other obligation %s", first.ID, again.ID, second.ID)
 	}
+	otherShipment := reserved
+	otherShipment.ShipmentID = "S-2"
+	one, _ := postgres.COMEnvelope("cmd-1", reserved, at)
+	two, _ := postgres.COMEnvelope("cmd-1", otherShipment, at)
+	if one.ID == two.ID {
+		t.Fatal("reservations for different shipments need different event ids")
+	}
+}
+
+// TestTheModelEmitsThePublishedEventTypes runs every command of the model and checks that its events are
+// exactly the types package api publishes.
+func TestTheModelEmitsThePublishedEventTypes(t *testing.T) {
+	at := time.Date(2026, 11, 6, 8, 0, 0, 0, time.UTC)
+	pallets := domain.Measure{Packs: 10, GrossWeight: kernel.Quantity{Unit: "KGM", Amount: 500}}
+	o, err := domain.RecordOrder(domain.OrderDraft{TenantID: "T", OrderID: "O-1", RecordedBy: "sales-1",
+		Lines: []domain.OrderLine{{Description: "Pallets", PackageType: "PX", Measure: pallets}},
+		Quote: domain.AcceptedQuote{QuoteID: "Q-1", QuoteRevision: 1, LegalEntityID: "LE", CustomerPartyID: "P", CustomerRevision: 1,
+			Total: kernel.Money{Currency: "USD", Minor: 1}, Validity: kernel.ValidityInterval{From: at, Until: at.Add(48 * time.Hour)},
+			AcceptedAt: at, EvidenceRef: "signed", TermsHash: strings.Repeat("ab", 32)},
+		Customer: domain.CustomerSnapshot{PartyID: "P", PartyRevision: 1, LegalName: "Fixture Corp", CountryCode: "US",
+			RoleValidity: kernel.ValidityInterval{From: at}, RoleEvidenceRef: "contract"},
+	}, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = errors.Join(
+		o.Allocate(1, "OB-1", pallets, "planner-1", at),
+		o.Reserve("OB-1", 1, "S-1", "fulfilment", at),
+		o.ReleaseReservation("OB-1", 1, "S-1", "fulfilment", at),
+		o.Amend("OB-1", "OB-2", pallets, "planner-1", at),
+		o.Revoke("OB-2", "planner-1", at),
+		o.Cancel("sales-1", at),
+	); err != nil {
+		t.Fatal(err)
+	}
+	published := map[string]bool{api.CustomerOrderRecorded: true, api.CustomerOrderCancelled: true, api.FulfillmentObligationAllocated: true,
+		api.FulfillmentObligationRevoked: true, api.ObligationReserved: true, api.ObligationReservationReleased: true}
+	emitted := map[string]bool{}
+	for _, e := range o.Pending() {
+		if !published[e.Type] {
+			t.Errorf("event type %s is not published by package api", e.Type)
+		}
+		emitted[e.Type] = true
+	}
+	if len(emitted) != len(published) {
+		t.Fatalf("emitted %v, published %v", emitted, published)
+	}
 }
 
 func TestClassifyMapsCausesToAPIKinds(t *testing.T) {
@@ -61,10 +115,15 @@ func TestClassifyMapsCausesToAPIKinds(t *testing.T) {
 		{bentorepo.ErrAlreadyExists, api.ErrConflict},
 		{application.ErrQuoteAlreadyOrdered, api.ErrConflict},
 		{bentorepo.ErrNotFound, api.ErrNotFound},
+		{domain.ErrUnknownObligation, api.ErrNotFound},
 		{domain.ErrOverAllocation, api.ErrRejected},
 		{domain.ErrQuoteMismatch, api.ErrRejected},
 		{domain.ErrOutsideQuoteValidity, api.ErrRejected},
 		{domain.ErrInvalidTransition, api.ErrRejected},
+		{domain.ErrInvalidChange, api.ErrRejected},
+		{domain.ErrObligationNotActive, api.ErrRejected},
+		{domain.ErrObligationReserved, api.ErrRejected},
+		{domain.ErrNotReserved, api.ErrRejected},
 		{fmt.Errorf("%w: rate said no", application.ErrQuoteNotAccepted), api.ErrRejected},
 		{fmt.Errorf("%w: org said no", application.ErrCustomerNotConfirmed), api.ErrRejected},
 		{application.ErrInvalidQuery, api.ErrRejected},

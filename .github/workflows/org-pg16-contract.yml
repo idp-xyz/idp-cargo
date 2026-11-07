@@ -67,6 +67,8 @@ jobs:
           GRANT SELECT,INSERT ON cargo_rate.quote_line,cargo_rate.command_receipt TO cargo_app;
           GRANT SELECT,INSERT,UPDATE ON cargo_com.customer_order TO cargo_app;
           GRANT SELECT,INSERT ON cargo_com.order_line,cargo_com.fulfillment_obligation,cargo_com.command_receipt TO cargo_app;
+          GRANT SELECT,INSERT ON cargo_com.obligation_reservation TO cargo_app;
+          GRANT UPDATE (released_by,released_at) ON cargo_com.obligation_reservation TO cargo_app;
           GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA bento TO cargo_app;
           GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA bento TO cargo_app;
           SQL
