@@ -36,20 +36,29 @@ internal/contexts/com/          COM bounded context (Commercial Commitment)
   internal/adapters/org/        customer snapshot from ORG's api (anticorruption layer)
   internal/adapters/rate/       accepted quote and terms hash from RATE's api (anticorruption layer)
   internal/integration/         PG16 tests with stand-ins for ORG and RATE, including races of allocations and of reservation against revocation
+internal/contexts/ful/          FUL bounded context (Freight Fulfillment); in S1 the shipment plan only
+  module.go                     assembles FUL; COM is passed in as its query port
+  api/                          FUL's contract: shipment commands, ShipmentPlanSnapshot v1, events, error kinds, Authorizer port
+  internal/domain/              Shipment: planned obligation versions of one customer, immutable plan versions, confirmations
+  internal/application/         create, add, amend, confirm, release and cancel use cases, the plan query, and their ports
+  internal/adapters/postgres/   shipments, receipts and Outbox in cargo_ful
+  internal/adapters/com/        obligation versions from COM's ObligationSnapshot v2 (anticorruption layer)
+  internal/integration/         PG16 tests with a stand-in for COM, including shipments racing for one obligation
 internal/bootstrap/             composition root: one connection pool, a Bento transaction owner per context and for the relay
-internal/kernel/                value objects shared by every context (ValidityInterval, Money, Quantity); standard library only
+internal/kernel/                value objects shared by every context (ValidityInterval, Money, Quantity, LocationCode); standard library only
 internal/foundation/bento/      context-agnostic IDP-Bento-Go adaptation (tenant-bound transactions, clock)
 internal/foundation/messaging/  reliable messaging: Outbox relay, HTTP webhook publisher
 migrations/org/                 immutable ORG migrations 000001–000006
 migrations/rate/                RATE migrations, starting with 000001_rate_quotes
 migrations/com/                 COM migrations 000001_com_orders and 000002_com_obligation_lifecycle
+migrations/ful/                 FUL migrations, starting with 000001_ful_shipments
 migrations/manifest/            order in which the contexts' migrations run
 tools/dependency-check/         package rules of the structure baseline; cross-context allowlist generated from the Context Map
 .github/CODEOWNERS              an owner for every context directory and the kernel
 ```
 
 - Other contexts, transports, cross-context processes and the AI capability layer import `internal/contexts/org/api` only; the compiler rejects imports of `internal/contexts/org/internal/...` from outside ORG, and `tools/dependency-check` rejects the rest of what the layering and the Context Map do not allow.
-- Further contexts (FUL, BOOK, …), `internal/processes/` and `internal/ai/` get directories when their first real code lands; no empty scaffolding.
+- Further contexts (BOOK, PHY, …), `internal/processes/` and `internal/ai/` get directories when their first real code lands; no empty scaffolding.
 - Design documents, review reports and evidence logs are kept in the IDP-Cargo master archive and are not published in this repository.
 
 ## Status of evidence
@@ -72,6 +81,12 @@ GitHub Actions, `ubuntu-24.04` runner, workflow `org-pg16-contract.yml`, on ever
   - FUL reserves an obligation version for a shipment, and releases it, through ObligationReservation v1 (`ReserveObligationForFulfillment`, `ReleaseObligationReservation`). While a shipment holds an obligation, COM refuses to revoke it or to cancel its order. COM never queries FUL.
   - `GetObligationSnapshotV2` adds packs, package type, gross weight, volume, the version's status, the latest version and the holding shipment. ObligationSnapshot v1 stays published, with the packs as a Recommendation 20 package unit (`XPX` for pallets).
   - Migration `000002_com_obligation_lifecycle` replaces the line and obligation quantities, adds cancellation and `obligation_reservation`, and replaces the triggers. It refuses to run on a `cargo_com` that already holds V0.1 orders. The triggers lock the order row, so a reservation and a revocation of one obligation never both commit; PG16 tests race them through the api and in raw SQL. A model-based property test runs random sequences of all six commands.
+- V2.15 also adds FUL, step 4 of the S1 slice: the shipment plan (FUL tactical candidate V0.1).
+  - A shipment plans exact COM obligation versions of one customer party and legal entity. COM must report each version ACTIVE, the obligation's latest, and reserved for the shipment; FUL asks before its own transaction. The shipment has its own identity, never the order's.
+  - Every change writes an immutable plan version: transport mode, origin and destination UN/LOCODEs, departure window, and the cargo scope summed from the planned obligations. Confirmation needs a complete route and re-checks every obligation with COM; a confirmed plan that changes must be confirmed again.
+  - Releasing an obligation or cancelling the shipment comes first; the caller then releases COM's reservation. FUL never writes to COM and never asserts loading or delivery.
+  - `GetShipmentPlanSnapshot` returns ShipmentPlanSnapshot v1 for BOOK in step 5. The kernel gains `LocationCode`, which keeps UN/LOCODE and IATA airport codes apart.
+  - `cargo_ful` keeps plan versions and confirmations immutable, lets a planned obligation be released only once, and plans an obligation in at most one live shipment through a unique index. PG16 tests race eight shipments for one obligation and eight amendments against one revision; a test in `internal/bootstrap` runs ORG, RATE, COM and FUL through the C6 handshake.
 
 Bento testkit contracts:
 
@@ -97,7 +112,7 @@ NOT executed:
 1. Install Go 1.26.5 and resolve the immutable framework candidate; do not use Git `main` or a local `replace`.
 2. Set `IDP_CARGO_MIGRATOR_DSN` to a dedicated migration role in PG16.
 3. `go run ./cmd/cargo-migrate -manifest migrations/manifest/contexts.txt` to inspect; separately authorize `-apply`.
-4. Create a `cargo_app` user with no owner/superuser/BYPASSRLS/DDL rights; grant only required DML (for `cargo_rate`: SELECT, INSERT, UPDATE on `quote`; SELECT, INSERT on `quote_line` and `command_receipt`; for `cargo_com`: SELECT, INSERT, UPDATE on `customer_order`; SELECT, INSERT on `order_line`, `fulfillment_obligation`, `obligation_reservation` and `command_receipt`; UPDATE of `released_by` and `released_at` only on `obligation_reservation`).
+4. Create a `cargo_app` user with no owner/superuser/BYPASSRLS/DDL rights; grant only required DML (for `cargo_rate`: SELECT, INSERT, UPDATE on `quote`; SELECT, INSERT on `quote_line` and `command_receipt`; for `cargo_com`: SELECT, INSERT, UPDATE on `customer_order`; SELECT, INSERT on `order_line`, `fulfillment_obligation`, `obligation_reservation` and `command_receipt`; UPDATE of `released_by` and `released_at` only on `obligation_reservation`; for `cargo_ful`: SELECT, INSERT, UPDATE on `shipment`; SELECT, INSERT on `shipment_obligation`, `shipment_plan_version`, `shipment_plan_confirmation` and `command_receipt`; UPDATE of `released_by` and `released_at` only on `shipment_obligation`).
 5. Set `CI=true IDP_CARGO_POSTGRES_DSN=...`. The Bento contract tests also need `IDP_CARGO_MIGRATOR_DSN` to provision their throwaway schemas.
 6. `go test -tags integration -count=1 -v ./...`
 7. `go test -tags integration -race -count=1 ./...`
@@ -120,6 +135,7 @@ NOT executed:
 - COM keeps the customer's legal name and country only as the transaction snapshot frozen with the order (MD-05). The obligation snapshots carry identifiers, packs, weight and volume, not names, because FUL does not consume legal names.
 - The reservation is COM's own fact, set and cleared through COM's api, so the COM → FUL relationship keeps its direction. In S1 an API client drives the handshake (rule T6); a release that FUL has not recorded first is caught by FUL's own re-checks, not by COM.
 - COM's rules follow the 2026-11-06 business review (C3–C7) where implemented; one order per accepted quote and recording within the quote's validity (C1, C2), commercial terms (C8) and addresses (C9) are still the earlier candidate rules. Package type codes and weight and volume units are checked for form only until reference data exists (MD-25).
+- FUL's rules are a candidate design pending business review: one transport mode per shipment (AIR, SEA, ROAD or RAIL), UN/LOCODE origins and destinations only, additions only while the plan is a draft, one weight unit per shipment, and volume declared by all of its obligations or by none. The customer's requested route and dates are not on the order yet, so planners enter them in FUL.
 - The earliest ORG master data cannot be signed off until a Cargo business owner validates authoritative identity, legal status and partner role semantics.
 
 ## Dependency lock qualification
