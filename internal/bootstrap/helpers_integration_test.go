@@ -12,8 +12,12 @@ import (
 	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
-// allowAll authorizes every ORG, RATE and COM action.
+// allowAll authorizes every ORG, RATE, COM and FUL action.
 type allowAll struct{}
+
+func (allowAll) AuthorizeShipmentAction(context.Context, string, string, string, string) error {
+	return nil
+}
 
 func (allowAll) AuthorizeRoleApproval(context.Context, string, string, string, string) error {
 	return nil

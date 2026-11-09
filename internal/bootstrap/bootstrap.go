@@ -15,6 +15,8 @@ import (
 	bentooutbox "go.idp.xyz/idp-bento-go/postgres/outbox"
 	"go.idp.xyz/idp-cargo/internal/contexts/com"
 	comapi "go.idp.xyz/idp-cargo/internal/contexts/com/api"
+	"go.idp.xyz/idp-cargo/internal/contexts/ful"
+	fulapi "go.idp.xyz/idp-cargo/internal/contexts/ful/api"
 	"go.idp.xyz/idp-cargo/internal/contexts/org"
 	orgapi "go.idp.xyz/idp-cargo/internal/contexts/org/api"
 	"go.idp.xyz/idp-cargo/internal/contexts/rate"
@@ -88,6 +90,15 @@ func (p *Platform) COM(org orgapi.Queries, rate rateapi.Queries, auth comapi.Aut
 		return nil, err
 	}
 	return com.New(db, org, rate, auth)
+}
+
+// FUL assembles the FUL bounded context. com is used only through its query side.
+func (p *Platform) FUL(com comapi.Queries, auth fulapi.Authorizer) (*ful.Module, error) {
+	db, err := p.newDB()
+	if err != nil {
+		return nil, err
+	}
+	return ful.New(db, com, auth)
 }
 
 // RelayConfig configures the Outbox relay that publishes to an HTTP sink.
