@@ -345,8 +345,8 @@ func TestReservationsAreAddressedToTheObligation(t *testing.T) {
 	if again, err := f.reserve("reserve-1", "OB-1", "S-1"); err != nil || again != r {
 		t.Fatalf("replay = %+v, %v", again, err)
 	}
-	if _, err := f.reserve("reserve-2", "OB-1", "S-2"); !errors.Is(err, com.ErrObligationReserved) {
-		t.Fatalf("another shipment: err = %v", err)
+	if _, err := f.reserve("reserve-2", "OB-1", "S-1"); !errors.Is(err, com.ErrObligationReserved) {
+		t.Fatalf("the same shipment again: err = %v", err)
 	}
 	if _, err := f.revoke("revoke-1", 3, "OB-1"); !errors.Is(err, com.ErrObligationReserved) {
 		t.Fatalf("revoke while reserved: err = %v", err)

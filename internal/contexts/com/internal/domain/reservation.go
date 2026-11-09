@@ -5,10 +5,12 @@ import (
 	"time"
 )
 
-// Reservation records that a FUL shipment holds an obligation version (C6). While a shipment holds an
-// obligation, COM refuses to revoke it or to cancel its order; FUL releases it first. COM never asks FUL:
-// the reservation is COM's own fact, set and cleared through COM's api. Reservations are numbered from 1
-// within the order and kept after release.
+// Reservation records that a FUL shipment holds an obligation version (C6). Since F1 several shipments
+// may each hold one, because FUL can plan parts of one obligation in several shipments; COM does not know
+// the parts, FUL keeps them within the obligation. While any shipment holds an obligation, COM refuses to
+// revoke it or to cancel its order; FUL releases it first. COM never asks FUL: the reservation is COM's own
+// fact, set and cleared through COM's api. Reservations are numbered from 1 within the order and kept
+// after release.
 type Reservation struct {
 	No                int
 	ObligationID      ObligationID
@@ -24,7 +26,7 @@ type Reservation struct {
 func (r Reservation) Held() bool { return r.ReleasedAt.IsZero() }
 
 // Reserve records that a shipment holds an obligation version. The version must be the obligation's
-// latest and ACTIVE, and no shipment may hold the obligation already.
+// latest and ACTIVE, and the shipment must not hold the obligation already; other shipments may (F1).
 func (o *CustomerOrder) Reserve(id ObligationID, version int64, shipment, by string, at time.Time) error {
 	ob, ok := o.Obligation(id, version)
 	if !ok {
@@ -33,8 +35,8 @@ func (o *CustomerOrder) Reserve(id ObligationID, version int64, shipment, by str
 	if latest, _ := o.Latest(id); ob.Status != ObligationActive || latest.Version != version {
 		return fmt.Errorf("%w: %q version %d", ErrObligationNotActive, id, version)
 	}
-	if r, held := o.Held(id); held {
-		return fmt.Errorf("%w: shipment %s holds %q", ErrObligationReserved, r.ShipmentID, id)
+	if o.heldBy(id, shipment) >= 0 {
+		return fmt.Errorf("%w: shipment %s holds %q already", ErrObligationReserved, shipment, id)
 	}
 	if !identifier(shipment) || blank(by) || at.IsZero() || at.Before(o.lastChange(id)) {
 		return ErrInvalidChange
@@ -48,8 +50,8 @@ func (o *CustomerOrder) Reserve(id ObligationID, version int64, shipment, by str
 // ReleaseReservation clears the reservation a shipment holds on an obligation version, once FUL has
 // released the obligation or cancelled the shipment (C6).
 func (o *CustomerOrder) ReleaseReservation(id ObligationID, version int64, shipment, by string, at time.Time) error {
-	i := o.held(id)
-	if i < 0 || o.state.Reservations[i].ObligationVersion != version || o.state.Reservations[i].ShipmentID != shipment {
+	i := o.heldBy(id, shipment)
+	if i < 0 || o.state.Reservations[i].ObligationVersion != version {
 		return fmt.Errorf("%w: %q version %d, shipment %s", ErrNotReserved, id, version, shipment)
 	}
 	r := &o.state.Reservations[i]
@@ -65,17 +67,29 @@ func (o *CustomerOrder) ReleaseReservation(id ObligationID, version int64, shipm
 	return nil
 }
 
-// Held returns the reservation in force on an obligation, if a shipment holds it.
+// Held returns the earliest reservation in force on an obligation, if any shipment holds it.
 func (o *CustomerOrder) Held(id ObligationID) (Reservation, bool) {
-	if i := o.held(id); i >= 0 {
-		return o.state.Reservations[i], true
+	if holders := o.Holders(id); len(holders) > 0 {
+		return holders[0], true
 	}
 	return Reservation{}, false
 }
 
-func (o *CustomerOrder) held(id ObligationID) int {
-	for i, r := range o.state.Reservations {
+// Holders returns every reservation in force on an obligation, in the order they were made.
+func (o *CustomerOrder) Holders(id ObligationID) []Reservation {
+	var holders []Reservation
+	for _, r := range o.state.Reservations {
 		if r.ObligationID == id && r.Held() {
+			holders = append(holders, r)
+		}
+	}
+	return holders
+}
+
+// heldBy returns the index of the reservation a shipment holds on an obligation, or -1.
+func (o *CustomerOrder) heldBy(id ObligationID, shipment string) int {
+	for i, r := range o.state.Reservations {
+		if r.ObligationID == id && r.ShipmentID == shipment && r.Held() {
 			return i
 		}
 	}
@@ -99,10 +113,14 @@ func (o *CustomerOrder) ReleasedReservations() []Reservation {
 }
 
 // validateReservations checks restored reservations: numbered from 1, each on an ACTIVE version of the
-// order, released at most once and not before it was made, and at most one in force per obligation, on
-// its latest version.
+// order, released at most once and not before it was made, and at most one in force per obligation and
+// shipment, on the obligation's latest version.
 func (o *CustomerOrder) validateReservations() error {
-	holding := map[ObligationID]bool{}
+	type holder struct {
+		obligation ObligationID
+		shipment   string
+	}
+	holding := map[holder]bool{}
 	for i, r := range o.state.Reservations {
 		ob, ok := o.Obligation(r.ObligationID, r.ObligationVersion)
 		released := !r.Held()
@@ -113,10 +131,11 @@ func (o *CustomerOrder) validateReservations() error {
 		if released {
 			continue
 		}
-		if latest, _ := o.Latest(r.ObligationID); holding[r.ObligationID] || latest.Version != r.ObligationVersion {
+		h := holder{r.ObligationID, r.ShipmentID}
+		if latest, _ := o.Latest(r.ObligationID); holding[h] || latest.Version != r.ObligationVersion {
 			return fmt.Errorf("%w: reservation %d", ErrInvalidOrder, i+1)
 		}
-		holding[r.ObligationID] = true
+		holding[h] = true
 	}
 	return nil
 }

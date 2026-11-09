@@ -64,6 +64,9 @@ type obligationRow struct {
 	GrossWeight       int64     `json:"gross_weight"`
 	VolumeUnit        string    `json:"volume_unit"`
 	Volume            int64     `json:"volume"`
+	PartPacks         int64     `json:"part_packs"`
+	PartGrossWeight   int64     `json:"part_gross_weight"`
+	PartVolume        int64     `json:"part_volume"`
 	AddedBy           string    `json:"added_by"`
 	AddedAt           time.Time `json:"added_at"`
 	ReleasedBy        string    `json:"released_by"`
@@ -157,6 +160,7 @@ func readShipment(ctx context.Context, q queryRower, tenant ful.TenantID, id ful
 			ObligationRef: ful.ObligationRef{ObligationID: ful.ObligationID(o.ObligationID), ObligationVersion: o.ObligationVersion,
 				OrderID: o.OrderID, CustomerPartyID: o.CustomerPartyID, LegalEntityID: o.LegalEntityID, Packs: o.Packs,
 				PackageType: o.PackageType, GrossWeight: quantity(o.GrossWeightUnit, o.GrossWeight), Volume: quantity(o.VolumeUnit, o.Volume)},
+			Part:    ful.CargoScope{Packs: o.PartPacks, GrossWeight: quantity(o.GrossWeightUnit, o.PartGrossWeight), Volume: quantity(o.VolumeUnit, o.PartVolume)},
 			AddedBy: o.AddedBy, AddedAt: utc(o.AddedAt), ReleasedBy: o.ReleasedBy, ReleasedAt: utc(o.ReleasedAt)})
 	}
 	for _, p := range plans {
@@ -236,12 +240,17 @@ func (s ShipmentStore) writeAdded(ctx context.Context, q bentopg.Executor, shipm
 	for i, p := range shipment.AddedObligations() {
 		_, err := q.Exec(ctx, `INSERT INTO cargo_ful.shipment_obligation (tenant_id,shipment_id,entry_no,obligation_id,obligation_version,
             order_id,customer_party_id,legal_entity_id,packs,package_type,gross_weight_unit,gross_weight,volume_unit,volume,
-            added_by,added_at,released_by,released_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
+            part_packs,part_gross_weight,part_volume,added_by,added_at,released_by,released_at)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
 			string(st.TenantID), string(st.ShipmentID), first+i+1, string(p.ObligationID), p.ObligationVersion,
 			p.OrderID, p.CustomerPartyID, p.LegalEntityID, p.Packs, p.PackageType, string(p.GrossWeight.Unit), p.GrossWeight.Amount,
-			orNull(string(p.Volume.Unit)), orNull(p.Volume.Amount), p.AddedBy, p.AddedAt, orNull(p.ReleasedBy), orNull(p.ReleasedAt))
+			orNull(string(p.Volume.Unit)), orNull(p.Volume.Amount), p.Part.Packs, p.Part.GrossWeight.Amount, orNull(p.Part.Volume.Amount),
+			p.AddedBy, p.AddedAt, orNull(p.ReleasedBy), orNull(p.ReleasedAt))
 		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "shipment_obligation_one_live_shipment" {
+		switch {
+		case errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "shipment_obligation_one_live_part":
+			return fmt.Errorf("%w: %s", ful.ErrAlreadyPlanned, p.ObligationID)
+		case errors.As(err, &pgErr) && pgErr.Code == "23514" && pgErr.ConstraintName == "shipment_obligation_within_obligation":
 			return fmt.Errorf("%w: %s", app.ErrPlannedElsewhere, p.ObligationID)
 		}
 		if err != nil {
@@ -275,6 +284,50 @@ func (s ShipmentStore) writeAdded(ctx context.Context, q bentopg.Executor, shipm
 		}
 	}
 	return nil
+}
+
+// PlannedElsewhere returns the sum of the live parts other shipments plan of an obligation, in their units.
+// It first takes the obligation's transaction lock, the one the shipment_obligation trigger takes, so that
+// commands planning parts of one obligation run one after another and each sees what the others committed
+// (read committed). A live part of another version or COM commitment is reported as planned elsewhere.
+func (s ShipmentStore) PlannedElsewhere(ctx context.Context, tenant ful.TenantID, id ful.ObligationID, version int64, except ful.ShipmentID) (ful.CargoScope, error) {
+	q, err := s.DB.RequireExecutor(ctx)
+	if err != nil {
+		return ful.CargoScope{}, err
+	}
+	if _, err = q.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('cargo_ful.obligation:' || $1 || '/' || $2, 0))`,
+		string(tenant), string(id)); err != nil {
+		return ful.CargoScope{}, err
+	}
+	var versions, packs, weight, volume int64
+	var weightUnit, volumeUnit *string
+	err = q.QueryRow(ctx, `SELECT count(DISTINCT obligation_version) FILTER (WHERE obligation_version <> $3),
+        coalesce(sum(part_packs), 0), coalesce(sum(part_gross_weight), 0), coalesce(sum(part_volume), 0),
+        min(gross_weight_unit), min(volume_unit)
+      FROM cargo_ful.shipment_obligation
+      WHERE tenant_id=$1 AND obligation_id=$2 AND released_at IS NULL AND shipment_id <> $4`,
+		string(tenant), string(id), version, string(except)).Scan(&versions, &packs, &weight, &volume, &weightUnit, &volumeUnit)
+	if err != nil {
+		return ful.CargoScope{}, err
+	}
+	if versions > 0 {
+		return ful.CargoScope{}, fmt.Errorf("%w: another shipment plans another version of %s", app.ErrPlannedElsewhere, id)
+	}
+	if packs == 0 {
+		return ful.CargoScope{}, nil
+	}
+	var elsewhere ful.CargoScope
+	elsewhere.Packs = packs
+	elsewhere.GrossWeight = quantity(deref(weightUnit), weight)
+	elsewhere.Volume = quantity(deref(volumeUnit), volume)
+	return elsewhere, nil
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 // CommandReceipts stores the result of every committed FUL command for replays.

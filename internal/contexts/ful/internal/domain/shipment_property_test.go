@@ -133,7 +133,11 @@ func TestPlanProperties(t *testing.T) {
 			return false
 		}
 		if status != ShipmentCancelled {
-			if scope, err := scopeOf(s.Planned()); err != nil || scope != s.Latest().Scope {
+			var wholes []CargoScope
+			for _, ob := range s.Planned() {
+				wholes = append(wholes, ob.Whole())
+			}
+			if scope, err := scopeOf(wholes); err != nil || scope != s.Latest().Scope {
 				return false
 			}
 		}

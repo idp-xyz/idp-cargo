@@ -53,7 +53,8 @@ func (m *Module) CreateShipmentFromObligation(ctx context.Context, cmd api.Creat
 	receipt, err := application.CreateShipmentFromObligation{Deps: m.deps(cmd.TenantID, cmd.CommandID), Obligations: m.obligations()}.Handle(ctx,
 		application.CreateShipmentFromObligationCommand{
 			CommandID: cmd.CommandID, Scope: scope(cmd.TenantID, cmd.ActorID), ShipmentID: domain.ShipmentID(cmd.ShipmentID),
-			ObligationID: domain.ObligationID(cmd.ObligationID), ObligationVersion: cmd.ObligationVersion, OccurredAt: stored(cmd.OccurredAt),
+			ObligationID: domain.ObligationID(cmd.ObligationID), ObligationVersion: cmd.ObligationVersion,
+			Part: part(cmd.Packs, cmd.GrossWeight, cmd.Volume), OccurredAt: stored(cmd.OccurredAt),
 		})
 	return toReceipt(receipt, err)
 }
@@ -63,8 +64,17 @@ func (m *Module) AddObligationToShipment(ctx context.Context, cmd api.AddObligat
 		application.AddObligationToShipmentCommand{
 			CommandID: cmd.CommandID, Scope: scope(cmd.TenantID, cmd.ActorID), ShipmentID: domain.ShipmentID(cmd.ShipmentID),
 			ExpectedRevision: cmd.ExpectedRevision, ObligationID: domain.ObligationID(cmd.ObligationID), ObligationVersion: cmd.ObligationVersion,
-			OccurredAt: stored(cmd.OccurredAt),
+			Part: part(cmd.Packs, cmd.GrossWeight, cmd.Volume), OccurredAt: stored(cmd.OccurredAt),
 		})
+	return toReceipt(receipt, err)
+}
+
+func (m *Module) ChangeShipmentPart(ctx context.Context, cmd api.ChangeShipmentPart) (api.Receipt, error) {
+	receipt, err := application.ChangeShipmentPart{Deps: m.deps(cmd.TenantID, cmd.CommandID)}.Handle(ctx, application.ChangeShipmentPartCommand{
+		CommandID: cmd.CommandID, Scope: scope(cmd.TenantID, cmd.ActorID), ShipmentID: domain.ShipmentID(cmd.ShipmentID),
+		ExpectedRevision: cmd.ExpectedRevision, ObligationID: domain.ObligationID(cmd.ObligationID), ObligationVersion: cmd.ObligationVersion,
+		Part: part(cmd.Packs, cmd.GrossWeight, cmd.Volume), Reason: cmd.Reason, OccurredAt: stored(cmd.OccurredAt),
+	})
 	return toReceipt(receipt, err)
 }
 
@@ -106,11 +116,9 @@ func (m *Module) CancelShipment(ctx context.Context, cmd api.CancelShipment) (ap
 }
 
 func (m *Module) GetShipmentPlanSnapshot(ctx context.Context, q api.GetShipmentPlanSnapshot) (api.ShipmentPlanSnapshot, error) {
-	shipment, revision, err := application.GetShipmentPlan{
-		Tx: bento.TenantTransactor{DB: m.db, Tenant: q.TenantID}, Shipments: postgres.ShipmentStore{DB: m.db},
-	}.Handle(ctx, domain.TenantID(q.TenantID), domain.ShipmentID(q.ShipmentID))
+	shipment, revision, err := m.shipment(ctx, q)
 	if err != nil {
-		return api.ShipmentPlanSnapshot{}, classify(err)
+		return api.ShipmentPlanSnapshot{}, err
 	}
 	st, plan := shipment.State(), shipment.Latest()
 	snapshot := api.ShipmentPlanSnapshot{
@@ -130,6 +138,51 @@ func (m *Module) GetShipmentPlanSnapshot(ctx context.Context, q api.GetShipmentP
 		snapshot.Packs, snapshot.GrossWeight, snapshot.Volume = plan.Scope.Packs, plan.Scope.GrossWeight, plan.Scope.Volume
 	}
 	return snapshot, nil
+}
+
+func (m *Module) GetShipmentPlanSnapshotV2(ctx context.Context, q api.GetShipmentPlanSnapshot) (api.ShipmentPlanSnapshotV2, error) {
+	shipment, revision, err := m.shipment(ctx, q)
+	if err != nil {
+		return api.ShipmentPlanSnapshotV2{}, err
+	}
+	st, plan := shipment.State(), shipment.Latest()
+	snapshot := api.ShipmentPlanSnapshotV2{
+		TenantID: string(st.TenantID), ShipmentID: string(st.ShipmentID), Revision: revision, Status: string(st.Status),
+		PlanVersion: plan.No, CustomerPartyID: st.CustomerPartyID, LegalEntityID: st.LegalEntityID,
+		TransportMode: string(plan.Route.Mode), Origin: plan.Route.Origin, Destination: plan.Route.Destination, DepartureWindow: plan.Route.Departure,
+		PlannedAt: plan.At,
+	}
+	if n := len(st.Confirmations); n > 0 {
+		snapshot.ConfirmedVersion = st.Confirmations[n-1].PlanNo
+	}
+	for _, p := range shipment.Parts() {
+		snapshot.Parts = append(snapshot.Parts, api.PlannedPart{ObligationID: string(p.ObligationID), ObligationVersion: p.ObligationVersion,
+			OrderID: p.OrderID, Packs: p.Part.Packs, GrossWeight: p.Part.GrossWeight, Volume: p.Part.Volume,
+			ObligationPacks: p.Packs, ObligationWeight: p.GrossWeight, ObligationVolume: p.Volume})
+	}
+	if st.Status != domain.ShipmentCancelled {
+		snapshot.Packs, snapshot.GrossWeight, snapshot.Volume = plan.Scope.Packs, plan.Scope.GrossWeight, plan.Scope.Volume
+	}
+	return snapshot, nil
+}
+
+// shipment reads a shipment for a snapshot, without locking it.
+func (m *Module) shipment(ctx context.Context, q api.GetShipmentPlanSnapshot) (*domain.Shipment, int64, error) {
+	shipment, revision, err := application.GetShipmentPlan{
+		Tx: bento.TenantTransactor{DB: m.db, Tenant: q.TenantID}, Shipments: postgres.ShipmentStore{DB: m.db},
+	}.Handle(ctx, domain.TenantID(q.TenantID), domain.ShipmentID(q.ShipmentID))
+	if err != nil {
+		return nil, 0, classify(err)
+	}
+	return shipment, revision, nil
+}
+
+// part is the part a command asks for; zero packs asks for all that other shipments leave.
+func part(packs int64, weight, volume kernel.Quantity) domain.CargoScope {
+	if packs == 0 && weight == (kernel.Quantity{}) && volume == (kernel.Quantity{}) {
+		return domain.CargoScope{}
+	}
+	return domain.CargoScope{Packs: packs, GrossWeight: weight, Volume: volume}
 }
 
 func (m *Module) obligations() application.Obligations { return comacl.Obligations{COM: m.com} }
@@ -186,7 +239,8 @@ func classify(err error) error {
 		kind = api.ErrConflict
 	case errors.Is(err, bentorepo.ErrNotFound):
 		kind = api.ErrNotFound
-	case errors.Is(err, domain.ErrInvalidShipment), errors.Is(err, domain.ErrInvalidObligation), errors.Is(err, domain.ErrOtherCustomer),
+	case errors.Is(err, domain.ErrInvalidShipment), errors.Is(err, domain.ErrInvalidObligation), errors.Is(err, domain.ErrInvalidPart),
+		errors.Is(err, domain.ErrOtherCustomer),
 		errors.Is(err, domain.ErrAlreadyPlanned), errors.Is(err, domain.ErrNotPlanned), errors.Is(err, domain.ErrLastObligation),
 		errors.Is(err, domain.ErrInvalidPlan), errors.Is(err, domain.ErrIncompletePlan), errors.Is(err, domain.ErrInvalidTransition),
 		errors.Is(err, domain.ErrInvalidChange), errors.Is(err, application.ErrNotPlannable), errors.Is(err, application.ErrInvalidQuery),

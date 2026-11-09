@@ -1,4 +1,4 @@
-# IDP-Cargo · Go + DDD + Bento-Go · V2.15 integration candidate
+# IDP-Cargo · Go + DDD + Bento-Go · V2.16 integration candidate
 
 **IDP-Cargo is one product repository and one Go module. Business code is organized by DDD bounded context; IDP-Bento-Go and IDP-Platform-Go stay separate repositories referenced as Go module versions.**
 
@@ -87,6 +87,12 @@ GitHub Actions, `ubuntu-24.04` runner, workflow `org-pg16-contract.yml`, on ever
   - Releasing an obligation or cancelling the shipment comes first; the caller then releases COM's reservation. FUL never writes to COM and never asserts loading or delivery.
   - `GetShipmentPlanSnapshot` returns ShipmentPlanSnapshot v1 for BOOK in step 5. The kernel gains `LocationCode`, which keeps UN/LOCODE and IATA airport codes apart.
   - `cargo_ful` keeps plan versions and confirmations immutable, lets a planned obligation be released only once, and plans an obligation in at most one live shipment through a unique index. PG16 tests race eight shipments for one obligation and eight amendments against one revision; a test in `internal/bootstrap` runs ORG, RATE, COM and FUL through the C6 handshake.
+- V2.16 implements owner decision F1 (FUL tactical candidate V0.2): a shipment plans a part of an obligation version, and the parts of one obligation may be planned in several shipments. A carrier's shortload or a rollover is replanned in FUL, without a COM amendment.
+  - A part has packs and gross weight, and volume exactly when the obligation declares one, in its units. The live parts of an obligation never exceed it; the part with its last packs takes all the weight and volume left, and a part that leaves packs leaves weight and volume for them.
+  - `CreateShipmentFromObligation` and `AddObligationToShipment` take an optional part; without one they plan all that other shipments leave. `ChangeShipmentPart` replans a part with a reason, as a `PART_CHANGED` plan version and `ShipmentPartChanged.v1`; a confirmed plan that changes must be confirmed again. `GetShipmentPlanSnapshotV2` lists the parts with what COM committed.
+  - FUL takes the obligation's transaction lock before it reads what other shipments plan of it, in the command's transaction, and the `shipment_obligation` trigger takes the same lock and re-checks the sum, so concurrent commands cannot exceed an obligation. PG16 tests race eight shipments for parts of one obligation.
+  - COM V0.4: several shipments may each hold a reservation on one obligation version, one per shipment; COM still refuses to revoke an obligation, or to cancel its order, while any shipment holds it. `GetObligationSnapshotV3` lists every holder; in v2 `HeldByShipmentID` names the holder only when there is exactly one. FUL reads v3.
+  - Migrations `com/000003_com_reservation_per_shipment` and `ful/000002_ful_shipment_parts`. The FUL migration converts V0.1 entries, which planned whole obligations, into parts equal to the whole. A test in `internal/bootstrap` replans a shortload of 8 of 30 pallets across two shipments with the real contexts.
 
 Bento testkit contracts:
 
@@ -135,7 +141,7 @@ NOT executed:
 - COM keeps the customer's legal name and country only as the transaction snapshot frozen with the order (MD-05). The obligation snapshots carry identifiers, packs, weight and volume, not names, because FUL does not consume legal names.
 - The reservation is COM's own fact, set and cleared through COM's api, so the COM → FUL relationship keeps its direction. In S1 an API client drives the handshake (rule T6); a release that FUL has not recorded first is caught by FUL's own re-checks, not by COM.
 - COM's rules follow the 2026-11-06 business review (C3–C7) where implemented; one order per accepted quote and recording within the quote's validity (C1, C2), commercial terms (C8) and addresses (C9) are still the earlier candidate rules. Package type codes and weight and volume units are checked for form only until reference data exists (MD-25).
-- FUL's rules are a candidate design pending business review: one transport mode per shipment (AIR, SEA, ROAD or RAIL), UN/LOCODE origins and destinations only, additions only while the plan is a draft, one weight unit per shipment, and volume declared by all of its obligations or by none. The customer's requested route and dates are not on the order yet, so planners enter them in FUL.
+- FUL's rules are a candidate design pending business review: one transport mode per shipment (AIR, SEA, ROAD or RAIL), UN/LOCODE origins and destinations only, additions only while the plan is a draft, one weight unit per shipment, and volume declared by all of its obligations or by none. Splitting obligations into parts follows owner decision F1. The customer's requested route and dates are not on the order yet, so planners enter them in FUL.
 - The earliest ORG master data cannot be signed off until a Cargo business owner validates authoritative identity, legal status and partner role semantics.
 
 ## Dependency lock qualification
