@@ -10,10 +10,14 @@ import (
 	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
-// CreateShipmentFromObligation starts a shipment from one COM obligation version. COM must report the
-// version ACTIVE, the obligation's latest, and reserved for ShipmentID, which the caller reserves through
-// COM's ObligationReservation v1 first. ShipmentID is the shipment's own identity, never an order id.
-// TenantID and ActorID must come from a verified principal.
+// CreateShipmentFromObligation starts a shipment from a part of one COM obligation version. COM must
+// report the version ACTIVE, the obligation's latest, and reserved for ShipmentID, which the caller
+// reserves through COM's ObligationReservation v1 first. ShipmentID is the shipment's own identity, never
+// an order id. TenantID and ActorID must come from a verified principal.
+//
+// The part (F1) is Packs, GrossWeight and Volume, in the obligation's units, with Volume exactly when the
+// obligation declares one. Zero Packs plans all that other shipments leave of the obligation. The live parts
+// of an obligation never exceed it; the part with its last packs takes all its weight and volume left.
 type CreateShipmentFromObligation struct {
 	CommandID         string
 	TenantID          string
@@ -21,11 +25,14 @@ type CreateShipmentFromObligation struct {
 	ShipmentID        string
 	ObligationID      string
 	ObligationVersion int64
+	Packs             int64
+	GrossWeight       kernel.Quantity
+	Volume            kernel.Quantity
 	OccurredAt        time.Time
 }
 
-// AddObligationToShipment plans one more obligation version of the shipment's customer and legal entity,
-// with the same COM checks, while the plan is a draft.
+// AddObligationToShipment plans a part of one more obligation version of the shipment's customer and legal
+// entity, with the same COM checks and part rules, while the plan is a draft.
 type AddObligationToShipment struct {
 	CommandID         string
 	TenantID          string
@@ -34,6 +41,28 @@ type AddObligationToShipment struct {
 	ExpectedRevision  int64
 	ObligationID      string
 	ObligationVersion int64
+	Packs             int64
+	GrossWeight       kernel.Quantity
+	Volume            kernel.Quantity
+	OccurredAt        time.Time
+}
+
+// ChangeShipmentPart replans the part of an obligation version a shipment plans, with a reason (F1): a
+// carrier's shortload is replanned by reducing the part here and planning the rest in another shipment;
+// COM's commitment is unchanged. Packs must be positive; the part rules are those of
+// CreateShipmentFromObligation. A confirmed plan that changes must be confirmed again.
+type ChangeShipmentPart struct {
+	CommandID         string
+	TenantID          string
+	ActorID           string
+	ShipmentID        string
+	ExpectedRevision  int64
+	ObligationID      string
+	ObligationVersion int64
+	Packs             int64
+	GrossWeight       kernel.Quantity
+	Volume            kernel.Quantity
+	Reason            string
 	OccurredAt        time.Time
 }
 
@@ -112,6 +141,7 @@ type Commands interface {
 	AmendShipmentPlan(ctx context.Context, cmd AmendShipmentPlan) (Receipt, error)
 	ConfirmShipmentPlan(ctx context.Context, cmd ConfirmShipmentPlan) (Receipt, error)
 	ReleaseObligationFromShipment(ctx context.Context, cmd ReleaseObligationFromShipment) (Receipt, error)
+	ChangeShipmentPart(ctx context.Context, cmd ChangeShipmentPart) (Receipt, error)
 	CancelShipment(ctx context.Context, cmd CancelShipment) (Receipt, error)
 }
 
@@ -122,6 +152,7 @@ const (
 	ActionAmendShipmentPlan             = "AmendShipmentPlan"
 	ActionConfirmShipmentPlan           = "ConfirmShipmentPlan"
 	ActionReleaseObligationFromShipment = "ReleaseObligationFromShipment"
+	ActionChangeShipmentPart            = "ChangeShipmentPart"
 	ActionCancelShipment                = "CancelShipment"
 )
 

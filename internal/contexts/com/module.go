@@ -155,10 +155,39 @@ func (m *Module) GetObligationSnapshotV2(ctx context.Context, q api.GetObligatio
 		LegalEntityID: string(s.Quote.LegalEntityID), Customer: api.CustomerRef{PartyID: s.Customer.PartyID, PartyRevision: s.Customer.PartyRevision},
 		QuoteID: s.Quote.QuoteID, QuoteRevision: s.Quote.QuoteRevision, AllocatedAt: ob.AllocatedAt, RevokedAt: ob.RevokedAt,
 	}
-	if r, held := order.Held(ob.ObligationID); held && r.ObligationVersion == ob.Version {
-		snapshot.HeldByShipmentID = r.ShipmentID
+	if holders := holdersOf(order, ob); len(holders) == 1 {
+		snapshot.HeldByShipmentID = holders[0]
 	}
 	return snapshot, nil
+}
+
+func (m *Module) GetObligationSnapshotV3(ctx context.Context, q api.GetObligationSnapshot) (api.ObligationSnapshotV3, error) {
+	order, ob, err := m.obligation(ctx, q)
+	if err != nil {
+		return api.ObligationSnapshotV3{}, err
+	}
+	s := order.State()
+	l := s.Lines[ob.LineNo-1]
+	latest, _ := order.Latest(ob.ObligationID)
+	return api.ObligationSnapshotV3{
+		TenantID: string(s.TenantID), ObligationID: string(ob.ObligationID), ObligationVersion: ob.Version, LatestVersion: latest.Version,
+		Status: string(ob.Status), OrderID: string(s.OrderID), OrderLineNo: ob.LineNo, Description: l.Description,
+		Packs: ob.Measure.Packs, PackageType: string(l.PackageType), GrossWeight: ob.Measure.GrossWeight, Volume: ob.Measure.Volume,
+		LegalEntityID: string(s.Quote.LegalEntityID), Customer: api.CustomerRef{PartyID: s.Customer.PartyID, PartyRevision: s.Customer.PartyRevision},
+		QuoteID: s.Quote.QuoteID, QuoteRevision: s.Quote.QuoteRevision, AllocatedAt: ob.AllocatedAt, RevokedAt: ob.RevokedAt,
+		HeldByShipmentIDs: holdersOf(order, ob),
+	}, nil
+}
+
+// holdersOf returns the shipments holding an obligation version, in the order they reserved it.
+func holdersOf(order *domain.CustomerOrder, ob domain.Obligation) []string {
+	var holders []string
+	for _, r := range order.Holders(ob.ObligationID) {
+		if r.ObligationVersion == ob.Version {
+			holders = append(holders, r.ShipmentID)
+		}
+	}
+	return holders
 }
 
 func (m *Module) obligation(ctx context.Context, q api.GetObligationSnapshot) (*domain.CustomerOrder, domain.Obligation, error) {

@@ -1,11 +1,13 @@
-// Package com is FUL's anticorruption layer for COM: it turns ObligationSnapshot v2 into the obligation
-// reference a shipment plans, and refuses a version that COM does not report plannable for the shipment.
+// Package com is FUL's anticorruption layer for COM: it turns ObligationSnapshot v3 into the obligation
+// reference a shipment plans a part of, and refuses a version that COM does not report plannable for the
+// shipment. Since F1 several shipments may hold one obligation version, each for its own part.
 package com
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 
 	comapi "go.idp.xyz/idp-cargo/internal/contexts/com/api"
 	app "go.idp.xyz/idp-cargo/internal/contexts/ful/internal/application"
@@ -16,9 +18,9 @@ import (
 type Obligations struct{ COM comapi.Queries }
 
 // Plannable returns the obligation version if COM reports it ACTIVE, the obligation's latest version,
-// and reserved for the shipment.
+// and reserved for the shipment, among the shipments that hold it.
 func (o Obligations) Plannable(ctx context.Context, tenant ful.TenantID, id ful.ObligationID, version int64, shipment ful.ShipmentID) (ful.ObligationRef, error) {
-	s, err := o.COM.GetObligationSnapshotV2(ctx, comapi.GetObligationSnapshot{TenantID: string(tenant), ObligationID: string(id), Version: version})
+	s, err := o.COM.GetObligationSnapshotV3(ctx, comapi.GetObligationSnapshot{TenantID: string(tenant), ObligationID: string(id), Version: version})
 	if errors.Is(err, comapi.ErrNotFound) || errors.Is(err, comapi.ErrRejected) {
 		// COM's answer is kept as text only, so its error kinds never become FUL's: an obligation COM does
 		// not know is not plannable, it does not make the shipment "not found".
@@ -32,8 +34,8 @@ func (o Obligations) Plannable(ctx context.Context, tenant ful.TenantID, id ful.
 		return ful.ObligationRef{}, fmt.Errorf("%w: COM answered for another obligation version", app.ErrNotPlannable)
 	case s.Status != comapi.ObligationActive || s.LatestVersion != version:
 		return ful.ObligationRef{}, fmt.Errorf("%w: COM reports %s version %d %s, latest version %d", app.ErrNotPlannable, id, version, s.Status, s.LatestVersion)
-	case s.HeldByShipmentID != string(shipment):
-		return ful.ObligationRef{}, fmt.Errorf("%w: COM reports %s reserved for shipment %q, not %s", app.ErrNotPlannable, id, s.HeldByShipmentID, shipment)
+	case !slices.Contains(s.HeldByShipmentIDs, string(shipment)):
+		return ful.ObligationRef{}, fmt.Errorf("%w: COM reports %s reserved for shipments %q, not %s", app.ErrNotPlannable, id, s.HeldByShipmentIDs, shipment)
 	}
 	return ful.ObligationRef{
 		ObligationID: id, ObligationVersion: version, OrderID: s.OrderID, CustomerPartyID: s.Customer.PartyID,

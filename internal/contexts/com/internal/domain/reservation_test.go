@@ -46,14 +46,14 @@ func TestAReservedObligationStaysUntilItsShipmentReleasesIt(t *testing.T) {
 		t.Fatalf("a reservation does not change the order's status: %s", o.Status())
 	}
 
-	// While S-1 holds OB-1, COM refuses to revoke it, to amend it, to cancel its order and to reserve it again.
+	// While S-1 holds OB-1, COM refuses to revoke it, to amend it, to cancel its order and to let S-1
+	// reserve it again. Other shipments may reserve it too (F1): see TestSeveralShipmentsHoldOneObligation.
 	busy := o.State()
 	later := reserveAt.Add(time.Hour)
 	for name, err := range map[string]error{
 		"revoke":                o.Revoke("OB-1", "planner-1", later),
 		"amend":                 o.Amend("OB-1", "OB-2", packsWithVolume(10, 500, 12_000), "planner-1", later),
 		"cancel":                o.Cancel("sales-1", later),
-		"reserve for S-2":       o.Reserve("OB-1", 1, "S-2", "fulfilment", later),
 		"reserve again for S-1": o.Reserve("OB-1", 1, "S-1", "fulfilment", later),
 	} {
 		if !errors.Is(err, ErrObligationReserved) {
@@ -137,5 +137,54 @@ func TestAReleasedObligationCanBeReservedAgain(t *testing.T) {
 	}
 	if added := o.AddedReservations(); len(added) != 2 || added[0].Held() || !added[1].Held() || len(o.ReleasedReservations()) != 0 {
 		t.Fatalf("a reservation made and released before it was stored is one added row: %+v", added)
+	}
+}
+
+// F1: FUL may plan parts of one obligation in several shipments, so each of them holds its own reservation.
+// The obligation cannot be revoked until every one is released.
+func TestSeveralShipmentsHoldOneObligation(t *testing.T) {
+	o := recorded(t)
+	when := recordAt.Add(time.Hour)
+	if err := errors.Join(
+		o.Allocate(1, "OB-1", packsWithVolume(10, 500, 12_000), "planner-1", when),
+		o.Reserve("OB-1", 1, "S-1", "fulfilment", when),
+		o.Reserve("OB-1", 1, "S-2", "fulfilment", when.Add(time.Minute)),
+	); err != nil {
+		t.Fatal(err)
+	}
+	holders := o.Holders("OB-1")
+	if len(holders) != 2 || holders[0].ShipmentID != "S-1" || holders[1].ShipmentID != "S-2" || holders[1].No != 2 {
+		t.Fatalf("holders %+v", holders)
+	}
+	if r, held := o.Held("OB-1"); !held || r.ShipmentID != "S-1" {
+		t.Fatalf("Held returns the earliest holder: %v %+v", held, r)
+	}
+	if err := o.Reserve("OB-1", 1, "S-2", "fulfilment", when.Add(2*time.Minute)); !errors.Is(err, ErrObligationReserved) {
+		t.Fatalf("S-2 reserving again: err = %v", err)
+	}
+	restored, err := RestoreOrder(o.State())
+	if err != nil {
+		t.Fatalf("an order with two holders of one obligation restores: %v", err)
+	}
+	release := when.Add(time.Hour)
+	if err = restored.ReleaseReservation("OB-1", 1, "S-1", "fulfilment", release); err != nil {
+		t.Fatal(err)
+	}
+	if err = restored.Revoke("OB-1", "planner-1", release); !errors.Is(err, ErrObligationReserved) {
+		t.Fatalf("revoking while S-2 still holds it: err = %v", err)
+	}
+	if err = restored.ReleaseReservation("OB-1", 1, "S-2", "fulfilment", release); err != nil {
+		t.Fatal(err)
+	}
+	if err = restored.Revoke("OB-1", "planner-1", release); err != nil {
+		t.Fatalf("revoking once every holder released it: %v", err)
+	}
+
+	// A stored order may not show one shipment holding an obligation twice.
+	st := o.State()
+	st.Reservations = append(st.Reservations, Reservation{No: 3, ObligationID: "OB-1", ObligationVersion: 1, ShipmentID: "S-2",
+		ReservedBy: "fulfilment", ReservedAt: when.Add(3 * time.Minute)})
+	if _, err = RestoreOrder(st); !errors.Is(err, ErrInvalidOrder) {
+		t.Fatalf("one shipment holding twice: err = %v", err)
 	}
 }

@@ -14,11 +14,12 @@ type AddObligationToShipmentCommand struct {
 	ExpectedRevision  int64
 	ObligationID      ful.ObligationID
 	ObligationVersion int64
+	Part              ful.CargoScope `json:",omitzero"` // empty: all that other shipments leave of the obligation
 	OccurredAt        time.Time
 }
 
-// AddObligationToShipment plans one more obligation version that COM reports ACTIVE, current and reserved
-// for this shipment.
+// AddObligationToShipment plans a part of one more obligation version that COM reports ACTIVE, current
+// and reserved for this shipment.
 type AddObligationToShipment struct {
 	Deps
 	Obligations Obligations
@@ -39,7 +40,15 @@ func (h AddObligationToShipment) Handle(ctx context.Context, c AddObligationToSh
 	if err != nil {
 		return Receipt{}, err
 	}
-	return h.change(ctx, c.Scope, c.CommandID, hash, c.ShipmentID, c.ExpectedRevision, func(s *ful.Shipment) error {
-		return s.AddObligation(ob, c.Scope.ActorID, c.OccurredAt)
+	return h.changeIn(ctx, c.Scope, c.CommandID, hash, c.ShipmentID, c.ExpectedRevision, func(txCtx context.Context, s *ful.Shipment) error {
+		elsewhere, err := h.Shipments.PlannedElsewhere(txCtx, c.Scope.TenantID, c.ObligationID, c.ObligationVersion, c.ShipmentID)
+		if err != nil {
+			return err
+		}
+		part, err := partToPlan(ob, c.Part, elsewhere)
+		if err != nil {
+			return err
+		}
+		return s.AddPart(ob, part, elsewhere, c.Scope.ActorID, c.OccurredAt)
 	})
 }

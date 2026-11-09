@@ -93,7 +93,8 @@ type CancelCustomerOrder struct {
 }
 
 // ReserveObligationForFulfillment records that a FUL shipment holds an obligation version. The version
-// must be the obligation's latest and ACTIVE, and no shipment may hold the obligation already.
+// must be the obligation's latest and ACTIVE, and the shipment must not hold the obligation already. Other
+// shipments may hold it too, each planning a part of it (F1).
 type ReserveObligationForFulfillment struct {
 	CommandID         string
 	TenantID          string

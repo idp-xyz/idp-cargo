@@ -382,8 +382,8 @@ func TestRevocationReservationAndCancellationOnPostgres(t *testing.T) {
 			return err
 		},
 		"cancel": func() error { _, err := f.module.CancelCustomerOrder(ctx, f.cancel("O-1", "cancel-0", 4)); return err },
-		"reserve for S-2": func() error {
-			_, err := f.module.ReserveObligationForFulfillment(ctx, f.reserve("reserve-2", "OB-1", 1, "S-2"))
+		"reserve again for S-1": func() error {
+			_, err := f.module.ReserveObligationForFulfillment(ctx, f.reserve("reserve-2", "OB-1", 1, "S-1"))
 			return err
 		},
 		"release for S-2": func() error {
@@ -497,7 +497,10 @@ func TestOrderCommitmentCannotBeChangedInPostgres(t *testing.T) {
           gross_weight,status,allocated_by,allocated_at) VALUES ($1,'OB-Z',1,'O-1',1,1,'KGM',1,'ACTIVE','rogue',now())`,
 			nil, "23514", "the line declares a volume"},
 		{revokeSQL, []any{"OB-1", revokedAt}, "23514", "S-1 holds OB-1"},
-		{reserveSQL, []any{"OB-1", 2, reservedAt}, "23505", "one reservation of an obligation is in force"},
+		{`INSERT INTO cargo_com.obligation_reservation (tenant_id,order_id,reservation_no,obligation_id,obligation_version,shipment_id,
+          reserved_by,reserved_at) SELECT tenant_id,order_id,2,obligation_id,1,'S-1','rogue',$2 FROM cargo_com.fulfillment_obligation
+          WHERE tenant_id=$1 AND obligation_id='OB-1' AND obligation_version=1`, []any{reservedAt}, "23505",
+			"a shipment holds one reservation of an obligation (other shipments may hold one too, F1)"},
 	})
 	if _, err := f.module.ReleaseObligationReservation(ctx, f.release("release-1", "OB-1", 1, "S-1")); err != nil {
 		t.Fatal(err)

@@ -44,8 +44,9 @@ const (
 
 // ObligationSnapshotV2 is one version of a fulfillment obligation as FUL plans against it: the packs,
 // package type and declared gross weight and volume COM committed (C3); the version's status and the
-// obligation's latest version (C6); and the shipment that holds the version, if any. FUL may plan a
-// version only while it is the latest, ACTIVE and held by FUL's shipment. It carries no names (MD-05).
+// obligation's latest version (C6); and the shipment that holds the version, if exactly one does. Since F1
+// several shipments may hold one version, each planning a part of it; HeldByShipmentID is then empty and
+// ObligationSnapshotV3 lists them. It carries no names (MD-05).
 type ObligationSnapshotV2 struct {
 	TenantID          string
 	ObligationID      string
@@ -65,7 +66,32 @@ type ObligationSnapshotV2 struct {
 	QuoteRevision     int64
 	AllocatedAt       time.Time
 	RevokedAt         time.Time // zero unless Status is ObligationRevoked
-	HeldByShipmentID  string    // empty when no shipment holds the version
+	HeldByShipmentID  string    // the shipment holding the version when exactly one does; empty otherwise
+}
+
+// ObligationSnapshotV3 is ObligationSnapshotV2 with every shipment that holds the version (F1): FUL may
+// plan a part of an obligation in a shipment only while the version is the latest, ACTIVE and held by
+// that shipment. Holders are listed in the order they reserved. It carries no names (MD-05).
+type ObligationSnapshotV3 struct {
+	TenantID          string
+	ObligationID      string
+	ObligationVersion int64
+	LatestVersion     int64
+	Status            string // ObligationActive or ObligationRevoked
+	OrderID           string
+	OrderLineNo       int
+	Description       string
+	Packs             int64
+	PackageType       string
+	GrossWeight       kernel.Quantity
+	Volume            kernel.Quantity // zero when not declared
+	LegalEntityID     string
+	Customer          CustomerRef
+	QuoteID           string
+	QuoteRevision     int64
+	AllocatedAt       time.Time
+	RevokedAt         time.Time // zero unless Status is ObligationRevoked
+	HeldByShipmentIDs []string  // empty when no shipment holds the version
 }
 
 // GetObligationSnapshot asks for one version of an obligation. TenantID must come from a verified
@@ -80,4 +106,5 @@ type GetObligationSnapshot struct {
 type Queries interface {
 	GetObligationSnapshot(ctx context.Context, q GetObligationSnapshot) (ObligationSnapshot, error)
 	GetObligationSnapshotV2(ctx context.Context, q GetObligationSnapshot) (ObligationSnapshotV2, error)
+	GetObligationSnapshotV3(ctx context.Context, q GetObligationSnapshot) (ObligationSnapshotV3, error)
 }

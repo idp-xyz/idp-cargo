@@ -22,7 +22,7 @@ var (
 	ErrIdempotencyConflict = errors.New("ful application: command id reused with a different payload")
 	ErrMissingDependency   = errors.New("ful application: required dependency missing")
 	ErrNotPlannable        = errors.New("ful application: COM does not report the obligation version active, current and reserved for the shipment")
-	ErrPlannedElsewhere    = errors.New("ful application: another shipment that is not cancelled plans the obligation")
+	ErrPlannedElsewhere    = errors.New("ful application: other shipments that are not cancelled plan all of the obligation, or another version of it")
 	ErrInvalidQuery        = errors.New("ful application: invalid query")
 )
 
@@ -40,6 +40,7 @@ const (
 	ActionAmendShipmentPlan             ShipmentAction = "AmendShipmentPlan"
 	ActionConfirmShipmentPlan           ShipmentAction = "ConfirmShipmentPlan"
 	ActionReleaseObligationFromShipment ShipmentAction = "ReleaseObligationFromShipment"
+	ActionChangeShipmentPart            ShipmentAction = "ChangeShipmentPart"
 	ActionCancelShipment                ShipmentAction = "CancelShipment"
 )
 
@@ -56,11 +57,14 @@ type TxRunner interface {
 
 // ShipmentStore loads and writes shipments. Load locks the shipment for a command; Read does not. Save
 // writes the status and cancellation and what the shipment added or released since it was loaded.
+// PlannedElsewhere, called in the command's transaction, locks an obligation for planning and returns the
+// sum of the live parts other shipments plan of it (F1).
 type ShipmentStore interface {
 	Load(context.Context, ful.TenantID, ful.ShipmentID) (*ful.Shipment, int64, error)
 	Read(context.Context, ful.TenantID, ful.ShipmentID) (*ful.Shipment, int64, error)
 	Insert(context.Context, *ful.Shipment) (int64, error)
 	Save(context.Context, *ful.Shipment, int64) (int64, error)
+	PlannedElsewhere(ctx context.Context, tenant ful.TenantID, id ful.ObligationID, version int64, except ful.ShipmentID) (ful.CargoScope, error)
 }
 
 type Receipts interface {
@@ -130,6 +134,11 @@ func (d Deps) authorize(ctx context.Context, s Scope, action ShipmentAction, id 
 // change commits one change to a stored shipment, made at the revision the caller expects, with its
 // Outbox events and the command receipt.
 func (d Deps) change(ctx context.Context, s Scope, commandID, hash string, id ful.ShipmentID, expected int64, apply func(*ful.Shipment) error) (Receipt, error) {
+	return d.changeIn(ctx, s, commandID, hash, id, expected, func(_ context.Context, shipment *ful.Shipment) error { return apply(shipment) })
+}
+
+// changeIn is change for an apply that reads in the command's transaction.
+func (d Deps) changeIn(ctx context.Context, s Scope, commandID, hash string, id ful.ShipmentID, expected int64, apply func(context.Context, *ful.Shipment) error) (Receipt, error) {
 	return d.write(ctx, s, commandID, hash, func(txCtx context.Context) (*ful.Shipment, int64, error) {
 		shipment, revision, err := d.Shipments.Load(txCtx, s.TenantID, id)
 		if err != nil {
@@ -138,7 +147,7 @@ func (d Deps) change(ctx context.Context, s Scope, commandID, hash string, id fu
 		if revision != expected {
 			return nil, 0, ful.ErrConflict
 		}
-		if err = apply(shipment); err != nil {
+		if err = apply(txCtx, shipment); err != nil {
 			return nil, 0, err
 		}
 		newRevision, err := d.Shipments.Save(txCtx, shipment, revision)
@@ -213,4 +222,20 @@ func requestHash(command any) (string, error) {
 	}
 	sum := sha256.Sum256(blob)
 	return hex.EncodeToString(sum[:]), nil
+}
+
+// partToPlan returns the part a command asks for, or, when it asks for none, all that other shipments leave
+// of the obligation. Nothing left is ErrPlannedElsewhere.
+func partToPlan(ob ful.ObligationRef, requested, elsewhere ful.CargoScope) (ful.CargoScope, error) {
+	if requested != (ful.CargoScope{}) {
+		return requested, nil
+	}
+	rest, err := ob.Remaining(elsewhere)
+	if err != nil {
+		return ful.CargoScope{}, err
+	}
+	if rest.Packs <= 0 {
+		return ful.CargoScope{}, fmt.Errorf("%w: %s", ErrPlannedElsewhere, ob.ObligationID)
+	}
+	return rest, nil
 }

@@ -10,6 +10,7 @@ const (
 	ShipmentPlanAmended        = "ShipmentPlanAmended.v1"
 	ShipmentPlanConfirmed      = "ShipmentPlanConfirmed.v1"
 	ShipmentObligationReleased = "ShipmentObligationReleased.v1"
+	ShipmentPartChanged        = "ShipmentPartChanged.v1"
 	ShipmentCancelled          = "ShipmentCancelled.v1"
 )
 

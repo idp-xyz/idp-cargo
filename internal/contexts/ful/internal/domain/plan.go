@@ -54,32 +54,40 @@ func (r Route) Same(o Route) bool {
 		r.Departure.From.Equal(o.Departure.From) && r.Departure.Until.Equal(o.Departure.Until)
 }
 
-// CargoScope is what a plan version moves: the sums of the packs, gross weights and volumes of the
-// obligations it plans. The shipment does not override them in S1 (C4).
+// CargoScope is a quantity of cargo: packs, gross weight and volume. A part is the scope of one obligation
+// a shipment plans (F1); a plan version's scope is the sum of the parts it plans. The shipment does not
+// override what COM committed (C4): a part only divides it.
 type CargoScope struct {
 	Packs       int64
 	GrossWeight kernel.Quantity
 	Volume      kernel.Quantity // zero when the obligations declare none
 }
 
-// scopeOf sums the measures of obligations, starting in the first one's units.
-func scopeOf(obs []ObligationRef) (CargoScope, error) {
-	if len(obs) == 0 {
-		return CargoScope{}, nil
-	}
-	scope := CargoScope{GrossWeight: kernel.Quantity{Unit: obs[0].GrossWeight.Unit}, Volume: kernel.Quantity{Unit: obs[0].Volume.Unit}}
-	for _, o := range obs {
+// empty reports whether the scope holds nothing, in no unit.
+func (s CargoScope) empty() bool { return s == CargoScope{} }
+
+// scopeOf sums parts, in the first one's units.
+func scopeOf(parts []CargoScope) (CargoScope, error) {
+	var scope CargoScope
+	for _, p := range parts {
 		var err error
-		if scope, err = scope.add(o, 1); err != nil {
+		if scope, err = scope.add(p, 1); err != nil {
 			return CargoScope{}, err
 		}
 	}
 	return scope, nil
 }
 
-// add returns s plus or minus an obligation's measure. Gross weights must share a unit, and volumes too;
-// an obligation with a volume and one without do not mix in one shipment.
-func (s CargoScope) add(o ObligationRef, sign int64) (CargoScope, error) {
+// add returns s plus or minus another scope; adding an empty scope changes nothing, and an empty s takes
+// o's units. Gross weights must share a unit, and volumes too: cargo with a volume and cargo without do not
+// mix in one sum.
+func (s CargoScope) add(o CargoScope, sign int64) (CargoScope, error) {
+	if o.empty() {
+		return s, nil
+	}
+	if s.empty() {
+		s.GrossWeight.Unit, s.Volume.Unit = o.GrossWeight.Unit, o.Volume.Unit
+	}
 	weight, err := s.GrossWeight.Add(kernel.Quantity{Unit: o.GrossWeight.Unit, Amount: sign * o.GrossWeight.Amount})
 	if err != nil {
 		return CargoScope{}, err
@@ -98,18 +106,22 @@ const (
 	PlanObligationAdded    PlanChange = "OBLIGATION_ADDED"
 	PlanAmended            PlanChange = "AMENDED"
 	PlanObligationReleased PlanChange = "OBLIGATION_RELEASED"
+	PlanPartChanged        PlanChange = "PART_CHANGED" // F1: the planned part of an obligation changed, with a reason
 )
 
 func (c PlanChange) valid() bool {
 	switch c {
-	case PlanCreated, PlanObligationAdded, PlanAmended, PlanObligationReleased:
+	case PlanCreated, PlanObligationAdded, PlanAmended, PlanObligationReleased, PlanPartChanged:
 		return true
 	}
 	return false
 }
 
-// PlanVersion is one immutable version of the shipment plan: the route, the cargo scope of the
-// obligations planned at that version, what changed and, for an amendment, why. Every change adds a
+// needsReason reports whether a plan version of this change must say why.
+func (c PlanChange) needsReason() bool { return c == PlanAmended || c == PlanPartChanged }
+
+// PlanVersion is one immutable version of the shipment plan: the route, the cargo scope of the parts
+// planned at that version, what changed and, for an amendment or a changed part, why. Every change adds a
 // version, so the original plan stays visible (FUL-Rollover).
 type PlanVersion struct {
 	No     int

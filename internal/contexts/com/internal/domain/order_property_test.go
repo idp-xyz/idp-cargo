@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math/rand"
 	"reflect"
+	"slices"
 	"testing"
 	"testing/quick"
 	"time"
@@ -69,8 +70,10 @@ type modelObligation struct {
 	measure Measure
 	version int64
 	active  bool
-	holder  string
+	holders []string // shipments holding the obligation, in the order they reserved it (F1)
 }
+
+func (ob *modelObligation) holds(shipment string) bool { return slices.Contains(ob.holders, shipment) }
 
 func (m *lifecycleModel) committed(lineNo int) (packs, weight, volume int64) {
 	for _, ob := range m.obligations {
@@ -118,7 +121,7 @@ func (m *lifecycleModel) status() OrderStatus {
 
 func (m *lifecycleModel) revocable(id ObligationID) bool {
 	ob := m.obligations[id]
-	return !m.cancelled && ob != nil && ob.active && ob.holder == ""
+	return !m.cancelled && ob != nil && ob.active && len(ob.holders) == 0
 }
 
 // TestLifecycleProperties checks, for random scripts, that the order accepts exactly what the model
@@ -182,18 +185,21 @@ func TestLifecycleProperties(t *testing.T) {
 				}
 			case st.Kind <= 8:
 				ob := m.obligations[target]
-				ok = ob != nil && ob.active && ob.holder == "" && version == ob.version
+				ok = ob != nil && ob.active && !ob.holds(shipment) && version == ob.version
 				err = o.Reserve(target, version, shipment, "fulfilment", when)
-				apply = func() { ob.holder = shipment; events++ }
+				apply = func() { ob.holders = append(ob.holders, shipment); events++ }
 			case st.Kind <= 10:
 				ob := m.obligations[target]
-				ok = ob != nil && ob.holder == shipment && version == 1
+				ok = ob != nil && ob.holds(shipment) && version == 1
 				err = o.ReleaseReservation(target, version, shipment, "fulfilment", when)
-				apply = func() { ob.holder = ""; events++ }
+				apply = func() {
+					ob.holders = slices.DeleteFunc(slices.Clone(ob.holders), func(h string) bool { return h == shipment })
+					events++
+				}
 			default:
 				ok = !m.cancelled
 				for _, ob := range m.obligations {
-					ok = ok && (!ob.active || ob.holder == "")
+					ok = ok && (!ob.active || len(ob.holders) == 0)
 				}
 				err = o.Cancel("sales-1", when)
 				apply = func() {
@@ -236,8 +242,12 @@ func TestLifecycleProperties(t *testing.T) {
 		for id, ob := range m.obligations {
 			latest, _ := o.Latest(id)
 			r, held := o.Held(id)
-			if latest.Version != ob.version || (latest.Status == ObligationActive) != ob.active || held != (ob.holder != "") ||
-				(held && (r.ShipmentID != ob.holder || latest.Status != ObligationActive)) {
+			var holders []string
+			for _, h := range o.Holders(id) {
+				holders = append(holders, h.ShipmentID)
+			}
+			if latest.Version != ob.version || (latest.Status == ObligationActive) != ob.active || held != (len(ob.holders) > 0) ||
+				!slices.Equal(holders, ob.holders) || (held && (r.ShipmentID != ob.holders[0] || latest.Status != ObligationActive)) {
 				t.Logf("obligation %s: latest %+v, held %v %+v; model %+v", id, latest, held, r, *ob)
 				return false
 			}

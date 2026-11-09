@@ -24,8 +24,26 @@ func (x *txFake) WithinTransaction(ctx context.Context, fn func(context.Context)
 var errNoShipment = errors.New("shipment not found")
 
 type storeFake struct {
+	tx        *txFake
 	shipments map[ful.ShipmentID]ful.ShipmentState
 	revs      map[ful.ShipmentID]int64
+	outsideTx bool // PlannedElsewhere was called outside a transaction
+}
+
+// PlannedElsewhere sums the live parts other stored shipments plan of an obligation.
+func (s *storeFake) PlannedElsewhere(_ context.Context, _ ful.TenantID, id ful.ObligationID, _ int64, except ful.ShipmentID) (ful.CargoScope, error) {
+	s.outsideTx = s.outsideTx || s.tx.depth == 0
+	var sum ful.CargoScope
+	for sid, st := range s.shipments {
+		for _, p := range st.Obligations {
+			if sid == except || p.ObligationID != id || !p.Planned() {
+				continue
+			}
+			sum.Packs += p.Part.Packs
+			sum.GrossWeight = kernel.Quantity{Unit: p.Part.GrossWeight.Unit, Amount: sum.GrossWeight.Amount + p.Part.GrossWeight.Amount}
+		}
+	}
+	return sum, nil
 }
 
 func (s *storeFake) Load(_ context.Context, _ ful.TenantID, id ful.ShipmentID) (*ful.Shipment, int64, error) {
@@ -81,6 +99,8 @@ func (a *authFake) RequireShipmentAction(context.Context, Scope, ShipmentAction,
 type comFake struct {
 	tx       *txFake
 	refuse   map[ful.ObligationID]bool
+	holders  map[ful.ShipmentID]bool // shipments COM reports as holding every obligation; SH-1 when empty
+	packs    int64                   // packs per obligation, 50 kg each; 2 when zero
 	calls    []string
 	insideTx bool
 }
@@ -88,11 +108,19 @@ type comFake struct {
 func (c *comFake) Plannable(_ context.Context, _ ful.TenantID, id ful.ObligationID, version int64, shipment ful.ShipmentID) (ful.ObligationRef, error) {
 	c.calls = append(c.calls, string(id))
 	c.insideTx = c.insideTx || c.tx.depth > 0
-	if c.refuse[id] || shipment != "SH-1" {
+	held := shipment == "SH-1"
+	if len(c.holders) > 0 {
+		held = c.holders[shipment]
+	}
+	if c.refuse[id] || !held {
 		return ful.ObligationRef{}, fmt.Errorf("%w: %s", ErrNotPlannable, id)
 	}
+	packs := c.packs
+	if packs == 0 {
+		packs = 2
+	}
 	return ful.ObligationRef{ObligationID: id, ObligationVersion: version, OrderID: "O-1", CustomerPartyID: "P", LegalEntityID: "LE",
-		Packs: 2, PackageType: "PX", GrossWeight: kernel.Quantity{Unit: "KGM", Amount: 100}}, nil
+		Packs: packs, PackageType: "PX", GrossWeight: kernel.Quantity{Unit: "KGM", Amount: 50 * packs}}, nil
 }
 
 type fixture struct {
@@ -104,7 +132,7 @@ type fixture struct {
 
 func newFixture() *fixture {
 	tx := &txFake{}
-	f := &fixture{store: &storeFake{shipments: map[ful.ShipmentID]ful.ShipmentState{}, revs: map[ful.ShipmentID]int64{}},
+	f := &fixture{store: &storeFake{tx: tx, shipments: map[ful.ShipmentID]ful.ShipmentState{}, revs: map[ful.ShipmentID]int64{}},
 		outbox: &outboxFake{}, com: &comFake{tx: tx, refuse: map[ful.ObligationID]bool{}}}
 	f.deps = Deps{Tx: tx, Shipments: f.store, Receipts: receiptsFake{}, Outbox: f.outbox, Auth: &authFake{}}
 	return f
@@ -189,6 +217,58 @@ func TestConfirmRechecksEveryPlannedObligationWithCOM(t *testing.T) {
 		t.Fatalf("cancel: %v", err)
 	}
 	want := "[ShipmentCreated.v1 ShipmentObligationAdded.v1 ShipmentPlanAmended.v1 ShipmentPlanConfirmed.v1 ShipmentObligationReleased.v1 ShipmentCancelled.v1]"
+	if got := fmt.Sprint(f.outbox.events); got != want {
+		t.Fatalf("events %s", got)
+	}
+}
+
+// F1: one obligation of 10 pallets is split over shipments; what other shipments plan is read in the
+// command's transaction, a command without a part takes what is left, and parts can be replanned.
+func TestPartsOfOneObligationAcrossShipments(t *testing.T) {
+	f := newFixture()
+	ctx := context.Background()
+	f.com.packs, f.com.holders = 10, map[ful.ShipmentID]bool{"SH-1": true, "SH-2": true, "SH-3": true}
+	kg := func(n int64) kernel.Quantity { return kernel.Quantity{Unit: "KGM", Amount: n} }
+	create := func(command string, shipment ful.ShipmentID, part ful.CargoScope) (Receipt, error) {
+		return CreateShipmentFromObligation{Deps: f.deps, Obligations: f.com}.Handle(ctx, CreateShipmentFromObligationCommand{
+			CommandID: command, Scope: planner, ShipmentID: shipment, ObligationID: "OB-1", ObligationVersion: 1, Part: part, OccurredAt: now})
+	}
+	change := func(command string, shipment ful.ShipmentID, revision int64, part ful.CargoScope) (Receipt, error) {
+		return ChangeShipmentPart{Deps: f.deps}.Handle(ctx, ChangeShipmentPartCommand{CommandID: command, Scope: planner, ShipmentID: shipment,
+			ExpectedRevision: revision, ObligationID: "OB-1", ObligationVersion: 1, Part: part, Reason: "MU587 loaded 6 of 10", OccurredAt: now.Add(time.Hour)})
+	}
+	if _, err := create("create-1", "SH-1", ful.CargoScope{Packs: 6, GrossWeight: kg(300)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := create("create-2", "SH-2", ful.CargoScope{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.store.shipments["SH-2"].Plans[0].Scope; got != (ful.CargoScope{Packs: 4, GrossWeight: kg(200)}) {
+		t.Fatalf("a command without a part takes what is left: %+v", got)
+	}
+	if _, err := create("create-3", "SH-3", ful.CargoScope{}); !errors.Is(err, ErrPlannedElsewhere) {
+		t.Fatalf("nothing left: err = %v", err)
+	}
+	if _, err := create("create-4", "SH-3", ful.CargoScope{Packs: 1, GrossWeight: kg(50)}); !errors.Is(err, ful.ErrInvalidPart) {
+		t.Fatalf("a part beyond what is left: err = %v", err)
+	}
+	if _, err := change("change-0", "SH-2", 1, ful.CargoScope{Packs: 5, GrossWeight: kg(250)}); !errors.Is(err, ful.ErrInvalidPart) {
+		t.Fatalf("growing before the other shrinks: err = %v", err)
+	}
+	if _, err := change("change-1", "SH-1", 1, ful.CargoScope{Packs: 4, GrossWeight: kg(200)}); err != nil {
+		t.Fatal(err)
+	}
+	r, err := change("change-2", "SH-2", 1, ful.CargoScope{Packs: 6, GrossWeight: kg(300)})
+	if err != nil || r.NewRevision != 2 {
+		t.Fatalf("growing into what was freed: %+v, %v", r, err)
+	}
+	if again, err := change("change-2", "SH-2", 1, ful.CargoScope{Packs: 6, GrossWeight: kg(300)}); err != nil || again != r {
+		t.Fatalf("replay = %+v, %v", again, err)
+	}
+	if f.store.outsideTx {
+		t.Fatal("what other shipments plan was read outside the command's transaction")
+	}
+	want := "[ShipmentCreated.v1 ShipmentCreated.v1 ShipmentPartChanged.v1 ShipmentPartChanged.v1]"
 	if got := fmt.Sprint(f.outbox.events); got != want {
 		t.Fatalf("events %s", got)
 	}

@@ -267,8 +267,9 @@ func TestRestoreOrderChecksConsistency(t *testing.T) {
 		},
 		"reservation numbering":            func(s *OrderState) { s.Reservations[1].No = 5 },
 		"reservation of a revoked version": func(s *OrderState) { s.Reservations[0].ObligationID, s.Reservations[0].ObligationVersion = "OB-2", 2 },
-		"two shipments hold one obligation": func(s *OrderState) {
+		"one shipment holds one obligation twice": func(s *OrderState) {
 			s.Reservations[0].ReleasedBy, s.Reservations[0].ReleasedAt = "", time.Time{}
+			s.Reservations[0].ShipmentID = s.Reservations[1].ShipmentID
 		},
 		"release without who":        func(s *OrderState) { s.Reservations[0].ReleasedBy = "" },
 		"released before reserved":   func(s *OrderState) { s.Reservations[0].ReleasedAt = recordAt },
