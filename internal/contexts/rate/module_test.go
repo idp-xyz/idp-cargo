@@ -19,18 +19,32 @@ import (
 func TestQuoteEventsMatchPublishedContract(t *testing.T) {
 	at := time.Date(2026, 11, 6, 8, 0, 0, 0, time.UTC)
 	quote, err := domain.PriceQuote(domain.QuoteDraft{
-		TenantID: "T", QuoteID: "Q", LegalEntityID: "LE", Customer: domain.CustomerRef{PartyID: "P", PartyRevision: 2}, Currency: "USD",
+		TenantID: "T", QuoteID: "Q", LegalEntityID: "LE", Customer: domain.CustomerRef{PartyID: "P", PartyRevision: 2},
+		Recipient: domain.RecipientCustomer, Currency: "USD",
 		Lines:    []domain.Line{{ChargeCode: "FREIGHT", Sell: kernel.Money{Currency: "USD", Minor: 100}, Cost: kernel.Money{Currency: "USD", Minor: 50}}},
 		Validity: kernel.ValidityInterval{From: at, Until: at.Add(time.Hour)}, Author: "sales-1",
 	}, at)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = quote.Accept("sales-1", "signed-quote", 2, at); err != nil {
+	if err = quote.Accept("sales-1", domain.EvidenceSignedDocument, "signed-quote", 2, at, at); err != nil {
 		t.Fatal(err)
 	}
-	for i, want := range []string{api.QuotePriced, api.QuoteAccepted} {
-		e := quote.Pending()[i]
+	expired, err := domain.PriceQuote(domain.QuoteDraft{
+		TenantID: "T", QuoteID: "Q", LegalEntityID: "LE", Customer: domain.CustomerRef{PartyID: "P", PartyRevision: 2},
+		Recipient: domain.RecipientCustomer, Currency: "USD",
+		Lines:    []domain.Line{{ChargeCode: "FREIGHT", Sell: kernel.Money{Currency: "USD", Minor: 100}, Cost: kernel.Money{Currency: "USD", Minor: 50}}},
+		Validity: kernel.ValidityInterval{From: at, Until: at.Add(time.Hour)}, Author: "sales-1",
+	}, at)
+	if err == nil {
+		err = expired.Expire(at.Add(time.Hour))
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := append(quote.Pending(), expired.Pending()[1])
+	for i, want := range []string{api.QuotePriced, api.QuoteAccepted, api.QuoteExpired} {
+		e := events[i]
 		envelope, err := postgres.RATEEnvelope("cmd-1", e, at)
 		if err != nil {
 			t.Fatal(err)
@@ -60,6 +74,8 @@ func TestClassifyMapsCausesToAPIKinds(t *testing.T) {
 		{fmt.Errorf("%w: org said no", application.ErrCustomerNotConfirmed), api.ErrRejected},
 		{application.ErrQuoteNotAccepted, api.ErrRejected},
 		{kernel.ErrCurrencyMismatch, api.ErrRejected},
+		{kernel.ErrOutsideRecordWindow, api.ErrRejected},
+		{domain.ErrInvalidTransition, api.ErrRejected},
 	} {
 		got := classify(tc.cause)
 		if !errors.Is(got, tc.want) || !errors.Is(got, tc.cause) {

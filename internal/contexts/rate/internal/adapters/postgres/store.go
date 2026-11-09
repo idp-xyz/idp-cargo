@@ -37,18 +37,21 @@ func readQuote(ctx context.Context, db *bentopg.DB, tenant rate.TenantID, id rat
 		return nil, 0, err
 	}
 	s := rate.QuoteState{QuoteDraft: rate.QuoteDraft{TenantID: tenant, QuoteID: id}}
-	var entity, party, currency, status string
-	var approvedBy, approvalReason, acceptedBy, evidence *string
-	var approvedAt, acceptedAt *time.Time
+	var entity, party, currency, status, recipient string
+	var approvedBy, approvalReason, acceptedBy, evidence, evidenceKind, rule, version, place, service *string
+	var approvedAt, acceptedAt, acceptedRecordedAt, expiredAt *time.Time
 	var acceptedRevision *int64
+	var selfApproved bool
 	var revision int64
-	err = q.QueryRow(ctx, `SELECT legal_entity_id,customer_party_id,customer_party_revision,currency,valid_from,valid_until,
-        margin_floor_bp,author,status,approved_by,approved_at,approval_reason_ref,
-        accepted_by,accepted_at,acceptance_evidence_ref,accepted_customer_revision,revision
+	err = q.QueryRow(ctx, `SELECT legal_entity_id,customer_party_id,customer_party_revision,recipient_role,currency,valid_from,valid_until,
+        margin_floor_bp,author,status,approved_by,approved_at,approval_reason_ref,self_approved,
+        accepted_by,accepted_at,accepted_recorded_at,acceptance_evidence_kind,acceptance_evidence_ref,accepted_customer_revision,
+        expired_at,incoterms_rule,incoterms_version,named_place,service_level,revision
       FROM cargo_rate.quote WHERE tenant_id=$1 AND quote_id=$2`+lock, string(tenant), string(id)).Scan(
-		&entity, &party, &s.Customer.PartyRevision, &currency, &s.Validity.From, &s.Validity.Until,
-		&s.MarginFloorBP, &s.Author, &status, &approvedBy, &approvedAt, &approvalReason,
-		&acceptedBy, &acceptedAt, &evidence, &acceptedRevision, &revision)
+		&entity, &party, &s.Customer.PartyRevision, &recipient, &currency, &s.Validity.From, &s.Validity.Until,
+		&s.MarginFloorBP, &s.Author, &status, &approvedBy, &approvedAt, &approvalReason, &selfApproved,
+		&acceptedBy, &acceptedAt, &acceptedRecordedAt, &evidenceKind, &evidence, &acceptedRevision,
+		&expiredAt, &rule, &version, &place, &service, &revision)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, 0, bentorepo.ErrNotFound
 	}
@@ -56,31 +59,76 @@ func readQuote(ctx context.Context, db *bentopg.DB, tenant rate.TenantID, id rat
 		return nil, 0, err
 	}
 	s.LegalEntityID, s.Customer.PartyID, s.Currency, s.Status = rate.LegalEntityID(entity), party, kernel.CurrencyCode(currency), rate.QuoteStatus(status)
+	s.Recipient = rate.RecipientRole(recipient)
+	s.Terms = rate.CommercialTerms{IncotermsRule: deref(rule), IncotermsVersion: deref(version), NamedPlace: deref(place), ServiceLevel: deref(service)}
 	if approvedBy != nil {
-		s.Approval = &rate.PriceApproval{ApprovedBy: *approvedBy, ApprovedAt: *approvedAt, ReasonRef: *approvalReason}
+		s.Approval = &rate.PriceApproval{ApprovedBy: *approvedBy, ApprovedAt: *approvedAt, ReasonRef: *approvalReason, SelfApproved: selfApproved}
 	}
 	if acceptedAt != nil {
-		s.Acceptance = &rate.Acceptance{AcceptedBy: *acceptedBy, AcceptedAt: *acceptedAt, EvidenceRef: *evidence, CustomerRevision: *acceptedRevision}
+		s.Acceptance = &rate.Acceptance{AcceptedBy: *acceptedBy, AcceptedAt: *acceptedAt, EvidenceKind: rate.EvidenceKind(deref(evidenceKind)),
+			EvidenceRef: *evidence, CustomerRevision: *acceptedRevision}
+		if acceptedRecordedAt != nil {
+			s.Acceptance.RecordedAt = *acceptedRecordedAt
+		}
 	}
-	rows, err := q.Query(ctx, `SELECT charge_code,sell_minor,cost_minor FROM cargo_rate.quote_line
+	if expiredAt != nil {
+		s.ExpiredAt = *expiredAt
+	}
+	rows, err := q.Query(ctx, `SELECT charge_code,sell_currency,sell_minor,cost_currency,cost_minor FROM cargo_rate.quote_line
       WHERE tenant_id=$1 AND quote_id=$2 ORDER BY line_no`, string(tenant), string(id))
 	if err != nil {
 		return nil, 0, err
 	}
-	defer rows.Close()
 	for rows.Next() {
-		var code string
+		var code, sellCurrency, costCurrency string
 		var sell, cost int64
-		if err = rows.Scan(&code, &sell, &cost); err != nil {
+		if err = rows.Scan(&code, &sellCurrency, &sell, &costCurrency, &cost); err != nil {
+			rows.Close()
 			return nil, 0, err
 		}
-		s.Lines = append(s.Lines, rate.Line{ChargeCode: rate.ChargeCode(code), Sell: kernel.Money{Currency: s.Currency, Minor: sell}, Cost: kernel.Money{Currency: s.Currency, Minor: cost}})
+		s.Lines = append(s.Lines, rate.Line{ChargeCode: rate.ChargeCode(code), Sell: kernel.Money{Currency: kernel.CurrencyCode(sellCurrency), Minor: sell},
+			Cost: kernel.Money{Currency: kernel.CurrencyCode(costCurrency), Minor: cost}})
 	}
+	rows.Close()
 	if err = rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	rates, err := q.Query(ctx, `SELECT from_currency,rate,scale,from_digits,quote_digits,source,as_of FROM cargo_rate.quote_exchange_rate
+      WHERE tenant_id=$1 AND quote_id=$2 ORDER BY from_currency`, string(tenant), string(id))
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rates.Close()
+	for rates.Next() {
+		var r rate.ExchangeRate
+		var from string
+		var scale, fromDigits, quoteDigits int16
+		if err = rates.Scan(&from, &r.Rate, &scale, &fromDigits, &quoteDigits, &r.Source, &r.AsOf); err != nil {
+			return nil, 0, err
+		}
+		r.From, r.Scale, r.FromDigits, r.QuoteDigits, r.AsOf = kernel.CurrencyCode(from), int(scale), int(fromDigits), int(quoteDigits), r.AsOf.UTC()
+		s.ExchangeRates = append(s.ExchangeRates, r)
+	}
+	if err = rates.Err(); err != nil {
 		return nil, 0, err
 	}
 	quote, err := rate.RestoreQuote(s)
 	return quote, revision, err
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+// orNull returns nil for an empty string, so that the column stores NULL.
+func orNull(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }
 
 // Insert writes a new quote at revision 1 with its lines.
@@ -91,11 +139,13 @@ func (s QuoteStore) Insert(ctx context.Context, quote *rate.Quote) (int64, error
 	}
 	st := quote.State()
 	var revision int64
+	t := st.Terms
 	err = q.QueryRow(ctx, `INSERT INTO cargo_rate.quote (tenant_id,quote_id,legal_entity_id,customer_party_id,customer_party_revision,
-        currency,valid_from,valid_until,margin_floor_bp,author,status)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING revision`,
+        recipient_role,currency,valid_from,valid_until,margin_floor_bp,author,status,incoterms_rule,incoterms_version,named_place,service_level)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING revision`,
 		string(st.TenantID), string(st.QuoteID), string(st.LegalEntityID), st.Customer.PartyID, st.Customer.PartyRevision,
-		string(st.Currency), st.Validity.From, st.Validity.Until, st.MarginFloorBP, st.Author, string(st.Status)).Scan(&revision)
+		string(st.Recipient), string(st.Currency), st.Validity.From, st.Validity.Until, st.MarginFloorBP, st.Author, string(st.Status),
+		orNull(t.IncotermsRule), orNull(t.IncotermsVersion), orNull(t.NamedPlace), orNull(t.ServiceLevel)).Scan(&revision)
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "quote_pkey" {
 		return 0, bentorepo.ErrAlreadyExists
@@ -104,8 +154,16 @@ func (s QuoteStore) Insert(ctx context.Context, quote *rate.Quote) (int64, error
 		return 0, err
 	}
 	for i, l := range st.Lines {
-		if _, err = q.Exec(ctx, `INSERT INTO cargo_rate.quote_line (tenant_id,quote_id,line_no,charge_code,sell_minor,cost_minor)
-          VALUES ($1,$2,$3,$4,$5,$6)`, string(st.TenantID), string(st.QuoteID), i+1, string(l.ChargeCode), l.Sell.Minor, l.Cost.Minor); err != nil {
+		if _, err = q.Exec(ctx, `INSERT INTO cargo_rate.quote_line (tenant_id,quote_id,line_no,charge_code,sell_currency,sell_minor,cost_currency,cost_minor)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, string(st.TenantID), string(st.QuoteID), i+1, string(l.ChargeCode),
+			string(l.Sell.Currency), l.Sell.Minor, string(l.Cost.Currency), l.Cost.Minor); err != nil {
+			return 0, err
+		}
+	}
+	for _, r := range st.ExchangeRates {
+		if _, err = q.Exec(ctx, `INSERT INTO cargo_rate.quote_exchange_rate (tenant_id,quote_id,from_currency,rate,scale,from_digits,quote_digits,source,as_of)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, string(st.TenantID), string(st.QuoteID), string(r.From), r.Rate, r.Scale, r.FromDigits,
+			r.QuoteDigits, r.Source, r.AsOf); err != nil {
 			return 0, err
 		}
 	}
@@ -119,20 +177,27 @@ func (s QuoteStore) Save(ctx context.Context, quote *rate.Quote, expected int64)
 		return 0, err
 	}
 	st := quote.State()
-	var approvedBy, approvalReason, acceptedBy, evidence, approvedAt, acceptedAt, acceptedRevision any
+	var approvedBy, approvalReason, acceptedBy, evidence, evidenceKind, approvedAt, acceptedAt, acceptedRecordedAt, acceptedRevision, expiredAt any
+	selfApproved := false
 	if a := st.Approval; a != nil {
-		approvedBy, approvedAt, approvalReason = a.ApprovedBy, a.ApprovedAt, a.ReasonRef
+		approvedBy, approvedAt, approvalReason, selfApproved = a.ApprovedBy, a.ApprovedAt, a.ReasonRef, a.SelfApproved
 	}
 	if a := st.Acceptance; a != nil {
-		acceptedBy, acceptedAt, evidence, acceptedRevision = a.AcceptedBy, a.AcceptedAt, a.EvidenceRef, a.CustomerRevision
+		acceptedBy, acceptedAt, evidenceKind, evidence, acceptedRevision = a.AcceptedBy, a.AcceptedAt, string(a.EvidenceKind), a.EvidenceRef, a.CustomerRevision
+		if !a.RecordedAt.IsZero() {
+			acceptedRecordedAt = a.RecordedAt
+		}
+	}
+	if !st.ExpiredAt.IsZero() {
+		expiredAt = st.ExpiredAt
 	}
 	var revision int64
-	err = q.QueryRow(ctx, `UPDATE cargo_rate.quote SET status=$3,approved_by=$4,approved_at=$5,approval_reason_ref=$6,
-        accepted_by=$7,accepted_at=$8,acceptance_evidence_ref=$9,accepted_customer_revision=$10,
-        revision=revision+1,updated_at=now()
-      WHERE tenant_id=$1 AND quote_id=$2 AND revision=$11 RETURNING revision`,
-		string(st.TenantID), string(st.QuoteID), string(st.Status), approvedBy, approvedAt, approvalReason,
-		acceptedBy, acceptedAt, evidence, acceptedRevision, expected).Scan(&revision)
+	err = q.QueryRow(ctx, `UPDATE cargo_rate.quote SET status=$3,approved_by=$4,approved_at=$5,approval_reason_ref=$6,self_approved=$7,
+        accepted_by=$8,accepted_at=$9,accepted_recorded_at=$10,acceptance_evidence_kind=$11,acceptance_evidence_ref=$12,
+        accepted_customer_revision=$13,expired_at=$14,revision=revision+1,updated_at=now()
+      WHERE tenant_id=$1 AND quote_id=$2 AND revision=$15 RETURNING revision`,
+		string(st.TenantID), string(st.QuoteID), string(st.Status), approvedBy, approvedAt, approvalReason, selfApproved,
+		acceptedBy, acceptedAt, acceptedRecordedAt, evidenceKind, evidence, acceptedRevision, expiredAt, expected).Scan(&revision)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, bentorepo.ErrConflict
 	}

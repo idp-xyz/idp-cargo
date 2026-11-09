@@ -74,24 +74,35 @@ func (o *outboxFake) EnqueueRATEEvent(_ context.Context, e rate.Event) error {
 
 type authFake struct {
 	fail  error
+	deny  map[QuoteAction]bool
 	calls int
 }
 
-func (a *authFake) RequireQuoteAction(context.Context, Scope, QuoteAction, rate.QuoteID) error {
+func (a *authFake) RequireQuoteAction(_ context.Context, _ Scope, action QuoteAction, _ rate.QuoteID) error {
 	a.calls++
+	if a.deny[action] {
+		return errors.New("policy deny " + string(action))
+	}
 	return a.fail
 }
+
+// clockFake is the time RATE records a command at.
+type clockFake struct{ t time.Time }
+
+func (c *clockFake) Now() time.Time { return c.t }
 
 type customersFake struct {
 	tx       *txFake
 	revision int64
 	fail     error
 	calls    int
+	roles    []rate.RecipientRole
 	insideTx bool
 }
 
-func (c *customersFake) VerifyCustomer(_ context.Context, _ rate.TenantID, party string, _ rate.LegalEntityID, _ time.Time) (rate.CustomerRef, error) {
+func (c *customersFake) VerifyRecipient(_ context.Context, _ rate.TenantID, party string, _ rate.LegalEntityID, role rate.RecipientRole, _ time.Time) (rate.CustomerRef, error) {
 	c.calls++
+	c.roles = append(c.roles, role)
 	c.insideTx = c.insideTx || c.tx.depth > 0
 	if c.fail != nil {
 		return rate.CustomerRef{}, c.fail
@@ -107,6 +118,7 @@ func (f floorFake) MarginFloorBP(context.Context, rate.TenantID, rate.LegalEntit
 
 type fixture struct {
 	deps      Deps
+	clock     *clockFake
 	tx        *txFake
 	store     *storeFake
 	outbox    *outboxFake
@@ -117,8 +129,8 @@ type fixture struct {
 func newFixture() *fixture {
 	tx := &txFake{}
 	f := &fixture{tx: tx, store: &storeFake{quotes: map[rate.QuoteID]rate.QuoteState{}, revs: map[rate.QuoteID]int64{}},
-		outbox: &outboxFake{}, auth: &authFake{}, customers: &customersFake{tx: tx, revision: 2}}
-	f.deps = Deps{Tx: tx, Quotes: f.store, Receipts: receiptsFake{}, Outbox: f.outbox, Auth: f.auth}
+		outbox: &outboxFake{}, auth: &authFake{}, customers: &customersFake{tx: tx, revision: 2}, clock: &clockFake{t: now.Add(2 * time.Hour)}}
+	f.deps = Deps{Tx: tx, Quotes: f.store, Receipts: receiptsFake{}, Outbox: f.outbox, Auth: f.auth, Clock: f.clock, Window: kernel.DefaultRecordWindow}
 	return f
 }
 
@@ -187,7 +199,7 @@ func TestApproveThenAcceptRechecksTheCustomer(t *testing.T) {
 		t.Fatalf("approve: %+v, %v", r, err)
 	}
 	accept := AcceptQuoteCommand{CommandID: "accept-1", Scope: Scope{TenantID: "T", ActorID: "sales-1"}, QuoteID: "Q-1",
-		ExpectedRevision: 1, EvidenceRef: "signed-quote", OccurredAt: now.Add(time.Hour)}
+		ExpectedRevision: 1, EvidenceKind: rate.EvidenceEmail, EvidenceRef: "signed-quote", OccurredAt: now.Add(time.Hour)}
 	h := AcceptQuote{Deps: f.deps, Customers: f.customers}
 	if _, err := h.Handle(context.Background(), accept); !errors.Is(err, rate.ErrConflict) {
 		t.Fatalf("stale revision: err = %v", err)
@@ -199,10 +211,102 @@ func TestApproveThenAcceptRechecksTheCustomer(t *testing.T) {
 		t.Fatalf("accept: %+v, %v", r, err)
 	}
 	stored := f.store.quotes["Q-1"]
-	if stored.Status != rate.QuoteAccepted || stored.Acceptance.CustomerRevision != 3 || f.customers.insideTx {
+	if stored.Status != rate.QuoteAccepted || stored.Acceptance.CustomerRevision != 3 || f.customers.insideTx ||
+		!stored.Acceptance.RecordedAt.Equal(f.clock.t) || stored.Acceptance.EvidenceKind != rate.EvidenceEmail {
 		t.Fatalf("stored %+v; ORG asked inside a transaction: %v", stored, f.customers.insideTx)
 	}
 	if got := fmt.Sprint(f.outbox.events); got != "[QuotePriced.v1 QuotePriceApproved.v1 QuoteAccepted.v1]" {
+		t.Fatalf("events %s", got)
+	}
+}
+
+// T1: a command's business time may lie up to the record window before the time RATE records it, and not
+// after it; a command committed earlier still replays later.
+func TestBusinessTimeMustLieWithinTheRecordWindow(t *testing.T) {
+	f := newFixture()
+	h := CreateQuote{Deps: f.deps, Customers: f.customers, Margins: floorFake(0)}
+	for name, occurred := range map[string]time.Time{
+		"eight days late":       f.clock.t.Add(-8 * 24 * time.Hour),
+		"an hour in the future": f.clock.t.Add(time.Hour),
+	} {
+		c := createCommand("create-" + name)
+		c.OccurredAt = occurred
+		if _, err := h.Handle(context.Background(), c); !errors.Is(err, kernel.ErrOutsideRecordWindow) || f.customers.calls != 0 {
+			t.Errorf("%s: err = %v, ORG calls %d", name, err, f.customers.calls)
+		}
+	}
+	r := f.create(t, 0)
+	f.clock.t = f.clock.t.Add(10 * 24 * time.Hour)
+	if again := f.create(t, 0); again != r {
+		t.Fatalf("a committed command replays outside the window: %+v vs %+v", again, r)
+	}
+}
+
+// R7: a quote goes to a customer by default, or to an overseas agent, shipper or consignee, whom ORG
+// must confirm in that role; acceptance asks ORG again for the same role.
+func TestTheRecipientRoleIsCheckedWithORG(t *testing.T) {
+	f := newFixture()
+	f.create(t, 0)
+	agent := createCommand("create-agent")
+	agent.QuoteID, agent.Recipient = "Q-2", rate.RecipientOverseasAgent
+	if _, err := (CreateQuote{Deps: f.deps, Customers: f.customers, Margins: floorFake(0)}).Handle(context.Background(), agent); err != nil {
+		t.Fatal(err)
+	}
+	unknown := createCommand("create-unknown")
+	unknown.QuoteID, unknown.Recipient = "Q-3", "FORWARDER"
+	if _, err := (CreateQuote{Deps: f.deps, Customers: f.customers, Margins: floorFake(0)}).Handle(context.Background(), unknown); !errors.Is(err, rate.ErrInvalidQuote) {
+		t.Fatalf("an unknown role: err = %v", err)
+	}
+	accept := AcceptQuoteCommand{CommandID: "accept-agent", Scope: Scope{TenantID: "T", ActorID: "sales-1"}, QuoteID: "Q-2",
+		ExpectedRevision: 1, EvidenceKind: rate.EvidenceCustomerPortal, EvidenceRef: "portal-77", OccurredAt: now.Add(time.Hour)}
+	if _, err := (AcceptQuote{Deps: f.deps, Customers: f.customers}).Handle(context.Background(), accept); err != nil {
+		t.Fatal(err)
+	}
+	if got := fmt.Sprint(f.customers.roles); got != "[CUSTOMER OVERSEAS_AGENT OVERSEAS_AGENT]" {
+		t.Fatalf("roles asked of ORG: %s", got)
+	}
+	if f.store.quotes["Q-2"].Recipient != rate.RecipientOverseasAgent {
+		t.Fatalf("stored recipient %s", f.store.quotes["Q-2"].Recipient)
+	}
+}
+
+// R3: the author approves their own quote only when the policy allows ApproveOwnQuotePrice.
+func TestTheAuthorApprovesOnlyWithTheDesignatedRole(t *testing.T) {
+	f := newFixture()
+	f.create(t, 2000)
+	own := ApproveQuotePriceCommand{CommandID: "approve-own", Scope: Scope{TenantID: "T", ActorID: "sales-1"}, QuoteID: "Q-1",
+		ExpectedRevision: 1, ReasonRef: "margin-exception-1", OccurredAt: now}
+	f.auth.deny = map[QuoteAction]bool{ActionApproveOwnQuotePrice: true}
+	if _, err := (ApproveQuotePrice{Deps: f.deps}).Handle(context.Background(), own); !errors.Is(err, rate.ErrSelfApproval) {
+		t.Fatalf("without the role: err = %v", err)
+	}
+	f.auth.deny = nil
+	own.CommandID = "approve-own-2"
+	if _, err := (ApproveQuotePrice{Deps: f.deps}).Handle(context.Background(), own); err != nil {
+		t.Fatal(err)
+	}
+	if a := f.store.quotes["Q-1"].Approval; a == nil || !a.SelfApproved {
+		t.Fatalf("approval %+v", a)
+	}
+}
+
+// R4: the scheduled job expires a quote once its validity has passed.
+func TestExpireQuote(t *testing.T) {
+	f := newFixture()
+	f.create(t, 0)
+	until := now.Add(14 * 24 * time.Hour)
+	expire := ExpireQuoteCommand{CommandID: "expire-1", Scope: Scope{TenantID: "T", ActorID: "rate-scheduler"}, QuoteID: "Q-1",
+		ExpectedRevision: 1, OccurredAt: until.Add(-time.Hour)}
+	f.clock.t = until.Add(time.Minute)
+	if _, err := (ExpireQuote{Deps: f.deps}).Handle(context.Background(), expire); !errors.Is(err, rate.ErrInvalidTransition) {
+		t.Fatalf("still valid: err = %v", err)
+	}
+	expire.CommandID, expire.OccurredAt = "expire-2", until
+	r, err := (ExpireQuote{Deps: f.deps}).Handle(context.Background(), expire)
+	if err != nil || r.NewRevision != 2 || f.store.quotes["Q-1"].Status != rate.QuoteExpired {
+		t.Fatalf("expire: %+v, %v, %s", r, err, f.store.quotes["Q-1"].Status)
+	}
+	if got := fmt.Sprint(f.outbox.events); got != "[QuotePriced.v1 QuoteExpired.v1]" {
 		t.Fatalf("events %s", got)
 	}
 }

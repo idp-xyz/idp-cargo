@@ -40,7 +40,7 @@ func TestAShortloadIsReplannedAcrossShipments(t *testing.T) {
 	}
 	tenant := uniqueTenant("cargo-parts-")
 	seedORG(t, platform, tenant, "party-p")
-	at := time.Now().UTC().Truncate(time.Microsecond)
+	at := time.Now().UTC().Add(-48 * time.Hour).Truncate(time.Microsecond) // business times lie in the past (T1)
 	kg := func(n int64) kernel.Quantity { return kernel.Quantity{Unit: "KGM", Amount: n} }
 	if err = errors.Join(
 		func() error {
@@ -57,7 +57,7 @@ func TestAShortloadIsReplannedAcrossShipments(t *testing.T) {
 		}(),
 		func() error {
 			_, err := rateModule.AcceptQuote(ctx, rateapi.AcceptQuote{CommandID: "accept-Q-1", TenantID: tenant, ActorID: "sales-1", QuoteID: "Q-1",
-				ExpectedRevision: 1, EvidenceRef: "signed-Q-1", OccurredAt: at.Add(time.Hour)})
+				ExpectedRevision: 1, EvidenceKind: rateapi.EvidenceSignedDocument, EvidenceRef: "signed-Q-1", OccurredAt: at.Add(time.Hour)})
 			return err
 		}(),
 		func() error {

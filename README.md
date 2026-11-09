@@ -1,4 +1,4 @@
-# IDP-Cargo · Go + DDD + Bento-Go · V2.16 integration candidate
+# IDP-Cargo · Go + DDD + Bento-Go · V2.17 integration candidate
 
 **IDP-Cargo is one product repository and one Go module. Business code is organized by DDD bounded context; IDP-Bento-Go and IDP-Platform-Go stay separate repositories referenced as Go module versions.**
 
@@ -93,6 +93,14 @@ GitHub Actions, `ubuntu-24.04` runner, workflow `org-pg16-contract.yml`, on ever
   - FUL takes the obligation's transaction lock before it reads what other shipments plan of it, in the command's transaction, and the `shipment_obligation` trigger takes the same lock and re-checks the sum, so concurrent commands cannot exceed an obligation. PG16 tests race eight shipments for parts of one obligation.
   - COM V0.4: several shipments may each hold a reservation on one obligation version, one per shipment; COM still refuses to revoke an obligation, or to cancel its order, while any shipment holds it. `GetObligationSnapshotV3` lists every holder; in v2 `HeldByShipmentID` names the holder only when there is exactly one. FUL reads v3.
   - Migrations `com/000003_com_reservation_per_shipment` and `ful/000002_ful_shipment_parts`. The FUL migration converts V0.1 entries, which planned whole obligations, into parts equal to the whole. A test in `internal/bootstrap` replans a shortload of 8 of 30 pallets across two shipments with the real contexts.
+- V2.17 implements RATE V0.3: the business review decisions R3, R4, R5 and R7, the owner decisions R8, R9 and T1 of 2026-11-09, and the quote side of C8.
+  - R8: each line's sell and cost carry their currency. A quote totals in its own currency at frozen exchange rates, one per other currency, with source, date and the ISO 4217 minor digits used; lines convert one by one, halves away from zero. The margin floor is checked in the quote currency. The rates price the quote; invoicing rates belong to FIN.
+  - R9: a zero line is a charge included elsewhere; a discount is a negative line without cost, and makes the quote need a price approval. The total never falls below zero.
+  - R3: the quote's author may approve its price only when the `Authorizer` allows `ApproveOwnQuotePrice`, and the approval is flagged as a self-approval. R4: `ExpireQuote` ends a quote not accepted once its validity has passed (the scheduled job follows in S2); expired quotes are frozen. R5: acceptance evidence has a kind: signed document, e-mail or customer portal. R7: quotes go to customers, overseas agents, shippers or consignees, whom ORG confirms in that role.
+  - T1: `kernel.RecordWindow` admits a business time up to seven days before the time RATE records the command (configurable with `WithRecordWindow`) and five minutes after it; the acceptance's recording time is kept. A command committed earlier still replays later.
+  - C8: optional Incoterms rule, edition (2010 or 2020), named place and service level on the quote.
+  - `GetQuoteSnapshotV2` returns all of it, without costs or margins; v1 keeps each line's own currency and totals in the quote currency.
+  - Migration `rate/000002_rate_quote_v03` converts V0.2 quotes without loss: lines take the quote currency, recipients are customers, and accepted quotes get the evidence kind UNRECORDED and no recording time. New table `cargo_rate.quote_exchange_rate`, immutable.
 
 Bento testkit contracts:
 
@@ -118,7 +126,7 @@ NOT executed:
 1. Install Go 1.26.5 and resolve the immutable framework candidate; do not use Git `main` or a local `replace`.
 2. Set `IDP_CARGO_MIGRATOR_DSN` to a dedicated migration role in PG16.
 3. `go run ./cmd/cargo-migrate -manifest migrations/manifest/contexts.txt` to inspect; separately authorize `-apply`.
-4. Create a `cargo_app` user with no owner/superuser/BYPASSRLS/DDL rights; grant only required DML (for `cargo_rate`: SELECT, INSERT, UPDATE on `quote`; SELECT, INSERT on `quote_line` and `command_receipt`; for `cargo_com`: SELECT, INSERT, UPDATE on `customer_order`; SELECT, INSERT on `order_line`, `fulfillment_obligation`, `obligation_reservation` and `command_receipt`; UPDATE of `released_by` and `released_at` only on `obligation_reservation`; for `cargo_ful`: SELECT, INSERT, UPDATE on `shipment`; SELECT, INSERT on `shipment_obligation`, `shipment_plan_version`, `shipment_plan_confirmation` and `command_receipt`; UPDATE of `released_by` and `released_at` only on `shipment_obligation`).
+4. Create a `cargo_app` user with no owner/superuser/BYPASSRLS/DDL rights; grant only required DML (for `cargo_rate`: SELECT, INSERT, UPDATE on `quote`; SELECT, INSERT on `quote_line`, `quote_exchange_rate` and `command_receipt`; for `cargo_com`: SELECT, INSERT, UPDATE on `customer_order`; SELECT, INSERT on `order_line`, `fulfillment_obligation`, `obligation_reservation` and `command_receipt`; UPDATE of `released_by` and `released_at` only on `obligation_reservation`; for `cargo_ful`: SELECT, INSERT, UPDATE on `shipment`; SELECT, INSERT on `shipment_obligation`, `shipment_plan_version`, `shipment_plan_confirmation` and `command_receipt`; UPDATE of `released_by` and `released_at` only on `shipment_obligation`).
 5. Set `CI=true IDP_CARGO_POSTGRES_DSN=...`. The Bento contract tests also need `IDP_CARGO_MIGRATOR_DSN` to provision their throwaway schemas.
 6. `go test -tags integration -count=1 -v ./...`
 7. `go test -tags integration -race -count=1 ./...`
@@ -137,7 +145,7 @@ NOT executed:
 - `EventID` is not a substitute for CommandID deduplication. No Exactly-Once guarantee.
 - The relay delivers at least once: a crash between publish and settle re-delivers after the lease expires. Sinks and consumers deduplicate by event ID, which the webhook sends as `Idempotency-Key`. Leases are wall-clock timestamps, so worker hosts need synchronized clocks.
 - RATE keeps customers as ORG party references only; legal names stay in ORG. Quote costs and margins never leave RATE.
-- RATE's margin floor, independent price approval and acceptance rules are a candidate design pending business review; the floor itself is supplied by `MarginPolicy`, not hard-coded.
+- RATE's rules follow the 2026-11-06 business review and the owner decisions of 2026-11-09; the margin floor is supplied by `MarginPolicy`, not hard-coded. Approval for non-standard payment terms and non-functional currencies (R2) waits for their reference sources, and rate cards (R6) for S2.
 - COM keeps the customer's legal name and country only as the transaction snapshot frozen with the order (MD-05). The obligation snapshots carry identifiers, packs, weight and volume, not names, because FUL does not consume legal names.
 - The reservation is COM's own fact, set and cleared through COM's api, so the COM → FUL relationship keeps its direction. In S1 an API client drives the handshake (rule T6); a release that FUL has not recorded first is caught by FUL's own re-checks, not by COM.
 - COM's rules follow the 2026-11-06 business review (C3–C7) where implemented; one order per accepted quote and recording within the quote's validity (C1, C2), commercial terms (C8) and addresses (C9) are still the earlier candidate rules. Package type codes and weight and volume units are checked for form only until reference data exists (MD-25).

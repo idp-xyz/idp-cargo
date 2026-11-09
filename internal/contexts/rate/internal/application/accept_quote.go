@@ -13,12 +13,14 @@ type AcceptQuoteCommand struct {
 	Scope            Scope
 	QuoteID          rate.QuoteID
 	ExpectedRevision int64
+	EvidenceKind     rate.EvidenceKind
 	EvidenceRef      string
 	OccurredAt       time.Time
 }
 
-// AcceptQuote records the customer's acceptance. ORG must still confirm the customer role at that
-// instant; the accepted quote is frozen.
+// AcceptQuote records the customer's acceptance at its business time, with typed evidence (R5), and the
+// time RATE records it (T1). ORG must still confirm the recipient role at that instant; the accepted quote
+// is frozen.
 type AcceptQuote struct {
 	Deps
 	Customers Customers
@@ -38,6 +40,10 @@ func (h AcceptQuote) Handle(ctx context.Context, c AcceptQuoteCommand) (Receipt,
 	if r, ok, err := h.replay(ctx, c.Scope.TenantID, c.CommandID, hash); err != nil || ok {
 		return r, err
 	}
+	recorded, err := h.admit(c.OccurredAt)
+	if err != nil {
+		return Receipt{}, err
+	}
 	if err = h.Auth.RequireQuoteAction(ctx, c.Scope, ActionAcceptQuote, c.QuoteID); err != nil {
 		return Receipt{}, fmt.Errorf("%w: %v", ErrUnauthorized, err)
 	}
@@ -52,7 +58,7 @@ func (h AcceptQuote) Handle(ctx context.Context, c AcceptQuoteCommand) (Receipt,
 	if err != nil {
 		return Receipt{}, err
 	}
-	customer, err := h.Customers.VerifyCustomer(ctx, c.Scope.TenantID, priced.Customer.PartyID, priced.LegalEntityID, c.OccurredAt)
+	customer, err := h.Customers.VerifyRecipient(ctx, c.Scope.TenantID, priced.Customer.PartyID, priced.LegalEntityID, priced.Recipient, c.OccurredAt)
 	if err != nil {
 		return Receipt{}, err
 	}
@@ -64,7 +70,7 @@ func (h AcceptQuote) Handle(ctx context.Context, c AcceptQuoteCommand) (Receipt,
 		if revision != c.ExpectedRevision {
 			return nil, 0, rate.ErrConflict
 		}
-		if err = quote.Accept(c.Scope.ActorID, c.EvidenceRef, customer.PartyRevision, c.OccurredAt); err != nil {
+		if err = quote.Accept(c.Scope.ActorID, c.EvidenceKind, c.EvidenceRef, customer.PartyRevision, c.OccurredAt, recorded); err != nil {
 			return nil, 0, err
 		}
 		newRevision, err := h.Quotes.Save(txCtx, quote, revision)

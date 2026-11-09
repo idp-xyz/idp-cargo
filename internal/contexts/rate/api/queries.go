@@ -36,6 +36,43 @@ type QuoteSnapshot struct {
 	AcceptanceEvidenceRef string
 }
 
+// SnapshotLineV2 is one charge of an accepted quote: its sell amount in its own currency, the amount in the
+// quote currency at the frozen rate, and whether it is a discount (R8, R9).
+type SnapshotLineV2 struct {
+	ChargeCode      string
+	Amount          kernel.Money
+	InQuoteCurrency kernel.Money
+	Discount        bool
+}
+
+// QuoteSnapshotV2 is QuoteSnapshot v1 with what the 2026-11-06 business review and the owner decisions of
+// 2026-11-09 added: the recipient role (R7), lines in several currencies with the frozen exchange rates and
+// rounding (R8), discount lines (R9), the reasons for and kind of price approval (R2, R3), the evidence kind
+// and recording time of the acceptance (R5, T1), and the commercial terms (C8). Like v1 it carries no costs
+// or margins. In v1 the lines keep their own currencies and Total is in the quote currency.
+type QuoteSnapshotV2 struct {
+	TenantID               string
+	QuoteID                string
+	QuoteRevision          int64
+	LegalEntityID          string
+	Customer               CustomerRef
+	RecipientRole          string
+	Currency               kernel.CurrencyCode
+	Lines                  []SnapshotLineV2
+	Total                  kernel.Money
+	ExchangeRates          []ExchangeRate
+	Rounding               string // "HALF_UP_PER_LINE"
+	Terms                  CommercialTerms
+	Validity               kernel.ValidityInterval
+	PriceApprovalReasons   []string // BELOW_MARGIN_FLOOR, DISCOUNT; empty when none was needed
+	PriceApprovedBy        string   // empty when no approval was needed
+	PriceSelfApproved      bool
+	AcceptedAt             time.Time
+	AcceptanceRecordedAt   time.Time // zero for quotes accepted before recording times were kept
+	AcceptanceEvidenceKind string    // UNRECORDED for quotes accepted before evidence kinds were kept
+	AcceptanceEvidenceRef  string
+}
+
 // GetQuoteSnapshot asks for the snapshot of an accepted quote. TenantID must come from a verified
 // principal.
 type GetQuoteSnapshot struct {
@@ -47,4 +84,5 @@ type GetQuoteSnapshot struct {
 // not accepted yields ErrRejected.
 type Queries interface {
 	GetQuoteSnapshot(ctx context.Context, q GetQuoteSnapshot) (QuoteSnapshot, error)
+	GetQuoteSnapshotV2(ctx context.Context, q GetQuoteSnapshot) (QuoteSnapshotV2, error)
 }

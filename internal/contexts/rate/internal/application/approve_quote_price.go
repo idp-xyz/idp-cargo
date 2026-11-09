@@ -17,7 +17,8 @@ type ApproveQuotePriceCommand struct {
 	OccurredAt       time.Time
 }
 
-// ApproveQuotePrice records the caller's price approval for a quote below its margin floor.
+// ApproveQuotePrice records the caller's price approval for a quote that needs one. The quote's author may
+// approve it only when authorized for ActionApproveOwnQuotePrice (R3).
 type ApproveQuotePrice struct {
 	Deps
 }
@@ -28,6 +29,12 @@ func (h ApproveQuotePrice) Handle(ctx context.Context, c ApproveQuotePriceComman
 	}
 	hash, err := requestHash(c)
 	if err != nil {
+		return Receipt{}, err
+	}
+	if r, ok, err := h.replay(ctx, c.Scope.TenantID, c.CommandID, hash); err != nil || ok {
+		return r, err
+	}
+	if _, err = h.admit(c.OccurredAt); err != nil {
 		return Receipt{}, err
 	}
 	return h.write(ctx, c.Scope, c.CommandID, hash, func(txCtx context.Context) (*rate.Quote, int64, error) {
@@ -41,7 +48,8 @@ func (h ApproveQuotePrice) Handle(ctx context.Context, c ApproveQuotePriceComman
 		if revision != c.ExpectedRevision {
 			return nil, 0, rate.ErrConflict
 		}
-		if err = quote.ApprovePrice(c.Scope.ActorID, c.ReasonRef, c.OccurredAt); err != nil {
+		own := quote.Author() == c.Scope.ActorID && h.Auth.RequireQuoteAction(txCtx, c.Scope, ActionApproveOwnQuotePrice, c.QuoteID) == nil
+		if err = quote.ApprovePrice(c.Scope.ActorID, c.ReasonRef, own, c.OccurredAt); err != nil {
 			return nil, 0, err
 		}
 		newRevision, err := h.Quotes.Save(txCtx, quote, revision)

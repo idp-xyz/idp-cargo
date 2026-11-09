@@ -10,16 +10,51 @@ import (
 	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
-// QuoteLine is one priced charge. Cost is RATE-internal: it decides whether a price approval is needed
-// and never appears in a QuoteSnapshot.
+// QuoteLine is one priced charge (R8, R9). Sell and Cost each carry their currency; a line in a currency
+// other than the quote's needs an ExchangeRate. A zero sell amount is a charge included elsewhere; a
+// negative one is a discount, which has no cost and makes the quote need a price approval. Cost is
+// RATE-internal: it decides whether a price approval is needed and never appears in a QuoteSnapshot.
 type QuoteLine struct {
 	ChargeCode string
 	Sell       kernel.Money
 	Cost       kernel.Money
 }
 
-// CreateQuote prices a quote for a party that ORG confirms as a customer of the legal entity at
-// OccurredAt. TenantID and ActorID must come from a verified principal.
+// ExchangeRate converts amounts in From into the quote currency (R8): one unit of From is
+// Rate × 10^−Scale units of the quote currency. FromDigits and QuoteDigits are the ISO 4217 minor digits
+// of the two currencies. Amounts convert line by line, halves rounded away from zero. The rate prices the
+// quote; invoicing and accounting rates belong to FIN.
+type ExchangeRate struct {
+	From        kernel.CurrencyCode
+	Rate        int64
+	Scale       int
+	FromDigits  int
+	QuoteDigits int
+	Source      string
+	AsOf        time.Time
+}
+
+// CommercialTerms are the optional Incoterms rule, its edition (2010 or 2020) and named place, and the
+// service level a quote is priced for (C8); the order takes them over.
+type CommercialTerms struct {
+	IncotermsRule    string
+	IncotermsVersion string
+	NamedPlace       string
+	ServiceLevel     string
+}
+
+// Roles a quote may go to (R7); ORG must confirm the party in the role for the legal entity.
+const (
+	RecipientCustomer      = "CUSTOMER"
+	RecipientOverseasAgent = "OVERSEAS_AGENT"
+	RecipientShipper       = "SHIPPER"
+	RecipientConsignee     = "CONSIGNEE"
+)
+
+// CreateQuote prices a quote for a party that ORG confirms in RecipientRole (CUSTOMER when empty) for the
+// legal entity at OccurredAt. Currency is the currency the quote totals in. TenantID and ActorID must come
+// from a verified principal. OccurredAt is the business time; it may be up to the record window earlier
+// than the time RATE records the command, and not later (T1).
 type CreateQuote struct {
 	CommandID       string
 	TenantID        string
@@ -27,14 +62,18 @@ type CreateQuote struct {
 	QuoteID         string
 	LegalEntityID   string
 	CustomerPartyID string
+	RecipientRole   string
 	Currency        kernel.CurrencyCode
 	Lines           []QuoteLine
+	ExchangeRates   []ExchangeRate
+	Terms           CommercialTerms
 	Validity        kernel.ValidityInterval
 	OccurredAt      time.Time
 }
 
-// ApproveQuotePrice authorizes a quote whose margin is below the floor. The approver is ActorID and
-// must not be the quote's author.
+// ApproveQuotePrice authorizes a quote that needs a price approval: its margin is below the floor or it
+// has a discount line. The approver is ActorID; the quote's author may approve it only with a role the
+// Authorizer allows ActionApproveOwnQuotePrice, and the approval is then flagged as a self-approval (R3).
 type ApproveQuotePrice struct {
 	CommandID        string
 	TenantID         string
@@ -45,14 +84,35 @@ type ApproveQuotePrice struct {
 	OccurredAt       time.Time
 }
 
-// AcceptQuote records the customer's acceptance, with evidence, within the quote's validity.
+// Kinds of acceptance evidence (R5).
+const (
+	EvidenceSignedDocument = "SIGNED_DOCUMENT"
+	EvidenceEmail          = "EMAIL"
+	EvidenceCustomerPortal = "CUSTOMER_PORTAL"
+)
+
+// AcceptQuote records the customer's acceptance at OccurredAt, within the quote's validity, with the kind
+// and reference of its evidence. OccurredAt may be up to the record window earlier than the time RATE
+// records it, which is kept too (T1).
 type AcceptQuote struct {
 	CommandID        string
 	TenantID         string
 	ActorID          string
 	QuoteID          string
 	ExpectedRevision int64
+	EvidenceKind     string
 	EvidenceRef      string
+	OccurredAt       time.Time
+}
+
+// ExpireQuote ends a quote that was not accepted, once its validity has passed (R4). A scheduled job calls
+// it with its own principal.
+type ExpireQuote struct {
+	CommandID        string
+	TenantID         string
+	ActorID          string
+	QuoteID          string
+	ExpectedRevision int64
 	OccurredAt       time.Time
 }
 
@@ -68,13 +128,16 @@ type Commands interface {
 	CreateQuote(ctx context.Context, cmd CreateQuote) (Receipt, error)
 	ApproveQuotePrice(ctx context.Context, cmd ApproveQuotePrice) (Receipt, error)
 	AcceptQuote(ctx context.Context, cmd AcceptQuote) (Receipt, error)
+	ExpireQuote(ctx context.Context, cmd ExpireQuote) (Receipt, error)
 }
 
 // Actions an Authorizer decides on.
 const (
-	ActionCreateQuote       = "CreateQuote"
-	ActionApproveQuotePrice = "ApproveQuotePrice"
-	ActionAcceptQuote       = "AcceptQuote"
+	ActionCreateQuote          = "CreateQuote"
+	ActionApproveQuotePrice    = "ApproveQuotePrice"
+	ActionApproveOwnQuotePrice = "ApproveOwnQuotePrice" // allow it only to roles designated to approve their own quotes (R3)
+	ActionAcceptQuote          = "AcceptQuote"
+	ActionExpireQuote          = "ExpireQuote"
 )
 
 // Authorizer decides whether a verified actor may perform a quote action. The identity and policy layer

@@ -36,7 +36,7 @@ func TestOrderFromAnAcceptedQuote(t *testing.T) {
 	tenant := uniqueTenant("cargo-order-")
 	seedORG(t, platform, tenant, "party-s", "party-t")
 
-	at := time.Now().UTC().Truncate(time.Microsecond)
+	at := time.Now().UTC().Add(-48 * time.Hour).Truncate(time.Microsecond) // business times lie in the past (T1)
 	roleEnds := at.Add(10 * 24 * time.Hour)
 	if _, err = orgModule.ApproveRole(ctx, orgapi.ApproveRole{CommandID: "order-role", TenantID: tenant, ActorID: "org-officer",
 		LegalEntityID: "LE", PartyID: "party-s", ExpectedRevision: 1, RoleCode: "CUSTOMER", ValidFrom: at, ValidUntil: roleEnds,
@@ -52,7 +52,7 @@ func TestOrderFromAnAcceptedQuote(t *testing.T) {
 			t.Fatal(err)
 		}
 		if _, err := rateModule.AcceptQuote(ctx, rateapi.AcceptQuote{CommandID: "accept-" + id, TenantID: tenant, ActorID: "sales-1",
-			QuoteID: id, ExpectedRevision: 1, EvidenceRef: "signed-" + id, OccurredAt: at.Add(time.Hour)}); err != nil {
+			QuoteID: id, ExpectedRevision: 1, EvidenceKind: rateapi.EvidenceSignedDocument, EvidenceRef: "signed-" + id, OccurredAt: at.Add(time.Hour)}); err != nil {
 			t.Fatal(err)
 		}
 	}

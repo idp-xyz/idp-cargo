@@ -84,6 +84,10 @@ type rateStub struct {
 	refuse error
 }
 
+func (r *rateStub) GetQuoteSnapshotV2(context.Context, rateapi.GetQuoteSnapshot) (rateapi.QuoteSnapshotV2, error) {
+	return rateapi.QuoteSnapshotV2{}, errors.New("COM reads QuoteSnapshot v1 only")
+}
+
 func (r *rateStub) GetQuoteSnapshot(_ context.Context, q rateapi.GetQuoteSnapshot) (rateapi.QuoteSnapshot, error) {
 	if r.refuse != nil {
 		return rateapi.QuoteSnapshot{}, fmt.Errorf("%w: stub", r.refuse)

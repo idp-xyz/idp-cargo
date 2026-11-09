@@ -40,7 +40,7 @@ func TestShipmentPlanFromReservedObligations(t *testing.T) {
 	}
 	tenant := uniqueTenant("cargo-shipment-")
 	seedORG(t, platform, tenant, "party-s")
-	at := time.Now().UTC().Truncate(time.Microsecond)
+	at := time.Now().UTC().Add(-48 * time.Hour).Truncate(time.Microsecond) // business times lie in the past (T1)
 	if _, err = orgModule.ApproveRole(ctx, orgapi.ApproveRole{CommandID: "customer-role", TenantID: tenant, ActorID: "org-officer",
 		LegalEntityID: "LE", PartyID: "party-s", ExpectedRevision: 1, RoleCode: "CUSTOMER", ValidFrom: at, ValidUntil: at.Add(30 * 24 * time.Hour),
 		EvidenceRef: "customer-contract", OccurredAt: at}); err != nil {
@@ -52,7 +52,7 @@ func TestShipmentPlanFromReservedObligations(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err = rateModule.AcceptQuote(ctx, rateapi.AcceptQuote{CommandID: "accept-Q-1", TenantID: tenant, ActorID: "sales-1", QuoteID: "Q-1",
-		ExpectedRevision: 1, EvidenceRef: "signed-Q-1", OccurredAt: at.Add(time.Hour)}); err != nil {
+		ExpectedRevision: 1, EvidenceKind: rateapi.EvidenceSignedDocument, EvidenceRef: "signed-Q-1", OccurredAt: at.Add(time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
 	kg := func(n int64) kernel.Quantity { return kernel.Quantity{Unit: "KGM", Amount: n} }
