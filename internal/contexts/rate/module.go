@@ -29,15 +29,24 @@ type Module struct {
 	auth    api.Authorizer
 	margins api.MarginPolicy
 	clock   bento.SystemClock
+	window  kernel.RecordWindow
 }
+
+// Option configures a module.
+type Option func(*Module)
+
+// WithRecordWindow sets how far a command's business time may lie before the time RATE records it, and how
+// much clock skew after it is tolerated (T1). The default is kernel.DefaultRecordWindow: seven days and
+// five minutes.
+func WithRecordWindow(w kernel.RecordWindow) Option { return func(m *Module) { m.window = w } }
 
 var (
 	_ api.Commands = (*Module)(nil)
 	_ api.Queries  = (*Module)(nil)
 )
 
-// New assembles RATE. org answers customer checks; the composition root passes ORG's module.
-func New(db *bentopg.DB, org orgapi.Queries, auth api.Authorizer, margins api.MarginPolicy) (*Module, error) {
+// New assembles RATE. org answers recipient checks; the composition root passes ORG's module.
+func New(db *bentopg.DB, org orgapi.Queries, auth api.Authorizer, margins api.MarginPolicy, opts ...Option) (*Module, error) {
 	if db == nil || org == nil || auth == nil || margins == nil {
 		return nil, errors.New("rate: module needs a database, ORG queries, an authorizer and a margin policy")
 	}
@@ -45,7 +54,14 @@ func New(db *bentopg.DB, org orgapi.Queries, auth api.Authorizer, margins api.Ma
 	if err != nil {
 		return nil, err
 	}
-	return &Module{db: db, outbox: outbox, org: org, auth: auth, margins: margins}, nil
+	m := &Module{db: db, outbox: outbox, org: org, auth: auth, margins: margins, window: kernel.DefaultRecordWindow}
+	for _, opt := range opts {
+		opt(m)
+	}
+	if !m.window.Valid() {
+		return nil, errors.New("rate: the record window must not be negative")
+	}
+	return m, nil
 }
 
 func (m *Module) CreateQuote(ctx context.Context, cmd api.CreateQuote) (api.Receipt, error) {
@@ -53,12 +69,20 @@ func (m *Module) CreateQuote(ctx context.Context, cmd api.CreateQuote) (api.Rece
 	for i, l := range cmd.Lines {
 		lines[i] = domain.Line{ChargeCode: domain.ChargeCode(l.ChargeCode), Sell: l.Sell, Cost: l.Cost}
 	}
+	var rates []domain.ExchangeRate
+	for _, r := range cmd.ExchangeRates {
+		rates = append(rates, domain.ExchangeRate{From: r.From, Rate: r.Rate, Scale: r.Scale, FromDigits: r.FromDigits,
+			QuoteDigits: r.QuoteDigits, Source: r.Source, AsOf: stored(r.AsOf)})
+	}
+	t := cmd.Terms
 	receipt, err := application.CreateQuote{
 		Deps: m.deps(cmd.TenantID, cmd.CommandID), Customers: orgacl.Customers{ORG: m.org}, Margins: margins{m.margins},
 	}.Handle(ctx, application.CreateQuoteCommand{
 		CommandID: cmd.CommandID, Scope: scope(cmd.TenantID, cmd.ActorID), QuoteID: domain.QuoteID(cmd.QuoteID),
-		LegalEntityID: domain.LegalEntityID(cmd.LegalEntityID), CustomerPartyID: cmd.CustomerPartyID, Currency: cmd.Currency,
-		Lines: lines, Validity: kernel.ValidityInterval{From: stored(cmd.Validity.From), Until: stored(cmd.Validity.Until)},
+		LegalEntityID: domain.LegalEntityID(cmd.LegalEntityID), CustomerPartyID: cmd.CustomerPartyID,
+		Recipient: domain.RecipientRole(cmd.RecipientRole), Currency: cmd.Currency, Lines: lines, ExchangeRates: rates,
+		Terms:      domain.CommercialTerms{IncotermsRule: t.IncotermsRule, IncotermsVersion: t.IncotermsVersion, NamedPlace: t.NamedPlace, ServiceLevel: t.ServiceLevel},
+		Validity:   kernel.ValidityInterval{From: stored(cmd.Validity.From), Until: stored(cmd.Validity.Until)},
 		OccurredAt: stored(cmd.OccurredAt),
 	})
 	return toReceipt(receipt, err)
@@ -75,17 +99,75 @@ func (m *Module) ApproveQuotePrice(ctx context.Context, cmd api.ApproveQuotePric
 func (m *Module) AcceptQuote(ctx context.Context, cmd api.AcceptQuote) (api.Receipt, error) {
 	receipt, err := application.AcceptQuote{Deps: m.deps(cmd.TenantID, cmd.CommandID), Customers: orgacl.Customers{ORG: m.org}}.Handle(ctx, application.AcceptQuoteCommand{
 		CommandID: cmd.CommandID, Scope: scope(cmd.TenantID, cmd.ActorID), QuoteID: domain.QuoteID(cmd.QuoteID),
-		ExpectedRevision: cmd.ExpectedRevision, EvidenceRef: cmd.EvidenceRef, OccurredAt: stored(cmd.OccurredAt),
+		ExpectedRevision: cmd.ExpectedRevision, EvidenceKind: domain.EvidenceKind(cmd.EvidenceKind), EvidenceRef: cmd.EvidenceRef,
+		OccurredAt: stored(cmd.OccurredAt),
 	})
 	return toReceipt(receipt, err)
 }
 
-func (m *Module) GetQuoteSnapshot(ctx context.Context, q api.GetQuoteSnapshot) (api.QuoteSnapshot, error) {
+func (m *Module) ExpireQuote(ctx context.Context, cmd api.ExpireQuote) (api.Receipt, error) {
+	receipt, err := application.ExpireQuote{Deps: m.deps(cmd.TenantID, cmd.CommandID)}.Handle(ctx, application.ExpireQuoteCommand{
+		CommandID: cmd.CommandID, Scope: scope(cmd.TenantID, cmd.ActorID), QuoteID: domain.QuoteID(cmd.QuoteID),
+		ExpectedRevision: cmd.ExpectedRevision, OccurredAt: stored(cmd.OccurredAt),
+	})
+	return toReceipt(receipt, err)
+}
+
+func (m *Module) accepted(ctx context.Context, q api.GetQuoteSnapshot) (*domain.Quote, int64, error) {
 	quote, revision, err := application.GetQuoteSnapshot{
 		Tx: bento.TenantTransactor{DB: m.db, Tenant: q.TenantID}, Quotes: postgres.QuoteReader{DB: m.db},
 	}.Handle(ctx, domain.TenantID(q.TenantID), domain.QuoteID(q.QuoteID))
 	if err != nil {
-		return api.QuoteSnapshot{}, classify(err)
+		return nil, 0, classify(err)
+	}
+	return quote, revision, nil
+}
+
+func (m *Module) GetQuoteSnapshotV2(ctx context.Context, q api.GetQuoteSnapshot) (api.QuoteSnapshotV2, error) {
+	quote, revision, err := m.accepted(ctx, q)
+	if err != nil {
+		return api.QuoteSnapshotV2{}, err
+	}
+	total, _, err := quote.Totals()
+	if err != nil {
+		return api.QuoteSnapshotV2{}, classify(err)
+	}
+	converted, err := quote.Converted()
+	if err != nil {
+		return api.QuoteSnapshotV2{}, classify(err)
+	}
+	reasons, err := quote.ApprovalReasons()
+	if err != nil {
+		return api.QuoteSnapshotV2{}, classify(err)
+	}
+	s, a, t := quote.State(), quote.State().Acceptance, quote.State().Terms
+	snapshot := api.QuoteSnapshotV2{
+		TenantID: string(s.TenantID), QuoteID: string(s.QuoteID), QuoteRevision: revision, LegalEntityID: string(s.LegalEntityID),
+		Customer: api.CustomerRef{PartyID: s.Customer.PartyID, PartyRevision: a.CustomerRevision}, RecipientRole: string(s.Recipient),
+		Currency: s.Currency, Total: total, Rounding: domain.RoundingHalfUpPerLine, Validity: s.Validity,
+		Terms:      api.CommercialTerms{IncotermsRule: t.IncotermsRule, IncotermsVersion: t.IncotermsVersion, NamedPlace: t.NamedPlace, ServiceLevel: t.ServiceLevel},
+		AcceptedAt: a.AcceptedAt, AcceptanceRecordedAt: a.RecordedAt, AcceptanceEvidenceKind: string(a.EvidenceKind), AcceptanceEvidenceRef: a.EvidenceRef,
+	}
+	for i, l := range s.Lines {
+		snapshot.Lines = append(snapshot.Lines, api.SnapshotLineV2{ChargeCode: string(l.ChargeCode), Amount: l.Sell, InQuoteCurrency: converted[i], Discount: l.Discount()})
+	}
+	for _, r := range s.ExchangeRates {
+		snapshot.ExchangeRates = append(snapshot.ExchangeRates, api.ExchangeRate{From: r.From, Rate: r.Rate, Scale: r.Scale,
+			FromDigits: r.FromDigits, QuoteDigits: r.QuoteDigits, Source: r.Source, AsOf: r.AsOf})
+	}
+	for _, r := range reasons {
+		snapshot.PriceApprovalReasons = append(snapshot.PriceApprovalReasons, string(r))
+	}
+	if s.Approval != nil {
+		snapshot.PriceApprovedBy, snapshot.PriceSelfApproved = s.Approval.ApprovedBy, s.Approval.SelfApproved
+	}
+	return snapshot, nil
+}
+
+func (m *Module) GetQuoteSnapshot(ctx context.Context, q api.GetQuoteSnapshot) (api.QuoteSnapshot, error) {
+	quote, revision, err := m.accepted(ctx, q)
+	if err != nil {
+		return api.QuoteSnapshot{}, err
 	}
 	total, _, err := quote.Totals()
 	if err != nil {
@@ -113,6 +195,8 @@ func (m *Module) deps(tenant, commandID string) application.Deps {
 		Receipts: postgres.CommandReceipts{DB: m.db},
 		Outbox:   postgres.Outbox{Writer: m.outbox, CommandID: commandID, RecordedAt: m.clock.Now()},
 		Auth:     authorizer{m.auth},
+		Clock:    m.clock,
+		Window:   m.window,
 	}
 }
 
@@ -165,7 +249,8 @@ func classify(err error) error {
 		kind = api.ErrNotFound
 	case errors.Is(err, domain.ErrInvalidQuote), errors.Is(err, domain.ErrInvalidTransition), errors.Is(err, domain.ErrSelfApproval),
 		errors.Is(err, domain.ErrOutsideValidity), errors.Is(err, application.ErrCustomerNotConfirmed),
-		errors.Is(err, application.ErrQuoteNotAccepted), errors.Is(err, kernel.ErrCurrencyMismatch), errors.Is(err, kernel.ErrAmountOverflow):
+		errors.Is(err, application.ErrQuoteNotAccepted), errors.Is(err, kernel.ErrCurrencyMismatch), errors.Is(err, kernel.ErrAmountOverflow),
+		errors.Is(err, kernel.ErrOutsideRecordWindow):
 		kind = api.ErrRejected
 	default:
 		return err

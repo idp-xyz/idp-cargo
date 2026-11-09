@@ -8,6 +8,7 @@ const (
 	QuotePriced        = "QuotePriced.v1"
 	QuotePriceApproved = "QuotePriceApproved.v1"
 	QuoteAccepted      = "QuoteAccepted.v1"
+	QuoteExpired       = "QuoteExpired.v1"
 )
 
 // EventPayload is the JSON payload of every RATE event: identifiers only, no prices or party data.

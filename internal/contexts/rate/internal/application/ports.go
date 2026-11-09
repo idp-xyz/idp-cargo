@@ -9,10 +9,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
 	rate "go.idp.xyz/idp-cargo/internal/contexts/rate/internal/domain"
+	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
 var (
@@ -31,9 +33,11 @@ type Scope struct {
 type QuoteAction string
 
 const (
-	ActionCreateQuote       QuoteAction = "CreateQuote"
-	ActionApproveQuotePrice QuoteAction = "ApproveQuotePrice"
-	ActionAcceptQuote       QuoteAction = "AcceptQuote"
+	ActionCreateQuote          QuoteAction = "CreateQuote"
+	ActionApproveQuotePrice    QuoteAction = "ApproveQuotePrice"
+	ActionApproveOwnQuotePrice QuoteAction = "ApproveOwnQuotePrice" // R3: held only by roles designated to approve their own quotes
+	ActionAcceptQuote          QuoteAction = "AcceptQuote"
+	ActionExpireQuote          QuoteAction = "ExpireQuote"
 )
 
 type Receipt struct {
@@ -66,31 +70,37 @@ type Authorization interface {
 	RequireQuoteAction(context.Context, Scope, QuoteAction, rate.QuoteID) error
 }
 
-// Customers confirms with ORG that a party is a customer of a legal entity at an instant. It is called
-// outside RATE's transactions.
+// Customers confirms with ORG that a party holds a recipient role (R7) for a legal entity at an instant. It
+// is called outside RATE's transactions.
 type Customers interface {
-	VerifyCustomer(ctx context.Context, tenant rate.TenantID, partyID string, entity rate.LegalEntityID, at time.Time) (rate.CustomerRef, error)
+	VerifyRecipient(ctx context.Context, tenant rate.TenantID, partyID string, entity rate.LegalEntityID, role rate.RecipientRole, at time.Time) (rate.CustomerRef, error)
 }
+
+// Clock tells the time RATE records a command (T1).
+type Clock interface{ Now() time.Time }
 
 // MarginPolicy supplies the margin floor, in basis points, for quotes of a legal entity.
 type MarginPolicy interface {
 	MarginFloorBP(context.Context, rate.TenantID, rate.LegalEntityID) (int, error)
 }
 
-// Deps are the ports every RATE command uses.
+// Deps are the ports every RATE command uses. Window bounds the business time a command states against
+// the time Clock records it (T1).
 type Deps struct {
 	Tx       TxRunner
 	Quotes   QuoteStore
 	Receipts Receipts
 	Outbox   IntegrationOutbox
 	Auth     Authorization
+	Clock    Clock
+	Window   kernel.RecordWindow
 }
 
 func (d Deps) check(ctx context.Context, s Scope, commandID string, occurredAt time.Time) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if d.Tx == nil || d.Quotes == nil || d.Receipts == nil || d.Outbox == nil || d.Auth == nil {
+	if d.Tx == nil || d.Quotes == nil || d.Receipts == nil || d.Outbox == nil || d.Auth == nil || d.Clock == nil {
 		return ErrMissingDependency
 	}
 	if s.TenantID == "" || strings.TrimSpace(s.ActorID) == "" || commandID == "" || occurredAt.IsZero() {
@@ -100,6 +110,16 @@ func (d Deps) check(ctx context.Context, s Scope, commandID string, occurredAt t
 		return ErrUnauthorized
 	}
 	return nil
+}
+
+// admit returns the time RATE records a command, if the command's business time lies within the window
+// before it (T1). It runs after the replay check, so a command retried later still returns its receipt.
+func (d Deps) admit(occurredAt time.Time) (time.Time, error) {
+	recorded := d.Clock.Now().UTC().Truncate(time.Microsecond)
+	if err := d.Window.Check(occurredAt, recorded); err != nil {
+		return time.Time{}, fmt.Errorf("%w: business time %s, recorded %s", err, occurredAt.Format(time.RFC3339), recorded.Format(time.RFC3339))
+	}
+	return recorded, nil
 }
 
 // replay returns the stored receipt of a command whose payload is unchanged.

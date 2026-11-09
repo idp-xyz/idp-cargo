@@ -17,6 +17,10 @@ type rateStub struct {
 	err      error
 }
 
+func (r rateStub) GetQuoteSnapshotV2(context.Context, rateapi.GetQuoteSnapshot) (rateapi.QuoteSnapshotV2, error) {
+	return rateapi.QuoteSnapshotV2{}, errors.New("COM reads QuoteSnapshot v1 only")
+}
+
 func (r rateStub) GetQuoteSnapshot(context.Context, rateapi.GetQuoteSnapshot) (rateapi.QuoteSnapshot, error) {
 	return r.snapshot, r.err
 }

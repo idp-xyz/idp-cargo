@@ -15,7 +15,7 @@ func usd(minor int64) kernel.Money { return kernel.Money{Currency: "USD", Minor:
 func draft(floorBP int, lines ...Line) QuoteDraft {
 	return QuoteDraft{
 		TenantID: "T", QuoteID: "Q-1", LegalEntityID: "LE", Customer: CustomerRef{PartyID: "P", PartyRevision: 2},
-		Currency: "USD", Lines: lines, Validity: kernel.ValidityInterval{From: at, Until: at.Add(14 * 24 * time.Hour)},
+		Recipient: RecipientCustomer, Currency: "USD", Lines: lines, Validity: kernel.ValidityInterval{From: at, Until: at.Add(14 * 24 * time.Hour)},
 		MarginFloorBP: floorBP, Author: "sales-1",
 	}
 }
@@ -57,9 +57,13 @@ func TestMarginFloorDecidesWhetherApprovalIsNeeded(t *testing.T) {
 
 func TestPriceQuoteRejectsInvalidDrafts(t *testing.T) {
 	for name, edit := range map[string]func(*QuoteDraft){
-		"no lines":                  func(d *QuoteDraft) { d.Lines = nil },
-		"line in another currency":  func(d *QuoteDraft) { d.Lines[0].Sell = kernel.Money{Currency: "EUR", Minor: 1} },
-		"free line":                 func(d *QuoteDraft) { d.Lines[0].Sell = usd(0) },
+		"no lines": func(d *QuoteDraft) { d.Lines = nil },
+		"line in another currency without a rate": func(d *QuoteDraft) { d.Lines[0].Sell = kernel.Money{Currency: "EUR", Minor: 1} },
+		"discount with a cost":                    func(d *QuoteDraft) { d.Lines[0].Sell = usd(-1) },
+		"discounts exceed charges": func(d *QuoteDraft) {
+			d.Lines = append(d.Lines, Line{ChargeCode: "DISCOUNT", Sell: usd(-100_001), Cost: usd(0)})
+		},
+		"no recipient role":         func(d *QuoteDraft) { d.Recipient = "" },
 		"negative cost":             func(d *QuoteDraft) { d.Lines[0].Cost = usd(-1) },
 		"open-ended validity":       func(d *QuoteDraft) { d.Validity.Until = time.Time{} },
 		"validity already ended":    func(d *QuoteDraft) { d.Validity = kernel.ValidityInterval{From: at.Add(-48 * time.Hour), Until: at} },
@@ -77,20 +81,20 @@ func TestPriceQuoteRejectsInvalidDrafts(t *testing.T) {
 
 func TestPriceApprovalNeedsAnIndependentApproverAndReason(t *testing.T) {
 	q := priced(t, 2000, freight(100_000, 90_000))
-	if err := q.ApprovePrice("sales-1", "margin-exception-1", at); !errors.Is(err, ErrSelfApproval) {
+	if err := q.ApprovePrice("sales-1", "margin-exception-1", false, at); !errors.Is(err, ErrSelfApproval) {
 		t.Fatalf("author approving: err = %v", err)
 	}
-	if err := q.ApprovePrice("manager-1", "", at); !errors.Is(err, ErrInvalidQuote) {
+	if err := q.ApprovePrice("manager-1", "", false, at); !errors.Is(err, ErrInvalidQuote) {
 		t.Fatalf("approval without reason: err = %v", err)
 	}
-	if err := q.ApprovePrice("manager-1", "margin-exception-1", at); err != nil {
+	if err := q.ApprovePrice("manager-1", "margin-exception-1", false, at); err != nil {
 		t.Fatal(err)
 	}
 	s := q.State()
 	if q.Status() != QuotePriced || s.Approval == nil || s.Approval.ApprovedBy != "manager-1" || s.MarginFloorBP != 2000 {
 		t.Fatalf("after approval: %+v", s)
 	}
-	if err := q.ApprovePrice("manager-2", "again", at); !errors.Is(err, ErrInvalidTransition) {
+	if err := q.ApprovePrice("manager-2", "again", false, at); !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("second approval: err = %v", err)
 	}
 	if events := q.Pending(); len(events) != 2 || events[1].Type != "QuotePriceApproved.v1" {
@@ -100,7 +104,7 @@ func TestPriceApprovalNeedsAnIndependentApproverAndReason(t *testing.T) {
 
 func TestAcceptanceWithinValidityFreezesTheQuote(t *testing.T) {
 	waiting := priced(t, 2000, freight(100_000, 90_000))
-	if err := waiting.Accept("sales-1", "signed-quote", 2, at); !errors.Is(err, ErrInvalidTransition) {
+	if err := waiting.Accept("sales-1", EvidenceSignedDocument, "signed-quote", 2, at, at); !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("accepting before the price approval: err = %v", err)
 	}
 	q := priced(t, 1000, freight(100_000, 90_000))
@@ -114,20 +118,21 @@ func TestAcceptanceWithinValidityFreezesTheQuote(t *testing.T) {
 		"when the validity ends":  {validity.Until, 2, ErrOutsideValidity},
 		"older customer revision": {at, 1, ErrInvalidQuote},
 	} {
-		if err := q.Accept("sales-1", "signed-quote", tc.revision, tc.at); !errors.Is(err, tc.want) {
+		if err := q.Accept("sales-1", EvidenceSignedDocument, "signed-quote", tc.revision, tc.at, tc.at); !errors.Is(err, tc.want) {
 			t.Errorf("%s: err = %v, want %v", name, err, tc.want)
 		}
 	}
-	if err := q.Accept("sales-1", "signed-quote", 3, at.Add(time.Hour)); err != nil {
+	if err := q.Accept("sales-1", EvidenceEmail, "signed-quote", 3, at.Add(time.Hour), at.Add(25*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	if s := q.State(); q.Status() != QuoteAccepted || s.Acceptance.CustomerRevision != 3 || s.Acceptance.EvidenceRef != "signed-quote" {
+	if s := q.State(); q.Status() != QuoteAccepted || s.Acceptance.CustomerRevision != 3 || s.Acceptance.EvidenceRef != "signed-quote" ||
+		s.Acceptance.EvidenceKind != EvidenceEmail || !s.Acceptance.RecordedAt.Equal(at.Add(25*time.Hour)) {
 		t.Fatalf("after acceptance: %+v", s)
 	}
-	if err := q.Accept("sales-1", "again", 3, at.Add(2*time.Hour)); !errors.Is(err, ErrInvalidTransition) {
+	if err := q.Accept("sales-1", EvidenceEmail, "again", 3, at.Add(2*time.Hour), at.Add(2*time.Hour)); !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("second acceptance: err = %v", err)
 	}
-	if err := q.ApprovePrice("manager-1", "late", at.Add(2*time.Hour)); !errors.Is(err, ErrInvalidTransition) {
+	if err := q.ApprovePrice("manager-1", "late", false, at.Add(2*time.Hour)); !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("approval after acceptance: err = %v", err)
 	}
 }

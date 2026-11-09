@@ -15,13 +15,17 @@ type CreateQuoteCommand struct {
 	QuoteID         rate.QuoteID
 	LegalEntityID   rate.LegalEntityID
 	CustomerPartyID string
+	Recipient       rate.RecipientRole `json:",omitzero"` // empty: CUSTOMER
 	Currency        kernel.CurrencyCode
 	Lines           []rate.Line
+	ExchangeRates   []rate.ExchangeRate  `json:",omitzero"`
+	Terms           rate.CommercialTerms `json:",omitzero"`
 	Validity        kernel.ValidityInterval
 	OccurredAt      time.Time
 }
 
-// CreateQuote prices a quote for a party that ORG confirms as a customer of the legal entity.
+// CreateQuote prices a quote for a party that ORG confirms in the recipient role (R7) for the legal
+// entity.
 type CreateQuote struct {
 	Deps
 	Customers Customers
@@ -42,10 +46,20 @@ func (h CreateQuote) Handle(ctx context.Context, c CreateQuoteCommand) (Receipt,
 	if r, ok, err := h.replay(ctx, c.Scope.TenantID, c.CommandID, hash); err != nil || ok {
 		return r, err
 	}
+	if _, err = h.admit(c.OccurredAt); err != nil {
+		return Receipt{}, err
+	}
 	if err = h.Auth.RequireQuoteAction(ctx, c.Scope, ActionCreateQuote, c.QuoteID); err != nil {
 		return Receipt{}, fmt.Errorf("%w: %v", ErrUnauthorized, err)
 	}
-	customer, err := h.Customers.VerifyCustomer(ctx, c.Scope.TenantID, c.CustomerPartyID, c.LegalEntityID, c.OccurredAt)
+	recipient := c.Recipient
+	if recipient == "" {
+		recipient = rate.RecipientCustomer
+	}
+	if !recipient.Valid() {
+		return Receipt{}, fmt.Errorf("%w: recipient role %q", rate.ErrInvalidQuote, recipient)
+	}
+	customer, err := h.Customers.VerifyRecipient(ctx, c.Scope.TenantID, c.CustomerPartyID, c.LegalEntityID, recipient, c.OccurredAt)
 	if err != nil {
 		return Receipt{}, err
 	}
@@ -54,8 +68,9 @@ func (h CreateQuote) Handle(ctx context.Context, c CreateQuoteCommand) (Receipt,
 		return Receipt{}, err
 	}
 	quote, err := rate.PriceQuote(rate.QuoteDraft{
-		TenantID: c.Scope.TenantID, QuoteID: c.QuoteID, LegalEntityID: c.LegalEntityID, Customer: customer,
-		Currency: c.Currency, Lines: c.Lines, Validity: c.Validity, MarginFloorBP: floor, Author: c.Scope.ActorID,
+		TenantID: c.Scope.TenantID, QuoteID: c.QuoteID, LegalEntityID: c.LegalEntityID, Customer: customer, Recipient: recipient,
+		Currency: c.Currency, Lines: c.Lines, ExchangeRates: c.ExchangeRates, Terms: c.Terms, Validity: c.Validity,
+		MarginFloorBP: floor, Author: c.Scope.ActorID,
 	}, c.OccurredAt)
 	if err != nil {
 		return Receipt{}, err

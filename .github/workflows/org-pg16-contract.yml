@@ -64,7 +64,7 @@ jobs:
             END LOOP;
           END $role_grant$;
           GRANT SELECT,INSERT,UPDATE ON cargo_rate.quote TO cargo_app;
-          GRANT SELECT,INSERT ON cargo_rate.quote_line,cargo_rate.command_receipt TO cargo_app;
+          GRANT SELECT,INSERT ON cargo_rate.quote_line,cargo_rate.quote_exchange_rate,cargo_rate.command_receipt TO cargo_app;
           GRANT SELECT,INSERT,UPDATE ON cargo_com.customer_order TO cargo_app;
           GRANT SELECT,INSERT ON cargo_com.order_line,cargo_com.fulfillment_obligation,cargo_com.command_receipt TO cargo_app;
           GRANT SELECT,INSERT ON cargo_com.obligation_reservation TO cargo_app;
