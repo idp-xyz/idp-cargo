@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	bentopg "go.idp.xyz/idp-bento-go/postgres"
@@ -147,6 +148,7 @@ func (m *Module) GetQuoteSnapshotV2(ctx context.Context, q api.GetQuoteSnapshot)
 		Currency: s.Currency, Total: total, Rounding: domain.RoundingHalfUpPerLine, Validity: s.Validity,
 		Terms:      api.CommercialTerms{IncotermsRule: t.IncotermsRule, IncotermsVersion: t.IncotermsVersion, NamedPlace: t.NamedPlace, ServiceLevel: t.ServiceLevel},
 		AcceptedAt: a.AcceptedAt, AcceptanceRecordedAt: a.RecordedAt, AcceptanceEvidenceKind: string(a.EvidenceKind), AcceptanceEvidenceRef: a.EvidenceRef,
+		ServiceLevelUnlisted: t.ServiceLevelUnlisted,
 	}
 	for i, l := range s.Lines {
 		snapshot.Lines = append(snapshot.Lines, api.SnapshotLineV2{ChargeCode: string(l.ChargeCode), Amount: l.Sell, InQuoteCurrency: converted[i], Discount: l.Discount()})
@@ -162,6 +164,36 @@ func (m *Module) GetQuoteSnapshotV2(ctx context.Context, q api.GetQuoteSnapshot)
 		snapshot.PriceApprovedBy, snapshot.PriceSelfApproved = s.Approval.ApprovedBy, s.Approval.SelfApproved
 	}
 	return snapshot, nil
+}
+
+// GetServiceLevel returns the listed service level with the code (C8).
+func (m *Module) GetServiceLevel(ctx context.Context, q api.GetServiceLevel) (api.ServiceLevel, error) {
+	if err := ctx.Err(); err != nil {
+		return api.ServiceLevel{}, err
+	}
+	if strings.TrimSpace(q.TenantID) == "" {
+		return api.ServiceLevel{}, fmt.Errorf("%w: no tenant", api.ErrUnauthenticated)
+	}
+	l, listed := domain.ListedServiceLevel(q.Code)
+	if !listed {
+		return api.ServiceLevel{}, fmt.Errorf("%w: service level %q is not on the list", api.ErrNotFound, q.Code)
+	}
+	return api.ServiceLevel{Code: l.Code, Name: l.Name}, nil
+}
+
+// ListServiceLevels returns the tenant's service-level list (C8).
+func (m *Module) ListServiceLevels(ctx context.Context, q api.ListServiceLevels) ([]api.ServiceLevel, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(q.TenantID) == "" {
+		return nil, fmt.Errorf("%w: no tenant", api.ErrUnauthenticated)
+	}
+	list := make([]api.ServiceLevel, len(domain.DefaultServiceLevels))
+	for i, l := range domain.DefaultServiceLevels {
+		list[i] = api.ServiceLevel{Code: l.Code, Name: l.Name}
+	}
+	return list, nil
 }
 
 func (m *Module) GetQuoteSnapshot(ctx context.Context, q api.GetQuoteSnapshot) (api.QuoteSnapshot, error) {

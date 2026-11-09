@@ -25,6 +25,9 @@ func (h RevokeObligation) Handle(ctx context.Context, c RevokeObligationCommand)
 	if err != nil || replayed {
 		return stored, err
 	}
+	if _, err = h.admit(c.OccurredAt); err != nil {
+		return Receipt{}, err
+	}
 	if err = h.authorize(ctx, c.Scope, ActionRevokeObligation, c.OrderID); err != nil {
 		return Receipt{}, err
 	}

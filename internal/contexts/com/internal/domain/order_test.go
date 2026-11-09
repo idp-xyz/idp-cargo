@@ -20,6 +20,8 @@ func kg(n int64) kernel.Quantity { return kernel.Quantity{Unit: "KGM", Amount: n
 
 func dm3(n int64) kernel.Quantity { return kernel.Quantity{Unit: "DMQ", Amount: n} }
 
+func lb(n int64) kernel.Quantity { return kernel.Quantity{Unit: "LBR", Amount: n} }
+
 // packs returns n packs weighing w kilograms, without a volume.
 func packs(n, w int64) Measure { return Measure{Packs: n, GrossWeight: kg(w)} }
 
@@ -36,10 +38,12 @@ func draft(lines ...OrderLine) OrderDraft {
 	return OrderDraft{
 		TenantID: "T", OrderID: "O-1", RecordedBy: "sales-1", Lines: lines,
 		Quote: AcceptedQuote{QuoteID: "Q-1", QuoteRevision: 3, LegalEntityID: "LE", CustomerPartyID: "P", CustomerRevision: 2,
-			Total: kernel.Money{Currency: "USD", Minor: 100_000}, Validity: kernel.ValidityInterval{From: at, Until: at.Add(14 * 24 * time.Hour)},
-			AcceptedAt: at.Add(time.Hour), EvidenceRef: "signed-quote", TermsHash: strings.Repeat("ab", 32)},
-		Customer: CustomerSnapshot{PartyID: "P", PartyRevision: 2, LegalName: "Fixture Corp", CountryCode: "US",
+			RecipientRole: RoleCustomer, Total: kernel.Money{Currency: "USD", Minor: 100_000},
+			Validity:   kernel.ValidityInterval{From: at, Until: at.Add(14 * 24 * time.Hour)},
+			AcceptedAt: at.Add(time.Hour), EvidenceRef: "signed-quote", TermsContract: QuoteSnapshotV2, TermsHash: strings.Repeat("ab", 32)},
+		Customer: CustomerSnapshot{PartyID: "P", PartyRevision: 2, LegalName: "Fixture Corp", CountryCode: "US", RoleCode: RoleCustomer,
 			RoleValidity: kernel.ValidityInterval{From: at, Until: at.Add(30 * 24 * time.Hour)}, RoleEvidenceRef: "customer-contract"},
+		Policy: BuiltInOrderPolicy(),
 	}
 }
 
@@ -50,7 +54,7 @@ var (
 
 func recorded(t *testing.T) *CustomerOrder {
 	t.Helper()
-	o, err := RecordOrder(draft(palletLine, cartonLine), recordAt)
+	o, err := RecordOrder(draft(palletLine, cartonLine), 0, recordAt, recordAt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +79,7 @@ func eventList(o *CustomerOrder) string {
 
 func TestRecordOrderFreezesTheQuoteAndTheCustomer(t *testing.T) {
 	d := draft(palletLine, cartonLine)
-	o, err := RecordOrder(d, recordAt)
+	o, err := RecordOrder(d, 0, recordAt, recordAt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +119,7 @@ func TestRecordOrderRejectsMismatchesWithTheQuote(t *testing.T) {
 	} {
 		d := draft(palletLine)
 		tc.edit(&d)
-		if _, err := RecordOrder(d, tc.at); !errors.Is(err, tc.want) {
+		if _, err := RecordOrder(d, 0, tc.at, tc.at); !errors.Is(err, tc.want) {
 			t.Errorf("%s: err = %v, want %v", name, err, tc.want)
 		}
 	}
@@ -136,11 +140,11 @@ func TestRecordOrderRejectsInvalidLines(t *testing.T) {
 		"blank description":            {line(" ", "PX", packs(10, 500))},
 		"description too long":         {line(strings.Repeat("é", maxText+1), "PX", packs(10, 500))},
 	} {
-		if _, err := RecordOrder(draft(lines...), recordAt); !errors.Is(err, ErrInvalidOrder) {
+		if _, err := RecordOrder(draft(lines...), 0, recordAt, recordAt); !errors.Is(err, ErrInvalidOrder) {
 			t.Errorf("%s: err = %v", name, err)
 		}
 	}
-	if _, err := RecordOrder(draft(line("Drums of resin", "1A", packs(4, 800))), recordAt); err != nil {
+	if _, err := RecordOrder(draft(line("Drums of resin", "1A", packs(4, 800))), 0, recordAt, recordAt); err != nil {
 		t.Errorf("numeric package type 1A (steel drum): %v", err)
 	}
 }

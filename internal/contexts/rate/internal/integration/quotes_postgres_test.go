@@ -381,6 +381,12 @@ func TestQuoteV03OnPostgres(t *testing.T) {
 		{`INSERT INTO cargo_rate.quote (tenant_id,quote_id,legal_entity_id,customer_party_id,customer_party_revision,recipient_role,currency,
           valid_from,valid_until,margin_floor_bp,author,status) VALUES ($1,'Q-ROGUE','LE','P-1',1,'FORWARDER','USD',now(),now()+interval '1 day',0,'x','PRICED')`,
 			"23514", "quotes go to the four recipient roles only"},
+		{`INSERT INTO cargo_rate.quote (tenant_id,quote_id,legal_entity_id,customer_party_id,customer_party_revision,recipient_role,currency,
+          valid_from,valid_until,margin_floor_bp,author,status,service_level) VALUES ($1,'Q-ROGUE-2','LE','P-1',1,'CUSTOMER','USD',now(),
+          now()+interval '1 day',0,'x','PRICED','next flight out')`, "23514", "a service level is a code unless it predates the list"},
+		{`INSERT INTO cargo_rate.quote (tenant_id,quote_id,legal_entity_id,customer_party_id,customer_party_revision,recipient_role,currency,
+          valid_from,valid_until,margin_floor_bp,author,status,service_level_unlisted) VALUES ($1,'Q-ROGUE-3','LE','P-1',1,'CUSTOMER','USD',now(),
+          now()+interval '1 day',0,'x','PRICED',true)`, "23514", "an unlisted mark needs a service level"},
 	} {
 		if err := f.exec(tc.sql); sqlState(err) != tc.state {
 			t.Errorf("%s: err = %v, want SQLSTATE %s (%s)", tc.sql, err, tc.state, tc.why)

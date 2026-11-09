@@ -26,6 +26,9 @@ func (h ReserveObligationForFulfillment) Handle(ctx context.Context, c ReserveOb
 	if err != nil || replayed {
 		return stored, err
 	}
+	if _, err = h.admit(c.OccurredAt); err != nil {
+		return Receipt{}, err
+	}
 	order, err := h.orderOf(ctx, c.Scope.TenantID, c.ObligationID)
 	if err != nil {
 		return Receipt{}, err

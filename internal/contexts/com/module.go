@@ -31,17 +31,27 @@ type Module struct {
 	rate   rateapi.Queries
 	auth   api.Authorizer
 	clock  bento.SystemClock
+	window kernel.RecordWindow
 }
 
 var (
 	_ api.Commands               = (*Module)(nil)
 	_ api.ObligationReservations = (*Module)(nil)
 	_ api.Queries                = (*Module)(nil)
+	_ api.OrderPolicies          = (*Module)(nil)
 )
 
-// New assembles COM. org answers customer checks and rate returns accepted quotes; the composition root
-// passes their modules.
-func New(db *bentopg.DB, org orgapi.Queries, rate rateapi.Queries, auth api.Authorizer) (*Module, error) {
+// Option configures a Module.
+type Option func(*Module)
+
+// WithRecordWindow sets how far a command's business time may lie before the time COM records it, and how
+// much clock skew after it is tolerated (T1). The default is kernel.DefaultRecordWindow: seven days and
+// five minutes.
+func WithRecordWindow(w kernel.RecordWindow) Option { return func(m *Module) { m.window = w } }
+
+// New assembles COM. org answers ordering-party checks and rate returns accepted quotes and service levels;
+// the composition root passes their modules.
+func New(db *bentopg.DB, org orgapi.Queries, rate rateapi.Queries, auth api.Authorizer, opts ...Option) (*Module, error) {
 	if db == nil || org == nil || rate == nil || auth == nil {
 		return nil, errors.New("com: module needs a database, ORG queries, RATE queries and an authorizer")
 	}
@@ -49,22 +59,82 @@ func New(db *bentopg.DB, org orgapi.Queries, rate rateapi.Queries, auth api.Auth
 	if err != nil {
 		return nil, err
 	}
-	return &Module{db: db, outbox: outbox, org: org, rate: rate, auth: auth}, nil
+	m := &Module{db: db, outbox: outbox, org: org, rate: rate, auth: auth, window: kernel.DefaultRecordWindow}
+	for _, opt := range opts {
+		opt(m)
+	}
+	if !m.window.Valid() {
+		return nil, errors.New("com: the record window must not be negative")
+	}
+	return m, nil
+}
+
+func lineOf(l api.OrderLine) domain.OrderLine {
+	return domain.OrderLine{Description: l.Description, PackageType: domain.PackageType(l.PackageType),
+		Measure: domain.Measure{Packs: l.Packs, GrossWeight: l.GrossWeight, Volume: l.Volume}}
 }
 
 func (m *Module) RecordCustomerOrder(ctx context.Context, cmd api.RecordCustomerOrder) (api.Receipt, error) {
 	lines := make([]domain.OrderLine, len(cmd.Lines))
 	for i, l := range cmd.Lines {
-		lines[i] = domain.OrderLine{Description: l.Description, PackageType: domain.PackageType(l.PackageType),
-			Measure: domain.Measure{Packs: l.Packs, GrossWeight: l.GrossWeight, Volume: l.Volume}}
+		lines[i] = lineOf(l)
 	}
+	t := cmd.Terms
 	receipt, err := application.RecordCustomerOrder{
 		Deps: m.deps(cmd.TenantID, cmd.CommandID), Quotes: rateacl.Quotes{RATE: m.rate}, Customers: orgacl.Customers{ORG: m.org},
+		Policies: postgres.Policies{DB: m.db}, ServiceLevels: rateacl.ServiceLevels{RATE: m.rate},
 	}.Handle(ctx, application.RecordCustomerOrderCommand{
 		CommandID: cmd.CommandID, Scope: scope(cmd.TenantID, cmd.ActorID), OrderID: domain.OrderID(cmd.OrderID), QuoteID: cmd.QuoteID,
 		CustomerPartyID: cmd.CustomerPartyID, Lines: lines, OccurredAt: stored(cmd.OccurredAt),
+		Terms: domain.CommercialTerms{IncotermsRule: t.IncotermsRule, IncotermsVersion: t.IncotermsVersion, NamedPlace: t.NamedPlace, ServiceLevel: t.ServiceLevel},
 	})
 	return toReceipt(receipt, err)
+}
+
+func (m *Module) AmendOrderLine(ctx context.Context, cmd api.AmendOrderLine) (api.Receipt, error) {
+	receipt, err := application.AmendOrderLine{Deps: m.deps(cmd.TenantID, cmd.CommandID)}.Handle(ctx, application.AmendOrderLineCommand{
+		CommandID: cmd.CommandID, Scope: scope(cmd.TenantID, cmd.ActorID), OrderID: domain.OrderID(cmd.OrderID),
+		ExpectedRevision: cmd.ExpectedRevision, LineNo: cmd.LineNo, Description: cmd.Description, PackageType: domain.PackageType(cmd.PackageType),
+		Measure: domain.Measure{Packs: cmd.Packs, GrossWeight: cmd.GrossWeight, Volume: cmd.Volume}, Reason: cmd.Reason,
+		OccurredAt: stored(cmd.OccurredAt),
+	})
+	return toReceipt(receipt, err)
+}
+
+func (m *Module) AddOrderLine(ctx context.Context, cmd api.AddOrderLine) (api.Receipt, error) {
+	l := lineOf(cmd.Line)
+	receipt, err := application.AddOrderLine{Deps: m.deps(cmd.TenantID, cmd.CommandID)}.Handle(ctx, application.AddOrderLineCommand{
+		CommandID: cmd.CommandID, Scope: scope(cmd.TenantID, cmd.ActorID), OrderID: domain.OrderID(cmd.OrderID),
+		ExpectedRevision: cmd.ExpectedRevision, Description: l.Description, PackageType: l.PackageType, Measure: l.Measure,
+		Reason: cmd.Reason, OccurredAt: stored(cmd.OccurredAt),
+	})
+	return toReceipt(receipt, err)
+}
+
+func (m *Module) SetOrderPolicy(ctx context.Context, cmd api.SetOrderPolicy) (api.PolicyReceipt, error) {
+	receipt, err := application.SetOrderPolicy{Deps: m.deps(cmd.TenantID, cmd.CommandID), Policies: postgres.Policies{DB: m.db}}.Handle(ctx,
+		application.SetOrderPolicyCommand{
+			CommandID: cmd.CommandID, Scope: scope(cmd.TenantID, cmd.ActorID), LegalEntityID: domain.LegalEntityID(cmd.LegalEntityID),
+			ExpectedVersion: cmd.ExpectedVersion, MaxOrdersPerQuote: cmd.MaxOrdersPerQuote, GraceDays: cmd.GraceDays,
+		})
+	if err != nil {
+		return api.PolicyReceipt{}, classify(err)
+	}
+	entity := receipt.PolicyKey
+	if entity == application.TenantPolicyKey {
+		entity = ""
+	}
+	return api.PolicyReceipt{CommandID: receipt.CommandID, LegalEntityID: entity, Version: receipt.NewRevision}, nil
+}
+
+func (m *Module) GetOrderPolicy(ctx context.Context, q api.GetOrderPolicy) (api.OrderPolicy, error) {
+	p, err := application.GetOrderPolicy{Tx: bento.TenantTransactor{DB: m.db, Tenant: q.TenantID}, Policies: postgres.Policies{DB: m.db}}.Handle(ctx,
+		domain.TenantID(q.TenantID), domain.LegalEntityID(q.LegalEntityID))
+	if err != nil {
+		return api.OrderPolicy{}, classify(err)
+	}
+	return api.OrderPolicy{Scope: string(p.Scope), LegalEntityID: string(p.LegalEntityID), Version: p.Version,
+		MaxOrdersPerQuote: p.MaxOrdersPerQuote, GraceDays: p.GraceDays}, nil
 }
 
 func (m *Module) AllocateOrderToObligation(ctx context.Context, cmd api.AllocateOrderToObligation) (api.Receipt, error) {
@@ -130,7 +200,7 @@ func (m *Module) GetObligationSnapshot(ctx context.Context, q api.GetObligationS
 			bentorepo.ErrNotFound, ob.Version, ob.ObligationID))
 	}
 	s := order.State()
-	l := s.Lines[ob.LineNo-1]
+	l, _, _ := order.Line(ob.LineNo)
 	return api.ObligationSnapshot{
 		TenantID: string(s.TenantID), ObligationID: string(ob.ObligationID), ObligationVersion: ob.Version,
 		OrderID: string(s.OrderID), OrderLineNo: ob.LineNo, Description: l.Description,
@@ -146,7 +216,7 @@ func (m *Module) GetObligationSnapshotV2(ctx context.Context, q api.GetObligatio
 		return api.ObligationSnapshotV2{}, err
 	}
 	s := order.State()
-	l := s.Lines[ob.LineNo-1]
+	l, _, _ := order.Line(ob.LineNo)
 	latest, _ := order.Latest(ob.ObligationID)
 	snapshot := api.ObligationSnapshotV2{
 		TenantID: string(s.TenantID), ObligationID: string(ob.ObligationID), ObligationVersion: ob.Version, LatestVersion: latest.Version,
@@ -167,7 +237,7 @@ func (m *Module) GetObligationSnapshotV3(ctx context.Context, q api.GetObligatio
 		return api.ObligationSnapshotV3{}, err
 	}
 	s := order.State()
-	l := s.Lines[ob.LineNo-1]
+	l, _, _ := order.Line(ob.LineNo)
 	latest, _ := order.Latest(ob.ObligationID)
 	return api.ObligationSnapshotV3{
 		TenantID: string(s.TenantID), ObligationID: string(ob.ObligationID), ObligationVersion: ob.Version, LatestVersion: latest.Version,
@@ -207,6 +277,8 @@ func (m *Module) deps(tenant, commandID string) application.Deps {
 		Receipts: postgres.CommandReceipts{DB: m.db},
 		Outbox:   postgres.Outbox{Writer: m.outbox, CommandID: commandID, RecordedAt: m.clock.Now()},
 		Auth:     authorizer{m.auth},
+		Clock:    m.clock,
+		Window:   m.window,
 	}
 }
 
@@ -248,7 +320,7 @@ func classify(err error) error {
 	case errors.Is(err, application.ErrIdempotencyConflict):
 		kind = api.ErrIdempotencyConflict
 	case errors.Is(err, domain.ErrConflict), errors.Is(err, bentorepo.ErrConflict), errors.Is(err, bentorepo.ErrAlreadyExists),
-		errors.Is(err, application.ErrQuoteAlreadyOrdered):
+		errors.Is(err, domain.ErrQuoteFullyOrdered), errors.Is(err, domain.ErrPolicyVersionStale):
 		kind = api.ErrConflict
 	case errors.Is(err, bentorepo.ErrNotFound), errors.Is(err, domain.ErrUnknownObligation):
 		kind = api.ErrNotFound
@@ -256,7 +328,9 @@ func classify(err error) error {
 		errors.Is(err, domain.ErrInvalidAllocation), errors.Is(err, domain.ErrOverAllocation), errors.Is(err, domain.ErrInvalidTransition),
 		errors.Is(err, domain.ErrInvalidChange), errors.Is(err, domain.ErrObligationNotActive), errors.Is(err, domain.ErrObligationReserved),
 		errors.Is(err, domain.ErrNotReserved), errors.Is(err, application.ErrQuoteNotAccepted), errors.Is(err, application.ErrCustomerNotConfirmed),
-		errors.Is(err, application.ErrInvalidQuery), errors.Is(err, kernel.ErrUnitMismatch), errors.Is(err, kernel.ErrAmountOverflow):
+		errors.Is(err, application.ErrInvalidQuery), errors.Is(err, kernel.ErrUnitMismatch), errors.Is(err, kernel.ErrAmountOverflow),
+		errors.Is(err, domain.ErrTermsMismatch), errors.Is(err, domain.ErrInvalidPolicy), errors.Is(err, application.ErrServiceLevelNotListed),
+		errors.Is(err, kernel.ErrOutsideRecordWindow):
 		kind = api.ErrRejected
 	default:
 		return err

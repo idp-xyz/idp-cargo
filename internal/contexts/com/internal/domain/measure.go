@@ -51,6 +51,22 @@ func (m Measure) sub(o Measure) (Measure, error) {
 	return Measure{Packs: m.Packs - o.Packs, GrossWeight: weight, Volume: volume}, nil
 }
 
+// add returns m + o. Gross weights must be in the same unit, and volumes too.
+func (m Measure) add(o Measure) (Measure, error) {
+	if (o.Packs > 0 && m.Packs > math.MaxInt64-o.Packs) || (o.Packs < 0 && m.Packs < math.MinInt64-o.Packs) {
+		return Measure{}, kernel.ErrAmountOverflow
+	}
+	weight, err := m.GrossWeight.Add(o.GrossWeight)
+	if err != nil {
+		return Measure{}, err
+	}
+	volume, err := m.Volume.Add(o.Volume)
+	if err != nil {
+		return Measure{}, err
+	}
+	return Measure{Packs: m.Packs + o.Packs, GrossWeight: weight, Volume: volume}, nil
+}
+
 // negative reports whether any part of m is below zero.
 func (m Measure) negative() bool {
 	return m.Packs < 0 || m.GrossWeight.Amount < 0 || m.Volume.Amount < 0

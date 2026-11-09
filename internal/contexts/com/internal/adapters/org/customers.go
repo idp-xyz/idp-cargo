@@ -1,5 +1,5 @@
-// Package org is COM's anticorruption layer for ORG: it turns ORG's party-role answer into the customer's
-// transaction snapshot.
+// Package org is COM's anticorruption layer for ORG: it turns ORG's party-role answer into the ordering
+// party's transaction snapshot.
 package org
 
 import (
@@ -13,15 +13,19 @@ import (
 	orgapi "go.idp.xyz/idp-cargo/internal/contexts/org/api"
 )
 
-// CustomerRole is the ORG partner role a party needs to place orders.
-const CustomerRole = "CUSTOMER"
-
-// Customers confirms customers through ORG's query side. Call it outside COM's transactions.
+// Customers confirms ordering parties through ORG's query side. Call it outside COM's transactions.
 type Customers struct{ ORG orgapi.Queries }
 
-func (c Customers) VerifyCustomer(ctx context.Context, tenant com.TenantID, partyID string, entity com.LegalEntityID, at time.Time) (com.CustomerSnapshot, error) {
-	role, err := c.ORG.ResolvePartyRole(ctx, orgapi.ResolvePartyRole{
-		TenantID: string(tenant), PartyID: partyID, RoleCode: CustomerRole, LegalEntityID: string(entity), At: at,
+// VerifyOrderingParty asks ORG whether the party may act in role, the role the quote went to (R7), for the
+// legal entity at the instant.
+func (c Customers) VerifyOrderingParty(ctx context.Context, tenant com.TenantID, partyID, role string, entity com.LegalEntityID, at time.Time) (com.CustomerSnapshot, error) {
+	switch role {
+	case com.RoleCustomer, com.RoleOverseasAgent, com.RoleShipper, com.RoleConsignee:
+	default:
+		return com.CustomerSnapshot{}, fmt.Errorf("%w: %q is not a role an order is placed in", app.ErrCustomerNotConfirmed, role)
+	}
+	answer, err := c.ORG.ResolvePartyRole(ctx, orgapi.ResolvePartyRole{
+		TenantID: string(tenant), PartyID: partyID, RoleCode: role, LegalEntityID: string(entity), At: at,
 	})
 	if errors.Is(err, orgapi.ErrRejected) || errors.Is(err, orgapi.ErrNotFound) {
 		// ORG's answer is kept as text only, so its error kinds never become COM's.
@@ -30,9 +34,9 @@ func (c Customers) VerifyCustomer(ctx context.Context, tenant com.TenantID, part
 	if err != nil {
 		return com.CustomerSnapshot{}, err
 	}
-	if role.Ref.IdentitySource != orgapi.IdentitySource || role.Ref.TenantID != string(tenant) || role.Ref.PartyID != partyID || role.RoleCode != CustomerRole {
+	if answer.Ref.IdentitySource != orgapi.IdentitySource || answer.Ref.TenantID != string(tenant) || answer.Ref.PartyID != partyID || answer.RoleCode != role {
 		return com.CustomerSnapshot{}, fmt.Errorf("%w: ORG answered for another party or role", app.ErrCustomerNotConfirmed)
 	}
-	return com.CustomerSnapshot{PartyID: role.Ref.PartyID, PartyRevision: role.Ref.PartyRevision, LegalName: role.LegalName,
-		CountryCode: role.CountryCode, RoleValidity: role.Validity, RoleEvidenceRef: role.EvidenceRef}, nil
+	return com.CustomerSnapshot{PartyID: answer.Ref.PartyID, PartyRevision: answer.Ref.PartyRevision, LegalName: answer.LegalName,
+		CountryCode: answer.CountryCode, RoleCode: answer.RoleCode, RoleValidity: answer.Validity, RoleEvidenceRef: answer.EvidenceRef}, nil
 }

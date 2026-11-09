@@ -210,6 +210,9 @@ func TestCommercialTerms(t *testing.T) {
 		"no named place":                {CommercialTerms{IncotermsRule: "FOB", IncotermsVersion: "2020"}, false},
 		"no edition":                    {CommercialTerms{IncotermsRule: "FOB", NamedPlace: "Shanghai port"}, false},
 		"a blank service level":         {CommercialTerms{ServiceLevel: " "}, false},
+		"an unlisted code":              {CommercialTerms{ServiceLevel: "PRIORITY"}, false},
+		"free text":                     {CommercialTerms{ServiceLevel: "next flight out"}, false},
+		"a legacy unlisted level":       {CommercialTerms{ServiceLevel: "next flight out", ServiceLevelUnlisted: true}, false},
 	} {
 		d := draft(1000, freight(100_000, 90_000))
 		d.Terms = tc.terms
@@ -234,6 +237,38 @@ func TestRestoreChecksTheV03State(t *testing.T) {
 		edit(&s)
 		if _, err := RestoreQuote(s); !errors.Is(err, ErrInvalidQuote) {
 			t.Errorf("%s: err = %v", name, err)
+		}
+	}
+}
+
+// A service level recorded as free text before the list existed is kept when the quote is restored, but no
+// new quote takes one (C8, amended 2026-11-09).
+func TestUnlistedServiceLevelsAreKeptButNotAcceptedAnew(t *testing.T) {
+	q := priced(t, 1000, freight(100_000, 90_000))
+	s := q.State()
+	s.Terms = CommercialTerms{ServiceLevel: "next flight out", ServiceLevelUnlisted: true}
+	if _, err := RestoreQuote(s); err != nil {
+		t.Fatalf("restore with an unlisted service level: %v", err)
+	}
+	s.Terms = CommercialTerms{ServiceLevel: "next flight out"}
+	if _, err := RestoreQuote(s); err == nil {
+		t.Fatal("restored free text that is not marked unlisted")
+	}
+	s.Terms = CommercialTerms{ServiceLevelUnlisted: true}
+	if _, err := RestoreQuote(s); err == nil {
+		t.Fatal("restored an unlisted mark without a service level")
+	}
+	for _, l := range DefaultServiceLevels {
+		if !ServiceLevelCode(l.Code) {
+			t.Errorf("listed code %q does not have the form of a code", l.Code)
+		}
+		if got, ok := ListedServiceLevel(l.Code); !ok || got != l {
+			t.Errorf("ListedServiceLevel(%q) = %v, %v", l.Code, got, ok)
+		}
+	}
+	for _, code := range []string{"", "S", "standard", "1STANDARD", "STANDARD-1", "ABCDEFGHIJKLMNOPQ"} {
+		if ServiceLevelCode(code) {
+			t.Errorf("%q has the form of a code", code)
 		}
 	}
 }

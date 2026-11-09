@@ -19,30 +19,55 @@ type OrderID string
 type ObligationID string
 type LegalEntityID string
 
-// CustomerSnapshot is the TransactionPartySnapshot of the customer: the ORG party at the revision ORG
-// confirmed when the order was recorded, with the particulars and the role in force then. Later ORG
-// changes never alter it.
+// CustomerSnapshot is the TransactionPartySnapshot of the ordering party: the ORG party at the revision ORG
+// confirmed when the order was recorded, with the particulars and the role in force then. The ordering party
+// is the quote's recipient, in the role the quote went to (R7): CUSTOMER, OVERSEAS_AGENT, SHIPPER or
+// CONSIGNEE. Later ORG changes never alter it.
 type CustomerSnapshot struct {
 	PartyID         string
 	PartyRevision   int64
 	LegalName       string
 	CountryCode     string
+	RoleCode        string
 	RoleValidity    kernel.ValidityInterval
 	RoleEvidenceRef string
 }
 
-// AcceptedQuote is COM's copy of the QuoteSnapshot v1 an order relies on. TermsHash is the hex SHA-256 of
-// the snapshot's canonical encoding.
+// Ordering roles: the roles a quote may go to (R7).
+const (
+	RoleCustomer      = "CUSTOMER"
+	RoleOverseasAgent = "OVERSEAS_AGENT"
+	RoleShipper       = "SHIPPER"
+	RoleConsignee     = "CONSIGNEE"
+)
+
+func orderingRole(r string) bool {
+	return r == RoleCustomer || r == RoleOverseasAgent || r == RoleShipper || r == RoleConsignee
+}
+
+// Contracts of the RATE snapshot an order relies on.
+const (
+	QuoteSnapshotV1 = "QuoteSnapshot.v1"
+	QuoteSnapshotV2 = "QuoteSnapshot.v2"
+)
+
+// AcceptedQuote is COM's copy of the RATE snapshot an order relies on: QuoteSnapshot v2 for orders
+// recorded since COM V0.5, v1 before. TermsHash is the hex SHA-256 of the snapshot's canonical encoding
+// under TermsContract. RecipientRole is the role the quote went to (CUSTOMER for v1) and Terms the
+// commercial terms it agreed (none for v1).
 type AcceptedQuote struct {
 	QuoteID          string
 	QuoteRevision    int64
 	LegalEntityID    LegalEntityID
 	CustomerPartyID  string
 	CustomerRevision int64 // the revision ORG confirmed when the quote was accepted
+	RecipientRole    string
 	Total            kernel.Money
 	Validity         kernel.ValidityInterval
 	AcceptedAt       time.Time
 	EvidenceRef      string
+	Terms            CommercialTerms
+	TermsContract    string
 	TermsHash        string
 }
 
@@ -87,6 +112,8 @@ const (
 	eventObligationRevoked   = "FulfillmentObligationRevoked.v1"
 	eventObligationReserved  = "ObligationReserved.v1"
 	eventReservationReleased = "ObligationReservationReleased.v1"
+	eventLineAmended         = "CustomerOrderLineAmended.v1"
+	eventLineAdded           = "CustomerOrderLineAdded.v1"
 )
 
 // Event carries identifiers only; the Outbox adapter maps it to a Bento envelope.
@@ -98,38 +125,52 @@ type Event struct {
 	ObligationID      ObligationID
 	ObligationVersion int64
 	ShipmentID        string
+	LineNo            int   // set for line events
+	LineVersion       int64 // set for line events
 }
 
-// OrderDraft is what a new order is recorded from. Lines are numbered in the order given.
+// OrderDraft is what a new order is recorded from. Lines are numbered in the order given. Requested are the
+// commercial terms given on the order, to complete what the quote left open (C8). Policy is the order policy
+// in force for the quote's legal entity (C1, C2).
 type OrderDraft struct {
 	TenantID   TenantID
 	OrderID    OrderID
 	Quote      AcceptedQuote
 	Customer   CustomerSnapshot
 	Lines      []OrderLine
+	Requested  CommercialTerms
+	Policy     OrderPolicy
 	RecordedBy string
 }
 
-// OrderState is a stored order, for persistence. Obligations holds every version of every obligation and
+// OrderState is a stored order, for persistence. Lines are the lines as recorded and LineChanges every line
+// version written since, in order (C10). Obligations holds every version of every obligation and
 // Reservations every reservation, released ones included, so the order keeps its whole history (C6).
+// EnteredAt is when COM recorded the order (T1); it is zero for orders recorded before COM V0.5.
 type OrderState struct {
 	OrderDraft
+	Terms        OrderTerms
 	RecordedAt   time.Time
+	EnteredAt    time.Time
 	Status       OrderStatus
+	LineChanges  []LineVersion
 	Obligations  []Obligation
 	Reservations []Reservation
 	CancelledBy  string
 	CancelledAt  time.Time
 }
 
-// CustomerOrder is the aggregate root. Its commitment never changes. Obligation versions and reservations
-// are only added, and a reservation is released at most once.
+// CustomerOrder is the aggregate root. What the quote, the ordering party, the terms and the policy say
+// never changes; lines change only by new versions (C10). Obligation versions and reservations are only
+// added, and a reservation is released at most once.
 type CustomerOrder struct {
-	state    OrderState
-	stored   int   // obligation versions already persisted
-	reserved int   // reservations already persisted
-	released []int // persisted reservations released since, by index
-	pending  []Event
+	state         OrderState
+	lines         lineIndex
+	storedChanges int   // line versions already persisted
+	stored        int   // obligation versions already persisted
+	reserved      int   // reservations already persisted
+	released      []int // persisted reservations released since, by index
+	pending       []Event
 }
 
 const (
@@ -137,21 +178,35 @@ const (
 	maxID   = 128 // the longest identifier cargo_com stores
 )
 
-// RecordOrder records an order against an accepted quote, for the quote's customer as ORG confirmed it
-// at the instant.
-func RecordOrder(d OrderDraft, at time.Time) (*CustomerOrder, error) {
-	if at.IsZero() {
+// RecordOrder records an order against an accepted quote, for the quote's recipient in the role the quote
+// went to, as ORG confirmed it at the instant (R7). ordersOfQuote is the number of orders not cancelled that
+// the quote already backs; the policy bounds it (C1) and how long after the quote's validity the order may
+// be recorded (C2). The order freezes the terms the quote agreed, completed by those requested (C8).
+// entered is when COM records the order (T1).
+func RecordOrder(d OrderDraft, ordersOfQuote int, at, entered time.Time) (*CustomerOrder, error) {
+	if at.IsZero() || entered.IsZero() || ordersOfQuote < 0 {
 		return nil, ErrInvalidOrder
 	}
 	d.Lines = append([]OrderLine(nil), d.Lines...)
 	for i := range d.Lines {
 		d.Lines[i].LineNo = i + 1
 	}
-	s := OrderState{OrderDraft: d, RecordedAt: at.UTC(), Status: OrderRecorded}
-	if err := s.validateCommitment(); err != nil {
+	terms, err := AgreeTerms(d.Quote.Terms, d.Requested)
+	if err != nil {
 		return nil, err
 	}
+	s := OrderState{OrderDraft: d, Terms: terms, RecordedAt: at.UTC(), EnteredAt: entered.UTC(), Status: OrderRecorded}
+	s.Requested = CommercialTerms{}
+	if err = s.validateCommitment(); err != nil {
+		return nil, err
+	}
+	if ordersOfQuote >= d.Policy.MaxOrdersPerQuote {
+		return nil, fmt.Errorf("%w: quote %s backs %d of at most %d", ErrQuoteFullyOrdered, d.Quote.QuoteID, ordersOfQuote, d.Policy.MaxOrdersPerQuote)
+	}
 	o := &CustomerOrder{state: s}
+	if o.lines, err = applyLineChanges(s.Lines, s.RecordedAt, nil); err != nil {
+		return nil, err
+	}
 	o.record(eventOrderRecorded, at, nil, "")
 	return o, nil
 }
@@ -162,25 +217,36 @@ func (s OrderState) validateCommitment() error {
 	case blank(string(s.TenantID)), blank(string(s.OrderID)), blank(s.RecordedBy), s.RecordedAt.IsZero():
 		return ErrInvalidOrder
 	case blank(q.QuoteID), q.QuoteRevision < 1, blank(string(q.LegalEntityID)), blank(q.CustomerPartyID), q.CustomerRevision < 1,
-		!q.Total.Currency.Valid(), q.Total.Minor <= 0, !q.Validity.Valid(), q.Validity.Until.IsZero(),
-		!q.Validity.Contains(q.AcceptedAt), blank(q.EvidenceRef), !hexDigest(q.TermsHash):
+		!orderingRole(q.RecipientRole), !q.Total.Currency.Valid(), q.Total.Minor <= 0, !q.Validity.Valid(), q.Validity.Until.IsZero(),
+		!q.Validity.Contains(q.AcceptedAt), blank(q.EvidenceRef), !hexDigest(q.TermsHash),
+		q.TermsContract != QuoteSnapshotV1 && q.TermsContract != QuoteSnapshotV2:
 		return fmt.Errorf("%w: accepted quote", ErrInvalidOrder)
+	case q.TermsContract == QuoteSnapshotV1 && (q.RecipientRole != RoleCustomer || q.Terms != CommercialTerms{}):
+		return fmt.Errorf("%w: a QuoteSnapshot v1 has no recipient role or terms", ErrInvalidOrder)
 	case blank(c.PartyID), c.PartyRevision < 1, !text(c.LegalName), !countryCode(c.CountryCode), !c.RoleValidity.Valid(),
 		blank(c.RoleEvidenceRef):
-		return fmt.Errorf("%w: customer snapshot", ErrInvalidOrder)
+		return fmt.Errorf("%w: ordering party snapshot", ErrInvalidOrder)
 	case c.PartyID != q.CustomerPartyID:
-		return fmt.Errorf("%w: the customer is not the quote's customer", ErrQuoteMismatch)
+		return fmt.Errorf("%w: the ordering party is not the quote's recipient", ErrQuoteMismatch)
+	case c.RoleCode != q.RecipientRole:
+		return fmt.Errorf("%w: ORG confirmed role %s, the quote went to %s", ErrQuoteMismatch, c.RoleCode, q.RecipientRole)
 	case c.PartyRevision < q.CustomerRevision:
 		return fmt.Errorf("%w: ORG revision %d is older than %d, the revision at acceptance", ErrQuoteMismatch, c.PartyRevision, q.CustomerRevision)
 	case !c.RoleValidity.Contains(s.RecordedAt):
-		return fmt.Errorf("%w: the customer role was not in force when the order was recorded", ErrInvalidOrder)
-	case s.RecordedAt.Before(q.AcceptedAt) || !q.Validity.Contains(s.RecordedAt):
+		return fmt.Errorf("%w: the ordering role was not in force when the order was recorded", ErrInvalidOrder)
+	case !s.Policy.valid():
+		return fmt.Errorf("%w: order policy", ErrInvalidOrder)
+	case s.Policy.Scope == PolicyLegalEntity && s.Policy.LegalEntityID != q.LegalEntityID:
+		return fmt.Errorf("%w: the order policy belongs to legal entity %s", ErrInvalidOrder, s.Policy.LegalEntityID)
+	case s.RecordedAt.Before(q.AcceptedAt) || s.RecordedAt.Before(q.Validity.From) || !s.RecordedAt.Before(s.Policy.lastInstant(q.Validity.Until)):
 		return ErrOutsideQuoteValidity
+	case !s.Terms.valid() || s.Terms.QuoteTerms() != q.Terms:
+		return fmt.Errorf("%w: commercial terms", ErrInvalidOrder)
 	case len(s.Lines) == 0:
 		return fmt.Errorf("%w: no lines", ErrInvalidOrder)
 	}
 	for i, l := range s.Lines {
-		if l.LineNo != i+1 || !text(l.Description) || !l.PackageType.Valid() || !l.Measure.valid() {
+		if l.LineNo != i+1 || !l.valid() {
 			return fmt.Errorf("%w: line %d", ErrInvalidOrder, i+1)
 		}
 	}
@@ -201,9 +267,14 @@ func RestoreOrder(s OrderState) (*CustomerOrder, error) {
 		return nil, fmt.Errorf("%w: cancellation", ErrInvalidOrder)
 	}
 	s.Lines = append([]OrderLine(nil), s.Lines...)
+	s.LineChanges = append([]LineVersion(nil), s.LineChanges...)
 	s.Obligations = append([]Obligation(nil), s.Obligations...)
 	s.Reservations = append([]Reservation(nil), s.Reservations...)
-	o := &CustomerOrder{state: s, stored: len(s.Obligations), reserved: len(s.Reservations)}
+	lines, err := applyLineChanges(s.Lines, s.RecordedAt, s.LineChanges)
+	if err != nil {
+		return nil, err
+	}
+	o := &CustomerOrder{state: s, lines: lines, storedChanges: len(s.LineChanges), stored: len(s.Obligations), reserved: len(s.Reservations)}
 	if err := o.validateObligations(); err != nil {
 		return nil, err
 	}
@@ -220,6 +291,7 @@ func RestoreOrder(s OrderState) (*CustomerOrder, error) {
 func (o *CustomerOrder) State() OrderState {
 	s := o.state
 	s.Lines = append([]OrderLine(nil), s.Lines...)
+	s.LineChanges = append([]LineVersion(nil), s.LineChanges...)
 	s.Obligations = append([]Obligation(nil), s.Obligations...)
 	s.Reservations = append([]Reservation(nil), s.Reservations...)
 	return s
@@ -237,11 +309,16 @@ func (o *CustomerOrder) Added() []Obligation {
 
 // Acknowledge is permitted only after the transaction holding the order and its Outbox events commits.
 func (o *CustomerOrder) Acknowledge() {
-	o.pending, o.stored, o.reserved, o.released = nil, len(o.state.Obligations), len(o.state.Reservations), nil
+	o.pending, o.storedChanges, o.stored, o.reserved, o.released = nil, len(o.state.LineChanges), len(o.state.Obligations), len(o.state.Reservations), nil
+}
+
+func (o *CustomerOrder) event(kind string, at time.Time) Event {
+	return Event{Type: kind, At: at.UTC(), TenantID: o.state.TenantID, SubjectID: string(o.state.OrderID)}
 }
 
 func (o *CustomerOrder) record(kind string, at time.Time, ob *Obligation, shipment string) {
-	e := Event{Type: kind, At: at.UTC(), TenantID: o.state.TenantID, SubjectID: string(o.state.OrderID), ShipmentID: shipment}
+	e := o.event(kind, at)
+	e.ShipmentID = shipment
 	if ob != nil {
 		e.ObligationID, e.ObligationVersion = ob.ObligationID, ob.Version
 	}

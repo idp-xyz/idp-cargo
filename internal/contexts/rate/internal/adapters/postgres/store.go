@@ -41,17 +41,17 @@ func readQuote(ctx context.Context, db *bentopg.DB, tenant rate.TenantID, id rat
 	var approvedBy, approvalReason, acceptedBy, evidence, evidenceKind, rule, version, place, service *string
 	var approvedAt, acceptedAt, acceptedRecordedAt, expiredAt *time.Time
 	var acceptedRevision *int64
-	var selfApproved bool
+	var selfApproved, unlisted bool
 	var revision int64
 	err = q.QueryRow(ctx, `SELECT legal_entity_id,customer_party_id,customer_party_revision,recipient_role,currency,valid_from,valid_until,
         margin_floor_bp,author,status,approved_by,approved_at,approval_reason_ref,self_approved,
         accepted_by,accepted_at,accepted_recorded_at,acceptance_evidence_kind,acceptance_evidence_ref,accepted_customer_revision,
-        expired_at,incoterms_rule,incoterms_version,named_place,service_level,revision
+        expired_at,incoterms_rule,incoterms_version,named_place,service_level,service_level_unlisted,revision
       FROM cargo_rate.quote WHERE tenant_id=$1 AND quote_id=$2`+lock, string(tenant), string(id)).Scan(
 		&entity, &party, &s.Customer.PartyRevision, &recipient, &currency, &s.Validity.From, &s.Validity.Until,
 		&s.MarginFloorBP, &s.Author, &status, &approvedBy, &approvedAt, &approvalReason, &selfApproved,
 		&acceptedBy, &acceptedAt, &acceptedRecordedAt, &evidenceKind, &evidence, &acceptedRevision,
-		&expiredAt, &rule, &version, &place, &service, &revision)
+		&expiredAt, &rule, &version, &place, &service, &unlisted, &revision)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, 0, bentorepo.ErrNotFound
 	}
@@ -60,7 +60,8 @@ func readQuote(ctx context.Context, db *bentopg.DB, tenant rate.TenantID, id rat
 	}
 	s.LegalEntityID, s.Customer.PartyID, s.Currency, s.Status = rate.LegalEntityID(entity), party, kernel.CurrencyCode(currency), rate.QuoteStatus(status)
 	s.Recipient = rate.RecipientRole(recipient)
-	s.Terms = rate.CommercialTerms{IncotermsRule: deref(rule), IncotermsVersion: deref(version), NamedPlace: deref(place), ServiceLevel: deref(service)}
+	s.Terms = rate.CommercialTerms{IncotermsRule: deref(rule), IncotermsVersion: deref(version), NamedPlace: deref(place), ServiceLevel: deref(service),
+		ServiceLevelUnlisted: unlisted}
 	if approvedBy != nil {
 		s.Approval = &rate.PriceApproval{ApprovedBy: *approvedBy, ApprovedAt: *approvedAt, ReasonRef: *approvalReason, SelfApproved: selfApproved}
 	}

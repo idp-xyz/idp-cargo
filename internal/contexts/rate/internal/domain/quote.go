@@ -165,6 +165,9 @@ func PriceQuote(d QuoteDraft, at time.Time) (*Quote, error) {
 	if err := d.validate(); err != nil {
 		return nil, err
 	}
+	if d.Terms.ServiceLevelUnlisted {
+		return nil, fmt.Errorf("%w: a new quote takes a service level from the list", ErrInvalidQuote)
+	}
 	if !at.Before(d.Validity.Until) {
 		return nil, fmt.Errorf("%w: validity has already ended", ErrInvalidQuote)
 	}

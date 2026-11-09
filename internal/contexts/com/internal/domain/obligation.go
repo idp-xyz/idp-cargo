@@ -155,10 +155,10 @@ func (o *CustomerOrder) revoke(ob Obligation, by string, at time.Time) {
 
 // Remaining returns what of a line its active obligations do not commit.
 func (o *CustomerOrder) Remaining(lineNo int) (Measure, error) {
-	if lineNo < 1 || lineNo > len(o.state.Lines) {
+	if lineNo < 1 || lineNo > len(o.lines.lines) {
 		return Measure{}, fmt.Errorf("%w: no line %d", ErrInvalidAllocation, lineNo)
 	}
-	remaining := o.state.Lines[lineNo-1].Measure
+	remaining := o.lines.lines[lineNo-1].Measure
 	for _, ob := range o.current() {
 		if ob.LineNo != lineNo || ob.Status != ObligationActive {
 			continue
@@ -250,7 +250,7 @@ func (o *CustomerOrder) derivedStatus() OrderStatus {
 	if !active {
 		return OrderRecorded
 	}
-	for no := 1; no <= len(o.state.Lines); no++ {
+	for no := 1; no <= len(o.lines.lines); no++ {
 		if remaining, err := o.Remaining(no); err != nil || remaining.Packs != 0 {
 			return OrderPartiallyAllocated
 		}
@@ -269,7 +269,7 @@ func (o *CustomerOrder) validateObligations() error {
 			versions[ob.ObligationID] = map[int64]Obligation{}
 		}
 		_, duplicate := versions[ob.ObligationID][ob.Version]
-		if duplicate || !identifier(string(ob.ObligationID)) || ob.LineNo < 1 || ob.LineNo > len(s.Lines) || !ob.Measure.valid() ||
+		if duplicate || !identifier(string(ob.ObligationID)) || ob.LineNo < 1 || ob.LineNo > len(o.lines.lines) || !ob.Measure.valid() ||
 			blank(ob.AllocatedBy) || ob.AllocatedAt.Before(s.RecordedAt) {
 			return fmt.Errorf("%w: obligation %q version %d", ErrInvalidOrder, ob.ObligationID, ob.Version)
 		}
@@ -293,7 +293,7 @@ func (o *CustomerOrder) validateObligations() error {
 			return fmt.Errorf("%w: cancelled, but obligation %q is active", ErrInvalidOrder, ob.ObligationID)
 		}
 	}
-	for no := 1; no <= len(s.Lines); no++ {
+	for no := 1; no <= len(o.lines.lines); no++ {
 		if remaining, err := o.Remaining(no); err != nil || remaining.negative() {
 			return fmt.Errorf("%w: line %d is over-allocated", ErrInvalidOrder, no)
 		}
