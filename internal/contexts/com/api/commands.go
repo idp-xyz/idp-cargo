@@ -47,6 +47,10 @@ type RecordCustomerOrder struct {
 	Lines           []OrderLine
 	Terms           CommercialTerms
 	OccurredAt      time.Time
+	// Transport and Parties are optional (C9, C11): the requested transport mode and movement type, and the
+	// shipper, consignee and notify party, carried from ORG as for SetOrderParty.
+	Transport Transport
+	Parties   []OrderParty
 }
 
 // AmendOrderLine corrects what the customer declared for a line (C10): the line's next version, with a

@@ -32,6 +32,7 @@ type Module struct {
 	auth   api.Authorizer
 	clock  bento.SystemClock
 	window kernel.RecordWindow
+	dir    application.Directory // ORG's address book and identity for order parties (C9); nil until wired
 }
 
 var (
@@ -39,6 +40,8 @@ var (
 	_ api.ObligationReservations = (*Module)(nil)
 	_ api.Queries                = (*Module)(nil)
 	_ api.OrderPolicies          = (*Module)(nil)
+	_ api.OrderPartyCommands     = (*Module)(nil)
+	_ api.OrderPartyQueries      = (*Module)(nil)
 )
 
 // Option configures a Module.
@@ -48,6 +51,17 @@ type Option func(*Module)
 // much clock skew after it is tolerated (T1). The default is kernel.DefaultRecordWindow: seven days and
 // five minutes.
 func WithRecordWindow(w kernel.RecordWindow) Option { return func(m *Module) { m.window = w } }
+
+// WithPartyDirectory gives COM ORG's identity and address book queries, which order parties need (C9). The
+// role confirmations come from the ORG queries passed to New. Without it, orders are recorded without
+// parties and SetOrderParty fails.
+func WithPartyDirectory(identities orgapi.PartyIdentityQueries, book orgapi.AddressBookQueries) Option {
+	return func(m *Module) {
+		if identities != nil && book != nil {
+			m.dir = orgacl.Directory{Roles: m.org, Identities: identities, Book: book}
+		}
+	}
+}
 
 // New assembles COM. org answers ordering-party checks and rate returns accepted quotes and service levels;
 // the composition root passes their modules.
@@ -82,11 +96,12 @@ func (m *Module) RecordCustomerOrder(ctx context.Context, cmd api.RecordCustomer
 	t := cmd.Terms
 	receipt, err := application.RecordCustomerOrder{
 		Deps: m.deps(cmd.TenantID, cmd.CommandID), Quotes: rateacl.Quotes{RATE: m.rate}, Customers: orgacl.Customers{ORG: m.org},
-		Policies: postgres.Policies{DB: m.db}, ServiceLevels: rateacl.ServiceLevels{RATE: m.rate},
+		Policies: postgres.Policies{DB: m.db}, ServiceLevels: rateacl.ServiceLevels{RATE: m.rate}, Directory: m.dir,
 	}.Handle(ctx, application.RecordCustomerOrderCommand{
 		CommandID: cmd.CommandID, Scope: scope(cmd.TenantID, cmd.ActorID), OrderID: domain.OrderID(cmd.OrderID), QuoteID: cmd.QuoteID,
 		CustomerPartyID: cmd.CustomerPartyID, Lines: lines, OccurredAt: stored(cmd.OccurredAt),
-		Terms: domain.CommercialTerms{IncotermsRule: t.IncotermsRule, IncotermsVersion: t.IncotermsVersion, NamedPlace: t.NamedPlace, ServiceLevel: t.ServiceLevel},
+		Terms:     domain.CommercialTerms{IncotermsRule: t.IncotermsRule, IncotermsVersion: t.IncotermsVersion, NamedPlace: t.NamedPlace, ServiceLevel: t.ServiceLevel},
+		Transport: transportOf(cmd.Transport), Parties: partyInputs(cmd.Parties),
 	})
 	return toReceipt(receipt, err)
 }
@@ -324,6 +339,9 @@ func classify(err error) error {
 		kind = api.ErrConflict
 	case errors.Is(err, bentorepo.ErrNotFound), errors.Is(err, domain.ErrUnknownObligation):
 		kind = api.ErrNotFound
+	case errors.Is(err, domain.ErrInvalidParty), errors.Is(err, domain.ErrPartyRule), errors.Is(err, domain.ErrAddressRequired),
+		errors.Is(err, application.ErrPartyNotConfirmed):
+		kind = api.ErrRejected
 	case errors.Is(err, domain.ErrInvalidOrder), errors.Is(err, domain.ErrQuoteMismatch), errors.Is(err, domain.ErrOutsideQuoteValidity),
 		errors.Is(err, domain.ErrInvalidAllocation), errors.Is(err, domain.ErrOverAllocation), errors.Is(err, domain.ErrInvalidTransition),
 		errors.Is(err, domain.ErrInvalidChange), errors.Is(err, domain.ErrObligationNotActive), errors.Is(err, domain.ErrObligationReserved),

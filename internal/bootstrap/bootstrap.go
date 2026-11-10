@@ -83,13 +83,20 @@ func (p *Platform) RATE(org orgapi.Queries, auth rateapi.Authorizer, margins rat
 	return rate.New(db, org, auth, margins)
 }
 
+// ORGForCOM is what COM asks ORG: role confirmations, party identity and address books (C9).
+type ORGForCOM interface {
+	orgapi.Queries
+	orgapi.PartyIdentityQueries
+	orgapi.AddressBookQueries
+}
+
 // COM assembles the COM bounded context. org and rate are used only through their query sides.
-func (p *Platform) COM(org orgapi.Queries, rate rateapi.Queries, auth comapi.Authorizer) (*com.Module, error) {
+func (p *Platform) COM(org ORGForCOM, rate rateapi.Queries, auth comapi.Authorizer) (*com.Module, error) {
 	db, err := p.newDB()
 	if err != nil {
 		return nil, err
 	}
-	return com.New(db, org, rate, auth)
+	return com.New(db, org, rate, auth, com.WithPartyDirectory(org, org))
 }
 
 // FUL assembles the FUL bounded context. com is used only through its query side.

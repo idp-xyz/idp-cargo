@@ -13,6 +13,8 @@ const (
 	ObligationReservationReleased  = "ObligationReservationReleased.v1"
 	CustomerOrderLineAmended       = "CustomerOrderLineAmended.v1"
 	CustomerOrderLineAdded         = "CustomerOrderLineAdded.v1"
+	OrderPartySet                  = "OrderPartySet.v1"
+	OrderTransportChanged          = "OrderTransportChanged.v1"
 )
 
 // EventPayload is the JSON payload of every COM event: identifiers only. SubjectID is the order. Events
@@ -28,4 +30,12 @@ type EventPayload struct {
 	ShipmentID        string `json:"shipment_id,omitempty"`
 	LineNo            int    `json:"order_line_no,omitempty"`
 	LineVersion       int64  `json:"order_line_version,omitempty"`
+	// OrderPartySet.v1 names the role, the version written, the kind and whether the version carries an
+	// address or contact given on the order; never a name, address or contact (C9, X1).
+	PartyRole    string `json:"party_role,omitempty"`
+	PartyVersion int64  `json:"party_version,omitempty"`
+	PartyKind    string `json:"party_kind,omitempty"`
+	Overridden   bool   `json:"overridden,omitempty"`
+	// OrderTransportChanged.v1 names the transport version written.
+	TransportVersion int64 `json:"transport_version,omitempty"`
 }
