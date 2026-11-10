@@ -43,7 +43,9 @@ const (
 // Address is one address of a party as printed on documents: a short code unique among the party's active
 // addresses (letters A-Z, digits, '-' and '_', up to 20), its purposes, the name and one to four lines, city,
 // state or province, postcode and ISO 3166 country, optionally a UN/LOCODE in that country, whether it is a
-// residential address, and optionally the same address in a local language.
+// residential address, optionally the organization's phone and e-mail at that address (such as a switchboard;
+// manifests require the shipper's phone; not on residential addresses), and optionally the same address in a
+// local language.
 type Address struct {
 	ShortCode   string
 	Purposes    []string
@@ -55,6 +57,8 @@ type Address struct {
 	CountryCode string
 	UNLocode    string
 	Residential bool
+	Phone       string
+	Email       string
 	Local       *LocalAddress
 }
 

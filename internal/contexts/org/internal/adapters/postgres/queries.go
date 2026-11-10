@@ -11,8 +11,8 @@ import (
 	org "go.idp.xyz/idp-cargo/internal/contexts/org/internal/domain"
 )
 
-// PartyReader reads a party with its approved roles for queries. One statement means one snapshot
-// under READ COMMITTED, so the revision matches the roles without locking the party row.
+// PartyReader reads a party with its approved roles, English name and active identifiers for queries. One
+// statement means one snapshot under READ COMMITTED, so the revision matches them without locking the party row.
 type PartyReader struct{ DB *bentopg.DB }
 
 func (r PartyReader) Read(ctx context.Context, tenant org.TenantID, party org.PartyID) (*org.BusinessParty, int64, error) {
@@ -20,7 +20,7 @@ func (r PartyReader) Read(ctx context.Context, tenant org.TenantID, party org.Pa
 	if err != nil {
 		return nil, 0, err
 	}
-	rows, err := q.Query(ctx, `SELECT p.legal_name,p.registration_country,p.status,p.revision,
+	rows, err := q.Query(ctx, `SELECT p.legal_name,p.registration_country,p.status,p.revision,coalesce(p.english_name,''),`+identifierColumns+`,
         r.role_code,r.legal_entity_id,r.valid_from,r.valid_until,r.evidence_ref,r.approved_by,r.approved_at
       FROM cargo_org.business_party p
       LEFT JOIN cargo_org.party_role r
@@ -31,14 +31,14 @@ func (r PartyReader) Read(ctx context.Context, tenant org.TenantID, party org.Pa
 		return nil, 0, err
 	}
 	defer rows.Close()
-	var name, country, status string
+	var name, country, status, english, identifiers string
 	var revision int64
 	var roles []org.Role
 	found := false
 	for rows.Next() {
 		var code, entity, evidence, approver *string
 		var from, until, approvedAt *time.Time
-		if err = rows.Scan(&name, &country, &status, &revision, &code, &entity, &from, &until, &evidence, &approver, &approvedAt); err != nil {
+		if err = rows.Scan(&name, &country, &status, &revision, &english, &identifiers, &code, &entity, &from, &until, &evidence, &approver, &approvedAt); err != nil {
 			return nil, 0, err
 		}
 		found = true
@@ -59,7 +59,14 @@ func (r PartyReader) Read(ctx context.Context, tenant org.TenantID, party org.Pa
 		return nil, 0, bentorepo.ErrNotFound
 	}
 	aggregate, err := org.RestoreParty(tenant, party, name, country, org.PartyStatus(status), roles)
-	return aggregate, revision, err
+	if err != nil {
+		return nil, 0, err
+	}
+	stored, err := decodeIdentifiers(identifiers)
+	if err != nil {
+		return nil, 0, err
+	}
+	return aggregate, revision, aggregate.RestoreIdentity(english, stored)
 }
 
 // LegalEntityStatuses reads legal entity status for queries.

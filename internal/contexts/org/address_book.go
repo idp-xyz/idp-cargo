@@ -154,7 +154,8 @@ func bookScope(tenant, actor string) application.Scope {
 
 func addressOf(a api.Address) domain.Address {
 	out := domain.Address{ShortCode: a.ShortCode, Purposes: purposes[domain.AddressPurpose](a.Purposes), Name: a.Name, Lines: a.Lines,
-		City: a.City, Region: a.Region, Postcode: a.Postcode, CountryCode: a.CountryCode, UNLocode: a.UNLocode, Residential: a.Residential}
+		City: a.City, Region: a.Region, Postcode: a.Postcode, CountryCode: a.CountryCode, UNLocode: a.UNLocode, Residential: a.Residential,
+		Phone: a.Phone, Email: a.Email}
 	if l := a.Local; l != nil {
 		out.Local = &domain.LocalAddress{Language: l.Language, Name: l.Name, Lines: l.Lines, City: l.City, Region: l.Region}
 	}
@@ -170,7 +171,8 @@ func partyAddressOf(book *domain.AddressBook, v domain.AddressVersion) api.Party
 		PartyID: string(book.Party()), AddressID: string(v.ID), Version: v.Version, Status: string(v.Status),
 		DefaultFor: texts(book.AddressDefaultsOf(v.ID)), BookRevision: book.Revision(),
 		Address: api.Address{ShortCode: v.ShortCode, Purposes: texts(v.Purposes), Name: v.Name, Lines: v.Lines, City: v.City,
-			Region: v.Region, Postcode: v.Postcode, CountryCode: v.CountryCode, UNLocode: v.UNLocode, Residential: v.Residential},
+			Region: v.Region, Postcode: v.Postcode, CountryCode: v.CountryCode, UNLocode: v.UNLocode, Residential: v.Residential,
+			Phone: v.Phone, Email: v.Email},
 	}
 	if l := v.Local; l != nil {
 		out.Local = &api.LocalAddress{Language: l.Language, Name: l.Name, Lines: l.Lines, City: l.City, Region: l.Region}

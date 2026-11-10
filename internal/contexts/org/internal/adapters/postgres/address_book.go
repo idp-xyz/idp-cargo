@@ -140,11 +140,11 @@ func saveAddressVersion(ctx context.Context, q bentopg.Executor, tenant, party s
 	}
 	_, err = q.Exec(ctx, `INSERT INTO cargo_org.party_address_version
         (tenant_id,party_id,address_id,version,revision,status,short_code,purposes,name,lines,city,region,postcode,country_code,unlocode,residential,
-         local_language,local_name,local_lines,local_city,local_region)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
+         local_language,local_name,local_lines,local_city,local_region,phone,email)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)`,
 		tenant, party, string(v.ID), v.Version, v.Revision, string(v.Status), v.ShortCode, texts(v.Purposes), v.Name, v.Lines, v.City,
 		nullable(v.Region), nullable(v.Postcode), v.CountryCode, nullable(v.UNLocode), v.Residential,
-		language, localName, localLines, localCity, localRegion)
+		language, localName, localLines, localCity, localRegion, nullable(v.Phone), nullable(v.Email))
 	return err
 }
 
@@ -223,7 +223,8 @@ func (r AddressBookReader) AddressVersion(ctx context.Context, tenant org.Tenant
 
 const addressColumns = `SELECT v.address_id,v.version,v.revision,v.status,v.short_code,v.purposes,v.name,v.lines,v.city,
   coalesce(v.region,''),coalesce(v.postcode,''),v.country_code,coalesce(v.unlocode,''),v.residential,
-  v.local_language,coalesce(v.local_name,''),v.local_lines,coalesce(v.local_city,''),coalesce(v.local_region,'')`
+  v.local_language,coalesce(v.local_name,''),v.local_lines,coalesce(v.local_city,''),coalesce(v.local_region,''),
+  coalesce(v.phone,''),coalesce(v.email,'')`
 
 // readBook reads the current version of every address and, if asked, contact, and the current defaults.
 func readBook(ctx context.Context, q bentopg.Querier, tenant org.TenantID, party org.PartyID, revision int64, withContacts bool) (*org.AddressBook, error) {
@@ -270,7 +271,7 @@ func scanAddresses(rows pgx.Rows) ([]org.AddressVersion, error) {
 		var local org.LocalAddress
 		if err := rows.Scan(&id, &v.Version, &v.Revision, &status, &v.ShortCode, &purposes, &v.Name, &v.Lines, &v.City,
 			&v.Region, &v.Postcode, &v.CountryCode, &v.UNLocode, &v.Residential,
-			&language, &local.Name, &localLines, &local.City, &local.Region); err != nil {
+			&language, &local.Name, &localLines, &local.City, &local.Region, &v.Phone, &v.Email); err != nil {
 			return nil, err
 		}
 		v.ID, v.Status = org.AddressID(id), org.EntryStatus(status)

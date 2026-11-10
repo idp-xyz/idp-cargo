@@ -1,4 +1,4 @@
-# IDP-Cargo · Go + DDD + Bento-Go · V2.23 integration candidate
+# IDP-Cargo · Go + DDD + Bento-Go · V2.24 integration candidate
 
 **IDP-Cargo is one product repository and one Go module. Business code is organized by DDD bounded context; IDP-Bento-Go and IDP-Platform-Go stay separate repositories referenced as Go module versions.**
 
@@ -13,10 +13,10 @@ cmd/cargo-migrate/              operator-only migrations: Bento schema, framewor
 cmd/cargo-worker/               Outbox relay: claim, publish to an HTTP sink, settle; at least once
 internal/contexts/org/          ORG bounded context
   module.go                     assembles ORG; the only constructor other code uses
-  api/                          ORG's contract: commands, PartyRef v1 and the party-role query, address book commands and queries, published events, error kinds, Authorizer port
+  api/                          ORG's contract: commands, PartyRef v1 and the party-role query, party identity and address book commands and queries, published events, error kinds, Authorizer port
   internal/                     private to ORG (Go internal rule)
-    domain/                     BusinessParty, LegalEntity, PartnerMergeCase, AddressBook (a party's addresses and contacts)
-    application/                ApproveRole, the address book commands and queries, and their ports
+    domain/                     BusinessParty (with typed identifiers and English name), LegalEntity, PartnerMergeCase, AddressBook (a party's addresses and contacts)
+    application/                ApproveRole, the party identity and address book commands and queries, and their ports
     adapters/postgres/          tenant-scoped persistence, receipts, Outbox, Bento repository ports
     integration/                PG16 tests (build tag integration)
 internal/contexts/rate/         RATE bounded context (Rate, Quote & Commercial Rules)
@@ -48,7 +48,7 @@ internal/bootstrap/             composition root: one connection pool, a Bento t
 internal/kernel/                value objects shared by every context (ValidityInterval, Money, Quantity, LocationCode); standard library only
 internal/foundation/bento/      context-agnostic IDP-Bento-Go adaptation (tenant-bound transactions, clock)
 internal/foundation/messaging/  reliable messaging: Outbox relay, HTTP webhook publisher
-migrations/org/                 immutable ORG migrations 000001–000007
+migrations/org/                 immutable ORG migrations 000001–000008
 migrations/rate/                RATE migrations, starting with 000001_rate_quotes
 migrations/com/                 COM migrations 000001_com_orders and 000002_com_obligation_lifecycle
 migrations/ful/                 FUL migrations, starting with 000001_ful_shipments
@@ -117,6 +117,13 @@ GitHub Actions, `ubuntu-24.04` runner, workflow `org-pg16-contract.yml`, on ever
   - Erasing a contact clears its name, phone, mobile and e-mail in every version and keeps purposes, statuses and the change records.
   - Migration `org/000007_org_party_address_book` replaces the encrypted `party_address` and `party_contact` candidates of migration 000001, which no code ever wrote, and refuses to run if they hold rows. Versions, defaults and change records cannot be rewritten; a contact version can only be erased. Deferred constraint triggers check every address book a transaction touches when it commits. The application role gets only the grants it needs on the new tables.
   - PG16 tests race eight commands on one address book revision (one commits) and show that the database refuses eight kinds of writes past ORG; a model-based property test runs random sequences of all nine commands.
+- V2.24 implements ORG V0.4, the owner's decision O1 of 2026-11-10 after benchmarking party data against SAP and Chinese rules: customs declarations, manifests and invoices name parties by official codes, which ORG did not keep.
+  - A party has typed identifiers (MD-06): `CN_USCC`, the 18-character unified social credit code checked against the GB 32100 check character; `CN_CUSTOMS`, the 10-character customs code; `AEO` (issuing country and code, as declarations print it); `EU_EORI`; `US_EIN`; and `REGISTRATION` for other national registration codes. Each entry has its issuing country and evidence; one active entry per type and country; an entry may record that the party has none (declarations then print NO). A code belongs to one party of a tenant; recording it for a second party is a conflict that names the holder, to be merged. Retiring keeps the entry as history; a correction retires and records again.
+  - A party has an optional English name, printable ASCII, as international documents print it; the legal name stays the registered one.
+  - Identity is part of the party, so `RecordPartyIdentifier`, `RetirePartyIdentifier` and `SetPartyEnglishName` advance the revision PartyRef carries; `GetPartyIdentity` returns names, status, identifiers and revision. `ResolvePartyRole` now returns the English name and identifiers in the same view as the revision, for COM V0.6 to freeze. Events name the identifier's type and country, never the code.
+  - An address may carry the organization's phone and e-mail at that address, such as a switchboard (manifests require the shipper's phone); a residential address carries neither.
+  - Migration `org/000008_org_party_identifiers` replaces the encrypted `party_identifier` candidate of migration 000001, which no code ever wrote, and refuses to run if it holds rows. The database checks each code's form, including the GB 32100 check character (`cargo_org.uscc_valid`), one active entry per type and country, one active holder per code, and lets an identifier only be retired, once. The application role gets INSERT and the retirement columns only.
+  - PG16 tests race eight parties recording one code (one commits), and show the database refusing a wrong check character, a second active entry, rewrites and deletions of identifiers, an undone retirement and a non-ASCII English name.
 
 Bento testkit contracts:
 
@@ -142,7 +149,7 @@ NOT executed:
 1. Install Go 1.26.5 and resolve the immutable framework candidate; do not use Git `main` or a local `replace`.
 2. Set `IDP_CARGO_MIGRATOR_DSN` to a dedicated migration role in PG16.
 3. `go run ./cmd/cargo-migrate -manifest migrations/manifest/contexts.txt` to inspect; separately authorize `-apply`.
-4. Create a `cargo_app` user with no owner/superuser/BYPASSRLS/DDL rights; grant only required DML (for `cargo_org` address books: SELECT, INSERT, UPDATE on `party_address_book`, `party_address` and `party_contact`; SELECT, INSERT on `party_address_book_change`, `party_address_version`, `party_address_default`, `party_contact_version` and `party_contact_default`; UPDATE of `name`, `phone`, `mobile`, `email` and `erased` only on `party_contact_version`; for `cargo_rate`: SELECT, INSERT, UPDATE on `quote`; SELECT, INSERT on `quote_line`, `quote_exchange_rate` and `command_receipt`; for `cargo_com`: SELECT, INSERT, UPDATE on `customer_order`; SELECT, INSERT on `order_line`, `order_line_amendment`, `order_policy`, `fulfillment_obligation`, `obligation_reservation` and `command_receipt`; UPDATE of `released_by` and `released_at` only on `obligation_reservation`; for `cargo_ful`: SELECT, INSERT, UPDATE on `shipment`; SELECT, INSERT on `shipment_obligation`, `shipment_plan_version`, `shipment_plan_confirmation` and `command_receipt`; UPDATE of `released_by` and `released_at` only on `shipment_obligation`).
+4. Create a `cargo_app` user with no owner/superuser/BYPASSRLS/DDL rights; grant only required DML (for `cargo_org` party identifiers: SELECT, INSERT on `party_identifier` and UPDATE of `retired_by`, `retired_at`, `retire_reason` and `retired_revision` only; for `cargo_org` address books: SELECT, INSERT, UPDATE on `party_address_book`, `party_address` and `party_contact`; SELECT, INSERT on `party_address_book_change`, `party_address_version`, `party_address_default`, `party_contact_version` and `party_contact_default`; UPDATE of `name`, `phone`, `mobile`, `email` and `erased` only on `party_contact_version`; for `cargo_rate`: SELECT, INSERT, UPDATE on `quote`; SELECT, INSERT on `quote_line`, `quote_exchange_rate` and `command_receipt`; for `cargo_com`: SELECT, INSERT, UPDATE on `customer_order`; SELECT, INSERT on `order_line`, `order_line_amendment`, `order_policy`, `fulfillment_obligation`, `obligation_reservation` and `command_receipt`; UPDATE of `released_by` and `released_at` only on `obligation_reservation`; for `cargo_ful`: SELECT, INSERT, UPDATE on `shipment`; SELECT, INSERT on `shipment_obligation`, `shipment_plan_version`, `shipment_plan_confirmation` and `command_receipt`; UPDATE of `released_by` and `released_at` only on `shipment_obligation`).
 5. Set `CI=true IDP_CARGO_POSTGRES_DSN=...`. The Bento contract tests also need `IDP_CARGO_MIGRATOR_DSN` to provision their throwaway schemas.
 6. `go test -tags integration -count=1 -v ./...`
 7. `go test -tags integration -race -count=1 ./...`
@@ -179,6 +186,7 @@ tools/localpg/localpg.sh down dev          # remove the container and its data
 - The reservation is COM's own fact, set and cleared through COM's api, so the COM → FUL relationship keeps its direction. In S1 an API client drives the handshake (rule T6); a release that FUL has not recorded first is caught by FUL's own re-checks, not by COM.
 - COM's rules follow the 2026-11-06 business review (C3–C7) and the owner decisions of 2026-11-09 (C1, C2, C8, C10) where implemented; addresses and contacts on the order (C9) follow in COM V0.6, now that ORG keeps them. Package type codes and weight and volume units are checked for form only until reference data exists (MD-25).
 - FUL's rules are a candidate design pending business review: one transport mode per shipment (AIR, SEA, ROAD or RAIL), UN/LOCODE origins and destinations only, additions only while the plan is a draft, one weight unit per shipment, and volume declared by all of its obligations or by none. Splitting obligations into parts follows owner decision F1. The customer's requested route and dates are not on the order yet, so planners enter them in FUL.
+- ORG keeps the official codes of organizations (unified social credit code, customs code, AEO, EORI, EIN, registration numbers); these are public registration data, not personal data, and leave ORG only through its queries, never in events. Identifiers of natural persons (identity cards, passports) are not accepted.
 - ORG keeps addresses and contacts under privacy assessment V1.1 (an assessor's opinion awaiting the data protection owner's sign-off). Contacts are personal data: reading them is authorized separately, they never appear in events or receipts, and they can be erased. Contact fields are stored in plaintext under row level security; encryption at rest waits for KMS. Development and tests use simulated data only (M1); real personal data needs the steps of section 6 of the assessment before the pilot (E3).
 - The earliest ORG master data cannot be signed off until a Cargo business owner validates authoritative identity, legal status and partner role semantics.
 

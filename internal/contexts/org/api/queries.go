@@ -32,7 +32,8 @@ type ResolvePartyRole struct {
 }
 
 // PartyRole is a positive answer: the reference to keep, the particulars to freeze into the caller's
-// own transaction snapshot, and the approved role in force at the instant asked about.
+// own transaction snapshot, and the approved role in force at the instant asked about. Since ORG V0.4 the
+// particulars include the English name and the active identifiers, read in the same view as the revision.
 type PartyRole struct {
 	Ref         PartyRef
 	LegalName   string
@@ -40,6 +41,8 @@ type PartyRole struct {
 	RoleCode    string
 	Validity    kernel.ValidityInterval
 	EvidenceRef string
+	EnglishName string
+	Identifiers []PartyIdentifier
 }
 
 // Queries is ORG's read side for other contexts. A party that may not act in the role yields
