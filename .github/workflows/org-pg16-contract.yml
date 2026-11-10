@@ -59,10 +59,13 @@ jobs:
           GRANT SELECT ON ALL TABLES IN SCHEMA cargo_org TO cargo_app;
           DO $role_grant$ DECLARE tab text; BEGIN
             FOR tab IN SELECT tablename FROM pg_tables
-              WHERE schemaname='cargo_org' AND tablename <> 'reference_code_edition' LOOP
+              WHERE schemaname='cargo_org' AND tablename <> 'reference_code_edition' AND tablename NOT LIKE 'party\_address%' AND tablename NOT LIKE 'party\_contact%' LOOP
               EXECUTE format('GRANT INSERT,UPDATE,DELETE ON cargo_org.%I TO cargo_app',tab);
             END LOOP;
           END $role_grant$;
+          GRANT INSERT,UPDATE ON cargo_org.party_address_book,cargo_org.party_address,cargo_org.party_contact TO cargo_app;
+          GRANT INSERT ON cargo_org.party_address_book_change,cargo_org.party_address_version,cargo_org.party_address_default,cargo_org.party_contact_version,cargo_org.party_contact_default TO cargo_app;
+          GRANT UPDATE (name,phone,mobile,email,erased) ON cargo_org.party_contact_version TO cargo_app;
           GRANT SELECT,INSERT,UPDATE ON cargo_rate.quote TO cargo_app;
           GRANT SELECT,INSERT ON cargo_rate.quote_line,cargo_rate.quote_exchange_rate,cargo_rate.command_receipt TO cargo_app;
           GRANT SELECT,INSERT,UPDATE ON cargo_com.customer_order TO cargo_app;

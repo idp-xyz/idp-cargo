@@ -78,6 +78,17 @@ func TestClassifyMapsCausesToAPIKinds(t *testing.T) {
 		{domain.ErrRoleNotEffective, api.ErrRejected},
 		{domain.ErrLegalEntityNotVerified, api.ErrRejected},
 		{application.ErrInvalidQuery, api.ErrRejected},
+		{application.ErrInvalidCommand, api.ErrRejected},
+		{domain.ErrEntryExists, api.ErrConflict},
+		{domain.ErrUnknownAddress, api.ErrNotFound},
+		{domain.ErrUnknownContact, api.ErrNotFound},
+		{domain.ErrInvalidAddress, api.ErrRejected},
+		{domain.ErrInvalidContact, api.ErrRejected},
+		{domain.ErrInvalidChange, api.ErrRejected},
+		{domain.ErrShortCodeInUse, api.ErrRejected},
+		{domain.ErrEntryNotActive, api.ErrRejected},
+		{domain.ErrNothingChanged, api.ErrRejected},
+		{domain.ErrPartyArchived, api.ErrRejected},
 	} {
 		got := classify(tc.cause)
 		if !errors.Is(got, tc.want) || !errors.Is(got, tc.cause) {
@@ -87,5 +98,55 @@ func TestClassifyMapsCausesToAPIKinds(t *testing.T) {
 	other := errors.New("connection reset")
 	if classify(other) != other {
 		t.Error("unknown causes must pass through unchanged")
+	}
+}
+
+// Address book events are published under the api's names and carry identifiers only: the party, the
+// address or contact, its version, the book revision and the purpose of a new default.
+func TestAddressBookEventsMatchPublishedContract(t *testing.T) {
+	pairs := map[string]string{
+		domain.EventPartyAddressAdded: api.PartyAddressAdded, domain.EventPartyAddressChanged: api.PartyAddressChanged,
+		domain.EventPartyAddressDeactivated: api.PartyAddressDeactivated, domain.EventPartyDefaultAddressSet: api.PartyDefaultAddressSet,
+		domain.EventPartyContactAdded: api.PartyContactAdded, domain.EventPartyContactChanged: api.PartyContactChanged,
+		domain.EventPartyContactDeactivated: api.PartyContactDeactivated, domain.EventPartyContactErased: api.PartyContactErased,
+		domain.EventPartyDefaultContactSet: api.PartyDefaultContactSet,
+	}
+	for d, a := range pairs {
+		if d != a {
+			t.Errorf("domain event %s is published as %s", d, a)
+		}
+	}
+	at := time.Date(2026, 11, 10, 8, 0, 0, 0, time.UTC)
+	book, err := domain.NewAddressBook("T", "P")
+	if err != nil {
+		t.Fatal(err)
+	}
+	contact := domain.Contact{Purposes: []domain.ContactPurpose{domain.ContactBooking}, Name: "Test Person A", Email: "desk-a@example.test"}
+	if _, err = book.AddContact("C1", contact, nil, "clerk", at); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = book.SetDefaultContact(domain.ContactBooking, "C1", "clerk", at); err != nil {
+		t.Fatal(err)
+	}
+	events := book.Pending()
+	want := []api.EventPayload{
+		{TenantID: "T", SubjectID: "P", EntryID: "C1", EntryVersion: 1, Revision: 1},
+		{TenantID: "T", SubjectID: "P", EntryID: "C1", EntryVersion: 1, Revision: 2, Purpose: api.ContactBooking},
+	}
+	for i, e := range events {
+		envelope, err := postgres.ORGEnvelope(fmt.Sprintf("cmd-%d", i), e, at)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(envelope.Payload), "Test Person") || strings.Contains(string(envelope.Payload), "example.test") {
+			t.Fatalf("event payload carries personal data: %s", envelope.Payload)
+		}
+		var payload api.EventPayload
+		if err = json.Unmarshal(envelope.Payload, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload != want[i] || envelope.Subject != "P" {
+			t.Fatalf("event %d payload = %+v, want %+v", i, payload, want[i])
+		}
 	}
 }

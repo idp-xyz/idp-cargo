@@ -26,8 +26,10 @@ type Module struct {
 }
 
 var (
-	_ api.Commands = (*Module)(nil)
-	_ api.Queries  = (*Module)(nil)
+	_ api.Commands            = (*Module)(nil)
+	_ api.Queries             = (*Module)(nil)
+	_ api.AddressBookCommands = (*Module)(nil)
+	_ api.AddressBookQueries  = (*Module)(nil)
 )
 
 func New(db *bentopg.DB, auth api.Authorizer) (*Module, error) {
@@ -98,6 +100,10 @@ func (a authorizer) RequireRoleApproval(ctx context.Context, s application.Scope
 	return a.AuthorizeRoleApproval(ctx, string(s.TenantID), s.ActorID, string(p), string(r))
 }
 
+func (a authorizer) RequirePartyAction(ctx context.Context, s application.Scope, action string, p domain.PartyID) error {
+	return a.AuthorizePartyAction(ctx, string(s.TenantID), s.ActorID, action, string(p))
+}
+
 // classify wraps known ORG and Bento causes in their api error kind and passes anything else through.
 func classify(err error) error {
 	var kind error
@@ -108,14 +114,17 @@ func classify(err error) error {
 		kind = api.ErrUnauthorized
 	case errors.Is(err, application.ErrIdempotencyConflict):
 		kind = api.ErrIdempotencyConflict
-	case errors.Is(err, domain.ErrConflict), errors.Is(err, bentorepo.ErrConflict):
+	case errors.Is(err, domain.ErrConflict), errors.Is(err, bentorepo.ErrConflict), errors.Is(err, domain.ErrEntryExists):
 		kind = api.ErrConflict
-	case errors.Is(err, bentorepo.ErrNotFound):
+	case errors.Is(err, bentorepo.ErrNotFound), errors.Is(err, domain.ErrUnknownAddress), errors.Is(err, domain.ErrUnknownContact):
 		kind = api.ErrNotFound
 	case errors.Is(err, domain.ErrInvalidIdentity), errors.Is(err, domain.ErrInvalidTransition),
 		errors.Is(err, domain.ErrRoleOverlap), errors.Is(err, domain.ErrMissingEvidence),
 		errors.Is(err, domain.ErrPartyNotActive), errors.Is(err, domain.ErrRoleNotEffective),
-		errors.Is(err, domain.ErrLegalEntityNotVerified), errors.Is(err, application.ErrInvalidQuery):
+		errors.Is(err, domain.ErrLegalEntityNotVerified), errors.Is(err, application.ErrInvalidQuery),
+		errors.Is(err, application.ErrInvalidCommand), errors.Is(err, domain.ErrInvalidAddress), errors.Is(err, domain.ErrInvalidContact),
+		errors.Is(err, domain.ErrInvalidChange), errors.Is(err, domain.ErrShortCodeInUse), errors.Is(err, domain.ErrEntryNotActive),
+		errors.Is(err, domain.ErrNothingChanged), errors.Is(err, domain.ErrPartyArchived):
 		kind = api.ErrRejected
 	default:
 		return err

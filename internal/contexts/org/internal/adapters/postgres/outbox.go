@@ -31,7 +31,8 @@ func ORGEnvelope(commandID string, e org.Event, recordedAt time.Time) (eventing.
 	// Event ID is deterministic per immutable command ID and event type.
 	// This makes retried uncertain outcomes traceable; receipts still enforce command idempotency.
 	digest := sha256.Sum256([]byte(commandID + "\x00" + e.Type + "\x00" + string(e.TenantID) + "\x00" + e.SubjectID))
-	payload, err := json.Marshal(api.EventPayload{TenantID: string(e.TenantID), SubjectID: e.SubjectID})
+	payload, err := json.Marshal(api.EventPayload{TenantID: string(e.TenantID), SubjectID: e.SubjectID,
+		EntryID: e.EntryID, EntryVersion: e.EntryVersion, Revision: e.Revision, Purpose: e.Purpose})
 	if err != nil {
 		return eventing.Envelope{}, err
 	}

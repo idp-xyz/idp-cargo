@@ -34,10 +34,12 @@ type Commands interface {
 	ApproveRole(ctx context.Context, cmd ApproveRole) (Receipt, error)
 }
 
-// Authorizer decides whether a verified actor may approve a role. The identity and policy layer
+// Authorizer decides whether a verified actor may approve a role, or perform a party action: one of the
+// address book commands or reading a party's contacts (the Action constants). The identity and policy layer
 // supplies it.
 type Authorizer interface {
 	AuthorizeRoleApproval(ctx context.Context, tenantID, actorID, partyID, roleCode string) error
+	AuthorizePartyAction(ctx context.Context, tenantID, actorID, action, partyID string) error
 }
 
 // Error kinds returned by Commands and Queries, wrapped around the original cause. Transports map

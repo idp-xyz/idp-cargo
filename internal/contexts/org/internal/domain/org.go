@@ -56,6 +56,12 @@ type Event struct {
 	At        time.Time
 	TenantID  TenantID
 	SubjectID string
+	// Address book events name the address or contact, its version, the book revision and, for a new
+	// default, the purpose. Empty for party events.
+	EntryID      string
+	EntryVersion int64
+	Revision     int64
+	Purpose      string
 	// Deliberately excludes legal identifiers and PII; event transport maps this to Bento Envelope.
 }
 

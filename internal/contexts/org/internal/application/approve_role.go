@@ -21,6 +21,7 @@ var (
 	ErrUnauthorized        = errors.New("org application: unauthorized")
 	ErrIdempotencyConflict = errors.New("org application: command id payload mismatch")
 	ErrMissingDependency   = errors.New("org application: required dependency missing")
+	ErrInvalidCommand      = errors.New("org application: invalid command")
 )
 
 type Scope struct {
@@ -36,11 +37,18 @@ type RoleApprovalCommand struct {
 	Role             org.Role
 	OccurredAt       time.Time
 }
+
+// Receipt is the result of a committed command. A role approval names the party and its new revision; an
+// address book command names the party, the book's new revision and the address or contact it concerns with
+// that entry's version.
 type Receipt struct {
-	CommandID   string
-	PartyID     org.PartyID
-	NewRevision int64
-	RequestHash string
+	CommandID    string
+	ResultType   string // ResultRoleApproval or ResultAddressBook
+	PartyID      org.PartyID
+	NewRevision  int64
+	EntryID      string
+	EntryVersion int64
+	RequestHash  string
 }
 type TxRunner interface {
 	WithinTransaction(context.Context, func(context.Context) error) error
@@ -142,7 +150,7 @@ func (h ApproveRole) Handle(ctx context.Context, c RoleApprovalCommand) (Receipt
 				return err
 			}
 		}
-		result = Receipt{CommandID: c.CommandID, PartyID: c.PartyID, NewRevision: newRevision, RequestHash: hash}
+		result = Receipt{CommandID: c.CommandID, ResultType: ResultRoleApproval, PartyID: c.PartyID, NewRevision: newRevision, RequestHash: hash}
 		if err = h.Receipts.Save(txCtx, c.Scope.TenantID, result); err != nil {
 			return err
 		}
