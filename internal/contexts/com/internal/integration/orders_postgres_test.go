@@ -78,29 +78,47 @@ func (o *orgStub) ResolvePartyRole(_ context.Context, q orgapi.ResolvePartyRole)
 	}, nil
 }
 
-// rateStub answers RATE's snapshot query: every quote is accepted for P-1, or the query is refused.
+// rateStub answers RATE's queries: every quote is accepted for P-1 as a customer, unless edit changes it, or
+// the query is refused. STANDARD and EXPRESS are the listed service levels.
 type rateStub struct {
 	at     time.Time
 	refuse error
+	edit   map[string]func(*rateapi.QuoteSnapshotV2)
 }
 
-func (r *rateStub) GetQuoteSnapshotV2(context.Context, rateapi.GetQuoteSnapshot) (rateapi.QuoteSnapshotV2, error) {
-	return rateapi.QuoteSnapshotV2{}, errors.New("COM reads QuoteSnapshot v1 only")
-}
-
-func (r *rateStub) GetQuoteSnapshot(_ context.Context, q rateapi.GetQuoteSnapshot) (rateapi.QuoteSnapshot, error) {
+func (r *rateStub) GetQuoteSnapshotV2(_ context.Context, q rateapi.GetQuoteSnapshot) (rateapi.QuoteSnapshotV2, error) {
 	if r.refuse != nil {
-		return rateapi.QuoteSnapshot{}, fmt.Errorf("%w: stub", r.refuse)
+		return rateapi.QuoteSnapshotV2{}, fmt.Errorf("%w: stub", r.refuse)
 	}
-	return snapshot(q.TenantID, q.QuoteID, r.at), nil
+	s := snapshot(q.TenantID, q.QuoteID, r.at)
+	if edit := r.edit[q.QuoteID]; edit != nil {
+		edit(&s)
+	}
+	return s, nil
 }
 
-func snapshot(tenant, quote string, at time.Time) rateapi.QuoteSnapshot {
+func (r *rateStub) GetQuoteSnapshot(context.Context, rateapi.GetQuoteSnapshot) (rateapi.QuoteSnapshot, error) {
+	return rateapi.QuoteSnapshot{}, errors.New("COM reads QuoteSnapshot v2")
+}
+
+func (r *rateStub) GetServiceLevel(_ context.Context, q rateapi.GetServiceLevel) (rateapi.ServiceLevel, error) {
+	if q.Code == "STANDARD" || q.Code == "EXPRESS" {
+		return rateapi.ServiceLevel{Code: q.Code, Name: q.Code}, nil
+	}
+	return rateapi.ServiceLevel{}, fmt.Errorf("%w: %s", rateapi.ErrNotFound, q.Code)
+}
+
+func (r *rateStub) ListServiceLevels(context.Context, rateapi.ListServiceLevels) ([]rateapi.ServiceLevel, error) {
+	return []rateapi.ServiceLevel{{Code: "STANDARD", Name: "STANDARD"}, {Code: "EXPRESS", Name: "EXPRESS"}}, nil
+}
+
+func snapshot(tenant, quote string, at time.Time) rateapi.QuoteSnapshotV2 {
 	usd := kernel.Money{Currency: "USD", Minor: 100_000}
-	return rateapi.QuoteSnapshot{TenantID: tenant, QuoteID: quote, QuoteRevision: 3, LegalEntityID: "LE",
-		Customer: rateapi.CustomerRef{PartyID: "P-1", PartyRevision: 2}, Lines: []rateapi.SnapshotLine{{ChargeCode: "FREIGHT", Amount: usd}},
-		Total: usd, Validity: kernel.ValidityInterval{From: at.Add(-time.Hour), Until: at.Add(14 * 24 * time.Hour)},
-		AcceptedAt: at.Add(-30 * time.Minute), AcceptanceEvidenceRef: "signed-quote"}
+	return rateapi.QuoteSnapshotV2{TenantID: tenant, QuoteID: quote, QuoteRevision: 3, LegalEntityID: "LE",
+		Customer: rateapi.CustomerRef{PartyID: "P-1", PartyRevision: 2}, RecipientRole: "CUSTOMER", Currency: "USD",
+		Lines: []rateapi.SnapshotLineV2{{ChargeCode: "FREIGHT", Amount: usd, InQuoteCurrency: usd}}, Total: usd, Rounding: "HALF_UP_PER_LINE",
+		Validity:   kernel.ValidityInterval{From: at.Add(-time.Hour), Until: at.Add(14 * 24 * time.Hour)},
+		AcceptedAt: at.Add(-30 * time.Minute), AcceptanceEvidenceKind: "EMAIL", AcceptanceEvidenceRef: "signed-quote"}
 }
 
 // orderPolicy forbids the actor "intruder".
@@ -140,8 +158,8 @@ type fixture struct {
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
-	at := time.Now().UTC().Truncate(time.Microsecond)
-	f := &fixture{db: testDB(t), org: &orgStub{at: at}, rate: &rateStub{at: at}, at: at,
+	at := time.Now().UTC().Add(-48 * time.Hour).Truncate(time.Microsecond) // business times lie in the past (T1)
+	f := &fixture{db: testDB(t), org: &orgStub{at: at}, rate: &rateStub{at: at, edit: map[string]func(*rateapi.QuoteSnapshotV2){}}, at: at,
 		tenant: "cargo-com-" + time.Now().UTC().Format("20060102T150405.000000000")}
 	module, err := commodule.New(f.db, f.org, f.rate, orderPolicy{})
 	if err != nil {
@@ -334,7 +352,7 @@ func TestOrderLifecycleOnPostgres(t *testing.T) {
 	if got := f.outboxTypes(t); !reflect.DeepEqual(got, wantEvents) {
 		t.Fatalf("outbox events %v, want %v", got, wantEvents)
 	}
-	terms, _ := rateacl.TermsHash(snapshot(f.tenant, "Q-1", f.at))
+	terms, _ := rateacl.TermsHashV2(snapshot(f.tenant, "Q-1", f.at))
 	var status, hash, name string
 	var revision int64
 	if err = f.within(t, func(ctx context.Context, e bentopg.Executor) error {

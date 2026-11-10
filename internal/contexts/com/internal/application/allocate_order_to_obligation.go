@@ -28,6 +28,9 @@ func (h AllocateOrderToObligation) Handle(ctx context.Context, c AllocateOrderTo
 	if err != nil || replayed {
 		return stored, err
 	}
+	if _, err = h.admit(c.OccurredAt); err != nil {
+		return Receipt{}, err
+	}
 	if err = h.authorize(ctx, c.Scope, ActionAllocateOrderToObligation, c.OrderID); err != nil {
 		return Receipt{}, err
 	}

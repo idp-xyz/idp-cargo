@@ -62,6 +62,15 @@ func (s *storeFake) Save(_ context.Context, o *com.CustomerOrder, expected int64
 	s.revs[o.ID()]++
 	return s.revs[o.ID()], nil
 }
+func (s *storeFake) OrdersOfQuote(_ context.Context, _ com.TenantID, quote string) (int, error) {
+	n := 0
+	for _, st := range s.orders {
+		if st.Quote.QuoteID == quote && st.Status != com.OrderCancelled {
+			n++
+		}
+	}
+	return n, nil
+}
 func (s *storeFake) OrderOf(_ context.Context, _ com.TenantID, id com.ObligationID) (com.OrderID, error) {
 	for order, st := range s.orders {
 		for _, ob := range st.Obligations {
@@ -108,6 +117,7 @@ type quotesFake struct {
 	fail     error
 	calls    int
 	insideTx bool
+	terms    com.CommercialTerms
 }
 
 func (q *quotesFake) AcceptedQuote(context.Context, com.TenantID, string) (com.AcceptedQuote, error) {
@@ -118,7 +128,8 @@ func (q *quotesFake) AcceptedQuote(context.Context, com.TenantID, string) (com.A
 	}
 	return com.AcceptedQuote{QuoteID: "Q-1", QuoteRevision: 3, LegalEntityID: "LE", CustomerPartyID: "P", CustomerRevision: 2,
 		Total: kernel.Money{Currency: "USD", Minor: 100_000}, Validity: kernel.ValidityInterval{From: now.Add(-time.Hour), Until: now.Add(14 * 24 * time.Hour)},
-		AcceptedAt: now.Add(-30 * time.Minute), EvidenceRef: "signed-quote", TermsHash: strings.Repeat("cd", 32)}, nil
+		RecipientRole: com.RoleCustomer, AcceptedAt: now.Add(-30 * time.Minute), EvidenceRef: "signed-quote", Terms: q.terms,
+		TermsContract: com.QuoteSnapshotV2, TermsHash: strings.Repeat("cd", 32)}, nil
 }
 
 type customersFake struct {
@@ -126,32 +137,88 @@ type customersFake struct {
 	fail     error
 	calls    int
 	insideTx bool
+	roles    []string
 }
 
-func (c *customersFake) VerifyCustomer(_ context.Context, _ com.TenantID, party string, _ com.LegalEntityID, _ time.Time) (com.CustomerSnapshot, error) {
+func (c *customersFake) VerifyOrderingParty(_ context.Context, _ com.TenantID, party, role string, _ com.LegalEntityID, _ time.Time) (com.CustomerSnapshot, error) {
 	c.calls++
 	c.insideTx = c.insideTx || c.tx.depth > 0
+	c.roles = append(c.roles, role)
 	if c.fail != nil {
 		return com.CustomerSnapshot{}, c.fail
 	}
-	return com.CustomerSnapshot{PartyID: party, PartyRevision: 2, LegalName: "Fixture Corp", CountryCode: "US",
+	return com.CustomerSnapshot{PartyID: party, PartyRevision: 2, LegalName: "Fixture Corp", CountryCode: "US", RoleCode: role,
 		RoleValidity: kernel.ValidityInterval{From: now.Add(-time.Hour)}, RoleEvidenceRef: "customer-contract"}, nil
 }
 
-type fixture struct {
-	deps      Deps
-	store     *storeFake
-	outbox    *outboxFake
-	auth      *authFake
-	quotes    *quotesFake
-	customers *customersFake
+type policiesFake struct {
+	versions map[com.LegalEntityID][]com.PolicySetting
+	inForce  int
 }
 
+func (p *policiesFake) InForce(_ context.Context, _ com.TenantID, entity com.LegalEntityID) (com.OrderPolicy, error) {
+	p.inForce++
+	for _, scope := range []com.LegalEntityID{entity, ""} {
+		if v := p.versions[scope]; len(v) > 0 {
+			return v[len(v)-1].OrderPolicy, nil
+		}
+	}
+	return com.BuiltInOrderPolicy(), nil
+}
+
+func (p *policiesFake) Latest(_ context.Context, _ com.TenantID, entity com.LegalEntityID) (*com.PolicySetting, error) {
+	if v := p.versions[entity]; len(v) > 0 {
+		latest := v[len(v)-1]
+		return &latest, nil
+	}
+	return nil, nil
+}
+
+func (p *policiesFake) Insert(_ context.Context, s com.PolicySetting) error {
+	p.versions[s.LegalEntityID] = append(p.versions[s.LegalEntityID], s)
+	return nil
+}
+
+type serviceLevelsFake struct {
+	tx       *txFake
+	asked    []string
+	insideTx bool
+}
+
+func (s *serviceLevelsFake) Listed(_ context.Context, _ com.TenantID, code string) error {
+	s.asked = append(s.asked, code)
+	s.insideTx = s.insideTx || s.tx.depth > 0
+	if code == "STANDARD" || code == "EXPRESS" {
+		return nil
+	}
+	return ErrServiceLevelNotListed
+}
+
+type clockFake struct{ at time.Time }
+
+func (c *clockFake) Now() time.Time { return c.at }
+
+type fixture struct {
+	deps          Deps
+	store         *storeFake
+	outbox        *outboxFake
+	auth          *authFake
+	quotes        *quotesFake
+	customers     *customersFake
+	policies      *policiesFake
+	serviceLevels *serviceLevelsFake
+	clock         *clockFake
+}
+
+// newFixture records commands eight hours after now, so the business times the tests state lie within the
+// record window before it (T1).
 func newFixture() *fixture {
 	tx := &txFake{}
 	f := &fixture{store: &storeFake{orders: map[com.OrderID]com.OrderState{}, revs: map[com.OrderID]int64{}},
-		outbox: &outboxFake{}, auth: &authFake{}, quotes: &quotesFake{tx: tx}, customers: &customersFake{tx: tx}}
-	f.deps = Deps{Tx: tx, Orders: f.store, Receipts: receiptsFake{}, Outbox: f.outbox, Auth: f.auth}
+		outbox: &outboxFake{}, auth: &authFake{}, quotes: &quotesFake{tx: tx}, customers: &customersFake{tx: tx},
+		policies: &policiesFake{versions: map[com.LegalEntityID][]com.PolicySetting{}}, serviceLevels: &serviceLevelsFake{tx: tx},
+		clock: &clockFake{at: now.Add(8 * time.Hour)}}
+	f.deps = Deps{Tx: tx, Orders: f.store, Receipts: receiptsFake{}, Outbox: f.outbox, Auth: f.auth, Clock: f.clock, Window: kernel.DefaultRecordWindow}
 	return f
 }
 
@@ -167,7 +234,7 @@ func recordCommand(id string) RecordCustomerOrderCommand {
 }
 
 func (f *fixture) recorder() RecordCustomerOrder {
-	return RecordCustomerOrder{Deps: f.deps, Quotes: f.quotes, Customers: f.customers}
+	return RecordCustomerOrder{Deps: f.deps, Quotes: f.quotes, Customers: f.customers, Policies: f.policies, ServiceLevels: f.serviceLevels}
 }
 
 func (f *fixture) allocate(command string, revision int64, obligation com.ObligationID, m com.Measure) (Receipt, error) {

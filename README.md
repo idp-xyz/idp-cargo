@@ -1,4 +1,4 @@
-# IDP-Cargo · Go + DDD + Bento-Go · V2.17 integration candidate
+# IDP-Cargo · Go + DDD + Bento-Go · V2.21 integration candidate
 
 **IDP-Cargo is one product repository and one Go module. Business code is organized by DDD bounded context; IDP-Bento-Go and IDP-Platform-Go stay separate repositories referenced as Go module versions.**
 
@@ -101,6 +101,13 @@ GitHub Actions, `ubuntu-24.04` runner, workflow `org-pg16-contract.yml`, on ever
   - C8: optional Incoterms rule, edition (2010 or 2020), named place and service level on the quote.
   - `GetQuoteSnapshotV2` returns all of it, without costs or margins; v1 keeps each line's own currency and totals in the quote currency.
   - Migration `rate/000002_rate_quote_v03` converts V0.2 quotes without loss: lines take the quote currency, recipients are customers, and accepted quotes get the evidence kind UNRECORDED and no recording time. New table `cargo_rate.quote_exchange_rate`, immutable.
+- V2.21 implements COM V0.5 and RATE V0.4: the owner decisions C10, C1, C2 and the amendment of C8 of 2026-11-09, T1 in COM, and the ordering-party side of R7.
+  - C10: a customer's correction of what it declared is `AmendOrderLine`, the line's next version with a reason, without a new quote; `AddOrderLine` adds a line. A line never falls below what its active obligations commit, and keeps its package type and units while it has any. A difference measured at receipt is not a correction; FUL records it.
+  - C1, C2: an order policy per legal entity, with a tenant default, bounds how many orders one accepted quote backs (1 to 999, built in 1; cancelled orders do not count) and the grace after the quote's validity (0 to 30 days, built in 0). `SetOrderPolicy` records versions that take effect when recorded; each order freezes the policy it followed. COM locks the quote before it counts, and the database checks both again.
+  - C8: an order freezes the commercial terms of the quote and may complete what the quote left open, never change it. A service level is a code from RATE's service-level list (`GetServiceLevel`, `ListServiceLevels`; S1 lists STANDARD, EXPRESS, ECONOMY and DEFERRED); free text recorded before the list is kept and marked unlisted.
+  - R7: the ordering party is the quote's recipient, confirmed by ORG in the role the quote went to. COM reads `QuoteSnapshotV2` and hashes its canonical form.
+  - T1: every COM command's business time lies within `kernel.RecordWindow` before the time COM records it (configurable with `WithRecordWindow`); orders and line changes keep that time.
+  - Migrations `rate/000003_rate_service_level_list` and `com/000004_com_order_correction_policy_terms` convert existing data without loss: orders become orders of a v1 snapshot by a customer under the built-in policy, without terms or recording time. New tables `cargo_com.order_line_amendment` and `cargo_com.order_policy`, immutable.
 
 Bento testkit contracts:
 

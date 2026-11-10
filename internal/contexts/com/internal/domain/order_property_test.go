@@ -134,7 +134,7 @@ func TestLifecycleProperties(t *testing.T) {
 		for i, m := range s.Lines {
 			lines[i] = line(fmt.Sprintf("Item %d", i+1), "PK", m)
 		}
-		o, err := RecordOrder(draft(lines...), recordAt)
+		o, err := RecordOrder(draft(lines...), 0, recordAt, recordAt)
 		if err != nil {
 			t.Log(err)
 			return false

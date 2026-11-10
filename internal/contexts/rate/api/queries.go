@@ -71,6 +71,29 @@ type QuoteSnapshotV2 struct {
 	AcceptanceRecordedAt   time.Time // zero for quotes accepted before recording times were kept
 	AcceptanceEvidenceKind string    // UNRECORDED for quotes accepted before evidence kinds were kept
 	AcceptanceEvidenceRef  string
+	// ServiceLevelUnlisted is true when Terms.ServiceLevel was recorded as free text before the
+	// service-level list existed (C8); it is passed on as recorded.
+	ServiceLevelUnlisted bool
+}
+
+// ServiceLevel is an entry of RATE's service-level list, the commercial catalogue of service levels a
+// quote or an order may name (C8).
+type ServiceLevel struct {
+	Code string
+	Name string
+}
+
+// GetServiceLevel asks for the listed service level with Code. TenantID must come from a verified
+// principal.
+type GetServiceLevel struct {
+	TenantID string
+	Code     string
+}
+
+// ListServiceLevels asks for a tenant's service-level list. S1 lists the same built-in codes for every
+// tenant; tenants maintain their own list before the pilot.
+type ListServiceLevels struct {
+	TenantID string
 }
 
 // GetQuoteSnapshot asks for the snapshot of an accepted quote. TenantID must come from a verified
@@ -81,8 +104,10 @@ type GetQuoteSnapshot struct {
 }
 
 // Queries is RATE's read side for other contexts. An unknown quote yields ErrNotFound; a quote that is
-// not accepted yields ErrRejected.
+// not accepted yields ErrRejected. A service level that is not listed yields ErrNotFound.
 type Queries interface {
 	GetQuoteSnapshot(ctx context.Context, q GetQuoteSnapshot) (QuoteSnapshot, error)
 	GetQuoteSnapshotV2(ctx context.Context, q GetQuoteSnapshot) (QuoteSnapshotV2, error)
+	GetServiceLevel(ctx context.Context, q GetServiceLevel) (ServiceLevel, error)
+	ListServiceLevels(ctx context.Context, q ListServiceLevels) ([]ServiceLevel, error)
 }

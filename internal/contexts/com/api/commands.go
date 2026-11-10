@@ -21,9 +21,22 @@ type OrderLine struct {
 	Volume      kernel.Quantity // zero when not declared
 }
 
-// RecordCustomerOrder records a customer's order against a quote RATE has accepted. The customer must be
-// the quote's customer, and ORG must confirm it as a customer of the quote's legal entity at OccurredAt.
-// TenantID and ActorID must come from a verified principal.
+// CommercialTerms are the Incoterms rule, its edition (2010 or 2020) and named place, and the service level,
+// a code of RATE's service-level list (C8).
+type CommercialTerms struct {
+	IncotermsRule    string
+	IncotermsVersion string
+	NamedPlace       string
+	ServiceLevel     string
+}
+
+// RecordCustomerOrder records an order against a quote RATE has accepted. The ordering party,
+// CustomerPartyID, must be the quote's recipient, and ORG must confirm it in the role the quote went to for
+// the quote's legal entity at OccurredAt (R7). The order freezes the quote's commercial terms; Terms may
+// complete what the quote left open, never change what it agreed (C8). The order policy of the quote's
+// legal entity bounds how many orders the quote backs and how long after its validity the order may come
+// (C1, C2). OccurredAt is the business time; it may be up to the record window earlier than the time COM
+// records the command, and not later (T1). TenantID and ActorID must come from a verified principal.
 type RecordCustomerOrder struct {
 	CommandID       string
 	TenantID        string
@@ -32,7 +45,41 @@ type RecordCustomerOrder struct {
 	QuoteID         string
 	CustomerPartyID string
 	Lines           []OrderLine
+	Terms           CommercialTerms
 	OccurredAt      time.Time
+}
+
+// AmendOrderLine corrects what the customer declared for a line (C10): the line's next version, with a
+// reason, without a new quote. A difference measured at receipt is not a correction; FUL records it. The
+// line may not fall below what its active obligations commit, and keeps its package type and units while it
+// has any; revoke or amend the obligations first (C6).
+type AmendOrderLine struct {
+	CommandID        string
+	TenantID         string
+	ActorID          string
+	OrderID          string
+	ExpectedRevision int64
+	LineNo           int
+	Description      string
+	Packs            int64
+	PackageType      string
+	GrossWeight      kernel.Quantity
+	Volume           kernel.Quantity // zero when not declared
+	Reason           string
+	OccurredAt       time.Time
+}
+
+// AddOrderLine adds a line to a recorded order, numbered after its lines, such as goods the customer added
+// (C10).
+type AddOrderLine struct {
+	CommandID        string
+	TenantID         string
+	ActorID          string
+	OrderID          string
+	ExpectedRevision int64
+	Line             OrderLine
+	Reason           string
+	OccurredAt       time.Time
 }
 
 // AllocateOrderToObligation commits packs of an order line, with their declared gross weight and volume,
@@ -131,6 +178,51 @@ type Commands interface {
 	RevokeObligation(ctx context.Context, cmd RevokeObligation) (Receipt, error)
 	AmendObligation(ctx context.Context, cmd AmendObligation) (Receipt, error)
 	CancelCustomerOrder(ctx context.Context, cmd CancelCustomerOrder) (Receipt, error)
+	AmendOrderLine(ctx context.Context, cmd AmendOrderLine) (Receipt, error)
+	AddOrderLine(ctx context.Context, cmd AddOrderLine) (Receipt, error)
+}
+
+// SetOrderPolicy records the next version of the order policy of a legal entity, or of the tenant default
+// when LegalEntityID is empty (C1, C2): how many orders one accepted quote may back (1 to 999) and for how
+// many days after the quote's validity an order may still be recorded (0 to 30). ExpectedVersion is the
+// version the caller read, 0 when none was recorded. The version takes effect when COM records it.
+type SetOrderPolicy struct {
+	CommandID         string
+	TenantID          string
+	ActorID           string
+	LegalEntityID     string
+	ExpectedVersion   int64
+	MaxOrdersPerQuote int
+	GraceDays         int
+}
+
+// PolicyReceipt confirms a recorded policy version. Replaying the same command returns the same receipt.
+type PolicyReceipt struct {
+	CommandID     string
+	LegalEntityID string // empty for the tenant default
+	Version       int64
+}
+
+// GetOrderPolicy asks for the order policy an order of the legal entity follows.
+type GetOrderPolicy struct {
+	TenantID      string
+	LegalEntityID string
+}
+
+// OrderPolicy is the policy in force: Scope is LEGAL_ENTITY, TENANT (the tenant default) or BUILT_IN (none
+// recorded: one order per quote and no grace); Version is 0 for BUILT_IN.
+type OrderPolicy struct {
+	Scope             string
+	LegalEntityID     string
+	Version           int64
+	MaxOrdersPerQuote int
+	GraceDays         int
+}
+
+// OrderPolicies is COM's entry point for order policies.
+type OrderPolicies interface {
+	SetOrderPolicy(ctx context.Context, cmd SetOrderPolicy) (PolicyReceipt, error)
+	GetOrderPolicy(ctx context.Context, q GetOrderPolicy) (OrderPolicy, error)
 }
 
 // ObligationReservations is ObligationReservation v1, the contract FUL uses to write to COM (rule T4): FUL
@@ -150,10 +242,14 @@ const (
 	ActionCancelCustomerOrder             = "CancelCustomerOrder"
 	ActionReserveObligationForFulfillment = "ReserveObligationForFulfillment"
 	ActionReleaseObligationReservation    = "ReleaseObligationReservation"
+	ActionAmendOrderLine                  = "AmendOrderLine"
+	ActionAddOrderLine                    = "AddOrderLine"
+	ActionSetOrderPolicy                  = "SetOrderPolicy"
 )
 
 // Authorizer decides whether a verified actor may perform an order action. The identity and policy layer
-// supplies it. For the reservation commands, orderID is the order that holds the obligation.
+// supplies it. For the reservation commands, orderID is the order that holds the obligation; for
+// SetOrderPolicy it is empty.
 type Authorizer interface {
 	AuthorizeOrderAction(ctx context.Context, tenantID, actorID, action, orderID string) error
 }

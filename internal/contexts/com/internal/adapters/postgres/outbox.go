@@ -36,9 +36,13 @@ func COMEnvelope(commandID string, e com.Event, recordedAt time.Time) (eventing.
 	if e.ShipmentID != "" {
 		key += "\x00" + e.ShipmentID
 	}
+	if e.LineNo != 0 {
+		key += "\x00line:" + strconv.Itoa(e.LineNo) + "/" + strconv.FormatInt(e.LineVersion, 10)
+	}
 	digest := sha256.Sum256([]byte(key))
 	payload, err := json.Marshal(api.EventPayload{TenantID: string(e.TenantID), SubjectID: e.SubjectID,
-		ObligationID: string(e.ObligationID), ObligationVersion: e.ObligationVersion, ShipmentID: e.ShipmentID})
+		ObligationID: string(e.ObligationID), ObligationVersion: e.ObligationVersion, ShipmentID: e.ShipmentID,
+		LineNo: e.LineNo, LineVersion: e.LineVersion})
 	if err != nil {
 		return eventing.Envelope{}, err
 	}

@@ -72,15 +72,20 @@ func TestTheModelEmitsThePublishedEventTypes(t *testing.T) {
 	o, err := domain.RecordOrder(domain.OrderDraft{TenantID: "T", OrderID: "O-1", RecordedBy: "sales-1",
 		Lines: []domain.OrderLine{{Description: "Pallets", PackageType: "PX", Measure: pallets}},
 		Quote: domain.AcceptedQuote{QuoteID: "Q-1", QuoteRevision: 1, LegalEntityID: "LE", CustomerPartyID: "P", CustomerRevision: 1,
-			Total: kernel.Money{Currency: "USD", Minor: 1}, Validity: kernel.ValidityInterval{From: at, Until: at.Add(48 * time.Hour)},
-			AcceptedAt: at, EvidenceRef: "signed", TermsHash: strings.Repeat("ab", 32)},
-		Customer: domain.CustomerSnapshot{PartyID: "P", PartyRevision: 1, LegalName: "Fixture Corp", CountryCode: "US",
+			RecipientRole: domain.RoleCustomer, Total: kernel.Money{Currency: "USD", Minor: 1},
+			Validity:   kernel.ValidityInterval{From: at, Until: at.Add(48 * time.Hour)},
+			AcceptedAt: at, EvidenceRef: "signed", TermsContract: domain.QuoteSnapshotV2, TermsHash: strings.Repeat("ab", 32)},
+		Customer: domain.CustomerSnapshot{PartyID: "P", PartyRevision: 1, LegalName: "Fixture Corp", CountryCode: "US", RoleCode: domain.RoleCustomer,
 			RoleValidity: kernel.ValidityInterval{From: at}, RoleEvidenceRef: "contract"},
-	}, at)
+		Policy: domain.BuiltInOrderPolicy(),
+	}, 0, at, at)
 	if err != nil {
 		t.Fatal(err)
 	}
+	heavier := domain.Measure{Packs: 10, GrossWeight: kernel.Quantity{Unit: "KGM", Amount: 520}}
 	if err = errors.Join(
+		o.AmendLine(1, "Pallets", "PX", heavier, "customer corrected the weight", "cs-1", at, at),
+		o.AddLine("Cartons", "CT", pallets, "customer added cartons", "cs-1", at, at),
 		o.Allocate(1, "OB-1", pallets, "planner-1", at),
 		o.Reserve("OB-1", 1, "S-1", "fulfilment", at),
 		o.ReleaseReservation("OB-1", 1, "S-1", "fulfilment", at),
@@ -91,7 +96,8 @@ func TestTheModelEmitsThePublishedEventTypes(t *testing.T) {
 		t.Fatal(err)
 	}
 	published := map[string]bool{api.CustomerOrderRecorded: true, api.CustomerOrderCancelled: true, api.FulfillmentObligationAllocated: true,
-		api.FulfillmentObligationRevoked: true, api.ObligationReserved: true, api.ObligationReservationReleased: true}
+		api.FulfillmentObligationRevoked: true, api.ObligationReserved: true, api.ObligationReservationReleased: true,
+		api.CustomerOrderLineAmended: true, api.CustomerOrderLineAdded: true}
 	emitted := map[string]bool{}
 	for _, e := range o.Pending() {
 		if !published[e.Type] {
@@ -113,7 +119,12 @@ func TestClassifyMapsCausesToAPIKinds(t *testing.T) {
 		{domain.ErrConflict, api.ErrConflict},
 		{bentorepo.ErrConflict, api.ErrConflict},
 		{bentorepo.ErrAlreadyExists, api.ErrConflict},
-		{application.ErrQuoteAlreadyOrdered, api.ErrConflict},
+		{domain.ErrQuoteFullyOrdered, api.ErrConflict},
+		{domain.ErrPolicyVersionStale, api.ErrConflict},
+		{domain.ErrTermsMismatch, api.ErrRejected},
+		{domain.ErrInvalidPolicy, api.ErrRejected},
+		{application.ErrServiceLevelNotListed, api.ErrRejected},
+		{kernel.ErrOutsideRecordWindow, api.ErrRejected},
 		{bentorepo.ErrNotFound, api.ErrNotFound},
 		{domain.ErrUnknownObligation, api.ErrNotFound},
 		{domain.ErrOverAllocation, api.ErrRejected},
