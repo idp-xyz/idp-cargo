@@ -32,7 +32,8 @@ func (m *Module) ChangeOrderTransport(ctx context.Context, cmd api.ChangeOrderTr
 func (m *Module) GetOrderParties(ctx context.Context, q api.GetOrderParties) (api.OrderParties, error) {
 	order, revision, contacts, err := application.GetOrderParties{
 		Tx: bento.TenantTransactor{DB: m.db, Tenant: q.TenantID}, Orders: postgres.PartyReader{DB: m.db}, Auth: authorizer{m.auth},
-	}.Handle(ctx, scope(q.TenantID, q.ActorID), domain.OrderID(q.OrderID), q.WithContacts)
+		Log: postgres.ContactAccessLog{DB: m.db},
+	}.Handle(ctx, scope(q.TenantID, q.ActorID), domain.OrderID(q.OrderID), q.WithContacts, q.Purpose)
 	if err != nil {
 		return api.OrderParties{}, classify(err)
 	}
@@ -59,6 +60,10 @@ func (m *Module) GetOrderParties(ctx context.Context, q api.GetOrderParties) (ap
 		if c, ok := contacts[p.Role][p.Version]; ok {
 			v.Contact = &api.FrozenContact{Source: string(c.Source), ORGContactID: c.ORGContactID, ORGVersion: c.ORGVersion,
 				Contact: api.Contact{Name: c.Name, Phone: c.Phone, Mobile: c.Mobile, Email: c.Email}, OverriddenBy: c.OverriddenBy, OverrideReason: c.OverrideReason}
+			if k := c.Consent; k != nil {
+				v.Contact.Consent = &api.ContactConsent{NoticeVersion: k.NoticeVersion, ProvideToOthers: k.ProvideToOthers, CrossBorder: k.CrossBorder,
+					Basis: k.Basis, EvidenceRef: k.EvidenceRef, ORGRevision: k.ORGRevision}
+			}
 		}
 		out.Parties = append(out.Parties, v)
 	}
@@ -90,6 +95,10 @@ func partyInput(p api.OrderParty) application.PartyInput {
 	}
 	if k := p.Contact.Override; k != nil {
 		in.Contact.Override = &domain.ContactSnapshot{Name: k.Name, Phone: k.Phone, Mobile: k.Mobile, Email: k.Email}
+		if c := p.Contact.Consent; c != nil {
+			in.Contact.Override.Consent = &domain.ContactConsent{NoticeVersion: c.NoticeVersion, ProvideToOthers: c.ProvideToOthers,
+				CrossBorder: c.CrossBorder, Basis: c.Basis, EvidenceRef: c.EvidenceRef, ORGRevision: c.ORGRevision}
+		}
 	}
 	return in
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	com "go.idp.xyz/idp-cargo/internal/contexts/com/internal/domain"
+	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
 // Order party actions an Authorizer decides on (C9, C11-C14).
@@ -328,19 +329,22 @@ type PartyReader interface {
 
 // GetOrderParties returns an order's transport and current parties; contacts only to callers authorized for
 // ReadOrderContacts (privacy assessment V1.1, control 6). Once the order is closed or cancelled its contacts
-// are restricted: only callers authorized for ReadRestrictedOrderContacts get them (P1). Erased contacts are
-// never returned.
+// are restricted: only callers authorized for ReadRestrictedOrderContacts get them, and only for a customs
+// audit, a legal claim or the person's own request (P1; PIPL article 47). Every read of contacts states its
+// purpose and is logged in the reading transaction; a read that cannot be logged returns nothing (privacy
+// assessment V1.2, section 8). Erased contacts are never returned.
 type GetOrderParties struct {
 	Tx     TxRunner
 	Orders PartyReader
 	Auth   Authorization
+	Log    ContactAccessLog
 }
 
-func (h GetOrderParties) Handle(ctx context.Context, s Scope, id com.OrderID, withContacts bool) (*com.CustomerOrder, int64, map[string]map[int64]com.ContactSnapshot, error) {
+func (h GetOrderParties) Handle(ctx context.Context, s Scope, id com.OrderID, withContacts bool, purpose kernel.AccessPurpose) (*com.CustomerOrder, int64, map[string]map[int64]com.ContactSnapshot, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, 0, nil, err
 	}
-	if h.Tx == nil || h.Orders == nil || h.Auth == nil {
+	if h.Tx == nil || h.Orders == nil || h.Auth == nil || withContacts && h.Log == nil {
 		return nil, 0, nil, ErrMissingDependency
 	}
 	if s.TenantID == "" {
@@ -355,30 +359,37 @@ func (h GetOrderParties) Handle(ctx context.Context, s Scope, id com.OrderID, wi
 	if withContacts && strings.TrimSpace(s.ActorID) == "" {
 		return nil, 0, nil, ErrUnauthenticated
 	}
-	order, revision, _, err := h.read(ctx, s, id, false)
+	if withContacts && !purpose.Valid() {
+		return nil, 0, nil, fmt.Errorf("%w: purpose %q", ErrInvalidQuery, purpose)
+	}
+	order, revision, _, err := h.read(ctx, s, id, false, purpose)
 	if err != nil || !withContacts {
 		return order, revision, nil, err
 	}
 	// The caller is authorized for the order as it was read; if it was closed or cancelled since, again.
 	restricted := order.ContactsRestricted()
-	if err = h.authorizeContacts(ctx, s, id, restricted); err != nil {
+	if err = h.authorizeContacts(ctx, s, id, restricted, purpose); err != nil {
 		return nil, 0, nil, err
 	}
-	order, revision, contacts, err := h.read(ctx, s, id, true)
+	order, revision, contacts, err := h.read(ctx, s, id, true, purpose)
 	if err != nil {
 		return nil, 0, nil, err
 	}
 	if order.ContactsRestricted() && !restricted {
-		if err = h.authorizeContacts(ctx, s, id, true); err != nil {
+		if err = h.authorizeContacts(ctx, s, id, true, purpose); err != nil {
 			return nil, 0, nil, err
 		}
 	}
 	return order, revision, contacts, nil
 }
 
-func (h GetOrderParties) authorizeContacts(ctx context.Context, s Scope, id com.OrderID, restricted bool) error {
+func (h GetOrderParties) authorizeContacts(ctx context.Context, s Scope, id com.OrderID, restricted bool, purpose kernel.AccessPurpose) error {
 	action := ActionReadOrderContacts
 	if restricted {
+		if !purpose.ForRetainedData() {
+			return fmt.Errorf("%w: the order's contacts are kept only for a customs audit, a legal claim or the person's own request, not %s",
+				ErrRestrictedPurpose, purpose)
+		}
 		action = ActionReadRestrictedOrderContacts
 	}
 	if err := h.Auth.RequireOrderAction(ctx, s, action, id); err != nil {
@@ -387,14 +398,24 @@ func (h GetOrderParties) authorizeContacts(ctx context.Context, s Scope, id com.
 	return nil
 }
 
-func (h GetOrderParties) read(ctx context.Context, s Scope, id com.OrderID, withContacts bool) (order *com.CustomerOrder, revision int64, contacts map[string]map[int64]com.ContactSnapshot, err error) {
+// read reads the order and, if asked, its contacts, and logs a read of contacts in the same transaction.
+func (h GetOrderParties) read(ctx context.Context, s Scope, id com.OrderID, withContacts bool, purpose kernel.AccessPurpose) (order *com.CustomerOrder, revision int64, contacts map[string]map[int64]com.ContactSnapshot, err error) {
 	err = h.Tx.WithinTransaction(ctx, func(txCtx context.Context) error {
 		var err error
 		if order, revision, err = h.Orders.ReadOrder(txCtx, s.TenantID, id); err != nil || !withContacts {
 			return err
 		}
-		contacts, err = h.Orders.ReadContacts(txCtx, s.TenantID, id)
-		return err
+		if contacts, err = h.Orders.ReadContacts(txCtx, s.TenantID, id); err != nil {
+			return err
+		}
+		read := ContactAccess{ActorID: s.ActorID, Action: string(ActionReadOrderContacts), OrderID: id, Restricted: order.ContactsRestricted(), Purpose: purpose}
+		if read.Restricted {
+			read.Action = string(ActionReadRestrictedOrderContacts)
+		}
+		for _, versions := range contacts {
+			read.Contacts += len(versions)
+		}
+		return h.Log.RecordContactsRead(txCtx, s.TenantID, read)
 	})
 	return order, revision, contacts, err
 }

@@ -40,3 +40,18 @@ func (m *Module) ListOrdersDueForContactErasure(ctx context.Context, q api.ListO
 	}
 	return out, nil
 }
+
+func (m *Module) ListContactAccess(ctx context.Context, q api.ListContactAccess) ([]api.ContactAccess, error) {
+	reads, err := application.ListContactAccess{Tx: bento.TenantTransactor{DB: m.db, Tenant: q.TenantID}, Log: postgres.ContactAccessLog{DB: m.db},
+		Auth: authorizer{m.auth}}.Handle(ctx, scope(q.TenantID, q.ActorID),
+		application.AccessFilter{OrderID: domain.OrderID(q.OrderID), ActorID: q.ReadBy, Since: q.Since, Until: q.Until, Limit: q.Limit})
+	if err != nil {
+		return nil, classify(err)
+	}
+	out := make([]api.ContactAccess, 0, len(reads))
+	for _, r := range reads {
+		out = append(out, api.ContactAccess{AccessID: r.AccessID, ActorID: r.ActorID, Action: r.Action, OrderID: string(r.OrderID),
+			Restricted: r.Restricted, Purpose: r.Purpose, Contacts: r.Contacts, RecordedAt: r.RecordedAt})
+	}
+	return out, nil
+}

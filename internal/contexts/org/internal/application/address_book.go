@@ -10,6 +10,7 @@ import (
 	"time"
 
 	org "go.idp.xyz/idp-cargo/internal/contexts/org/internal/domain"
+	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
 // Result types of command receipts.
@@ -31,6 +32,8 @@ const (
 	ActionErasePartyContact      = "ErasePartyContact"
 	ActionSetDefaultPartyContact = "SetDefaultPartyContact"
 	ActionReadPartyContacts      = "ReadPartyContacts"
+	ActionRecordContactConsent   = "RecordContactConsent"
+	ActionReadContactAccessLog   = "ReadContactAccessLog"
 )
 
 var commandActions = map[org.BookAction]string{
@@ -38,7 +41,7 @@ var commandActions = map[org.BookAction]string{
 	org.ActionDeactivateAddress: ActionDeactivatePartyAddress, org.ActionSetDefaultAddress: ActionSetDefaultPartyAddress,
 	org.ActionAddContact: ActionAddPartyContact, org.ActionChangeContact: ActionChangePartyContact,
 	org.ActionDeactivateContact: ActionDeactivatePartyContact, org.ActionEraseContact: ActionErasePartyContact,
-	org.ActionSetDefaultContact: ActionSetDefaultPartyContact,
+	org.ActionSetDefaultContact: ActionSetDefaultPartyContact, org.ActionRecordContactConsent: ActionRecordContactConsent,
 }
 
 // AddressBookCommand is one of the nine address book commands; Action says which, and only its fields are
@@ -55,6 +58,7 @@ type AddressBookCommand struct {
 	ContactID        org.ContactID        `json:",omitempty"`
 	Contact          *org.Contact         `json:",omitempty"`
 	ContactPurposes  []org.ContactPurpose `json:",omitempty"` // defaults of an added contact, or the purpose of a default
+	Consent          *org.ContactConsent  `json:",omitempty"`
 	Reason           string               `json:",omitempty"`
 }
 
@@ -223,6 +227,12 @@ func apply(book *org.AddressBook, c AddressBookCommand, now time.Time) (string, 
 		if err = onePurpose(len(c.ContactPurposes)); err == nil {
 			k, err = book.SetDefaultContact(c.ContactPurposes[0], c.ContactID, actor, now)
 		}
+	case org.ActionRecordContactConsent:
+		if c.Consent == nil {
+			err = fmt.Errorf("%w: no consent", org.ErrInvalidConsent)
+		} else {
+			k, err = book.RecordContactConsent(c.ContactID, *c.Consent, actor, now)
+		}
 	default:
 		err = fmt.Errorf("%w: action %q", ErrInvalidCommand, c.Action)
 	}
@@ -245,10 +255,13 @@ type AddressBookReader interface {
 
 // ReadAddressBook answers the address book queries. Addresses are business data of organizations and need
 // no authorization of their own; contacts are personal data and do (privacy assessment V1.1, control 1).
+// Every read of contacts states its purpose and is logged in the reading transaction, so a read that cannot
+// be logged returns nothing (privacy assessment V1.2, section 8).
 type ReadAddressBook struct {
 	Tx    TxRunner
 	Books AddressBookReader
 	Auth  PartyAuthorization
+	Log   ContactAccessLog
 }
 
 // Addresses returns the party's address book without contacts.
@@ -294,21 +307,42 @@ func (h ReadAddressBook) Address(ctx context.Context, tenant org.TenantID, party
 	return found, book, nil
 }
 
-// Contacts returns the party's address book with contacts, if the caller may read them.
-func (h ReadAddressBook) Contacts(ctx context.Context, s Scope, party org.PartyID) (*org.AddressBook, error) {
+// Contacts returns the party's address book with contacts, if the caller may read them, and logs the read
+// with its purpose.
+func (h ReadAddressBook) Contacts(ctx context.Context, s Scope, party org.PartyID, purpose kernel.AccessPurpose) (*org.AddressBook, error) {
 	if err := h.check(ctx, s.TenantID, party); err != nil {
 		return nil, err
 	}
 	if strings.TrimSpace(s.ActorID) == "" {
 		return nil, ErrUnauthenticated
 	}
-	if h.Auth == nil {
+	if h.Auth == nil || h.Log == nil {
 		return nil, ErrMissingDependency
+	}
+	if !purpose.Valid() {
+		return nil, fmt.Errorf("%w: purpose %q", ErrInvalidQuery, purpose)
 	}
 	if err := h.Auth.RequirePartyAction(ctx, s, ActionReadPartyContacts, party); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrUnauthorized, err)
 	}
-	return h.read(ctx, s.TenantID, party, true)
+	var book *org.AddressBook
+	err := h.Tx.WithinTransaction(ctx, func(txCtx context.Context) error {
+		var err error
+		if book, err = h.Books.Read(txCtx, s.TenantID, party, true); err != nil {
+			return err
+		}
+		read := ContactAccess{ActorID: s.ActorID, Action: ActionReadPartyContacts, PartyID: party, Purpose: purpose}
+		for _, c := range book.Contacts() {
+			if !c.Erased {
+				read.ContactIDs = append(read.ContactIDs, c.ID)
+			}
+		}
+		return h.Log.RecordContactsRead(txCtx, s.TenantID, read)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return book, nil
 }
 
 func (h ReadAddressBook) check(ctx context.Context, tenant org.TenantID, party org.PartyID) error {

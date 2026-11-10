@@ -125,7 +125,11 @@ func TestOrderContactsRetainedAndErasedWithRealContexts(t *testing.T) {
 		}
 	}
 	read := func(actor string, contacts bool) (comapi.OrderParties, error) {
-		return comModule.GetOrderParties(ctx, comapi.GetOrderParties{TenantID: tenant, ActorID: actor, OrderID: "O-1", WithContacts: contacts})
+		purpose := kernel.PurposeDocuments
+		if actor == "dpo" {
+			purpose = kernel.PurposeCustomsAudit
+		}
+		return comModule.GetOrderParties(ctx, comapi.GetOrderParties{TenantID: tenant, ActorID: actor, OrderID: "O-1", WithContacts: contacts, Purpose: purpose})
 	}
 	closeAt := at.Add(4 * time.Hour)
 	closing := comapi.CloseCustomerOrder{CommandID: "close-1", TenantID: tenant, ActorID: "cs-1", OrderID: "O-1", ExpectedRevision: 1, OccurredAt: closeAt}
@@ -152,7 +156,11 @@ func TestOrderContactsRetainedAndErasedWithRealContexts(t *testing.T) {
 	}
 
 	// Restricted: the documentation officer no longer sees the contacts; the data protection officer does.
-	if _, err = read("doc-officer", true); !errors.Is(err, comapi.ErrUnauthorized) {
+	if _, err = read("doc-officer", true); !errors.Is(err, comapi.ErrRejected) {
+		t.Fatalf("contacts of the closed order for documents: %v", err)
+	}
+	if _, err = comModule.GetOrderParties(ctx, comapi.GetOrderParties{TenantID: tenant, ActorID: "doc-officer", OrderID: "O-1", WithContacts: true,
+		Purpose: kernel.PurposeCustomsAudit}); !errors.Is(err, comapi.ErrUnauthorized) {
 		t.Fatalf("contacts of the closed order for the documentation officer: %v", err)
 	}
 	until := closeAt.AddDate(3, 0, 0)
@@ -198,7 +206,8 @@ func TestOrderContactsRetainedAndErasedWithRealContexts(t *testing.T) {
 	if due, err = comModule.ListOrdersDueForContactErasure(ctx, comapi.ListOrdersDueForContactErasure{TenantID: tenant, ActorID: "privacy-job", Limit: 10}); err != nil || len(due.Orders) != 0 {
 		t.Fatalf("due after the erasure: %+v %v", due, err)
 	}
-	if contacts, err := orgModule.GetPartyContacts(ctx, orgapi.GetPartyContacts{TenantID: tenant, ActorID: "org-officer", PartyID: "shipper-co"}); err != nil ||
+	if contacts, err := orgModule.GetPartyContacts(ctx, orgapi.GetPartyContacts{TenantID: tenant, ActorID: "org-officer", PartyID: "shipper-co",
+		Purpose: kernel.PurposeOperations}); err != nil ||
 		len(contacts.Contacts) != 1 || contacts.Contacts[0].Contact.Name != "Test Person A" {
 		t.Fatalf("ORG keeps its own contact: %+v %v", contacts, err)
 	}

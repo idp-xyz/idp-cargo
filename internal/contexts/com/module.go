@@ -44,6 +44,7 @@ var (
 	_ api.OrderPartyCommands     = (*Module)(nil)
 	_ api.OrderPartyQueries      = (*Module)(nil)
 	_ api.OrderContactRetention  = (*Module)(nil)
+	_ api.ContactAccessQueries   = (*Module)(nil)
 )
 
 // Option configures a Module.
@@ -373,7 +374,8 @@ func classify(err error) error {
 		errors.Is(err, domain.ErrNotReserved), errors.Is(err, application.ErrQuoteNotAccepted), errors.Is(err, application.ErrCustomerNotConfirmed),
 		errors.Is(err, application.ErrInvalidQuery), errors.Is(err, kernel.ErrUnitMismatch), errors.Is(err, kernel.ErrAmountOverflow),
 		errors.Is(err, domain.ErrTermsMismatch), errors.Is(err, domain.ErrInvalidPolicy), errors.Is(err, application.ErrServiceLevelNotListed),
-		errors.Is(err, kernel.ErrOutsideRecordWindow), errors.Is(err, domain.ErrContactsRetained), errors.Is(err, domain.ErrInvalidRetention):
+		errors.Is(err, kernel.ErrOutsideRecordWindow), errors.Is(err, domain.ErrContactsRetained), errors.Is(err, domain.ErrInvalidRetention),
+		errors.Is(err, application.ErrRestrictedPurpose):
 		kind = api.ErrRejected
 	default:
 		return err

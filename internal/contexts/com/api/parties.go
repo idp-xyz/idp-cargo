@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"time"
+
+	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
 // Transport modes and movement types an order may request (C11). CargoWise shipments carry the transport mode
@@ -88,6 +90,25 @@ type Contact struct {
 	Email  string
 }
 
+// How a contact's consent was obtained (privacy assessment V1.2, section 4; decision P4).
+const (
+	ConsentCustomerUndertaking = "CUSTOMER_UNDERTAKING"
+	ConsentSubjectConfirmed    = "SUBJECT_CONFIRMED"
+)
+
+// ContactConsent is the version of the tenant's personal information rules a person was told of and the
+// separate consents the person gave to the contact being provided to others and abroad (decisions P4, P7).
+// A contact carried from ORG brings the consent ORG recorded, with ORGRevision; a contact given on the order
+// may bring one (ORGRevision 0). DOC and BOOK check it before they send the contact out.
+type ContactConsent struct {
+	NoticeVersion   string
+	ProvideToOthers bool
+	CrossBorder     bool
+	Basis           string
+	EvidenceRef     string
+	ORGRevision     int64
+}
+
 // AddressChoice says which address an order party gets for one purpose. Empty: the party's default in ORG
 // for that purpose (OFFICE for the documentary address, PICKUP, DELIVERY). AddressID: another active ORG
 // address of the party. Override: an address given on the order, with a reason; it is never written back to
@@ -99,11 +120,13 @@ type AddressChoice struct {
 }
 
 // ContactChoice says which contact an order party gets. Contacts are read from ORG with the caller's own
-// authorization for ORG's ReadPartyContacts.
+// authorization for ORG's ReadPartyContacts, for the purpose ORDER_PARTY, and bring their consent. A contact
+// given on the order (Override) may bring its consent in Consent.
 type ContactChoice struct {
 	Use       string
 	ContactID string
 	Override  *Contact
+	Consent   *ContactConsent
 	Reason    string
 }
 
@@ -162,11 +185,16 @@ type OrderPartyCommands interface {
 // for callers the Authorizer allows ActionReadOrderContacts (FUL, DOC). Once the order is closed or cancelled
 // its contacts are restricted and need ActionReadRestrictedOrderContacts instead; erased contacts are never
 // returned (P1).
+//
+// With contacts, Purpose says why they are read; restricted contacts are read only for CUSTOMS_AUDIT,
+// LEGAL_CLAIM or DATA_SUBJECT_REQUEST (PIPL article 47). COM logs every read of contacts with its purpose; a
+// read it cannot log returns nothing.
 type GetOrderParties struct {
 	TenantID     string
 	ActorID      string
 	OrderID      string
 	WithContacts bool
+	Purpose      kernel.AccessPurpose
 }
 
 // PartyIdentifier is an identifier of an ORG party, as frozen with the party.
@@ -197,6 +225,7 @@ type FrozenContact struct {
 	Contact        Contact
 	OverriddenBy   string
 	OverrideReason string
+	Consent        *ContactConsent // nil when none was recorded
 }
 
 // OrderPartyView is the current version of an order party: OrderParties v1.

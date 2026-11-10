@@ -197,14 +197,22 @@ func saveParties(ctx context.Context, q bentopg.Executor, order *com.CustomerOrd
 			return err
 		}
 		if c := p.Contact; c != nil {
-			var contactID, contactVersion any
+			var contactID, contactVersion, notice, provide, abroad, basis, evidence, consentRevision any
 			if c.Source == com.FromORG {
 				contactID, contactVersion = c.ORGContactID, c.ORGVersion
 			}
+			if k := c.Consent; k != nil {
+				notice, provide, abroad, basis, evidence = k.NoticeVersion, k.ProvideToOthers, k.CrossBorder, k.Basis, k.EvidenceRef
+				if k.ORGRevision > 0 {
+					consentRevision = k.ORGRevision
+				}
+			}
 			if _, err = q.Exec(ctx, `INSERT INTO cargo_com.order_party_contact (tenant_id,order_id,role,version,source,org_contact_id,
-                org_contact_version,name,phone,mobile,email,overridden_by,override_reason) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+                org_contact_version,name,phone,mobile,email,overridden_by,override_reason,consent_notice_version,consent_provide_to_others,
+                consent_cross_border,consent_basis,consent_evidence_ref,consent_org_revision)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
 				tenant, id, p.Role, p.Version, string(c.Source), contactID, contactVersion, c.Name, orNull(c.Phone), orNull(c.Mobile),
-				orNull(c.Email), orNull(c.OverriddenBy), orNull(c.OverrideReason)); err != nil {
+				orNull(c.Email), orNull(c.OverriddenBy), orNull(c.OverrideReason), notice, provide, abroad, basis, evidence, consentRevision); err != nil {
 				return err
 			}
 		}
@@ -245,7 +253,9 @@ func (r PartyReader) ReadContacts(ctx context.Context, tenant com.TenantID, id c
 		return nil, err
 	}
 	rows, err := q.Query(ctx, `SELECT role,version,source,coalesce(org_contact_id,''),coalesce(org_contact_version,0),name,
-        coalesce(phone,''),coalesce(mobile,''),coalesce(email,''),coalesce(overridden_by,''),coalesce(override_reason,'')
+        coalesce(phone,''),coalesce(mobile,''),coalesce(email,''),coalesce(overridden_by,''),coalesce(override_reason,''),
+        consent_notice_version,coalesce(consent_provide_to_others,false),coalesce(consent_cross_border,false),coalesce(consent_basis,''),
+        coalesce(consent_evidence_ref,''),coalesce(consent_org_revision,0)
       FROM cargo_com.order_party_contact WHERE tenant_id=$1 AND order_id=$2 AND NOT erased`, string(tenant), string(id))
 	if err != nil {
 		return nil, err
@@ -256,9 +266,15 @@ func (r PartyReader) ReadContacts(ctx context.Context, tenant com.TenantID, id c
 		var role, source string
 		var version int64
 		var c com.ContactSnapshot
+		var notice *string
+		var k com.ContactConsent
 		if err = rows.Scan(&role, &version, &source, &c.ORGContactID, &c.ORGVersion, &c.Name, &c.Phone, &c.Mobile, &c.Email,
-			&c.OverriddenBy, &c.OverrideReason); err != nil {
+			&c.OverriddenBy, &c.OverrideReason, &notice, &k.ProvideToOthers, &k.CrossBorder, &k.Basis, &k.EvidenceRef, &k.ORGRevision); err != nil {
 			return nil, err
+		}
+		if notice != nil {
+			k.NoticeVersion = *notice
+			c.Consent = &k
 		}
 		c.Source = com.AddressSource(source)
 		if out[role] == nil {

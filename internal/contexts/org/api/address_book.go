@@ -1,6 +1,11 @@
 package api
 
-import "context"
+import (
+	"context"
+	"time"
+
+	"go.idp.xyz/idp-cargo/internal/kernel"
+)
 
 // Address purposes (C9). OFFICE is the address for documents and the office. Each purpose has at most one
 // default address per party.
@@ -38,6 +43,8 @@ const (
 	ActionErasePartyContact      = "ErasePartyContact"
 	ActionSetDefaultPartyContact = "SetDefaultPartyContact"
 	ActionReadPartyContacts      = "ReadPartyContacts"
+	ActionRecordContactConsent   = "RecordContactConsent"
+	ActionReadContactAccessLog   = "ReadContactAccessLog"
 )
 
 // Address is one address of a party as printed on documents: a short code unique among the party's active
@@ -216,6 +223,39 @@ type AddressBookCommands interface {
 	DeactivatePartyContact(ctx context.Context, cmd DeactivatePartyContact) (AddressBookReceipt, error)
 	ErasePartyContact(ctx context.Context, cmd ErasePartyContact) (AddressBookReceipt, error)
 	SetDefaultPartyContact(ctx context.Context, cmd SetDefaultPartyContact) (AddressBookReceipt, error)
+	RecordContactConsent(ctx context.Context, cmd RecordContactConsent) (AddressBookReceipt, error)
+}
+
+// How a contact's consent was obtained (privacy assessment V1.2, section 4; decision P4).
+const (
+	ConsentCustomerUndertaking = "CUSTOMER_UNDERTAKING" // the customer undertook in its contract that it told the person and obtained consent
+	ConsentSubjectConfirmed    = "SUBJECT_CONFIRMED"    // the person confirmed it
+)
+
+// ContactConsent is the version of the tenant's personal information rules a person was told of and the
+// separate consents the person gave: to the contact being provided to others, such as carriers, agents,
+// brokers and consignees (PIPL article 23), and abroad (article 39). EvidenceRef points to where the
+// undertaking or confirmation is kept. Revision is the address book revision that recorded it; reads set it.
+type ContactConsent struct {
+	NoticeVersion   string
+	ProvideToOthers bool
+	CrossBorder     bool
+	Basis           string
+	EvidenceRef     string
+	Revision        int64
+}
+
+// RecordContactConsent records the notice and consent of an active or inactive contact (decisions P4, P7).
+// It is one revision of the address book and leaves the contact's version as it is; recording a narrower
+// consent withdraws what it leaves out.
+type RecordContactConsent struct {
+	CommandID        string
+	TenantID         string
+	ActorID          string
+	PartyID          string
+	ExpectedRevision int64
+	ContactID        string
+	Consent          ContactConsent
 }
 
 // GetPartyAddresses asks for the current version of every address of a party. TenantID must come from a
@@ -253,11 +293,13 @@ type GetPartyAddress struct {
 }
 
 // GetPartyContacts asks for the current version of every contact of a party. Contacts are personal data:
-// ActorID, from a verified principal, must be authorized for ActionReadPartyContacts.
+// ActorID, from a verified principal, must be authorized for ActionReadPartyContacts, and Purpose says why
+// they are read. ORG logs every read with its purpose; a read it cannot log returns nothing.
 type GetPartyContacts struct {
 	TenantID string
 	ActorID  string
 	PartyID  string
+	Purpose  kernel.AccessPurpose
 }
 
 // PartyContacts is a party's contacts at the address book Revision (0 when it has none).
@@ -275,6 +317,36 @@ type PartyContact struct {
 	Status     string
 	DefaultFor []string
 	Contact
+	Consent *ContactConsent // nil until a consent is recorded
+}
+
+// ListContactAccess asks for the log of contact reads, newest first: of one party or all (PartyID empty), by
+// one actor or all, recorded in [Since, Until) (either may be zero), at most Limit (1 to 1000). ActorID must
+// be authorized for ActionReadContactAccessLog. The log is kept three years (decision P6).
+type ListContactAccess struct {
+	TenantID string
+	ActorID  string
+	PartyID  string
+	ReadBy   string
+	Since    time.Time
+	Until    time.Time
+	Limit    int
+}
+
+// ContactAccess is one logged read of a party's contacts. It holds no contact details.
+type ContactAccess struct {
+	AccessID   string
+	ActorID    string
+	Action     string
+	PartyID    string
+	Purpose    kernel.AccessPurpose
+	ContactIDs []string
+	RecordedAt time.Time
+}
+
+// ContactAccessQueries is ORG's read side of the contact access log.
+type ContactAccessQueries interface {
+	ListContactAccess(ctx context.Context, q ListContactAccess) ([]ContactAccess, error)
 }
 
 // AddressBookQueries is ORG's read side of address books for other contexts, such as COM carrying addresses

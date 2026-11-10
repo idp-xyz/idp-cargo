@@ -159,7 +159,8 @@ type AddressSnapshot struct {
 }
 
 // ContactSnapshot is a contact frozen on the order: personal data, stored apart from the order and never in
-// events (privacy assessment V1.1, controls 4-7). From ORG it names the ORG contact and version.
+// events (privacy assessment V1.1, controls 4-7). From ORG it names the ORG contact and version. Consent is
+// the notice and consent recorded for the person when the contact was frozen, nil when none was.
 type ContactSnapshot struct {
 	Source         AddressSource
 	ORGContactID   string
@@ -170,6 +171,43 @@ type ContactSnapshot struct {
 	Email          string
 	OverriddenBy   string
 	OverrideReason string
+	Consent        *ContactConsent
+}
+
+// Consent bases (decision P4).
+const (
+	ConsentCustomerUndertaking = "CUSTOMER_UNDERTAKING"
+	ConsentSubjectConfirmed    = "SUBJECT_CONFIRMED"
+)
+
+// ContactConsent is the version of the tenant's personal information rules a person was told of and the
+// separate consents the person gave to the contact being provided to others and abroad (privacy assessment
+// V1.2, section 5; decisions P4, P7): carried from ORG with the contact, at the ORG address book revision
+// that recorded it, or given with a contact given on the order (ORGRevision 0). DOC and BOOK check it before
+// they send the contact out.
+type ContactConsent struct {
+	NoticeVersion   string
+	ProvideToOthers bool
+	CrossBorder     bool
+	Basis           string
+	EvidenceRef     string
+	ORGRevision     int64
+}
+
+var noticeVersionForm = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+
+func (c *ContactConsent) check(source AddressSource) error {
+	switch {
+	case !noticeVersionForm.MatchString(c.NoticeVersion):
+		return errors.New("consent notice version")
+	case c.Basis != ConsentCustomerUndertaking && c.Basis != ConsentSubjectConfirmed:
+		return errors.New("consent basis")
+	case !fieldOK(c.EvidenceRef, 200):
+		return errors.New("consent evidence")
+	case (source == FromORG) != (c.ORGRevision > 0) || c.ORGRevision < 0:
+		return errors.New("a consent carried from ORG names its revision, one given on the order none")
+	}
+	return nil
 }
 
 // OrderParty is one version of an order party. A named party has its ORG record and a documentary address;
@@ -455,6 +493,9 @@ func (c *ContactSnapshot) check() error {
 	}
 	if !fieldOK(c.Name, 200) || !optionalField(c.Phone, 40) || !optionalField(c.Mobile, 40) || !optionalField(c.Email, 254) || c.Phone+c.Mobile+c.Email == "" {
 		return errors.New("contact fields")
+	}
+	if c.Consent != nil {
+		return c.Consent.check(c.Source)
 	}
 	return nil
 }

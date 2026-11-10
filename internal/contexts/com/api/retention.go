@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"time"
+
+	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
 // Contact retention (decision P1). An order's contacts serve it while it is open. Once it is closed or
@@ -14,6 +16,7 @@ import (
 const (
 	ActionEraseOrderContacts          = "EraseOrderContacts"
 	ActionReadRestrictedOrderContacts = "ReadRestrictedOrderContacts"
+	ActionReadContactAccessLog        = "ReadContactAccessLog"
 )
 
 // Where an order's contacts stand.
@@ -67,4 +70,35 @@ type DueOrders struct {
 type OrderContactRetention interface {
 	EraseOrderContacts(ctx context.Context, cmd EraseOrderContacts) (Receipt, error)
 	ListOrdersDueForContactErasure(ctx context.Context, q ListOrdersDueForContactErasure) (DueOrders, error)
+}
+
+// ListContactAccess asks for the log of order contact reads, newest first: of one order or all (OrderID
+// empty), by one actor or all (ReadBy), recorded in [Since, Until) (either may be zero), at most Limit (1 to
+// 1000). ActorID must be authorized for ActionReadContactAccessLog. The log is kept three years (decision P6).
+type ListContactAccess struct {
+	TenantID string
+	ActorID  string
+	OrderID  string
+	ReadBy   string
+	Since    time.Time
+	Until    time.Time
+	Limit    int
+}
+
+// ContactAccess is one logged read of an order's contacts: who, through which action, whether they were
+// restricted, for what purpose, and how many contact versions it returned. It holds no contact details.
+type ContactAccess struct {
+	AccessID   string
+	ActorID    string
+	Action     string
+	OrderID    string
+	Restricted bool
+	Purpose    kernel.AccessPurpose
+	Contacts   int
+	RecordedAt time.Time
+}
+
+// ContactAccessQueries is COM's read side of the contact access log.
+type ContactAccessQueries interface {
+	ListContactAccess(ctx context.Context, q ListContactAccess) ([]ContactAccess, error)
 }
