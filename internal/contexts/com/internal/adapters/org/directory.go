@@ -10,6 +10,7 @@ import (
 	app "go.idp.xyz/idp-cargo/internal/contexts/com/internal/application"
 	com "go.idp.xyz/idp-cargo/internal/contexts/com/internal/domain"
 	orgapi "go.idp.xyz/idp-cargo/internal/contexts/org/api"
+	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
 // Directory answers COM's questions about order parties through ORG's query side (C9): role confirmations
@@ -73,7 +74,8 @@ func (d Directory) Address(ctx context.Context, tenant com.TenantID, partyID, ad
 }
 
 func (d Directory) Contact(ctx context.Context, tenant com.TenantID, actor, partyID, contactID string) (com.ContactSnapshot, bool, error) {
-	contacts, err := d.Book.GetPartyContacts(ctx, orgapi.GetPartyContacts{TenantID: string(tenant), ActorID: actor, PartyID: partyID})
+	contacts, err := d.Book.GetPartyContacts(ctx, orgapi.GetPartyContacts{TenantID: string(tenant), ActorID: actor, PartyID: partyID,
+		Purpose: kernel.PurposeOrderParty})
 	if errors.Is(err, orgapi.ErrUnauthorized) {
 		return com.ContactSnapshot{}, false, fmt.Errorf("%w: ORG does not let %s read the contacts of %s: %v", app.ErrUnauthorized, actor, partyID, err.Error())
 	}
@@ -85,8 +87,13 @@ func (d Directory) Contact(ctx context.Context, tenant com.TenantID, actor, part
 			continue
 		}
 		if contactID == c.ContactID || contactID == "" && slices.Contains(c.DefaultFor, orgapi.ContactDocuments) {
-			return com.ContactSnapshot{Source: com.FromORG, ORGContactID: c.ContactID, ORGVersion: c.Version,
-				Name: c.Name, Phone: c.Phone, Mobile: c.Mobile, Email: c.Email}, true, nil
+			k := com.ContactSnapshot{Source: com.FromORG, ORGContactID: c.ContactID, ORGVersion: c.Version,
+				Name: c.Name, Phone: c.Phone, Mobile: c.Mobile, Email: c.Email}
+			if r := c.Consent; r != nil {
+				k.Consent = &com.ContactConsent{NoticeVersion: r.NoticeVersion, ProvideToOthers: r.ProvideToOthers, CrossBorder: r.CrossBorder,
+					Basis: r.Basis, EvidenceRef: r.EvidenceRef, ORGRevision: r.Revision}
+			}
+			return k, true, nil
 		}
 	}
 	if contactID != "" {

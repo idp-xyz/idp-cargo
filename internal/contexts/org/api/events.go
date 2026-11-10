@@ -20,6 +20,8 @@ const (
 	PartyContactDeactivated = "PartyContactDeactivated.v1"
 	PartyContactErased      = "PartyContactErased.v1"
 	PartyDefaultContactSet  = "PartyDefaultContactSet.v1"
+	// PartyContactConsentRecorded names the contact and the revision, never the consent (decision P7).
+	PartyContactConsentRecorded = "PartyContactConsentRecorded.v1"
 )
 
 // Party identity events (ORG V0.4). The payload's entry names the identifier's type and issuing country, such

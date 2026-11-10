@@ -87,6 +87,7 @@ var (
 	ErrNothingChanged   = errors.New("org: the change leaves the address book as it is")
 	ErrPartyArchived    = errors.New("org: the party is archived; its address book is closed")
 	ErrInconsistentBook = errors.New("org: stored address book is inconsistent")
+	ErrInvalidConsent   = errors.New("org: invalid notice and consent")
 )
 
 const (
@@ -197,6 +198,7 @@ type Unsaved struct {
 	AddressDefaults []DefaultChange
 	ContactDefaults []DefaultChange
 	Erased          []ContactID
+	Consents        []ConsentRecord
 }
 
 // AddressBook is the aggregate of a party's addresses and contacts (C9). It has a revision of its own, apart
@@ -211,6 +213,7 @@ type AddressBook struct {
 	contacts        map[ContactID]ContactVersion
 	addressDefaults map[AddressPurpose]AddressID
 	contactDefaults map[ContactPurpose]ContactID
+	consents        map[ContactID]ConsentRecord // the current consent of each contact that has one
 	unsaved         Unsaved
 	pending         []Event
 }
@@ -221,7 +224,7 @@ func NewAddressBook(tenant TenantID, party PartyID) (*AddressBook, error) {
 		return nil, ErrInvalidIdentity
 	}
 	return &AddressBook{tenant: tenant, party: party, addresses: map[AddressID]AddressVersion{}, contacts: map[ContactID]ContactVersion{},
-		addressDefaults: map[AddressPurpose]AddressID{}, contactDefaults: map[ContactPurpose]ContactID{}}, nil
+		addressDefaults: map[AddressPurpose]AddressID{}, contactDefaults: map[ContactPurpose]ContactID{}, consents: map[ContactID]ConsentRecord{}}, nil
 }
 
 // RestoreAddressBook rebuilds a stored address book from the current version of each address and contact and
@@ -631,6 +634,7 @@ func (b *AddressBook) Unsaved() Unsaved {
 	return Unsaved{
 		Changes: slices.Clone(u.Changes), AddressVersions: slices.Clone(u.AddressVersions), ContactVersions: slices.Clone(u.ContactVersions),
 		AddressDefaults: slices.Clone(u.AddressDefaults), ContactDefaults: slices.Clone(u.ContactDefaults), Erased: slices.Clone(u.Erased),
+		Consents: slices.Clone(u.Consents),
 	}
 }
 

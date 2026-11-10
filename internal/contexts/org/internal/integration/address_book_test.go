@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"go.idp.xyz/idp-cargo/internal/kernel"
 	"slices"
 	"strings"
 	"sync"
@@ -204,10 +205,10 @@ func TestAddressBookContactsReadAuthorizationAndErasure(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := module.GetPartyContacts(ctx, api.GetPartyContacts{TenantID: string(tenant), ActorID: "test-clerk", PartyID: "party-a"}); !errors.Is(err, api.ErrUnauthorized) {
+	if _, err := module.GetPartyContacts(ctx, api.GetPartyContacts{TenantID: string(tenant), ActorID: "test-clerk", PartyID: "party-a", Purpose: kernel.PurposeDocuments}); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("a clerk who maintains addresses may not read contacts: %v", err)
 	}
-	contacts, err := module.GetPartyContacts(ctx, api.GetPartyContacts{TenantID: string(tenant), ActorID: "test-approved", PartyID: "party-a"})
+	contacts, err := module.GetPartyContacts(ctx, api.GetPartyContacts{TenantID: string(tenant), ActorID: "test-approved", PartyID: "party-a", Purpose: kernel.PurposeDocuments})
 	if err != nil || contacts.Revision != 4 || len(contacts.Contacts) != 2 {
 		t.Fatalf("contacts: %+v %v", contacts, err)
 	}
@@ -225,7 +226,7 @@ func TestAddressBookContactsReadAuthorizationAndErasure(t *testing.T) {
 	if err != nil || erased.EntryVersion != 3 || erased.NewRevision != 5 {
 		t.Fatalf("erase: %+v %v", erased, err)
 	}
-	contacts, err = module.GetPartyContacts(ctx, api.GetPartyContacts{TenantID: string(tenant), ActorID: "test-approved", PartyID: "party-a"})
+	contacts, err = module.GetPartyContacts(ctx, api.GetPartyContacts{TenantID: string(tenant), ActorID: "test-approved", PartyID: "party-a", Purpose: kernel.PurposeDocuments})
 	if err != nil {
 		t.Fatal(err)
 	}

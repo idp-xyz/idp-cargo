@@ -89,6 +89,31 @@ func (m *Module) SetDefaultPartyContact(ctx context.Context, cmd api.SetDefaultP
 	})
 }
 
+func (m *Module) RecordContactConsent(ctx context.Context, cmd api.RecordContactConsent) (api.AddressBookReceipt, error) {
+	c := cmd.Consent
+	return m.maintain(ctx, application.AddressBookCommand{
+		CommandID: cmd.CommandID, Scope: bookScope(cmd.TenantID, cmd.ActorID), PartyID: domain.PartyID(cmd.PartyID),
+		ExpectedRevision: cmd.ExpectedRevision, Action: domain.ActionRecordContactConsent, ContactID: domain.ContactID(cmd.ContactID),
+		Consent: &domain.ContactConsent{NoticeVersion: c.NoticeVersion, ProvideToOthers: c.ProvideToOthers, CrossBorder: c.CrossBorder,
+			Basis: domain.ConsentBasis(c.Basis), EvidenceRef: c.EvidenceRef},
+	})
+}
+
+func (m *Module) ListContactAccess(ctx context.Context, q api.ListContactAccess) ([]api.ContactAccess, error) {
+	reads, err := application.ListContactAccess{Tx: bento.TenantTransactor{DB: m.db, Tenant: q.TenantID}, Log: postgres.ContactAccessLog{DB: m.db},
+		Auth: authorizer{m.auth}}.Handle(ctx, bookScope(q.TenantID, q.ActorID),
+		application.AccessFilter{PartyID: domain.PartyID(q.PartyID), ActorID: q.ReadBy, Since: q.Since, Until: q.Until, Limit: q.Limit})
+	if err != nil {
+		return nil, classify(err)
+	}
+	out := make([]api.ContactAccess, 0, len(reads))
+	for _, r := range reads {
+		out = append(out, api.ContactAccess{AccessID: r.AccessID, ActorID: r.ActorID, Action: r.Action, PartyID: string(r.PartyID),
+			Purpose: r.Purpose, ContactIDs: texts(r.ContactIDs), RecordedAt: r.RecordedAt})
+	}
+	return out, nil
+}
+
 func (m *Module) GetPartyAddresses(ctx context.Context, q api.GetPartyAddresses) (api.PartyAddresses, error) {
 	book, err := m.reader(q.TenantID).Addresses(ctx, domain.TenantID(q.TenantID), domain.PartyID(q.PartyID))
 	if err != nil {
@@ -110,16 +135,21 @@ func (m *Module) GetPartyAddress(ctx context.Context, q api.GetPartyAddress) (ap
 }
 
 func (m *Module) GetPartyContacts(ctx context.Context, q api.GetPartyContacts) (api.PartyContacts, error) {
-	book, err := m.reader(q.TenantID).Contacts(ctx, bookScope(q.TenantID, q.ActorID), domain.PartyID(q.PartyID))
+	book, err := m.reader(q.TenantID).Contacts(ctx, bookScope(q.TenantID, q.ActorID), domain.PartyID(q.PartyID), q.Purpose)
 	if err != nil {
 		return api.PartyContacts{}, classify(err)
 	}
 	out := api.PartyContacts{PartyID: q.PartyID, Revision: book.Revision()}
 	for _, c := range book.Contacts() {
-		out.Contacts = append(out.Contacts, api.PartyContact{
+		contact := api.PartyContact{
 			ContactID: string(c.ID), Version: c.Version, Status: string(c.Status), DefaultFor: texts(book.ContactDefaultsOf(c.ID)),
 			Contact: api.Contact{Purposes: texts(c.Purposes), Name: c.Name, Phone: c.Phone, Mobile: c.Mobile, Email: c.Email},
-		})
+		}
+		if r, ok := book.Consent(c.ID); ok {
+			contact.Consent = &api.ContactConsent{NoticeVersion: r.NoticeVersion, ProvideToOthers: r.ProvideToOthers, CrossBorder: r.CrossBorder,
+				Basis: string(r.Basis), EvidenceRef: r.EvidenceRef, Revision: r.Revision}
+		}
+		out.Contacts = append(out.Contacts, contact)
 	}
 	return out, nil
 }
@@ -145,6 +175,7 @@ func (m *Module) reader(tenant string) application.ReadAddressBook {
 		Tx:    bento.TenantTransactor{DB: m.db, Tenant: tenant},
 		Books: postgres.AddressBookReader{DB: m.db},
 		Auth:  authorizer{m.auth},
+		Log:   postgres.ContactAccessLog{DB: m.db},
 	}
 }
 

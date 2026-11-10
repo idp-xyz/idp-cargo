@@ -7,6 +7,7 @@ import (
 	"time"
 
 	org "go.idp.xyz/idp-cargo/internal/contexts/org/internal/domain"
+	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
 type clockFake struct{}
@@ -116,21 +117,55 @@ func TestMaintainAddressBookRefusals(t *testing.T) {
 
 func TestReadAddressBookAuthorizesContactsOnly(t *testing.T) {
 	auth := &partyAuthFake{}
-	h := ReadAddressBook{Tx: &txFake{}, Books: bookReaderFake{}, Auth: auth}
+	log := &accessLogFake{}
+	h := ReadAddressBook{Tx: &txFake{}, Books: bookReaderFake{}, Auth: auth, Log: log}
 	if _, err := h.Addresses(context.Background(), "T", "P"); err != nil || len(auth.actions) != 0 {
 		t.Fatalf("addresses: %v, authorized %v", err, auth.actions)
 	}
-	if _, err := h.Contacts(context.Background(), Scope{TenantID: "T"}, "P"); !errors.Is(err, ErrUnauthenticated) {
+	if _, err := h.Contacts(context.Background(), Scope{TenantID: "T"}, "P", kernel.PurposeDocuments); !errors.Is(err, ErrUnauthenticated) {
 		t.Fatalf("contacts without an actor: %v", err)
 	}
+	if _, err := h.Contacts(context.Background(), Scope{TenantID: "T", ActorID: "clerk"}, "P", "MARKETING"); !errors.Is(err, ErrInvalidQuery) {
+		t.Fatalf("contacts for a purpose not listed: %v", err)
+	}
+	if _, err := (ReadAddressBook{Tx: &txFake{}, Books: bookReaderFake{}, Auth: auth}).Contacts(context.Background(),
+		Scope{TenantID: "T", ActorID: "clerk"}, "P", kernel.PurposeDocuments); !errors.Is(err, ErrMissingDependency) {
+		t.Fatalf("contacts without an access log: %v", err)
+	}
 	auth.fail = errors.New("policy")
-	if _, err := h.Contacts(context.Background(), Scope{TenantID: "T", ActorID: "clerk"}, "P"); !errors.Is(err, ErrUnauthorized) ||
-		len(auth.actions) != 1 || auth.actions[0] != ActionReadPartyContacts {
-		t.Fatalf("contacts refused: %v, authorized %v", err, auth.actions)
+	if _, err := h.Contacts(context.Background(), Scope{TenantID: "T", ActorID: "clerk"}, "P", kernel.PurposeDocuments); !errors.Is(err, ErrUnauthorized) ||
+		len(auth.actions) != 1 || auth.actions[0] != ActionReadPartyContacts || len(log.reads) != 0 {
+		t.Fatalf("contacts refused: %v, authorized %v, logged %v", err, auth.actions, log.reads)
+	}
+	auth.fail = nil
+	if _, err := h.Contacts(context.Background(), Scope{TenantID: "T", ActorID: "clerk"}, "P", kernel.PurposeDocuments); err != nil ||
+		len(log.reads) != 1 || log.reads[0].ActorID != "clerk" || log.reads[0].Purpose != kernel.PurposeDocuments || log.reads[0].Action != ActionReadPartyContacts {
+		t.Fatalf("contacts read: %v, logged %+v", err, log.reads)
+	}
+	log.fail = errors.New("log down")
+	if book, err := h.Contacts(context.Background(), Scope{TenantID: "T", ActorID: "clerk"}, "P", kernel.PurposeDocuments); err == nil || book != nil {
+		t.Fatalf("a read that cannot be logged returned %v, %v", book, err)
 	}
 	if _, _, err := h.Address(context.Background(), "T", "P", "A1", -1); !errors.Is(err, ErrInvalidQuery) {
 		t.Fatalf("negative version: %v", err)
 	}
+}
+
+type accessLogFake struct {
+	reads []ContactAccess
+	fail  error
+}
+
+func (l *accessLogFake) RecordContactsRead(_ context.Context, _ org.TenantID, r ContactAccess) error {
+	if l.fail != nil {
+		return l.fail
+	}
+	l.reads = append(l.reads, r)
+	return nil
+}
+
+func (l *accessLogFake) ListContactsReads(context.Context, org.TenantID, AccessFilter) ([]ContactAccess, error) {
+	return l.reads, nil
 }
 
 type bookReaderFake struct{}

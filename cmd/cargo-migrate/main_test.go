@@ -71,8 +71,8 @@ func TestRepositoryManifestLoads(t *testing.T) {
 		}
 	}
 	want := []string{"000001_ref_locations", "000002_ref_locations_s1_subset", "000001_org_identity", "000002_org_roles", "000003_org_merge", "000004_org_audit_reference",
-		"000005_org_tenant_rls", "000006_org_receipt_revision", "000007_org_party_address_book", "000008_org_party_identifiers", "000001_rate_quotes", "000002_rate_quote_v03", "000003_rate_service_level_list", "000001_com_orders",
-		"000002_com_obligation_lifecycle", "000003_com_reservation_per_shipment", "000004_com_order_correction_policy_terms", "000005_com_order_status_derived", "000006_com_order_parties", "000007_com_order_closure_contact_retention",
+		"000005_org_tenant_rls", "000006_org_receipt_revision", "000007_org_party_address_book", "000008_org_party_identifiers", "000009_org_contact_consent_access", "000001_rate_quotes", "000002_rate_quote_v03", "000003_rate_service_level_list", "000001_com_orders",
+		"000002_com_obligation_lifecycle", "000003_com_reservation_per_shipment", "000004_com_order_correction_policy_terms", "000005_com_order_status_derived", "000006_com_order_parties", "000007_com_order_closure_contact_retention", "000008_com_contact_consent_access",
 		"000001_ful_shipments", "000002_ful_shipment_parts", "000003_ful_location_resolution"}
 	if strings.Join(ids, " ") != strings.Join(want, " ") {
 		t.Fatalf("migration order = %v, want %v", ids, want)

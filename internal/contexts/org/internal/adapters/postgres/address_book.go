@@ -114,6 +114,13 @@ func (s AddressBookStore) Save(ctx context.Context, book *org.AddressBook) error
 			return err
 		}
 	}
+	for _, c := range u.Consents {
+		if _, err = q.Exec(ctx, `INSERT INTO cargo_org.party_contact_consent
+            (tenant_id,party_id,contact_id,revision,notice_version,provide_to_others,cross_border,basis,evidence_ref) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+			tenant, party, string(c.ContactID), c.Revision, c.NoticeVersion, c.ProvideToOthers, c.CrossBorder, string(c.Basis), c.EvidenceRef); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -257,7 +264,36 @@ func readBook(ctx context.Context, q bentopg.Querier, tenant org.TenantID, party
 			return nil, err
 		}
 	}
-	return org.RestoreAddressBook(tenant, party, revision, addresses, contacts, addressDefaults, contactDefaults)
+	book, err := org.RestoreAddressBook(tenant, party, revision, addresses, contacts, addressDefaults, contactDefaults)
+	if err != nil || !withContacts {
+		return book, err
+	}
+	consents, err := readConsents(ctx, q, t, p)
+	if err != nil {
+		return nil, err
+	}
+	return book, book.RestoreConsents(consents)
+}
+
+// readConsents reads the current consent of each contact that has one.
+func readConsents(ctx context.Context, q bentopg.Querier, tenant, party string) ([]org.ConsentRecord, error) {
+	rows, err := q.Query(ctx, `SELECT DISTINCT ON (contact_id) contact_id,revision,notice_version,provide_to_others,cross_border,basis,evidence_ref
+      FROM cargo_org.party_contact_consent WHERE tenant_id=$1 AND party_id=$2 ORDER BY contact_id,revision DESC`, tenant, party)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []org.ConsentRecord
+	for rows.Next() {
+		var r org.ConsentRecord
+		var id, basis string
+		if err = rows.Scan(&id, &r.Revision, &r.NoticeVersion, &r.ProvideToOthers, &r.CrossBorder, &basis, &r.EvidenceRef); err != nil {
+			return nil, err
+		}
+		r.ContactID, r.Basis = org.ContactID(id), org.ConsentBasis(basis)
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 func scanAddresses(rows pgx.Rows) ([]org.AddressVersion, error) {

@@ -68,6 +68,7 @@ jobs:
           GRANT INSERT ON cargo_org.party_address_book_change,cargo_org.party_address_version,cargo_org.party_address_default,cargo_org.party_contact_version,cargo_org.party_contact_default TO cargo_app;
           GRANT UPDATE (name,phone,mobile,email,erased) ON cargo_org.party_contact_version TO cargo_app;
           GRANT INSERT ON cargo_org.party_identifier TO cargo_app;
+          GRANT INSERT ON cargo_org.party_contact_consent,cargo_org.party_contact_access TO cargo_app;
           GRANT UPDATE (retired_by,retired_at,retire_reason,retired_revision) ON cargo_org.party_identifier TO cargo_app;
           GRANT SELECT,INSERT,UPDATE ON cargo_rate.quote TO cargo_app;
           GRANT SELECT,INSERT ON cargo_rate.quote_line,cargo_rate.quote_exchange_rate,cargo_rate.command_receipt TO cargo_app;
@@ -78,6 +79,7 @@ jobs:
           GRANT SELECT,INSERT ON cargo_com.order_transport,cargo_com.order_party,cargo_com.order_party_contact TO cargo_app;
           GRANT UPDATE (name,phone,mobile,email,erased) ON cargo_com.order_party_contact TO cargo_app;
           GRANT SELECT,INSERT ON cargo_com.order_contact_retention,cargo_com.order_contact_erasure TO cargo_app;
+          GRANT SELECT,INSERT ON cargo_com.order_contact_access TO cargo_app;
           GRANT SELECT,INSERT,UPDATE ON cargo_ful.shipment TO cargo_app;
           GRANT SELECT,INSERT ON cargo_ful.shipment_obligation,cargo_ful.shipment_plan_version,cargo_ful.shipment_plan_confirmation,cargo_ful.command_receipt TO cargo_app;
           GRANT UPDATE (released_by,released_at) ON cargo_ful.shipment_obligation TO cargo_app;

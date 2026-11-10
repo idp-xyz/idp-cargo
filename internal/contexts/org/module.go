@@ -32,6 +32,7 @@ var (
 	_ api.AddressBookQueries    = (*Module)(nil)
 	_ api.PartyIdentityCommands = (*Module)(nil)
 	_ api.PartyIdentityQueries  = (*Module)(nil)
+	_ api.ContactAccessQueries  = (*Module)(nil)
 )
 
 func New(db *bentopg.DB, auth api.Authorizer) (*Module, error) {
@@ -130,7 +131,7 @@ func classify(err error) error {
 		errors.Is(err, application.ErrInvalidCommand), errors.Is(err, domain.ErrInvalidAddress), errors.Is(err, domain.ErrInvalidContact),
 		errors.Is(err, domain.ErrInvalidChange), errors.Is(err, domain.ErrShortCodeInUse), errors.Is(err, domain.ErrEntryNotActive),
 		errors.Is(err, domain.ErrNothingChanged), errors.Is(err, domain.ErrPartyArchived),
-		errors.Is(err, domain.ErrInvalidIdentifier), errors.Is(err, domain.ErrIdentifierExists):
+		errors.Is(err, domain.ErrInvalidIdentifier), errors.Is(err, domain.ErrIdentifierExists), errors.Is(err, domain.ErrInvalidConsent):
 		kind = api.ErrRejected
 	default:
 		return err

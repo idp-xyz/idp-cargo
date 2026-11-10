@@ -124,10 +124,10 @@ func TestOrderPartiesWithRealContexts(t *testing.T) {
 	if n := parties.Parties[2]; n.Role != comapi.PartyNotify || n.RoleCode != "" || n.HasContact {
 		t.Fatalf("notify party = %+v", n)
 	}
-	if _, err = comModule.GetOrderParties(ctx, comapi.GetOrderParties{TenantID: tenant, ActorID: "cs-1", OrderID: "O-1", WithContacts: true}); !errors.Is(err, comapi.ErrUnauthorized) {
+	if _, err = comModule.GetOrderParties(ctx, comapi.GetOrderParties{TenantID: tenant, ActorID: "cs-1", OrderID: "O-1", WithContacts: true, Purpose: kernel.PurposeDocuments}); !errors.Is(err, comapi.ErrUnauthorized) {
 		t.Fatalf("contacts for an actor not allowed: %v", err)
 	}
-	withContacts, err := comModule.GetOrderParties(ctx, comapi.GetOrderParties{TenantID: tenant, ActorID: "doc-officer", OrderID: "O-1", WithContacts: true})
+	withContacts, err := comModule.GetOrderParties(ctx, comapi.GetOrderParties{TenantID: tenant, ActorID: "doc-officer", OrderID: "O-1", WithContacts: true, Purpose: kernel.PurposeDocuments})
 	if err != nil || withContacts.Parties[0].Contact == nil || withContacts.Parties[0].Contact.Contact.Name != "Test Person A" || withContacts.Parties[0].Contact.ORGContactID != "S-DOCS" {
 		t.Fatalf("contacts for the documentation officer: %+v %v", withContacts.Parties, err)
 	}
