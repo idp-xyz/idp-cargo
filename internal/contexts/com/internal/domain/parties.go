@@ -13,7 +13,7 @@ import (
 	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
-// TransportMode is the transport mode the customer asks for (C11), as SAP TM forwarding orders carry it.
+// TransportMode is the transport mode the customer asks for (C11), as CargoWise shipments carry it.
 type TransportMode string
 
 const (

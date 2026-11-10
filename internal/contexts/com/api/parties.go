@@ -5,7 +5,8 @@ import (
 	"time"
 )
 
-// Transport modes and movement types an order may request (C11), as SAP TM forwarding orders carry them.
+// Transport modes and movement types an order may request (C11). CargoWise shipments carry the transport mode
+// and record a pickup mode and a delivery mode; a movement type maps to that pair.
 const (
 	ModeAir  = "AIR"
 	ModeSea  = "SEA"
