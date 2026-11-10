@@ -204,7 +204,7 @@ func readOrder(ctx context.Context, q queryRower, tenant com.TenantID, id com.Or
 	var roleUntil, cancelledAt, enteredAt *time.Time
 	var cancelledBy, rule, version, place, incotermsSource, service, serviceSource, policyEntity *string
 	var revision int64
-	var lineJSON, amendmentJSON, obligationJSON, reservationJSON []byte
+	var lineJSON, amendmentJSON, obligationJSON, reservationJSON, transportJSON, partyJSON []byte
 	err := q.QueryRow(ctx, `SELECT o.legal_entity_id,o.customer_party_id,o.customer_party_revision,o.customer_legal_name,
         o.customer_country_code,o.customer_role_code,o.customer_role_valid_from,o.customer_role_valid_until,o.customer_role_evidence_ref,
         o.quote_id,o.quote_revision,o.quote_customer_revision,o.quote_recipient_role,o.quote_currency,o.quote_total_minor,o.quote_valid_from,
@@ -219,7 +219,7 @@ func readOrder(ctx context.Context, q queryRower, tenant com.TenantID, id com.Or
         (SELECT coalesce(json_agg(f ORDER BY f.allocated_at, f.obligation_id, f.obligation_version), '[]')
           FROM cargo_com.fulfillment_obligation f WHERE f.tenant_id=o.tenant_id AND f.order_id=o.order_id),
         (SELECT coalesce(json_agg(r ORDER BY r.reservation_no), '[]') FROM cargo_com.obligation_reservation r
-          WHERE r.tenant_id=o.tenant_id AND r.order_id=o.order_id)
+          WHERE r.tenant_id=o.tenant_id AND r.order_id=o.order_id)`+partyColumns+`
       FROM cargo_com.customer_order o WHERE o.tenant_id=$1 AND o.order_id=$2`, string(tenant), string(id)).Scan(
 		&entity, &s.Customer.PartyID, &s.Customer.PartyRevision, &s.Customer.LegalName,
 		&s.Customer.CountryCode, &s.Customer.RoleCode, &s.Customer.RoleValidity.From, &roleUntil, &s.Customer.RoleEvidenceRef,
@@ -228,7 +228,7 @@ func readOrder(ctx context.Context, q queryRower, tenant com.TenantID, id com.Or
 		&rule, &version, &place, &incotermsSource, &service, &serviceSource,
 		&scope, &policyEntity, &s.Policy.Version, &s.Policy.MaxOrdersPerQuote, &s.Policy.GraceDays,
 		&s.RecordedBy, &s.RecordedAt, &enteredAt, &status, &revision, &cancelledBy, &cancelledAt,
-		&lineJSON, &amendmentJSON, &obligationJSON, &reservationJSON)
+		&lineJSON, &amendmentJSON, &obligationJSON, &reservationJSON, &transportJSON, &partyJSON)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, 0, bentorepo.ErrNotFound
 	}
@@ -297,6 +297,9 @@ func readOrder(ctx context.Context, q queryRower, tenant com.TenantID, id com.Or
 			ObligationVersion: r.ObligationVersion, ShipmentID: r.ShipmentID, ReservedBy: r.ReservedBy, ReservedAt: utc(r.ReservedAt),
 			ReleasedBy: r.ReleasedBy, ReleasedAt: utc(r.ReleasedAt)})
 	}
+	if err = restoreParties(&s, transportJSON, partyJSON); err != nil {
+		return nil, 0, err
+	}
 	order, err := com.RestoreOrder(s)
 	return order, revision, err
 }
@@ -354,6 +357,9 @@ func (s OrderStore) Insert(ctx context.Context, order *com.CustomerOrder) (int64
 			string(l.Measure.GrossWeight.Unit), l.Measure.GrossWeight.Amount, volumeUnit, volumeAmount); err != nil {
 			return 0, err
 		}
+	}
+	if err = saveParties(ctx, q, order); err != nil {
+		return 0, err
 	}
 	return revision, nil
 }
@@ -445,6 +451,9 @@ func (s OrderStore) Save(ctx context.Context, order *com.CustomerOrder, expected
 		if tag.RowsAffected() != 1 {
 			return 0, fmt.Errorf("%w: reservation %d of order %s", bentorepo.ErrConflict, r.No, st.OrderID)
 		}
+	}
+	if err = saveParties(ctx, q, order); err != nil {
+		return 0, err
 	}
 	return revision, nil
 }

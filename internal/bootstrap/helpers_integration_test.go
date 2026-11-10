@@ -4,10 +4,12 @@ package bootstrap
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"go.idp.xyz/idp-cargo/internal/foundation/bento"
 	"go.idp.xyz/idp-cargo/internal/kernel"
 )
@@ -88,4 +90,12 @@ func seedORG(t *testing.T, p *Platform, tenant string, parties ...string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+}
+
+func sqlState(err error) string {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code
+	}
+	return ""
 }

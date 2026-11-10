@@ -17,6 +17,8 @@ type RecordCustomerOrderCommand struct {
 	Lines           []com.OrderLine
 	Terms           com.CommercialTerms `json:",omitzero"` // completes what the quote left open (C8)
 	OccurredAt      time.Time
+	Transport       com.Transport `json:",omitzero"`  // requested transport mode and movement type (C11)
+	Parties         []PartyInput  `json:",omitempty"` // shipper, consignee, notify party (C9)
 }
 
 // RecordCustomerOrder records an order against a quote RATE has accepted, for the quote's recipient in the
@@ -29,6 +31,7 @@ type RecordCustomerOrder struct {
 	Customers     Customers
 	Policies      Policies
 	ServiceLevels ServiceLevels
+	Directory     Directory // needed only for orders recorded with parties
 }
 
 func (h RecordCustomerOrder) Handle(ctx context.Context, c RecordCustomerOrderCommand) (Receipt, error) {
@@ -66,6 +69,10 @@ func (h RecordCustomerOrder) Handle(ctx context.Context, c RecordCustomerOrderCo
 			return Receipt{}, err
 		}
 	}
+	parties, err := resolveParties(ctx, h.Directory, c.Scope, quote.LegalEntityID, c.OccurredAt, c.Transport, c.Parties)
+	if err != nil {
+		return Receipt{}, err
+	}
 	return h.write(ctx, c.Scope, c.CommandID, hash, func(txCtx context.Context) (*com.CustomerOrder, int64, error) {
 		policy, err := h.Policies.InForce(txCtx, c.Scope.TenantID, quote.LegalEntityID)
 		if err != nil {
@@ -77,7 +84,7 @@ func (h RecordCustomerOrder) Handle(ctx context.Context, c RecordCustomerOrderCo
 		}
 		order, err := com.RecordOrder(com.OrderDraft{
 			TenantID: c.Scope.TenantID, OrderID: c.OrderID, Quote: quote, Customer: party, Lines: c.Lines, Requested: c.Terms,
-			Policy: policy, RecordedBy: c.Scope.ActorID,
+			Policy: policy, RecordedBy: c.Scope.ActorID, Transport: c.Transport, InitialParties: parties,
 		}, orders, c.OccurredAt, entered)
 		if err != nil {
 			return nil, 0, err

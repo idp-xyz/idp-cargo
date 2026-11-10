@@ -114,6 +114,8 @@ const (
 	eventReservationReleased = "ObligationReservationReleased.v1"
 	eventLineAmended         = "CustomerOrderLineAmended.v1"
 	eventLineAdded           = "CustomerOrderLineAdded.v1"
+	eventPartySet            = "OrderPartySet.v1"
+	eventTransportChanged    = "OrderTransportChanged.v1"
 )
 
 // Event carries identifiers only; the Outbox adapter maps it to a Bento envelope.
@@ -127,20 +129,27 @@ type Event struct {
 	ShipmentID        string
 	LineNo            int   // set for line events
 	LineVersion       int64 // set for line events
+	PartyRole         string
+	PartyVersion      int64
+	PartyKind         string
+	Overridden        bool  // the party version carries an address or contact given on the order (C9; screening trigger, X1)
+	TransportVersion  int64 // set for transport events
 }
 
 // OrderDraft is what a new order is recorded from. Lines are numbered in the order given. Requested are the
 // commercial terms given on the order, to complete what the quote left open (C8). Policy is the order policy
-// in force for the quote's legal entity (C1, C2).
+// in force for the quote's legal entity (C1, C2). Transport and InitialParties are optional (C9, C11).
 type OrderDraft struct {
-	TenantID   TenantID
-	OrderID    OrderID
-	Quote      AcceptedQuote
-	Customer   CustomerSnapshot
-	Lines      []OrderLine
-	Requested  CommercialTerms
-	Policy     OrderPolicy
-	RecordedBy string
+	TenantID       TenantID
+	OrderID        OrderID
+	Quote          AcceptedQuote
+	Customer       CustomerSnapshot
+	Lines          []OrderLine
+	Requested      CommercialTerms
+	Policy         OrderPolicy
+	RecordedBy     string
+	Transport      Transport
+	InitialParties []OrderParty
 }
 
 // OrderState is a stored order, for persistence. Lines are the lines as recorded and LineChanges every line
@@ -158,19 +167,24 @@ type OrderState struct {
 	Reservations []Reservation
 	CancelledBy  string
 	CancelledAt  time.Time
+	// Every version of the order's transport and parties, in the order written (C9, C11, C12).
+	TransportVersions []TransportVersion
+	Parties           []OrderParty
 }
 
 // CustomerOrder is the aggregate root. What the quote, the ordering party, the terms and the policy say
 // never changes; lines change only by new versions (C10). Obligation versions and reservations are only
 // added, and a reservation is released at most once.
 type CustomerOrder struct {
-	state         OrderState
-	lines         lineIndex
-	storedChanges int   // line versions already persisted
-	stored        int   // obligation versions already persisted
-	reserved      int   // reservations already persisted
-	released      []int // persisted reservations released since, by index
-	pending       []Event
+	state           OrderState
+	lines           lineIndex
+	storedChanges   int   // line versions already persisted
+	stored          int   // obligation versions already persisted
+	reserved        int   // reservations already persisted
+	released        []int // persisted reservations released since, by index
+	storedParties   int   // party versions already persisted
+	storedTransport int   // transport versions already persisted
+	pending         []Event
 }
 
 const (
@@ -207,7 +221,32 @@ func RecordOrder(d OrderDraft, ordersOfQuote int, at, entered time.Time) (*Custo
 	if o.lines, err = applyLineChanges(s.Lines, s.RecordedAt, nil); err != nil {
 		return nil, err
 	}
+	o.state.Transport, o.state.InitialParties = Transport{}, nil
+	if !d.Transport.valid() {
+		return nil, fmt.Errorf("%w: transport %+v", ErrInvalidOrder, d.Transport)
+	}
+	if d.Transport != (Transport{}) {
+		o.state.TransportVersions = []TransportVersion{{Transport: d.Transport, Version: 1, ChangedBy: d.RecordedBy, ChangedAt: at.UTC(), EnteredAt: entered.UTC()}}
+	}
 	o.record(eventOrderRecorded, at, nil, "")
+	parties := map[string]OrderParty{}
+	for _, p := range d.InitialParties {
+		if _, twice := parties[p.Role]; twice {
+			return nil, fmt.Errorf("%w: %s given twice", ErrInvalidParty, p.Role)
+		}
+		p.Version, p.SetBy, p.SetAt, p.EnteredAt = 1, d.RecordedBy, at.UTC(), entered.UTC()
+		if p, err = p.normalized(); err != nil {
+			return nil, err
+		}
+		parties[p.Role] = p
+		o.state.Parties = append(o.state.Parties, p)
+	}
+	if err = partyRules(d.Transport, parties); err != nil {
+		return nil, err
+	}
+	for _, p := range o.state.Parties {
+		o.recordParty(p, at)
+	}
 	return o, nil
 }
 
@@ -284,7 +323,40 @@ func RestoreOrder(s OrderState) (*CustomerOrder, error) {
 	if derived := o.derivedStatus(); s.Status != derived {
 		return nil, fmt.Errorf("%w: status %s, but the obligations make it %s", ErrInvalidOrder, s.Status, derived)
 	}
+	if err := o.restoreParties(); err != nil {
+		return nil, err
+	}
 	return o, nil
+}
+
+// restoreParties checks the stored transport and party versions: numbered from 1 without gaps, each valid on
+// its own, and the current ones fitting the current transport.
+func (o *CustomerOrder) restoreParties() error {
+	s := &o.state
+	s.TransportVersions = append([]TransportVersion(nil), s.TransportVersions...)
+	s.Parties = append([]OrderParty(nil), s.Parties...)
+	for i, v := range s.TransportVersions {
+		if v.Version != int64(i+1) || !v.valid() || v.Transport == (Transport{}) || blank(v.ChangedBy) || v.ChangedAt.IsZero() || (i > 0 && blank(v.Reason)) {
+			return fmt.Errorf("%w: transport version %d", ErrInvalidOrder, i+1)
+		}
+	}
+	next := map[string]int64{}
+	for i, p := range s.Parties {
+		next[p.Role]++
+		if p.Version != next[p.Role] || blank(p.SetBy) || p.SetAt.IsZero() || (p.Version > 1 && blank(p.Reason)) {
+			return fmt.Errorf("%w: %s version %d", ErrInvalidOrder, p.Role, p.Version)
+		}
+		normal, err := p.normalized()
+		if err != nil {
+			return fmt.Errorf("%w: stored party: %v", ErrInvalidOrder, err)
+		}
+		s.Parties[i] = normal
+	}
+	if err := partyRules(o.Transport(), o.currentParties()); err != nil {
+		return fmt.Errorf("%w: stored parties: %v", ErrInvalidOrder, err)
+	}
+	o.storedParties, o.storedTransport = len(s.Parties), len(s.TransportVersions)
+	return nil
 }
 
 // State returns a copy of the order for persistence and read models.
@@ -294,6 +366,8 @@ func (o *CustomerOrder) State() OrderState {
 	s.LineChanges = append([]LineVersion(nil), s.LineChanges...)
 	s.Obligations = append([]Obligation(nil), s.Obligations...)
 	s.Reservations = append([]Reservation(nil), s.Reservations...)
+	s.TransportVersions = append([]TransportVersion(nil), s.TransportVersions...)
+	s.Parties = append([]OrderParty(nil), s.Parties...)
 	return s
 }
 
@@ -310,6 +384,7 @@ func (o *CustomerOrder) Added() []Obligation {
 // Acknowledge is permitted only after the transaction holding the order and its Outbox events commits.
 func (o *CustomerOrder) Acknowledge() {
 	o.pending, o.storedChanges, o.stored, o.reserved, o.released = nil, len(o.state.LineChanges), len(o.state.Obligations), len(o.state.Reservations), nil
+	o.storedParties, o.storedTransport = len(o.state.Parties), len(o.state.TransportVersions)
 }
 
 func (o *CustomerOrder) event(kind string, at time.Time) Event {

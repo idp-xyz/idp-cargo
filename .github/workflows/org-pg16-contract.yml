@@ -74,6 +74,8 @@ jobs:
           GRANT SELECT,INSERT ON cargo_com.order_line,cargo_com.order_line_amendment,cargo_com.order_policy,cargo_com.fulfillment_obligation,cargo_com.command_receipt TO cargo_app;
           GRANT SELECT,INSERT ON cargo_com.obligation_reservation TO cargo_app;
           GRANT UPDATE (released_by,released_at) ON cargo_com.obligation_reservation TO cargo_app;
+          GRANT SELECT,INSERT ON cargo_com.order_transport,cargo_com.order_party,cargo_com.order_party_contact TO cargo_app;
+          GRANT UPDATE (name,phone,mobile,email,erased) ON cargo_com.order_party_contact TO cargo_app;
           GRANT SELECT,INSERT,UPDATE ON cargo_ful.shipment TO cargo_app;
           GRANT SELECT,INSERT ON cargo_ful.shipment_obligation,cargo_ful.shipment_plan_version,cargo_ful.shipment_plan_confirmation,cargo_ful.command_receipt TO cargo_app;
           GRANT UPDATE (released_by,released_at) ON cargo_ful.shipment_obligation TO cargo_app;
