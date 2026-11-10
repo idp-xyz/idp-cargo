@@ -87,6 +87,7 @@ const (
 	OrderPartiallyAllocated OrderStatus = "PARTIALLY_ALLOCATED"
 	OrderAllocated          OrderStatus = "ALLOCATED"
 	OrderCancelled          OrderStatus = "CANCELLED"
+	OrderClosed             OrderStatus = "CLOSED"
 )
 
 var (
@@ -116,6 +117,8 @@ const (
 	eventLineAdded           = "CustomerOrderLineAdded.v1"
 	eventPartySet            = "OrderPartySet.v1"
 	eventTransportChanged    = "OrderTransportChanged.v1"
+	eventOrderClosed         = "CustomerOrderClosed.v1"
+	eventContactsErased      = "CustomerOrderContactsErased.v1"
 )
 
 // Event carries identifiers only; the Outbox adapter maps it to a Bento envelope.
@@ -167,6 +170,11 @@ type OrderState struct {
 	Reservations []Reservation
 	CancelledBy  string
 	CancelledAt  time.Time
+	ClosedBy     string
+	ClosedAt     time.Time
+	// Retention is set once the order is closed or cancelled, Erasure once its contacts are erased (P1).
+	Retention *ContactRetention
+	Erasure   *ContactErasure
 	// Every version of the order's transport and parties, in the order written (C9, C11, C12).
 	TransportVersions []TransportVersion
 	Parties           []OrderParty
@@ -184,6 +192,8 @@ type CustomerOrder struct {
 	released        []int // persisted reservations released since, by index
 	storedParties   int   // party versions already persisted
 	storedTransport int   // transport versions already persisted
+	retained        bool  // the retention is persisted
+	erased          bool  // the erasure is persisted
 	pending         []Event
 }
 
@@ -295,7 +305,7 @@ func (s OrderState) validateCommitment() error {
 // RestoreOrder rebuilds a stored order without emitting events.
 func RestoreOrder(s OrderState) (*CustomerOrder, error) {
 	switch s.Status {
-	case OrderRecorded, OrderPartiallyAllocated, OrderAllocated, OrderCancelled:
+	case OrderRecorded, OrderPartiallyAllocated, OrderAllocated, OrderCancelled, OrderClosed:
 	default:
 		return nil, fmt.Errorf("%w: status %q", ErrInvalidOrder, s.Status)
 	}
@@ -309,15 +319,20 @@ func RestoreOrder(s OrderState) (*CustomerOrder, error) {
 	s.LineChanges = append([]LineVersion(nil), s.LineChanges...)
 	s.Obligations = append([]Obligation(nil), s.Obligations...)
 	s.Reservations = append([]Reservation(nil), s.Reservations...)
+	s.Retention, s.Erasure = copyOf(s.Retention), copyOf(s.Erasure)
 	lines, err := applyLineChanges(s.Lines, s.RecordedAt, s.LineChanges)
 	if err != nil {
 		return nil, err
 	}
-	o := &CustomerOrder{state: s, lines: lines, storedChanges: len(s.LineChanges), stored: len(s.Obligations), reserved: len(s.Reservations)}
+	o := &CustomerOrder{state: s, lines: lines, storedChanges: len(s.LineChanges), stored: len(s.Obligations), reserved: len(s.Reservations),
+		retained: s.Retention != nil, erased: s.Erasure != nil}
 	if err := o.validateObligations(); err != nil {
 		return nil, err
 	}
 	if err := o.validateReservations(); err != nil {
+		return nil, err
+	}
+	if err := o.validateRetention(); err != nil {
 		return nil, err
 	}
 	if derived := o.derivedStatus(); s.Status != derived {
@@ -368,6 +383,7 @@ func (o *CustomerOrder) State() OrderState {
 	s.Reservations = append([]Reservation(nil), s.Reservations...)
 	s.TransportVersions = append([]TransportVersion(nil), s.TransportVersions...)
 	s.Parties = append([]OrderParty(nil), s.Parties...)
+	s.Retention, s.Erasure = copyOf(s.Retention), copyOf(s.Erasure)
 	return s
 }
 
@@ -385,6 +401,7 @@ func (o *CustomerOrder) Added() []Obligation {
 func (o *CustomerOrder) Acknowledge() {
 	o.pending, o.storedChanges, o.stored, o.reserved, o.released = nil, len(o.state.LineChanges), len(o.state.Obligations), len(o.state.Reservations), nil
 	o.storedParties, o.storedTransport = len(o.state.Parties), len(o.state.TransportVersions)
+	o.retained, o.erased = o.state.Retention != nil, o.state.Erasure != nil
 }
 
 func (o *CustomerOrder) event(kind string, at time.Time) Event {

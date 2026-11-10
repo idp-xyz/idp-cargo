@@ -201,7 +201,7 @@ func TestLifecycleProperties(t *testing.T) {
 				for _, ob := range m.obligations {
 					ok = ok && (!ob.active || len(ob.holders) == 0)
 				}
-				err = o.Cancel("sales-1", when)
+				err = o.Cancel("sales-1", when, MinContactRetentionMonths)
 				apply = func() {
 					for _, ob := range m.obligations {
 						if ob.active {

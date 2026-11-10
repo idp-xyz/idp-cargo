@@ -327,7 +327,9 @@ type PartyReader interface {
 }
 
 // GetOrderParties returns an order's transport and current parties; contacts only to callers authorized for
-// ReadOrderContacts (privacy assessment V1.1, control 6).
+// ReadOrderContacts (privacy assessment V1.1, control 6). Once the order is closed or cancelled its contacts
+// are restricted: only callers authorized for ReadRestrictedOrderContacts get them (P1). Erased contacts are
+// never returned.
 type GetOrderParties struct {
 	Tx     TxRunner
 	Orders PartyReader
@@ -350,18 +352,43 @@ func (h GetOrderParties) Handle(ctx context.Context, s Scope, id com.OrderID, wi
 	if scoped, ok := h.Tx.(interface{ TenantScope() string }); ok && scoped.TenantScope() != string(s.TenantID) {
 		return nil, 0, nil, ErrUnauthorized
 	}
-	if withContacts {
-		if strings.TrimSpace(s.ActorID) == "" {
-			return nil, 0, nil, ErrUnauthenticated
-		}
-		if err := h.Auth.RequireOrderAction(ctx, s, ActionReadOrderContacts, id); err != nil {
-			return nil, 0, nil, fmt.Errorf("%w: %v", ErrUnauthorized, err)
+	if withContacts && strings.TrimSpace(s.ActorID) == "" {
+		return nil, 0, nil, ErrUnauthenticated
+	}
+	order, revision, _, err := h.read(ctx, s, id, false)
+	if err != nil || !withContacts {
+		return order, revision, nil, err
+	}
+	// The caller is authorized for the order as it was read; if it was closed or cancelled since, again.
+	restricted := order.ContactsRestricted()
+	if err = h.authorizeContacts(ctx, s, id, restricted); err != nil {
+		return nil, 0, nil, err
+	}
+	order, revision, contacts, err := h.read(ctx, s, id, true)
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	if order.ContactsRestricted() && !restricted {
+		if err = h.authorizeContacts(ctx, s, id, true); err != nil {
+			return nil, 0, nil, err
 		}
 	}
-	var order *com.CustomerOrder
-	var revision int64
-	var contacts map[string]map[int64]com.ContactSnapshot
-	err := h.Tx.WithinTransaction(ctx, func(txCtx context.Context) error {
+	return order, revision, contacts, nil
+}
+
+func (h GetOrderParties) authorizeContacts(ctx context.Context, s Scope, id com.OrderID, restricted bool) error {
+	action := ActionReadOrderContacts
+	if restricted {
+		action = ActionReadRestrictedOrderContacts
+	}
+	if err := h.Auth.RequireOrderAction(ctx, s, action, id); err != nil {
+		return fmt.Errorf("%w: %v", ErrUnauthorized, err)
+	}
+	return nil
+}
+
+func (h GetOrderParties) read(ctx context.Context, s Scope, id com.OrderID, withContacts bool) (order *com.CustomerOrder, revision int64, contacts map[string]map[int64]com.ContactSnapshot, err error) {
+	err = h.Tx.WithinTransaction(ctx, func(txCtx context.Context) error {
 		var err error
 		if order, revision, err = h.Orders.ReadOrder(txCtx, s.TenantID, id); err != nil || !withContacts {
 			return err
@@ -369,8 +396,5 @@ func (h GetOrderParties) Handle(ctx context.Context, s Scope, id com.OrderID, wi
 		contacts, err = h.Orders.ReadContacts(txCtx, s.TenantID, id)
 		return err
 	})
-	if err != nil {
-		return nil, 0, nil, err
-	}
-	return order, revision, contacts, nil
+	return order, revision, contacts, err
 }

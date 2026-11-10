@@ -192,7 +192,7 @@ func TestSetPartyAndChangeTransport(t *testing.T) {
 	if len(restored.AddedParties()) != 0 || restored.Transport() != o.Transport() || len(restored.Parties()) != 3 {
 		t.Fatalf("restored: %+v", restored.Parties())
 	}
-	if err = o.Cancel("ops-1", later); err != nil {
+	if err = o.Cancel("ops-1", later, MinContactRetentionMonths); err != nil {
 		t.Fatal(err)
 	}
 	if err = o.SetParty(named(PartyNotify, "N2"), "ops-1", later, later); !errors.Is(err, ErrInvalidTransition) {

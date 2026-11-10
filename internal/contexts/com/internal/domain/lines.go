@@ -71,8 +71,8 @@ func (o *CustomerOrder) Line(no int) (OrderLine, int64, bool) {
 // corrected line may not fall below what its active obligations commit; while it has any, its package type
 // and units stay. To go lower, the obligations are revoked or amended first (C6).
 func (o *CustomerOrder) AmendLine(no int, desc string, pt PackageType, m Measure, reason, by string, at, entered time.Time) error {
-	if o.state.Status == OrderCancelled {
-		return ErrInvalidTransition
+	if err := o.open(); err != nil {
+		return err
 	}
 	current, version, ok := o.Line(no)
 	if !ok {
@@ -112,8 +112,8 @@ func (o *CustomerOrder) AmendLine(no int, desc string, pt PackageType, m Measure
 // AddLine adds a line to an order after it was recorded, such as goods the customer added (C10). It is
 // numbered after the existing lines.
 func (o *CustomerOrder) AddLine(desc string, pt PackageType, m Measure, reason, by string, at, entered time.Time) error {
-	if o.state.Status == OrderCancelled {
-		return ErrInvalidTransition
+	if err := o.open(); err != nil {
+		return err
 	}
 	next := OrderLine{LineNo: len(o.lines.lines) + 1, Description: desc, PackageType: pt, Measure: m}
 	switch {

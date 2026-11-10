@@ -62,6 +62,13 @@ func (s *storeFake) Save(_ context.Context, o *com.CustomerOrder, expected int64
 	s.revs[o.ID()]++
 	return s.revs[o.ID()], nil
 }
+func (s *storeFake) Erase(_ context.Context, o *com.CustomerOrder) error {
+	if _, added := o.AddedErasure(); !added {
+		return com.ErrInvalidTransition
+	}
+	s.orders[o.ID()] = o.State()
+	return nil
+}
 func (s *storeFake) OrdersOfQuote(_ context.Context, _ com.TenantID, quote string) (int, error) {
 	n := 0
 	for _, st := range s.orders {

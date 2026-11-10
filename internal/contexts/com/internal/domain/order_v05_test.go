@@ -280,7 +280,7 @@ func TestAddLineNumbersTheLineAfterTheOthers(t *testing.T) {
 
 func TestACancelledOrderIsNotCorrected(t *testing.T) {
 	o := recorded(t)
-	if err := o.Cancel("sales-1", recordAt.Add(time.Hour)); err != nil {
+	if err := o.Cancel("sales-1", recordAt.Add(time.Hour), MinContactRetentionMonths); err != nil {
 		t.Fatal(err)
 	}
 	later := recordAt.Add(2 * time.Hour)
