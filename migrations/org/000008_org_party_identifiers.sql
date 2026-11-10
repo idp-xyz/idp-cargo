@@ -1,5 +1,5 @@
 -- IDP-Cargo ORG V0.4 / PostgreSQL 16. Run only as the migrator role, never at service start.
--- Owner decision O1 of 2026-11-10 (benchmark against SAP and Chinese rules): a party's identity gains typed
+-- Owner decision O1 of 2026-11-10 (benchmark against CargoWise and Chinese rules): a party's identity gains typed
 -- identifiers (MD-06) and an English name; an address may carry the organization's phone and e-mail.
 -- Customs declarations name Chinese parties by their 18-character unified social credit code (GB 32100) and
 -- AEO operators by country and code; manifests require the shipper's code and phone.
