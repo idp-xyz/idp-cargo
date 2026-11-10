@@ -134,13 +134,26 @@ NOT executed:
 1. Install Go 1.26.5 and resolve the immutable framework candidate; do not use Git `main` or a local `replace`.
 2. Set `IDP_CARGO_MIGRATOR_DSN` to a dedicated migration role in PG16.
 3. `go run ./cmd/cargo-migrate -manifest migrations/manifest/contexts.txt` to inspect; separately authorize `-apply`.
-4. Create a `cargo_app` user with no owner/superuser/BYPASSRLS/DDL rights; grant only required DML (for `cargo_rate`: SELECT, INSERT, UPDATE on `quote`; SELECT, INSERT on `quote_line`, `quote_exchange_rate` and `command_receipt`; for `cargo_com`: SELECT, INSERT, UPDATE on `customer_order`; SELECT, INSERT on `order_line`, `fulfillment_obligation`, `obligation_reservation` and `command_receipt`; UPDATE of `released_by` and `released_at` only on `obligation_reservation`; for `cargo_ful`: SELECT, INSERT, UPDATE on `shipment`; SELECT, INSERT on `shipment_obligation`, `shipment_plan_version`, `shipment_plan_confirmation` and `command_receipt`; UPDATE of `released_by` and `released_at` only on `shipment_obligation`).
+4. Create a `cargo_app` user with no owner/superuser/BYPASSRLS/DDL rights; grant only required DML (for `cargo_rate`: SELECT, INSERT, UPDATE on `quote`; SELECT, INSERT on `quote_line`, `quote_exchange_rate` and `command_receipt`; for `cargo_com`: SELECT, INSERT, UPDATE on `customer_order`; SELECT, INSERT on `order_line`, `order_line_amendment`, `order_policy`, `fulfillment_obligation`, `obligation_reservation` and `command_receipt`; UPDATE of `released_by` and `released_at` only on `obligation_reservation`; for `cargo_ful`: SELECT, INSERT, UPDATE on `shipment`; SELECT, INSERT on `shipment_obligation`, `shipment_plan_version`, `shipment_plan_confirmation` and `command_receipt`; UPDATE of `released_by` and `released_at` only on `shipment_obligation`).
 5. Set `CI=true IDP_CARGO_POSTGRES_DSN=...`. The Bento contract tests also need `IDP_CARGO_MIGRATOR_DSN` to provision their throwaway schemas.
 6. `go test -tags integration -count=1 -v ./...`
 7. `go test -tags integration -race -count=1 ./...`
 8. Collect signed, retained CI proof.
 9. Relay events: `IDP_CARGO_POSTGRES_DSN=... go run ./cmd/cargo-worker -sink https://...`. A claimed batch is sent one delivery at a time under one lease, so `-lease` must exceed `-batch` × `-sink-timeout` (defaults 10 × 5s under 1m); the worker refuses to start otherwise. `-max-attempts` (50) stays five times `-max-failures` (10), as Bento recommends, so the claim limit only ends publishers that crash before settling.
 10. Package rules: `go run ./tools/dependency-check`. After the Context Map changes or a context is added, regenerate the allowlist with `-generate <Context Map JSON>` from the master archive.
+
+### Local PostgreSQL 16 on IDP-Cargo's ports
+
+Ports 25430-25439 are reserved for IDP-Cargo on developer machines: 25432 for integration runs (`dev`), 25433 for upgrade runs (`upgrade`), 25434 for empty-database checks (`empty`), the rest reserved. They lie below the default ephemeral port ranges of Linux and Windows. `tools/localpg/localpg.sh` serves each port only from its own labelled container (`idp-cargo-pg16-<role>`, PostgreSQL 16.15) and refuses to start, print a DSN or stop anything when a port is held by another program, so tests and migrations never reach someone else's server.
+
+```sh
+tools/localpg/localpg.sh up dev            # start, or confirm, idp-cargo-pg16-dev on 127.0.0.1:25432
+eval "$(tools/localpg/localpg.sh env dev)" # IDP_CARGO_MIGRATOR_DSN and IDP_CARGO_POSTGRES_DSN, as CI sets them
+go run ./cmd/cargo-migrate -manifest migrations/manifest/contexts.txt -apply
+tools/localpg/localpg.sh grants dev        # the application role and the grants of the CI workflow
+go test -tags integration -count=1 ./...
+tools/localpg/localpg.sh down dev          # remove the container and its data
+```
 
 ## Important boundaries
 
