@@ -92,6 +92,9 @@ type ObligationSnapshotV3 struct {
 	AllocatedAt       time.Time
 	RevokedAt         time.Time // zero unless Status is ObligationRevoked
 	HeldByShipmentIDs []string  // empty when no shipment holds the version
+	// RequestedTransportMode is the transport mode the order currently requests (C11; COM V0.6), empty when
+	// the order requests none. FUL plans the obligation only in a shipment of that mode.
+	RequestedTransportMode string
 }
 
 // GetObligationSnapshot asks for one version of an obligation. TenantID must come from a verified

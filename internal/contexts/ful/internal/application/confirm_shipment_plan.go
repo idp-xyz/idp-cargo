@@ -18,6 +18,7 @@ type ConfirmShipmentPlanCommand struct {
 // ConfirmShipmentPlan confirms the latest plan version once COM re-confirms every planned obligation
 // ACTIVE, at its planned version and reserved for this shipment. The obligations are read at the
 // expected revision and the commit checks that revision again, so the confirmed plan is the one checked.
+// The orders must still request the shipment's mode, if any (C11).
 type ConfirmShipmentPlan struct {
 	Deps
 	Obligations Obligations
@@ -27,7 +28,7 @@ func (h ConfirmShipmentPlan) Handle(ctx context.Context, c ConfirmShipmentPlanCo
 	if h.Obligations == nil {
 		return Receipt{}, ErrMissingDependency
 	}
-	hash, stored, replayed, err := h.begin(ctx, c.Scope, c.CommandID, c.OccurredAt, c)
+	hash, entered, stored, replayed, err := h.begin(ctx, c.Scope, c.CommandID, c.OccurredAt, c)
 	if err != nil || replayed {
 		return stored, err
 	}
@@ -49,12 +50,18 @@ func (h ConfirmShipmentPlan) Handle(ctx context.Context, c ConfirmShipmentPlanCo
 	if err != nil {
 		return Receipt{}, err
 	}
+	refs := make([]ful.ObligationRef, 0, len(planned))
 	for _, ob := range planned {
-		if _, err = h.Obligations.Plannable(ctx, c.Scope.TenantID, ob.ObligationID, ob.ObligationVersion, c.ShipmentID); err != nil {
+		fresh, err := h.Obligations.Plannable(ctx, c.Scope.TenantID, ob.ObligationID, ob.ObligationVersion, c.ShipmentID)
+		if err != nil {
 			return Receipt{}, err
 		}
+		refs = append(refs, fresh)
 	}
-	return h.change(ctx, c.Scope, c.CommandID, hash, c.ShipmentID, c.ExpectedRevision, func(s *ful.Shipment) error {
+	return h.change(ctx, c.Scope, c.CommandID, hash, entered, c.ShipmentID, c.ExpectedRevision, func(s *ful.Shipment) error {
+		if err := s.CheckRequestedModes(refs); err != nil {
+			return err
+		}
 		return s.Confirm(c.Scope.ActorID, c.OccurredAt)
 	})
 }

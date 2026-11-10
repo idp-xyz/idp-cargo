@@ -29,7 +29,7 @@ func (h AddObligationToShipment) Handle(ctx context.Context, c AddObligationToSh
 	if h.Obligations == nil {
 		return Receipt{}, ErrMissingDependency
 	}
-	hash, stored, replayed, err := h.begin(ctx, c.Scope, c.CommandID, c.OccurredAt, c)
+	hash, entered, stored, replayed, err := h.begin(ctx, c.Scope, c.CommandID, c.OccurredAt, c)
 	if err != nil || replayed {
 		return stored, err
 	}
@@ -40,7 +40,7 @@ func (h AddObligationToShipment) Handle(ctx context.Context, c AddObligationToSh
 	if err != nil {
 		return Receipt{}, err
 	}
-	return h.changeIn(ctx, c.Scope, c.CommandID, hash, c.ShipmentID, c.ExpectedRevision, func(txCtx context.Context, s *ful.Shipment) error {
+	return h.changeIn(ctx, c.Scope, c.CommandID, hash, entered, c.ShipmentID, c.ExpectedRevision, func(txCtx context.Context, s *ful.Shipment) error {
 		elsewhere, err := h.Shipments.PlannedElsewhere(txCtx, c.Scope.TenantID, c.ObligationID, c.ObligationVersion, c.ShipmentID)
 		if err != nil {
 			return err

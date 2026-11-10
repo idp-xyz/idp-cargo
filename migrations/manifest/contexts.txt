@@ -1,5 +1,6 @@
 # Order in which cargo-migrate applies the bounded contexts' migrations (rule DB9).
 # Each line names a directory under migrations/; files inside are named NNNNNN_<context>_<topic>.sql.
+ref
 org
 rate
 com

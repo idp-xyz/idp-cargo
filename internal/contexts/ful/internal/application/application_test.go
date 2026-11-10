@@ -105,6 +105,11 @@ type comFake struct {
 	insideTx bool
 }
 
+// RequestedMode reports no requested mode: the fake orders leave the mode to FUL.
+func (c *comFake) RequestedMode(context.Context, ful.TenantID, ful.ObligationID, int64) (ful.TransportMode, error) {
+	return "", nil
+}
+
 func (c *comFake) Plannable(_ context.Context, _ ful.TenantID, id ful.ObligationID, version int64, shipment ful.ShipmentID) (ful.ObligationRef, error) {
 	c.calls = append(c.calls, string(id))
 	c.insideTx = c.insideTx || c.tx.depth > 0
@@ -134,8 +139,25 @@ func newFixture() *fixture {
 	tx := &txFake{}
 	f := &fixture{store: &storeFake{tx: tx, shipments: map[ful.ShipmentID]ful.ShipmentState{}, revs: map[ful.ShipmentID]int64{}},
 		outbox: &outboxFake{}, com: &comFake{tx: tx, refuse: map[ful.ObligationID]bool{}}}
-	f.deps = Deps{Tx: tx, Shipments: f.store, Receipts: receiptsFake{}, Outbox: f.outbox, Auth: &authFake{}}
+	f.deps = Deps{Tx: tx, Shipments: f.store, Receipts: receiptsFake{}, Outbox: f.outbox, Auth: &authFake{}, Clock: clockFake{},
+		Window: kernel.DefaultRecordWindow}
 	return f
+}
+
+// clockFake records commands a day after the fixtures' business times, inside the record window (T1).
+type clockFake struct{}
+
+func (clockFake) Now() time.Time { return now.Add(24 * time.Hour) }
+
+// locationsFake resolves every UN/LOCODE to itself in a test edition, with an IATA code for AIR.
+type locationsFake struct{}
+
+func (locationsFake) Resolve(_ context.Context, mode ful.TransportMode, l kernel.LocationCode) (ResolvedLocation, error) {
+	r := ResolvedLocation{Code: l, Edition: "TEST-EDITION"}
+	if mode == ful.ModeAir {
+		r.IATA = l.Code[2:]
+	}
+	return r, nil
 }
 
 var planner = Scope{TenantID: "T", ActorID: "planner-1"}
@@ -184,7 +206,7 @@ func TestConfirmRechecksEveryPlannedObligationWithCOM(t *testing.T) {
 	}
 	route := ful.Route{Mode: ful.ModeSea, Origin: kernel.LocationCode{Scheme: kernel.UNLOCODE, Code: "CNSHA"},
 		Destination: kernel.LocationCode{Scheme: kernel.UNLOCODE, Code: "DEHAM"}, Departure: kernel.ValidityInterval{From: now.Add(72 * time.Hour), Until: now.Add(96 * time.Hour)}}
-	if _, err := (AmendShipmentPlan{Deps: f.deps}).Handle(ctx, AmendShipmentPlanCommand{CommandID: "amend-1", Scope: planner, ShipmentID: "SH-1",
+	if _, err := (AmendShipmentPlan{Deps: f.deps, Locations: locationsFake{}, Modes: f.com}).Handle(ctx, AmendShipmentPlanCommand{CommandID: "amend-1", Scope: planner, ShipmentID: "SH-1",
 		ExpectedRevision: 2, Route: route, Reason: "schedule", OccurredAt: now.Add(2 * time.Hour)}); err != nil {
 		t.Fatal(err)
 	}

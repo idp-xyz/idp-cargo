@@ -15,19 +15,40 @@ import (
 	"go.idp.xyz/idp-cargo/internal/contexts/ful/api"
 	comacl "go.idp.xyz/idp-cargo/internal/contexts/ful/internal/adapters/com"
 	"go.idp.xyz/idp-cargo/internal/contexts/ful/internal/adapters/postgres"
+	refacl "go.idp.xyz/idp-cargo/internal/contexts/ful/internal/adapters/reference"
 	"go.idp.xyz/idp-cargo/internal/contexts/ful/internal/application"
 	"go.idp.xyz/idp-cargo/internal/contexts/ful/internal/domain"
 	"go.idp.xyz/idp-cargo/internal/foundation/bento"
 	"go.idp.xyz/idp-cargo/internal/kernel"
+	refapi "go.idp.xyz/idp-cargo/internal/reference/api"
 )
 
 // Module wires FUL's use cases to PostgreSQL through IDP-Bento-Go and to COM's query side.
 type Module struct {
-	db     *bentopg.DB
-	outbox *bentooutbox.Store
-	com    comapi.Queries
-	auth   api.Authorizer
-	clock  bento.SystemClock
+	db        *bentopg.DB
+	outbox    *bentooutbox.Store
+	com       comapi.Queries
+	auth      api.Authorizer
+	clock     bento.SystemClock
+	window    kernel.RecordWindow
+	locations application.Locations // location reference data (F2); nil until wired
+}
+
+// Option configures a Module.
+type Option func(*Module)
+
+// WithRecordWindow sets how far a command's business time may lie before the time FUL records it, and how
+// much clock skew after it is tolerated (T1). The default is kernel.DefaultRecordWindow.
+func WithRecordWindow(w kernel.RecordWindow) Option { return func(m *Module) { m.window = w } }
+
+// WithLocations gives FUL the location reference data that routes are resolved against (F2). Without it a
+// plan cannot name locations.
+func WithLocations(l refapi.Locations) Option {
+	return func(m *Module) {
+		if l != nil {
+			m.locations = refacl.Locations{Ref: l}
+		}
+	}
 }
 
 var (
@@ -38,7 +59,7 @@ var (
 // New assembles FUL. com answers which obligation versions a shipment may plan; the composition root
 // passes COM's module. FUL never writes to COM: the caller reserves and releases obligations through
 // COM's ObligationReservation v1 (rule T6 in S1).
-func New(db *bentopg.DB, com comapi.Queries, auth api.Authorizer) (*Module, error) {
+func New(db *bentopg.DB, com comapi.Queries, auth api.Authorizer, opts ...Option) (*Module, error) {
 	if db == nil || com == nil || auth == nil {
 		return nil, errors.New("ful: module needs a database, COM queries and an authorizer")
 	}
@@ -46,7 +67,14 @@ func New(db *bentopg.DB, com comapi.Queries, auth api.Authorizer) (*Module, erro
 	if err != nil {
 		return nil, err
 	}
-	return &Module{db: db, outbox: outbox, com: com, auth: auth}, nil
+	m := &Module{db: db, outbox: outbox, com: com, auth: auth, window: kernel.DefaultRecordWindow}
+	for _, opt := range opts {
+		opt(m)
+	}
+	if !m.window.Valid() {
+		return nil, errors.New("ful: the record window must not be negative")
+	}
+	return m, nil
 }
 
 func (m *Module) CreateShipmentFromObligation(ctx context.Context, cmd api.CreateShipmentFromObligation) (api.Receipt, error) {
@@ -81,7 +109,7 @@ func (m *Module) ChangeShipmentPart(ctx context.Context, cmd api.ChangeShipmentP
 func (m *Module) AmendShipmentPlan(ctx context.Context, cmd api.AmendShipmentPlan) (api.Receipt, error) {
 	route := domain.Route{Mode: domain.TransportMode(cmd.TransportMode), Origin: cmd.Origin, Destination: cmd.Destination,
 		Departure: kernel.ValidityInterval{From: stored(cmd.DepartureWindow.From), Until: stored(cmd.DepartureWindow.Until)}}
-	receipt, err := application.AmendShipmentPlan{Deps: m.deps(cmd.TenantID, cmd.CommandID)}.Handle(ctx, application.AmendShipmentPlanCommand{
+	receipt, err := application.AmendShipmentPlan{Deps: m.deps(cmd.TenantID, cmd.CommandID), Locations: m.locations, Modes: comacl.Obligations{COM: m.com}}.Handle(ctx, application.AmendShipmentPlanCommand{
 		CommandID: cmd.CommandID, Scope: scope(cmd.TenantID, cmd.ActorID), ShipmentID: domain.ShipmentID(cmd.ShipmentID),
 		ExpectedRevision: cmd.ExpectedRevision, Route: route, Reason: cmd.Reason, OccurredAt: stored(cmd.OccurredAt),
 	})
@@ -150,7 +178,8 @@ func (m *Module) GetShipmentPlanSnapshotV2(ctx context.Context, q api.GetShipmen
 		TenantID: string(st.TenantID), ShipmentID: string(st.ShipmentID), Revision: revision, Status: string(st.Status),
 		PlanVersion: plan.No, CustomerPartyID: st.CustomerPartyID, LegalEntityID: st.LegalEntityID,
 		TransportMode: string(plan.Route.Mode), Origin: plan.Route.Origin, Destination: plan.Route.Destination, DepartureWindow: plan.Route.Departure,
-		PlannedAt: plan.At,
+		PlannedAt: plan.At, OriginIATA: plan.Route.OriginIATA, DestinationIATA: plan.Route.DestinationIATA,
+		LocationEdition: plan.Route.LocationEdition, EnteredAt: plan.EnteredAt,
 	}
 	if n := len(st.Confirmations); n > 0 {
 		snapshot.ConfirmedVersion = st.Confirmations[n-1].PlanNo
@@ -194,6 +223,8 @@ func (m *Module) deps(tenant, commandID string) application.Deps {
 		Receipts:  postgres.CommandReceipts{DB: m.db},
 		Outbox:    postgres.Outbox{Writer: m.outbox, CommandID: commandID, RecordedAt: m.clock.Now()},
 		Auth:      authorizer{m.auth},
+		Clock:     m.clock,
+		Window:    m.window,
 	}
 }
 
@@ -244,7 +275,9 @@ func classify(err error) error {
 		errors.Is(err, domain.ErrAlreadyPlanned), errors.Is(err, domain.ErrNotPlanned), errors.Is(err, domain.ErrLastObligation),
 		errors.Is(err, domain.ErrInvalidPlan), errors.Is(err, domain.ErrIncompletePlan), errors.Is(err, domain.ErrInvalidTransition),
 		errors.Is(err, domain.ErrInvalidChange), errors.Is(err, application.ErrNotPlannable), errors.Is(err, application.ErrInvalidQuery),
-		errors.Is(err, kernel.ErrUnitMismatch), errors.Is(err, kernel.ErrAmountOverflow):
+		errors.Is(err, kernel.ErrUnitMismatch), errors.Is(err, kernel.ErrAmountOverflow),
+		errors.Is(err, domain.ErrUnresolvedRoute), errors.Is(err, domain.ErrModeMismatch), errors.Is(err, application.ErrLocationRefused),
+		errors.Is(err, kernel.ErrOutsideRecordWindow):
 		kind = api.ErrRejected
 	default:
 		return err

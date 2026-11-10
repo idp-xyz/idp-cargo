@@ -91,12 +91,17 @@ type planRow struct {
 	Reason            string    `json:"reason"`
 	WrittenBy         string    `json:"written_by"`
 	WrittenAt         time.Time `json:"written_at"`
+	OriginIATA        string    `json:"origin_iata"`
+	DestinationIATA   string    `json:"destination_iata"`
+	LocationEdition   string    `json:"location_edition"`
+	EnteredAt         time.Time `json:"entered_at"`
 }
 
 type confirmationRow struct {
 	PlanNo      int       `json:"plan_no"`
 	ConfirmedBy string    `json:"confirmed_by"`
 	ConfirmedAt time.Time `json:"confirmed_at"`
+	EnteredAt   time.Time `json:"entered_at"`
 }
 
 func quantity(unit string, amount int64) kernel.Quantity {
@@ -168,12 +173,13 @@ func readShipment(ctx context.Context, q queryRower, tenant ful.TenantID, id ful
 			Route: ful.Route{Mode: ful.TransportMode(p.TransportMode),
 				Origin:      kernel.LocationCode{Scheme: kernel.LocationScheme(p.OriginScheme), Code: p.OriginCode},
 				Destination: kernel.LocationCode{Scheme: kernel.LocationScheme(p.DestinationScheme), Code: p.DestinationCode},
-				Departure:   kernel.ValidityInterval{From: utc(p.DepartureFrom), Until: utc(p.DepartureUntil)}},
+				Departure:   kernel.ValidityInterval{From: utc(p.DepartureFrom), Until: utc(p.DepartureUntil)},
+				OriginIATA:  p.OriginIATA, DestinationIATA: p.DestinationIATA, LocationEdition: p.LocationEdition},
 			Scope:  ful.CargoScope{Packs: p.ScopePacks, GrossWeight: quantity(p.ScopeWeightUnit, p.ScopeWeight), Volume: quantity(p.ScopeVolumeUnit, p.ScopeVolume)},
-			Reason: p.Reason, By: p.WrittenBy, At: utc(p.WrittenAt)})
+			Reason: p.Reason, By: p.WrittenBy, At: utc(p.WrittenAt), EnteredAt: utc(p.EnteredAt)})
 	}
 	for _, c := range confirmations {
-		st.Confirmations = append(st.Confirmations, ful.Confirmation{PlanNo: c.PlanNo, By: c.ConfirmedBy, At: utc(c.ConfirmedAt)})
+		st.Confirmations = append(st.Confirmations, ful.Confirmation{PlanNo: c.PlanNo, By: c.ConfirmedBy, At: utc(c.ConfirmedAt), EnteredAt: utc(c.EnteredAt)})
 	}
 	shipment, err := ful.RestoreShipment(st)
 	return shipment, revision, err
@@ -268,18 +274,19 @@ func (s ShipmentStore) writeAdded(ctx context.Context, q bentopg.Executor, shipm
 		}
 		if _, err := q.Exec(ctx, `INSERT INTO cargo_ful.shipment_plan_version (tenant_id,shipment_id,plan_no,change,transport_mode,
             origin_scheme,origin_code,destination_scheme,destination_code,departure_from,departure_until,scope_packs,scope_weight_unit,
-            scope_weight,scope_volume_unit,scope_volume,reason,written_by,written_at)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
+            scope_weight,scope_volume_unit,scope_volume,reason,written_by,written_at,origin_iata,destination_iata,location_edition,entered_at)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)`,
 			string(st.TenantID), string(st.ShipmentID), p.No, string(p.Change), orNull(string(r.Mode)),
 			originScheme, originCode, destinationScheme, destinationCode, orNull(r.Departure.From), orNull(r.Departure.Until),
 			p.Scope.Packs, string(p.Scope.GrossWeight.Unit), p.Scope.GrossWeight.Amount, orNull(string(p.Scope.Volume.Unit)),
-			orNull(p.Scope.Volume.Amount), orNull(p.Reason), p.By, p.At); err != nil {
+			orNull(p.Scope.Volume.Amount), orNull(p.Reason), p.By, p.At, orNull(r.OriginIATA), orNull(r.DestinationIATA),
+			orNull(r.LocationEdition), orNull(p.EnteredAt)); err != nil {
 			return err
 		}
 	}
 	for _, c := range shipment.AddedConfirmations() {
-		if _, err := q.Exec(ctx, `INSERT INTO cargo_ful.shipment_plan_confirmation (tenant_id,shipment_id,plan_no,confirmed_by,confirmed_at)
-            VALUES ($1,$2,$3,$4,$5)`, string(st.TenantID), string(st.ShipmentID), c.PlanNo, c.By, c.At); err != nil {
+		if _, err := q.Exec(ctx, `INSERT INTO cargo_ful.shipment_plan_confirmation (tenant_id,shipment_id,plan_no,confirmed_by,confirmed_at,entered_at)
+            VALUES ($1,$2,$3,$4,$5,$6)`, string(st.TenantID), string(st.ShipmentID), c.PlanNo, c.By, c.At, orNull(c.EnteredAt)); err != nil {
 			return err
 		}
 	}

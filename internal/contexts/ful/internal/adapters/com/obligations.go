@@ -40,5 +40,22 @@ func (o Obligations) Plannable(ctx context.Context, tenant ful.TenantID, id ful.
 	return ful.ObligationRef{
 		ObligationID: id, ObligationVersion: version, OrderID: s.OrderID, CustomerPartyID: s.Customer.PartyID,
 		LegalEntityID: s.LegalEntityID, Packs: s.Packs, PackageType: s.PackageType, GrossWeight: s.GrossWeight, Volume: s.Volume,
+		RequestedMode: ful.TransportMode(s.RequestedTransportMode),
 	}, nil
+}
+
+// RequestedMode returns the transport mode the order of an obligation version requests (C11), as COM's
+// ObligationSnapshotV3 reports it, whatever the version's status or reservations.
+func (o Obligations) RequestedMode(ctx context.Context, tenant ful.TenantID, id ful.ObligationID, version int64) (ful.TransportMode, error) {
+	s, err := o.COM.GetObligationSnapshotV3(ctx, comapi.GetObligationSnapshot{TenantID: string(tenant), ObligationID: string(id), Version: version})
+	if errors.Is(err, comapi.ErrNotFound) || errors.Is(err, comapi.ErrRejected) {
+		return "", fmt.Errorf("%w: %v", app.ErrNotPlannable, err)
+	}
+	if err != nil {
+		return "", err
+	}
+	if s.TenantID != string(tenant) || s.ObligationID != string(id) || s.ObligationVersion != version {
+		return "", fmt.Errorf("%w: COM answered for another obligation version", app.ErrNotPlannable)
+	}
+	return ful.TransportMode(s.RequestedTransportMode), nil
 }

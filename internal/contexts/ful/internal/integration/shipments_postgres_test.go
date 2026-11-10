@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	refapi "go.idp.xyz/idp-cargo/internal/reference/api"
 	"os"
 	"reflect"
 	"strings"
@@ -122,12 +123,28 @@ type fixture struct {
 	at     time.Time
 }
 
+// locationStub stands in for the location reference data: every well-formed UN/LOCODE resolves to itself in a
+// test edition, with its last three letters as the IATA airport code for AIR. The real data is exercised by
+// the bootstrap tests.
+type locationStub struct{}
+
+func (locationStub) ResolveLocation(_ context.Context, q refapi.ResolveLocation) (refapi.Location, error) {
+	if q.Scheme != refapi.SchemeUNLOCODE || len(q.Code) != 5 {
+		return refapi.Location{}, refapi.ErrUnknownLocation
+	}
+	loc := refapi.Location{UNLocode: q.Code, CountryCode: q.Code[:2], Functions: "1234----", Edition: "TEST-EDITION", Via: refapi.ViaUNLOCODE}
+	if q.Mode == refapi.ModeAir {
+		loc.IATAAirport = q.Code[2:]
+	}
+	return loc, nil
+}
+
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
-	at := time.Now().UTC().Truncate(time.Microsecond)
+	at := time.Now().UTC().Add(-48 * time.Hour).Truncate(time.Microsecond) // business times lie in the past (T1)
 	f := &fixture{db: testDB(t), com: &comStub{revoked: map[string]bool{}}, at: at,
 		tenant: "cargo-ful-" + time.Now().UTC().Format("20060102T150405.000000000")}
-	module, err := fulmodule.New(f.db, f.com, shipmentPolicy{})
+	module, err := fulmodule.New(f.db, f.com, shipmentPolicy{}, fulmodule.WithLocations(locationStub{}))
 	if err != nil {
 		t.Fatal(err)
 	}

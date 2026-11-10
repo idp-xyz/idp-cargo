@@ -25,18 +25,47 @@ func (m TransportMode) Valid() bool {
 }
 
 // Route is the transport mode, the origin and destination UN/LOCODEs and the planned departure window.
-// A draft may leave parts of it empty; a confirmed plan has all of them.
+// A draft may leave parts of it empty; a confirmed plan has all of them. Since FUL V0.3 (decision F2, option
+// 4) every location is resolved against the location reference data: the route freezes the UN/LOCODEs, for AIR
+// the IATA airport codes, and the reference data edition used. Routes stored before V0.3 have neither.
 type Route struct {
-	Mode        TransportMode
-	Origin      kernel.LocationCode
-	Destination kernel.LocationCode
-	Departure   kernel.ValidityInterval
+	Mode            TransportMode
+	Origin          kernel.LocationCode
+	Destination     kernel.LocationCode
+	Departure       kernel.ValidityInterval
+	OriginIATA      string
+	DestinationIATA string
+	LocationEdition string
 }
 
 func (r Route) valid() bool {
 	noWindow := r.Departure.From.IsZero() && r.Departure.Until.IsZero()
 	return (r.Mode == "" || r.Mode.Valid()) && unlocode(r.Origin) && unlocode(r.Destination) &&
-		(r.Origin.IsZero() || r.Origin != r.Destination) && (noWindow || r.Departure.Valid() && !r.Departure.Until.IsZero())
+		(r.Origin.IsZero() || r.Origin != r.Destination) && (noWindow || r.Departure.Valid() && !r.Departure.Until.IsZero()) &&
+		iata(r.OriginIATA, r.Mode, r.Origin) && iata(r.DestinationIATA, r.Mode, r.Destination) && len(r.LocationEdition) <= 64
+}
+
+// iata checks an IATA airport code: three letters, only on an AIR route, only with a location.
+func iata(code string, mode TransportMode, l kernel.LocationCode) bool {
+	if code == "" {
+		return true
+	}
+	return mode == ModeAir && !l.IsZero() && (kernel.LocationCode{Scheme: kernel.IATAAirport, Code: code}).Valid()
+}
+
+// Resolved reports whether every location of the route was resolved against the reference data (F2): an
+// edition when it names a location, and on an AIR route the IATA airport code of each location.
+func (r Route) Resolved() bool {
+	if r.Origin.IsZero() && r.Destination.IsZero() {
+		return true
+	}
+	if r.LocationEdition == "" {
+		return false
+	}
+	if r.Mode == ModeAir {
+		return (r.Origin.IsZero() || r.OriginIATA != "") && (r.Destination.IsZero() || r.DestinationIATA != "")
+	}
+	return true
 }
 
 func unlocode(l kernel.LocationCode) bool {
@@ -51,7 +80,8 @@ func (r Route) Complete() bool {
 // Same reports whether two routes are equal, comparing instants rather than their representation.
 func (r Route) Same(o Route) bool {
 	return r.Mode == o.Mode && r.Origin == o.Origin && r.Destination == o.Destination &&
-		r.Departure.From.Equal(o.Departure.From) && r.Departure.Until.Equal(o.Departure.Until)
+		r.Departure.From.Equal(o.Departure.From) && r.Departure.Until.Equal(o.Departure.Until) &&
+		r.OriginIATA == o.OriginIATA && r.DestinationIATA == o.DestinationIATA && r.LocationEdition == o.LocationEdition
 }
 
 // CargoScope is a quantity of cargo: packs, gross weight and volume. A part is the scope of one obligation
@@ -124,19 +154,21 @@ func (c PlanChange) needsReason() bool { return c == PlanAmended || c == PlanPar
 // planned at that version, what changed and, for an amendment or a changed part, why. Every change adds a
 // version, so the original plan stays visible (FUL-Rollover).
 type PlanVersion struct {
-	No     int
-	Change PlanChange
-	Route  Route
-	Scope  CargoScope
-	Reason string
-	By     string
-	At     time.Time
+	No        int
+	Change    PlanChange
+	Route     Route
+	Scope     CargoScope
+	Reason    string
+	By        string
+	At        time.Time
+	EnteredAt time.Time // when FUL recorded it (T1); zero before FUL V0.3
 }
 
 // Confirmation records who confirmed which plan version. A shipment is PLANNED while its latest plan
 // version is confirmed.
 type Confirmation struct {
-	PlanNo int
-	By     string
-	At     time.Time
+	PlanNo    int
+	By        string
+	At        time.Time
+	EnteredAt time.Time // when FUL recorded it (T1); zero before FUL V0.3
 }

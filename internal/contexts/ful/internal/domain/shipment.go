@@ -41,6 +41,8 @@ var (
 	ErrInvalidTransition = errors.New("ful: invalid state transition")
 	ErrInvalidChange     = errors.New("ful: invalid change to the shipment")
 	ErrConflict          = errors.New("ful: concurrent revision conflict")
+	ErrUnresolvedRoute   = errors.New("ful: the route's locations are not resolved against the location reference data")
+	ErrModeMismatch      = errors.New("ful: the order requests another transport mode")
 )
 
 // Event types, as package api publishes them.
@@ -77,10 +79,14 @@ type ObligationRef struct {
 	PackageType       string
 	GrossWeight       kernel.Quantity
 	Volume            kernel.Quantity // zero when COM has none
+	// RequestedMode is the transport mode the order requests (C11), as COM reported it when FUL asked; empty
+	// when the order requests none. FUL does not store it: every check asks COM again.
+	RequestedMode TransportMode
 }
 
 func (o ObligationRef) valid() bool {
-	return identifier(string(o.ObligationID)) && o.ObligationVersion > 0 && identifier(o.OrderID) && identifier(o.CustomerPartyID) &&
+	return (o.RequestedMode == "" || o.RequestedMode.Valid()) &&
+		identifier(string(o.ObligationID)) && o.ObligationVersion > 0 && identifier(o.OrderID) && identifier(o.CustomerPartyID) &&
 		identifier(o.LegalEntityID) && o.Packs > 0 && len(o.PackageType) == 2 && o.GrossWeight.Unit.Valid() && o.GrossWeight.Amount > 0 &&
 		(o.Volume == kernel.Quantity{} || o.Volume.Unit.Valid() && o.Volume.Amount > 0)
 }
@@ -227,6 +233,9 @@ func (s *Shipment) AddPart(ob ObligationRef, part, elsewhere CargoScope, by stri
 	if s.planning(ob.ObligationID) >= 0 {
 		return fmt.Errorf("%w: %s", ErrAlreadyPlanned, ob.ObligationID)
 	}
+	if err := s.CheckRequestedModes([]ObligationRef{ob}); err != nil {
+		return err
+	}
 	if err := ob.fits(part, elsewhere); err != nil {
 		return err
 	}
@@ -291,6 +300,9 @@ func (s *Shipment) AmendPlan(route Route, reason, by string, at time.Time) error
 	if !route.valid() || !text(reason) || route.Same(s.Latest().Route) {
 		return ErrInvalidPlan
 	}
+	if !route.Resolved() {
+		return ErrUnresolvedRoute
+	}
 	if err := s.changeable(by, at); err != nil {
 		return err
 	}
@@ -308,6 +320,9 @@ func (s *Shipment) Confirm(by string, at time.Time) error {
 	}
 	if !s.Latest().Route.Complete() {
 		return ErrIncompletePlan
+	}
+	if !s.Latest().Route.Resolved() {
+		return ErrUnresolvedRoute
 	}
 	if err := s.changeable(by, at); err != nil {
 		return err
@@ -365,6 +380,30 @@ func (s *Shipment) Cancel(reason, by string, at time.Time) error {
 	s.state.Status = ShipmentCancelled
 	s.record(eventCancelled, at, nil)
 	return nil
+}
+
+// CheckRequestedModes checks obligation references, fresh from COM, against the shipment's transport mode:
+// where both the route and an order name a mode, they must be the same (C11). A shipment of another mode needs
+// the order's transport changed first, in COM.
+func (s *Shipment) CheckRequestedModes(obligations []ObligationRef) error {
+	mode := s.Latest().Route.Mode
+	for _, ob := range obligations {
+		if mode != "" && ob.RequestedMode != "" && ob.RequestedMode != mode {
+			return fmt.Errorf("%w: order %s of %s requests %s, the shipment plans %s", ErrModeMismatch, ob.OrderID, ob.ObligationID, ob.RequestedMode, mode)
+		}
+	}
+	return nil
+}
+
+// Stamp records when FUL entered the plan versions and confirmations added since the shipment was loaded
+// (T1). Business times stay as given; the caller checks them against the record window.
+func (s *Shipment) Stamp(entered time.Time) {
+	for i := s.plans; i < len(s.state.Plans); i++ {
+		s.state.Plans[i].EnteredAt = entered.UTC()
+	}
+	for i := s.confirmations; i < len(s.state.Confirmations); i++ {
+		s.state.Confirmations[i].EnteredAt = entered.UTC()
+	}
 }
 
 // changeable checks who changes the shipment and that nothing recorded for it is later than at.
