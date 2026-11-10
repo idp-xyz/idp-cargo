@@ -26,14 +26,14 @@ type ChangeShipmentPartCommand struct {
 type ChangeShipmentPart struct{ Deps }
 
 func (h ChangeShipmentPart) Handle(ctx context.Context, c ChangeShipmentPartCommand) (Receipt, error) {
-	hash, stored, replayed, err := h.begin(ctx, c.Scope, c.CommandID, c.OccurredAt, c)
+	hash, entered, stored, replayed, err := h.begin(ctx, c.Scope, c.CommandID, c.OccurredAt, c)
 	if err != nil || replayed {
 		return stored, err
 	}
 	if err = h.authorize(ctx, c.Scope, ActionChangeShipmentPart, c.ShipmentID); err != nil {
 		return Receipt{}, err
 	}
-	return h.changeIn(ctx, c.Scope, c.CommandID, hash, c.ShipmentID, c.ExpectedRevision, func(txCtx context.Context, s *ful.Shipment) error {
+	return h.changeIn(ctx, c.Scope, c.CommandID, hash, entered, c.ShipmentID, c.ExpectedRevision, func(txCtx context.Context, s *ful.Shipment) error {
 		elsewhere, err := h.Shipments.PlannedElsewhere(txCtx, c.Scope.TenantID, c.ObligationID, c.ObligationVersion, c.ShipmentID)
 		if err != nil {
 			return err

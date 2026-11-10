@@ -78,6 +78,13 @@ type ShipmentPlanSnapshotV2 struct {
 	Volume           kernel.Quantity // zero when the obligations declare none
 	Parts            []PlannedPart   // none once cancelled
 	PlannedAt        time.Time       // when the current plan version was written
+	// Since FUL V0.3 (F2, option 4): the IATA airport codes of an AIR route, which air waybills and messages
+	// use, and the edition of the location reference data the route was resolved with; empty for plan versions
+	// written before V0.3. EnteredAt is when FUL recorded the current plan version (T1), zero before V0.3.
+	OriginIATA      string
+	DestinationIATA string
+	LocationEdition string
+	EnteredAt       time.Time
 }
 
 // GetShipmentPlanSnapshot asks for a shipment's current plan. TenantID must come from a verified

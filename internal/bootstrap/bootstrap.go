@@ -23,6 +23,7 @@ import (
 	rateapi "go.idp.xyz/idp-cargo/internal/contexts/rate/api"
 	"go.idp.xyz/idp-cargo/internal/foundation/bento"
 	"go.idp.xyz/idp-cargo/internal/foundation/messaging"
+	"go.idp.xyz/idp-cargo/internal/reference/locations"
 )
 
 // Config is what every Cargo process needs to reach PostgreSQL.
@@ -99,13 +100,27 @@ func (p *Platform) COM(org ORGForCOM, rate rateapi.Queries, auth comapi.Authoriz
 	return com.New(db, org, rate, auth, com.WithPartyDirectory(org, org))
 }
 
-// FUL assembles the FUL bounded context. com is used only through its query side.
+// FUL assembles the FUL bounded context. com is used only through its query side; routes are resolved
+// against the location reference data (F2), read on a transaction owner of its own.
 func (p *Platform) FUL(com comapi.Queries, auth fulapi.Authorizer) (*ful.Module, error) {
 	db, err := p.newDB()
 	if err != nil {
 		return nil, err
 	}
-	return ful.New(db, com, auth)
+	locations, err := p.Locations()
+	if err != nil {
+		return nil, err
+	}
+	return ful.New(db, com, auth, ful.WithLocations(locations))
+}
+
+// Locations assembles the read-only location reference data (repository structure baseline §11).
+func (p *Platform) Locations() (locations.Directory, error) {
+	db, err := p.newDB()
+	if err != nil {
+		return locations.Directory{}, err
+	}
+	return locations.New(db)
 }
 
 // RelayConfig configures the Outbox relay that publishes to an HTTP sink.

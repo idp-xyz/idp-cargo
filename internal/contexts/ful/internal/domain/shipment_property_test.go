@@ -54,10 +54,11 @@ var pool = func() []ObligationRef {
 
 var routes = []Route{
 	{},
-	{Mode: ModeSea, Origin: loc("CNSHA")},
+	{Mode: ModeSea, Origin: loc("CNSHA"), LocationEdition: testEdition},
 	route(at.Add(72 * time.Hour)),
 	route(at.Add(240 * time.Hour)),
-	{Mode: ModeAir, Origin: loc("CNSHA"), Destination: loc("DEHAM"), Departure: kernel.ValidityInterval{From: at, Until: at.Add(time.Hour)}},
+	{Mode: ModeAir, Origin: loc("CNSHA"), Destination: loc("DEHAM"), Departure: kernel.ValidityInterval{From: at, Until: at.Add(time.Hour)},
+		OriginIATA: "SHA", DestinationIATA: "HAM", LocationEdition: testEdition},
 	{Origin: loc("CNSHA"), Destination: loc("CNSHA")},
 }
 

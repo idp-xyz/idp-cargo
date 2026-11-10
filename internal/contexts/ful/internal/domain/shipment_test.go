@@ -29,7 +29,7 @@ func loc(code string) kernel.LocationCode {
 
 // route is a complete route by sea from Shanghai to Hamburg, departing within two days of from.
 func route(from time.Time) Route {
-	return Route{Mode: ModeSea, Origin: loc("CNSHA"), Destination: loc("DEHAM"), Departure: kernel.ValidityInterval{From: from, Until: from.Add(48 * time.Hour)}}
+	return Route{Mode: ModeSea, Origin: loc("CNSHA"), Destination: loc("DEHAM"), Departure: kernel.ValidityInterval{From: from, Until: from.Add(48 * time.Hour)}, LocationEdition: testEdition}
 }
 
 func created(t *testing.T) *Shipment {
@@ -123,11 +123,14 @@ func TestAddObligationKeepsOneCustomerAndSumsTheScope(t *testing.T) {
 	}
 }
 
+// testEdition stands for the location reference data edition the application resolves routes with.
+const testEdition = "TEST-EDITION"
+
 func TestAmendAndConfirmThePlan(t *testing.T) {
 	s := created(t)
 	s.Acknowledge()
 	depart := at.Add(72 * time.Hour)
-	partial := Route{Mode: ModeSea, Origin: loc("CNSHA")}
+	partial := Route{Mode: ModeSea, Origin: loc("CNSHA"), LocationEdition: testEdition}
 	if err := s.AmendPlan(partial, "port of loading agreed", "planner-1", at.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}

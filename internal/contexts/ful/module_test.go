@@ -62,7 +62,8 @@ func TestTheModelEmitsThePublishedEventTypes(t *testing.T) {
 		t.Fatal(err)
 	}
 	route := domain.Route{Mode: domain.ModeSea, Origin: kernel.LocationCode{Scheme: kernel.UNLOCODE, Code: "CNSHA"},
-		Destination: kernel.LocationCode{Scheme: kernel.UNLOCODE, Code: "DEHAM"}, Departure: kernel.ValidityInterval{From: at, Until: at.Add(time.Hour)}}
+		Destination: kernel.LocationCode{Scheme: kernel.UNLOCODE, Code: "DEHAM"}, Departure: kernel.ValidityInterval{From: at, Until: at.Add(time.Hour)},
+		LocationEdition: "TEST-EDITION"}
 	if err = errors.Join(
 		s.AddObligation(ref("OB-2"), "planner-1", at),
 		s.AmendPlan(route, "schedule", "planner-1", at),

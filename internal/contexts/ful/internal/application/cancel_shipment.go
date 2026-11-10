@@ -20,14 +20,14 @@ type CancelShipmentCommand struct {
 type CancelShipment struct{ Deps }
 
 func (h CancelShipment) Handle(ctx context.Context, c CancelShipmentCommand) (Receipt, error) {
-	hash, stored, replayed, err := h.begin(ctx, c.Scope, c.CommandID, c.OccurredAt, c)
+	hash, entered, stored, replayed, err := h.begin(ctx, c.Scope, c.CommandID, c.OccurredAt, c)
 	if err != nil || replayed {
 		return stored, err
 	}
 	if err = h.authorize(ctx, c.Scope, ActionCancelShipment, c.ShipmentID); err != nil {
 		return Receipt{}, err
 	}
-	return h.change(ctx, c.Scope, c.CommandID, hash, c.ShipmentID, c.ExpectedRevision, func(s *ful.Shipment) error {
+	return h.change(ctx, c.Scope, c.CommandID, hash, entered, c.ShipmentID, c.ExpectedRevision, func(s *ful.Shipment) error {
 		return s.Cancel(c.Reason, c.Scope.ActorID, c.OccurredAt)
 	})
 }

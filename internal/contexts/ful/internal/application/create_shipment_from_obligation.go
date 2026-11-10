@@ -29,7 +29,7 @@ func (h CreateShipmentFromObligation) Handle(ctx context.Context, c CreateShipme
 	if h.Obligations == nil {
 		return Receipt{}, ErrMissingDependency
 	}
-	hash, stored, replayed, err := h.begin(ctx, c.Scope, c.CommandID, c.OccurredAt, c)
+	hash, entered, stored, replayed, err := h.begin(ctx, c.Scope, c.CommandID, c.OccurredAt, c)
 	if err != nil || replayed {
 		return stored, err
 	}
@@ -53,6 +53,7 @@ func (h CreateShipmentFromObligation) Handle(ctx context.Context, c CreateShipme
 		if err != nil {
 			return nil, 0, err
 		}
+		shipment.Stamp(entered)
 		revision, err := h.Shipments.Insert(txCtx, shipment)
 		return shipment, revision, err
 	})

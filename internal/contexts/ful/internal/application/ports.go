@@ -14,6 +14,7 @@ import (
 	"time"
 
 	ful "go.idp.xyz/idp-cargo/internal/contexts/ful/internal/domain"
+	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
 var (
@@ -87,20 +88,26 @@ type Obligations interface {
 	Plannable(ctx context.Context, tenant ful.TenantID, id ful.ObligationID, version int64, shipment ful.ShipmentID) (ful.ObligationRef, error)
 }
 
-// Deps are the ports every FUL command uses.
+// Clock tells the time FUL records a command (T1).
+type Clock interface{ Now() time.Time }
+
+// Deps are the ports every FUL command uses. Window bounds the business time a command states against the
+// time Clock records it (T1).
 type Deps struct {
 	Tx        TxRunner
 	Shipments ShipmentStore
 	Receipts  Receipts
 	Outbox    IntegrationOutbox
 	Auth      Authorization
+	Clock     Clock
+	Window    kernel.RecordWindow
 }
 
 func (d Deps) check(ctx context.Context, s Scope, commandID string, occurredAt time.Time) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if d.Tx == nil || d.Shipments == nil || d.Receipts == nil || d.Outbox == nil || d.Auth == nil {
+	if d.Tx == nil || d.Shipments == nil || d.Receipts == nil || d.Outbox == nil || d.Auth == nil || d.Clock == nil {
 		return ErrMissingDependency
 	}
 	if s.TenantID == "" || strings.TrimSpace(s.ActorID) == "" || commandID == "" || occurredAt.IsZero() {
@@ -112,16 +119,24 @@ func (d Deps) check(ctx context.Context, s Scope, commandID string, occurredAt t
 	return nil
 }
 
-// begin checks a command and returns its stored receipt if the command was already committed.
-func (d Deps) begin(ctx context.Context, s Scope, commandID string, occurredAt time.Time, command any) (hash string, stored Receipt, replayed bool, err error) {
+// begin checks a command and returns its stored receipt if the command was already committed. Otherwise it
+// returns the time FUL records the command, if the command's business time lies within the record window
+// before it (T1); the window is checked after the replay, so a command retried later still gets its receipt.
+func (d Deps) begin(ctx context.Context, s Scope, commandID string, occurredAt time.Time, command any) (hash string, entered time.Time, stored Receipt, replayed bool, err error) {
 	if err = d.check(ctx, s, commandID, occurredAt); err != nil {
-		return "", Receipt{}, false, err
+		return "", time.Time{}, Receipt{}, false, err
 	}
 	if hash, err = requestHash(command); err != nil {
-		return "", Receipt{}, false, err
+		return "", time.Time{}, Receipt{}, false, err
 	}
-	stored, replayed, err = d.replay(ctx, s.TenantID, commandID, hash)
-	return hash, stored, replayed, err
+	if stored, replayed, err = d.replay(ctx, s.TenantID, commandID, hash); err != nil || replayed {
+		return hash, time.Time{}, stored, replayed, err
+	}
+	entered = d.Clock.Now().UTC().Truncate(time.Microsecond)
+	if err = d.Window.Check(occurredAt, entered); err != nil {
+		return "", time.Time{}, Receipt{}, false, fmt.Errorf("%w: business time %s, recorded %s", err, occurredAt.Format(time.RFC3339), entered.Format(time.RFC3339))
+	}
+	return hash, entered, Receipt{}, false, nil
 }
 
 func (d Deps) authorize(ctx context.Context, s Scope, action ShipmentAction, id ful.ShipmentID) error {
@@ -133,12 +148,12 @@ func (d Deps) authorize(ctx context.Context, s Scope, action ShipmentAction, id 
 
 // change commits one change to a stored shipment, made at the revision the caller expects, with its
 // Outbox events and the command receipt.
-func (d Deps) change(ctx context.Context, s Scope, commandID, hash string, id ful.ShipmentID, expected int64, apply func(*ful.Shipment) error) (Receipt, error) {
-	return d.changeIn(ctx, s, commandID, hash, id, expected, func(_ context.Context, shipment *ful.Shipment) error { return apply(shipment) })
+func (d Deps) change(ctx context.Context, s Scope, commandID, hash string, entered time.Time, id ful.ShipmentID, expected int64, apply func(*ful.Shipment) error) (Receipt, error) {
+	return d.changeIn(ctx, s, commandID, hash, entered, id, expected, func(_ context.Context, shipment *ful.Shipment) error { return apply(shipment) })
 }
 
 // changeIn is change for an apply that reads in the command's transaction.
-func (d Deps) changeIn(ctx context.Context, s Scope, commandID, hash string, id ful.ShipmentID, expected int64, apply func(context.Context, *ful.Shipment) error) (Receipt, error) {
+func (d Deps) changeIn(ctx context.Context, s Scope, commandID, hash string, entered time.Time, id ful.ShipmentID, expected int64, apply func(context.Context, *ful.Shipment) error) (Receipt, error) {
 	return d.write(ctx, s, commandID, hash, func(txCtx context.Context) (*ful.Shipment, int64, error) {
 		shipment, revision, err := d.Shipments.Load(txCtx, s.TenantID, id)
 		if err != nil {
@@ -150,6 +165,7 @@ func (d Deps) changeIn(ctx context.Context, s Scope, commandID, hash string, id 
 		if err = apply(txCtx, shipment); err != nil {
 			return nil, 0, err
 		}
+		shipment.Stamp(entered)
 		newRevision, err := d.Shipments.Save(txCtx, shipment, revision)
 		return shipment, newRevision, err
 	})

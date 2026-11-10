@@ -260,7 +260,7 @@ func (m *Module) GetObligationSnapshotV3(ctx context.Context, q api.GetObligatio
 		Packs: ob.Measure.Packs, PackageType: string(l.PackageType), GrossWeight: ob.Measure.GrossWeight, Volume: ob.Measure.Volume,
 		LegalEntityID: string(s.Quote.LegalEntityID), Customer: api.CustomerRef{PartyID: s.Customer.PartyID, PartyRevision: s.Customer.PartyRevision},
 		QuoteID: s.Quote.QuoteID, QuoteRevision: s.Quote.QuoteRevision, AllocatedAt: ob.AllocatedAt, RevokedAt: ob.RevokedAt,
-		HeldByShipmentIDs: holdersOf(order, ob),
+		HeldByShipmentIDs: holdersOf(order, ob), RequestedTransportMode: string(order.Transport().Mode),
 	}, nil
 }
 
