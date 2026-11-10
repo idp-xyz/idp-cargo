@@ -1,4 +1,4 @@
-# IDP-Cargo · Go + DDD + Bento-Go · V2.21 integration candidate
+# IDP-Cargo · Go + DDD + Bento-Go · V2.22 integration candidate
 
 **IDP-Cargo is one product repository and one Go module. Business code is organized by DDD bounded context; IDP-Bento-Go and IDP-Platform-Go stay separate repositories referenced as Go module versions.**
 
@@ -108,6 +108,7 @@ GitHub Actions, `ubuntu-24.04` runner, workflow `org-pg16-contract.yml`, on ever
   - R7: the ordering party is the quote's recipient, confirmed by ORG in the role the quote went to. COM reads `QuoteSnapshotV2` and hashes its canonical form.
   - T1: every COM command's business time lies within `kernel.RecordWindow` before the time COM records it (configurable with `WithRecordWindow`); orders and line changes keep that time.
   - Migrations `rate/000003_rate_service_level_list` and `com/000004_com_order_correction_policy_terms` convert existing data without loss: orders become orders of a v1 snapshot by a customer under the built-in policy, without terms or recording time. New tables `cargo_com.order_line_amendment` and `cargo_com.order_policy`, immutable.
+- V2.22 makes the database check an order's status (COM V0.5.1). The status is derived from the order's lines and obligations: CANCELLED once cancelled, RECORDED while no obligation is active, ALLOCATED when every line's active obligations take all its packs, otherwise PARTIALLY_ALLOCATED. COM writes it with every change; until now a write past COM, such as a revocation written in SQL, could leave a status COM then refused to restore. Deferred constraint triggers now check every order a transaction touches when it commits. Migration `com/000005_com_order_status_derived` derives stale statuses again; status is derived data, so nothing is lost.
 
 Bento testkit contracts:
 
