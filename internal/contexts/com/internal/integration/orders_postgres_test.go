@@ -278,12 +278,14 @@ func sqlState(err error) string {
 	return ""
 }
 
-// Rogue writes as the application role: a revocation copied from version 1, and a reservation.
+// Rogue writes as the application role: a revocation copied from version 1, the order status as COM derives it, and a reservation.
 const (
 	revokeSQL = `INSERT INTO cargo_com.fulfillment_obligation (tenant_id,obligation_id,obligation_version,order_id,line_no,packs,
         gross_weight_unit,gross_weight,volume_unit,volume,status,allocated_by,allocated_at,revoked_by,revoked_at)
       SELECT tenant_id,obligation_id,2,order_id,line_no,packs,gross_weight_unit,gross_weight,volume_unit,volume,'REVOKED',
         allocated_by,allocated_at,'rogue',$3 FROM cargo_com.fulfillment_obligation WHERE tenant_id=$1 AND obligation_id=$2 AND obligation_version=1`
+	statusSQL = `UPDATE cargo_com.customer_order SET status=cargo_com.derived_order_status(tenant_id,order_id),revision=revision+1,updated_at=now()
+      WHERE tenant_id=$1 AND order_id=$2`
 	reserveSQL = `INSERT INTO cargo_com.obligation_reservation (tenant_id,order_id,reservation_no,obligation_id,obligation_version,
         shipment_id,reserved_by,reserved_at)
       SELECT tenant_id,order_id,$3,obligation_id,1,'S-SQL','rogue',$4 FROM cargo_com.fulfillment_obligation
@@ -718,9 +720,13 @@ func TestReservationAndRevocationRaceInSQL(t *testing.T) {
 			return err
 		}
 	}
+	// A revocation written in SQL updates the order's status as COM does; the database checks it at commit.
 	revoke := func(id string) func(context.Context, bentopg.Executor) error {
 		return func(ctx context.Context, e bentopg.Executor) error {
-			_, err := e.Exec(ctx, revokeSQL, f.tenant, id, f.at.Add(4*time.Hour))
+			if _, err := e.Exec(ctx, revokeSQL, f.tenant, id, f.at.Add(4*time.Hour)); err != nil {
+				return err
+			}
+			_, err := e.Exec(ctx, statusSQL, f.tenant, "O-1")
 			return err
 		}
 	}
