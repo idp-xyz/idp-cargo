@@ -30,9 +30,10 @@ type Module struct {
 	org    orgapi.Queries
 	rate   rateapi.Queries
 	auth   api.Authorizer
-	clock  bento.SystemClock
+	clock  application.Clock
 	window kernel.RecordWindow
 	dir    application.Directory // ORG's address book and identity for order parties (C9); nil until wired
+	retain int                   // months the contacts of a closed or cancelled order are kept (P1)
 }
 
 var (
@@ -42,6 +43,7 @@ var (
 	_ api.OrderPolicies          = (*Module)(nil)
 	_ api.OrderPartyCommands     = (*Module)(nil)
 	_ api.OrderPartyQueries      = (*Module)(nil)
+	_ api.OrderContactRetention  = (*Module)(nil)
 )
 
 // Option configures a Module.
@@ -51,6 +53,22 @@ type Option func(*Module)
 // much clock skew after it is tolerated (T1). The default is kernel.DefaultRecordWindow: seven days and
 // five minutes.
 func WithRecordWindow(w kernel.RecordWindow) Option { return func(m *Module) { m.window = w } }
+
+// WithClock sets the clock COM records commands by (T1) and judges contact retention by (P1). The default
+// is the system clock.
+func WithClock(c interface{ Now() time.Time }) Option {
+	return func(m *Module) {
+		if c != nil {
+			m.clock = c
+		}
+	}
+}
+
+// WithContactRetention sets how many months the contacts of a closed or cancelled order are kept,
+// restricted, before they may be erased (P1): 36 to 120. The default is 36, three years, the customs
+// records' retention; legal counsel is to confirm it. A change applies to orders closed or cancelled after
+// it; each order keeps the end it was given.
+func WithContactRetention(months int) Option { return func(m *Module) { m.retain = months } }
 
 // WithPartyDirectory gives COM ORG's identity and address book queries, which order parties need (C9). The
 // role confirmations come from the ORG queries passed to New. Without it, orders are recorded without
@@ -73,12 +91,17 @@ func New(db *bentopg.DB, org orgapi.Queries, rate rateapi.Queries, auth api.Auth
 	if err != nil {
 		return nil, err
 	}
-	m := &Module{db: db, outbox: outbox, org: org, rate: rate, auth: auth, window: kernel.DefaultRecordWindow}
+	m := &Module{db: db, outbox: outbox, org: org, rate: rate, auth: auth, window: kernel.DefaultRecordWindow,
+		clock: bento.SystemClock{}, retain: domain.MinContactRetentionMonths}
 	for _, opt := range opts {
 		opt(m)
 	}
 	if !m.window.Valid() {
 		return nil, errors.New("com: the record window must not be negative")
+	}
+	if !domain.ValidRetentionMonths(m.retain) {
+		return nil, fmt.Errorf("com: contacts are retained %d to %d months, not %d", domain.MinContactRetentionMonths,
+			domain.MaxContactRetentionMonths, m.retain)
 	}
 	return m, nil
 }
@@ -294,6 +317,8 @@ func (m *Module) deps(tenant, commandID string) application.Deps {
 		Auth:     authorizer{m.auth},
 		Clock:    m.clock,
 		Window:   m.window,
+
+		RetentionMonths: m.retain,
 	}
 }
 
@@ -348,7 +373,7 @@ func classify(err error) error {
 		errors.Is(err, domain.ErrNotReserved), errors.Is(err, application.ErrQuoteNotAccepted), errors.Is(err, application.ErrCustomerNotConfirmed),
 		errors.Is(err, application.ErrInvalidQuery), errors.Is(err, kernel.ErrUnitMismatch), errors.Is(err, kernel.ErrAmountOverflow),
 		errors.Is(err, domain.ErrTermsMismatch), errors.Is(err, domain.ErrInvalidPolicy), errors.Is(err, application.ErrServiceLevelNotListed),
-		errors.Is(err, kernel.ErrOutsideRecordWindow):
+		errors.Is(err, kernel.ErrOutsideRecordWindow), errors.Is(err, domain.ErrContactsRetained), errors.Is(err, domain.ErrInvalidRetention):
 		kind = api.ErrRejected
 	default:
 		return err

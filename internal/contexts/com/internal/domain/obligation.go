@@ -32,7 +32,10 @@ type Obligation struct {
 // version 1. The line's active obligations never exceed its packs, gross weight or volume (C3). A line is
 // fully allocated when all its packs are.
 func (o *CustomerOrder) Allocate(lineNo int, id ObligationID, m Measure, by string, at time.Time) error {
-	if o.state.Status == OrderAllocated || o.state.Status == OrderCancelled {
+	if err := o.open(); err != nil {
+		return err
+	}
+	if o.state.Status == OrderAllocated {
 		return ErrInvalidTransition
 	}
 	if err := o.allocate(lineNo, id, m, by, at); err != nil {
@@ -69,8 +72,8 @@ func (o *CustomerOrder) allocate(lineNo int, id ObligationID, m Measure, by stri
 // Revoke revokes an active obligation that no shipment holds. It writes the next version, REVOKED, and
 // the obligation's packs, weight and volume become allocatable again (C6).
 func (o *CustomerOrder) Revoke(id ObligationID, by string, at time.Time) error {
-	if o.state.Status == OrderCancelled {
-		return ErrInvalidTransition
+	if err := o.open(); err != nil {
+		return err
 	}
 	ob, err := o.revocable(id, by, at)
 	if err != nil {
@@ -85,8 +88,8 @@ func (o *CustomerOrder) Revoke(id ObligationID, by string, at time.Time) error {
 // old one is revoked and the new one allocated, and both are recorded (C6). If the new allocation is
 // refused, nothing changes.
 func (o *CustomerOrder) Amend(id, newID ObligationID, m Measure, by string, at time.Time) error {
-	if o.state.Status == OrderCancelled {
-		return ErrInvalidTransition
+	if err := o.open(); err != nil {
+		return err
 	}
 	ob, err := o.revocable(id, by, at)
 	if err != nil {
@@ -103,13 +106,17 @@ func (o *CustomerOrder) Amend(id, newID ObligationID, m Measure, by string, at t
 }
 
 // Cancel revokes every active obligation and cancels the order for good. While a shipment holds one of
-// its obligations the order cannot be cancelled (C6).
-func (o *CustomerOrder) Cancel(by string, at time.Time) error {
-	if o.state.Status == OrderCancelled {
-		return ErrInvalidTransition
+// its obligations the order cannot be cancelled (C6), nor once it is closed. The order's contacts are then
+// kept for months from at, restricted, before they may be erased (P1).
+func (o *CustomerOrder) Cancel(by string, at time.Time, months int) error {
+	if err := o.open(); err != nil {
+		return err
 	}
 	if blank(by) || at.IsZero() || at.Before(o.state.RecordedAt) {
 		return ErrInvalidChange
+	}
+	if !ValidRetentionMonths(months) {
+		return fmt.Errorf("%w: %d months", ErrInvalidRetention, months)
 	}
 	var active []Obligation
 	for _, ob := range o.current() {
@@ -125,6 +132,7 @@ func (o *CustomerOrder) Cancel(by string, at time.Time) error {
 		o.revoke(ob, by, at)
 	}
 	o.state.Status, o.state.CancelledBy, o.state.CancelledAt = OrderCancelled, by, at.UTC()
+	o.startRetention(RetentionCancelled, at, months)
 	o.record(eventOrderCancelled, at, nil, "")
 	return nil
 }
@@ -242,6 +250,9 @@ func later(a, b time.Time) time.Time {
 func (o *CustomerOrder) derivedStatus() OrderStatus {
 	if !o.state.CancelledAt.IsZero() {
 		return OrderCancelled
+	}
+	if !o.state.ClosedAt.IsZero() {
+		return OrderClosed
 	}
 	active := false
 	for _, ob := range o.current() {

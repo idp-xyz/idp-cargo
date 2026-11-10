@@ -15,6 +15,8 @@ const (
 	CustomerOrderLineAdded         = "CustomerOrderLineAdded.v1"
 	OrderPartySet                  = "OrderPartySet.v1"
 	OrderTransportChanged          = "OrderTransportChanged.v1"
+	CustomerOrderClosed            = "CustomerOrderClosed.v1"
+	CustomerOrderContactsErased    = "CustomerOrderContactsErased.v1"
 )
 
 // EventPayload is the JSON payload of every COM event: identifiers only. SubjectID is the order. Events
@@ -22,6 +24,7 @@ const (
 // carries the version that records the revocation. ObligationReserved.v1 and
 // ObligationReservationReleased.v1 add the shipment. CustomerOrderLineAmended.v1 and
 // CustomerOrderLineAdded.v1 add the line and the version written (C10); they carry no quantities.
+// CustomerOrderClosed.v1 and CustomerOrderContactsErased.v1 name only the order (P1).
 type EventPayload struct {
 	TenantID          string `json:"tenant_id"`
 	SubjectID         string `json:"subject_id"`

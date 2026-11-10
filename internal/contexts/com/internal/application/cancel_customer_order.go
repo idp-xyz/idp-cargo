@@ -16,7 +16,7 @@ type CancelCustomerOrderCommand struct {
 }
 
 // CancelCustomerOrder cancels an order none of whose obligations a shipment holds; its active obligations
-// are revoked (C6).
+// are revoked (C6). The order's contacts are then retained, restricted, for Deps.RetentionMonths (P1).
 type CancelCustomerOrder struct{ Deps }
 
 func (h CancelCustomerOrder) Handle(ctx context.Context, c CancelCustomerOrderCommand) (Receipt, error) {
@@ -34,6 +34,6 @@ func (h CancelCustomerOrder) Handle(ctx context.Context, c CancelCustomerOrderCo
 		if revision != c.ExpectedRevision {
 			return com.ErrConflict
 		}
-		return order.Cancel(c.Scope.ActorID, c.OccurredAt)
+		return order.Cancel(c.Scope.ActorID, c.OccurredAt, h.retentionMonths())
 	})
 }

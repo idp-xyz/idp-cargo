@@ -193,11 +193,11 @@ type OrderParty struct {
 	EnteredAt   time.Time
 }
 
-// SetParty records the next version of one order party (C9, C12): until the order is cancelled, with a reason
+// SetParty records the next version of one order party (C9, C12): until the order is cancelled or closed, with a reason
 // when it replaces an earlier version. The parties must fit the order's transport (C11, C14).
 func (o *CustomerOrder) SetParty(p OrderParty, by string, at, entered time.Time) error {
-	if o.state.Status == OrderCancelled {
-		return fmt.Errorf("%w: the order is cancelled", ErrInvalidTransition)
+	if err := o.open(); err != nil {
+		return err
 	}
 	if blank(by) || at.IsZero() || entered.IsZero() {
 		return ErrInvalidChange
@@ -228,8 +228,8 @@ func (o *CustomerOrder) SetParty(p OrderParty, by string, at, entered time.Time)
 // must still fit: a TO ORDER consignee only on SEA, and a pickup or delivery address where the movement
 // starts or ends at a door (C14).
 func (o *CustomerOrder) ChangeTransport(t Transport, reason, by string, at, entered time.Time) error {
-	if o.state.Status == OrderCancelled {
-		return fmt.Errorf("%w: the order is cancelled", ErrInvalidTransition)
+	if err := o.open(); err != nil {
+		return err
 	}
 	if blank(by) || blank(reason) || utf8.RuneCountInString(reason) > maxText || at.IsZero() || entered.IsZero() {
 		return ErrInvalidChange

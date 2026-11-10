@@ -130,13 +130,13 @@ func TestCancelRevokesEveryActiveObligation(t *testing.T) {
 		t.Fatal(err)
 	}
 	o.Acknowledge()
-	if err := o.Cancel("sales-1", recordAt.Add(time.Hour)); !errors.Is(err, ErrInvalidChange) {
+	if err := o.Cancel("sales-1", recordAt.Add(time.Hour), MinContactRetentionMonths); !errors.Is(err, ErrInvalidChange) {
 		t.Fatalf("cancelling before the last allocation: err = %v", err)
 	}
-	if err := o.Cancel(" ", recordAt.Add(3*time.Hour)); !errors.Is(err, ErrInvalidChange) {
+	if err := o.Cancel(" ", recordAt.Add(3*time.Hour), MinContactRetentionMonths); !errors.Is(err, ErrInvalidChange) {
 		t.Fatalf("nobody cancelling: err = %v", err)
 	}
-	if err := o.Cancel("sales-1", recordAt.Add(3*time.Hour)); err != nil {
+	if err := o.Cancel("sales-1", recordAt.Add(3*time.Hour), MinContactRetentionMonths); err != nil {
 		t.Fatal(err)
 	}
 	s := o.State()
@@ -163,7 +163,7 @@ func TestCancelRevokesEveryActiveObligation(t *testing.T) {
 		"allocate": restored.Allocate(1, "OB-4", packsWithVolume(1, 1, 1), "planner-1", later),
 		"revoke":   restored.Revoke("OB-1", "planner-1", later),
 		"amend":    restored.Amend("OB-1", "OB-4", packsWithVolume(1, 1, 1), "planner-1", later),
-		"cancel":   restored.Cancel("sales-1", later),
+		"cancel":   restored.Cancel("sales-1", later, MinContactRetentionMonths),
 	} {
 		if !errors.Is(err, ErrInvalidTransition) {
 			t.Errorf("%s on a cancelled order: err = %v", name, err)
@@ -176,7 +176,7 @@ func TestCancelRevokesEveryActiveObligation(t *testing.T) {
 
 func TestCancelAnOrderWithoutObligations(t *testing.T) {
 	o := recorded(t)
-	if err := o.Cancel("sales-1", recordAt); err != nil || o.Status() != OrderCancelled || len(o.Added()) != 0 {
+	if err := o.Cancel("sales-1", recordAt, MinContactRetentionMonths); err != nil || o.Status() != OrderCancelled || len(o.Added()) != 0 {
 		t.Fatalf("cancel: %v, status %s, added %d", err, o.Status(), len(o.Added()))
 	}
 	if got := eventList(o); got != "[CustomerOrderRecorded.v1 CustomerOrderCancelled.v1]" {

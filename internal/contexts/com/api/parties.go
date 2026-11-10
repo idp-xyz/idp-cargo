@@ -159,7 +159,9 @@ type OrderPartyCommands interface {
 }
 
 // GetOrderParties asks for an order's transport and current parties. WithContacts adds the frozen contacts,
-// for callers the Authorizer allows ActionReadOrderContacts (FUL, DOC).
+// for callers the Authorizer allows ActionReadOrderContacts (FUL, DOC). Once the order is closed or cancelled
+// its contacts are restricted and need ActionReadRestrictedOrderContacts instead; erased contacts are never
+// returned (P1).
 type GetOrderParties struct {
 	TenantID     string
 	ActorID      string
@@ -221,12 +223,13 @@ type OrderPartyView struct {
 	SetAt         time.Time
 }
 
-// OrderParties is an order's transport and current parties at Revision.
+// OrderParties is an order's transport and current parties at Revision, and where its contacts stand.
 type OrderParties struct {
 	OrderID   string
 	Revision  int64
 	Transport Transport
 	Parties   []OrderPartyView
+	Contacts  ContactsStatus
 }
 
 // OrderPartyQueries is the read side of order parties.

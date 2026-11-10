@@ -184,6 +184,20 @@ type Commands interface {
 	CancelCustomerOrder(ctx context.Context, cmd CancelCustomerOrder) (Receipt, error)
 	AmendOrderLine(ctx context.Context, cmd AmendOrderLine) (Receipt, error)
 	AddOrderLine(ctx context.Context, cmd AddOrderLine) (Receipt, error)
+	CloseCustomerOrder(ctx context.Context, cmd CloseCustomerOrder) (Receipt, error)
+}
+
+// CloseCustomerOrder records that the work on an order is finished. Only an order whose lines are all
+// allocated can be closed. A closed order no longer changes: lines, obligations, parties and transport stay,
+// it cannot be cancelled, and shipments may no longer reserve its obligations, though those that hold them
+// may release them. Its contacts are then kept, restricted, until the retention period ends (P1).
+type CloseCustomerOrder struct {
+	CommandID        string
+	TenantID         string
+	ActorID          string
+	OrderID          string
+	ExpectedRevision int64
+	OccurredAt       time.Time
 }
 
 // SetOrderPolicy records the next version of the order policy of a legal entity, or of the tenant default
@@ -249,11 +263,12 @@ const (
 	ActionAmendOrderLine                  = "AmendOrderLine"
 	ActionAddOrderLine                    = "AddOrderLine"
 	ActionSetOrderPolicy                  = "SetOrderPolicy"
+	ActionCloseCustomerOrder              = "CloseCustomerOrder"
 )
 
 // Authorizer decides whether a verified actor may perform an order action. The identity and policy layer
 // supplies it. For the reservation commands, orderID is the order that holds the obligation; for
-// SetOrderPolicy it is empty.
+// SetOrderPolicy and ListOrdersDueForContactErasure it is empty.
 type Authorizer interface {
 	AuthorizeOrderAction(ctx context.Context, tenantID, actorID, action, orderID string) error
 }

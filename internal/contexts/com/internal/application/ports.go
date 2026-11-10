@@ -46,6 +46,9 @@ const (
 	ActionAmendOrderLine                  OrderAction = "AmendOrderLine"
 	ActionAddOrderLine                    OrderAction = "AddOrderLine"
 	ActionSetOrderPolicy                  OrderAction = "SetOrderPolicy"
+	ActionCloseCustomerOrder              OrderAction = "CloseCustomerOrder"
+	ActionEraseOrderContacts              OrderAction = "EraseOrderContacts"
+	ActionReadRestrictedOrderContacts     OrderAction = "ReadRestrictedOrderContacts"
 )
 
 // Result types of command receipts.
@@ -74,13 +77,15 @@ type TxRunner interface {
 }
 
 // OrderStore loads and writes orders for commands. Save writes the order's status and what the order
-// added since it was loaded: line versions, obligation versions, reservations and releases. OrderOf finds
-// the order that holds an obligation. OrdersOfQuote locks a quote for the transaction and counts the orders
-// not cancelled that it backs (C1).
+// added since it was loaded: line versions, obligation versions, reservations and releases, and the contact
+// retention a closure or cancellation starts. Erase writes an erasure of the order's contacts without
+// changing the order or its revision (P1). OrderOf finds the order that holds an obligation. OrdersOfQuote
+// locks a quote for the transaction and counts the orders not cancelled that it backs (C1).
 type OrderStore interface {
 	Load(context.Context, com.TenantID, com.OrderID) (*com.CustomerOrder, int64, error)
 	Insert(context.Context, *com.CustomerOrder) (int64, error)
 	Save(context.Context, *com.CustomerOrder, int64) (int64, error)
+	Erase(context.Context, *com.CustomerOrder) error
 	OrderOf(context.Context, com.TenantID, com.ObligationID) (com.OrderID, error)
 	OrdersOfQuote(ctx context.Context, tenant com.TenantID, quoteID string) (int, error)
 }
@@ -127,15 +132,24 @@ type ServiceLevels interface {
 type Clock interface{ Now() time.Time }
 
 // Deps are the ports every COM command uses. Window bounds the business time a command states against the
-// time Clock records it (T1).
+// time Clock records it (T1). RetentionMonths is how long the contacts of a closed or cancelled order are kept
+// before they may be erased (P1); zero means the minimum, 36.
 type Deps struct {
-	Tx       TxRunner
-	Orders   OrderStore
-	Receipts Receipts
-	Outbox   IntegrationOutbox
-	Auth     Authorization
-	Clock    Clock
-	Window   kernel.RecordWindow
+	Tx              TxRunner
+	Orders          OrderStore
+	Receipts        Receipts
+	Outbox          IntegrationOutbox
+	Auth            Authorization
+	Clock           Clock
+	Window          kernel.RecordWindow
+	RetentionMonths int
+}
+
+func (d Deps) retentionMonths() int {
+	if d.RetentionMonths == 0 {
+		return com.MinContactRetentionMonths
+	}
+	return d.RetentionMonths
 }
 
 func (d Deps) check(ctx context.Context, s Scope, commandID string, occurredAt time.Time) error {

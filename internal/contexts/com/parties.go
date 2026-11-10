@@ -37,7 +37,14 @@ func (m *Module) GetOrderParties(ctx context.Context, q api.GetOrderParties) (ap
 		return api.OrderParties{}, classify(err)
 	}
 	t := order.Transport()
-	out := api.OrderParties{OrderID: string(order.ID()), Revision: revision, Transport: api.Transport{Mode: string(t.Mode), Movement: string(t.Movement)}}
+	out := api.OrderParties{OrderID: string(order.ID()), Revision: revision, Transport: api.Transport{Mode: string(t.Mode), Movement: string(t.Movement)},
+		Contacts: api.ContactsStatus{State: api.ContactsInUse}}
+	if r, ok := order.Retention(); ok {
+		out.Contacts = api.ContactsStatus{State: api.ContactsRestricted, RetainedUntil: r.RetainedUntil}
+	}
+	if e, ok := order.Erasure(); ok {
+		out.Contacts.State, out.Contacts.ErasedAt = api.ContactsErased, e.ErasedAt
+	}
 	for _, p := range order.Parties() {
 		v := api.OrderPartyView{Role: p.Role, Version: p.Version, Kind: string(p.Kind), ToOrder: p.ToOrderText, HasContact: p.HasContact,
 			Overridden: p.Overridden, Reason: p.Reason, SetBy: p.SetBy, SetAt: p.SetAt,

@@ -69,7 +69,7 @@ func TestOrderEventsMatchPublishedContract(t *testing.T) {
 func TestTheModelEmitsThePublishedEventTypes(t *testing.T) {
 	at := time.Date(2026, 11, 6, 8, 0, 0, 0, time.UTC)
 	pallets := domain.Measure{Packs: 10, GrossWeight: kernel.Quantity{Unit: "KGM", Amount: 500}}
-	o, err := domain.RecordOrder(domain.OrderDraft{TenantID: "T", OrderID: "O-1", RecordedBy: "sales-1",
+	draft := domain.OrderDraft{TenantID: "T", OrderID: "O-1", RecordedBy: "sales-1",
 		Lines: []domain.OrderLine{{Description: "Pallets", PackageType: "PX", Measure: pallets}},
 		Quote: domain.AcceptedQuote{QuoteID: "Q-1", QuoteRevision: 1, LegalEntityID: "LE", CustomerPartyID: "P", CustomerRevision: 1,
 			RecipientRole: domain.RoleCustomer, Total: kernel.Money{Currency: "USD", Minor: 1},
@@ -78,10 +78,17 @@ func TestTheModelEmitsThePublishedEventTypes(t *testing.T) {
 		Customer: domain.CustomerSnapshot{PartyID: "P", PartyRevision: 1, LegalName: "Fixture Corp", CountryCode: "US", RoleCode: domain.RoleCustomer,
 			RoleValidity: kernel.ValidityInterval{From: at}, RoleEvidenceRef: "contract"},
 		Policy: domain.BuiltInOrderPolicy(),
-	}, 0, at, at)
+	}
+	o, err := domain.RecordOrder(draft, 0, at, at)
 	if err != nil {
 		t.Fatal(err)
 	}
+	draft.OrderID = "O-2"
+	closed, err := domain.RecordOrder(draft, 0, at, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	erasable := domain.RetentionEnd(at, domain.MinContactRetentionMonths)
 	heavier := domain.Measure{Packs: 10, GrossWeight: kernel.Quantity{Unit: "KGM", Amount: 520}}
 	if err = errors.Join(
 		o.AmendLine(1, "Pallets", "PX", heavier, "customer corrected the weight", "cs-1", at, at),
@@ -91,15 +98,18 @@ func TestTheModelEmitsThePublishedEventTypes(t *testing.T) {
 		o.ReleaseReservation("OB-1", 1, "S-1", "fulfilment", at),
 		o.Amend("OB-1", "OB-2", pallets, "planner-1", at),
 		o.Revoke("OB-2", "planner-1", at),
-		o.Cancel("sales-1", at),
+		o.Cancel("sales-1", at, domain.MinContactRetentionMonths),
+		o.EraseContacts("privacy-officer", erasable, erasable),
+		closed.Allocate(1, "OB-9", pallets, "planner-1", at),
+		closed.Close("cs-1", at, domain.MinContactRetentionMonths),
 	); err != nil {
 		t.Fatal(err)
 	}
 	published := map[string]bool{api.CustomerOrderRecorded: true, api.CustomerOrderCancelled: true, api.FulfillmentObligationAllocated: true,
 		api.FulfillmentObligationRevoked: true, api.ObligationReserved: true, api.ObligationReservationReleased: true,
-		api.CustomerOrderLineAmended: true, api.CustomerOrderLineAdded: true}
+		api.CustomerOrderLineAmended: true, api.CustomerOrderLineAdded: true, api.CustomerOrderClosed: true, api.CustomerOrderContactsErased: true}
 	emitted := map[string]bool{}
-	for _, e := range o.Pending() {
+	for _, e := range append(o.Pending(), closed.Pending()...) {
 		if !published[e.Type] {
 			t.Errorf("event type %s is not published by package api", e.Type)
 		}
@@ -128,6 +138,8 @@ func TestClassifyMapsCausesToAPIKinds(t *testing.T) {
 		{domain.ErrPartyRule, api.ErrRejected},
 		{domain.ErrAddressRequired, api.ErrRejected},
 		{application.ErrPartyNotConfirmed, api.ErrRejected},
+		{domain.ErrContactsRetained, api.ErrRejected},
+		{domain.ErrInvalidRetention, api.ErrRejected},
 		{kernel.ErrOutsideRecordWindow, api.ErrRejected},
 		{bentorepo.ErrNotFound, api.ErrNotFound},
 		{domain.ErrUnknownObligation, api.ErrNotFound},

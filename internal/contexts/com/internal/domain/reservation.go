@@ -28,6 +28,9 @@ func (r Reservation) Held() bool { return r.ReleasedAt.IsZero() }
 // Reserve records that a shipment holds an obligation version. The version must be the obligation's
 // latest and ACTIVE, and the shipment must not hold the obligation already; other shipments may (F1).
 func (o *CustomerOrder) Reserve(id ObligationID, version int64, shipment, by string, at time.Time) error {
+	if o.state.Status == OrderClosed {
+		return fmt.Errorf("%w: the order is closed", ErrInvalidTransition)
+	}
 	ob, ok := o.Obligation(id, version)
 	if !ok {
 		return fmt.Errorf("%w: %q version %d", ErrUnknownObligation, id, version)

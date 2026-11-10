@@ -91,13 +91,14 @@ type ORGForCOM interface {
 	orgapi.AddressBookQueries
 }
 
-// COM assembles the COM bounded context. org and rate are used only through their query sides.
-func (p *Platform) COM(org ORGForCOM, rate rateapi.Queries, auth comapi.Authorizer) (*com.Module, error) {
+// COM assembles the COM bounded context. org and rate are used only through their query sides; opts configure
+// COM, such as its clock or how long it retains the contacts of closed and cancelled orders.
+func (p *Platform) COM(org ORGForCOM, rate rateapi.Queries, auth comapi.Authorizer, opts ...com.Option) (*com.Module, error) {
 	db, err := p.newDB()
 	if err != nil {
 		return nil, err
 	}
-	return com.New(db, org, rate, auth, com.WithPartyDirectory(org, org))
+	return com.New(db, org, rate, auth, append([]com.Option{com.WithPartyDirectory(org, org)}, opts...)...)
 }
 
 // FUL assembles the FUL bounded context. com is used only through its query side; routes are resolved

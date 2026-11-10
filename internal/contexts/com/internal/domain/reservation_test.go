@@ -53,7 +53,7 @@ func TestAReservedObligationStaysUntilItsShipmentReleasesIt(t *testing.T) {
 	for name, err := range map[string]error{
 		"revoke":                o.Revoke("OB-1", "planner-1", later),
 		"amend":                 o.Amend("OB-1", "OB-2", packsWithVolume(10, 500, 12_000), "planner-1", later),
-		"cancel":                o.Cancel("sales-1", later),
+		"cancel":                o.Cancel("sales-1", later, MinContactRetentionMonths),
 		"reserve again for S-1": o.Reserve("OB-1", 1, "S-1", "fulfilment", later),
 	} {
 		if !errors.Is(err, ErrObligationReserved) {

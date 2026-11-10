@@ -201,17 +201,17 @@ func utc(t time.Time) time.Time {
 func readOrder(ctx context.Context, q queryRower, tenant com.TenantID, id com.OrderID) (*com.CustomerOrder, int64, error) {
 	s := com.OrderState{OrderDraft: com.OrderDraft{TenantID: tenant, OrderID: id}}
 	var entity, currency, status, scope string
-	var roleUntil, cancelledAt, enteredAt *time.Time
-	var cancelledBy, rule, version, place, incotermsSource, service, serviceSource, policyEntity *string
+	var roleUntil, cancelledAt, closedAt, enteredAt *time.Time
+	var cancelledBy, closedBy, rule, version, place, incotermsSource, service, serviceSource, policyEntity *string
 	var revision int64
-	var lineJSON, amendmentJSON, obligationJSON, reservationJSON, transportJSON, partyJSON []byte
+	var lineJSON, amendmentJSON, obligationJSON, reservationJSON, retentionJSON, erasureJSON, transportJSON, partyJSON []byte
 	err := q.QueryRow(ctx, `SELECT o.legal_entity_id,o.customer_party_id,o.customer_party_revision,o.customer_legal_name,
         o.customer_country_code,o.customer_role_code,o.customer_role_valid_from,o.customer_role_valid_until,o.customer_role_evidence_ref,
         o.quote_id,o.quote_revision,o.quote_customer_revision,o.quote_recipient_role,o.quote_currency,o.quote_total_minor,o.quote_valid_from,
         o.quote_valid_until,o.quote_accepted_at,o.quote_acceptance_evidence_ref,o.accepted_terms_contract,o.accepted_terms_sha256,
         o.incoterms_rule,o.incoterms_version,o.named_place,o.incoterms_source,o.service_level,o.service_level_source,
         o.policy_scope,o.policy_legal_entity_id,o.policy_version,o.max_orders_per_quote,o.grace_days,
-        o.recorded_by,o.recorded_at,o.entered_at,o.status,o.revision,o.cancelled_by,o.cancelled_at,
+        o.recorded_by,o.recorded_at,o.entered_at,o.status,o.revision,o.cancelled_by,o.cancelled_at,o.closed_by,o.closed_at,
         (SELECT coalesce(json_agg(l ORDER BY l.line_no), '[]') FROM cargo_com.order_line l
           WHERE l.tenant_id=o.tenant_id AND l.order_id=o.order_id),
         (SELECT coalesce(json_agg(a ORDER BY a.change_no), '[]') FROM cargo_com.order_line_amendment a
@@ -219,7 +219,7 @@ func readOrder(ctx context.Context, q queryRower, tenant com.TenantID, id com.Or
         (SELECT coalesce(json_agg(f ORDER BY f.allocated_at, f.obligation_id, f.obligation_version), '[]')
           FROM cargo_com.fulfillment_obligation f WHERE f.tenant_id=o.tenant_id AND f.order_id=o.order_id),
         (SELECT coalesce(json_agg(r ORDER BY r.reservation_no), '[]') FROM cargo_com.obligation_reservation r
-          WHERE r.tenant_id=o.tenant_id AND r.order_id=o.order_id)`+partyColumns+`
+          WHERE r.tenant_id=o.tenant_id AND r.order_id=o.order_id)`+retentionColumns+partyColumns+`
       FROM cargo_com.customer_order o WHERE o.tenant_id=$1 AND o.order_id=$2`, string(tenant), string(id)).Scan(
 		&entity, &s.Customer.PartyID, &s.Customer.PartyRevision, &s.Customer.LegalName,
 		&s.Customer.CountryCode, &s.Customer.RoleCode, &s.Customer.RoleValidity.From, &roleUntil, &s.Customer.RoleEvidenceRef,
@@ -227,8 +227,8 @@ func readOrder(ctx context.Context, q queryRower, tenant com.TenantID, id com.Or
 		&s.Quote.Validity.From, &s.Quote.Validity.Until, &s.Quote.AcceptedAt, &s.Quote.EvidenceRef, &s.Quote.TermsContract, &s.Quote.TermsHash,
 		&rule, &version, &place, &incotermsSource, &service, &serviceSource,
 		&scope, &policyEntity, &s.Policy.Version, &s.Policy.MaxOrdersPerQuote, &s.Policy.GraceDays,
-		&s.RecordedBy, &s.RecordedAt, &enteredAt, &status, &revision, &cancelledBy, &cancelledAt,
-		&lineJSON, &amendmentJSON, &obligationJSON, &reservationJSON, &transportJSON, &partyJSON)
+		&s.RecordedBy, &s.RecordedAt, &enteredAt, &status, &revision, &cancelledBy, &cancelledAt, &closedBy, &closedAt,
+		&lineJSON, &amendmentJSON, &obligationJSON, &reservationJSON, &retentionJSON, &erasureJSON, &transportJSON, &partyJSON)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, 0, bentorepo.ErrNotFound
 	}
@@ -258,6 +258,12 @@ func readOrder(ctx context.Context, q queryRower, tenant com.TenantID, id com.Or
 	}
 	if cancelledAt != nil && cancelledBy != nil {
 		s.CancelledBy, s.CancelledAt = *cancelledBy, cancelledAt.UTC()
+	}
+	if closedAt != nil && closedBy != nil {
+		s.ClosedBy, s.ClosedAt = *closedBy, closedAt.UTC()
+	}
+	if err = restoreRetention(&s, retentionJSON, erasureJSON); err != nil {
+		return nil, 0, err
 	}
 	type change struct {
 		no int
@@ -364,22 +370,26 @@ func (s OrderStore) Insert(ctx context.Context, order *com.CustomerOrder) (int64
 	return revision, nil
 }
 
-// Save writes the order's status and cancellation, the obligation versions and reservations it added and
-// the reservations it released, if the stored revision is still the expected one.
+// Save writes the order's status, cancellation and closure, the obligation versions and reservations it
+// added, the reservations it released and the contact retention it started, if the stored revision is still
+// the expected one.
 func (s OrderStore) Save(ctx context.Context, order *com.CustomerOrder, expected int64) (int64, error) {
 	q, err := s.DB.RequireExecutor(ctx)
 	if err != nil {
 		return 0, err
 	}
 	st := order.State()
-	var cancelledBy, cancelledAt any
+	var cancelledBy, cancelledAt, closedBy, closedAt any
 	if !st.CancelledAt.IsZero() {
 		cancelledBy, cancelledAt = st.CancelledBy, st.CancelledAt
 	}
+	if !st.ClosedAt.IsZero() {
+		closedBy, closedAt = st.ClosedBy, st.ClosedAt
+	}
 	var revision int64
-	err = q.QueryRow(ctx, `UPDATE cargo_com.customer_order SET status=$3,cancelled_by=$5,cancelled_at=$6,revision=revision+1,updated_at=now()
-      WHERE tenant_id=$1 AND order_id=$2 AND revision=$4 RETURNING revision`,
-		string(st.TenantID), string(st.OrderID), string(st.Status), expected, cancelledBy, cancelledAt).Scan(&revision)
+	err = q.QueryRow(ctx, `UPDATE cargo_com.customer_order SET status=$3,cancelled_by=$5,cancelled_at=$6,closed_by=$7,closed_at=$8,
+        revision=revision+1,updated_at=now() WHERE tenant_id=$1 AND order_id=$2 AND revision=$4 RETURNING revision`,
+		string(st.TenantID), string(st.OrderID), string(st.Status), expected, cancelledBy, cancelledAt, closedBy, closedAt).Scan(&revision)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, bentorepo.ErrConflict
 	}
@@ -453,6 +463,9 @@ func (s OrderStore) Save(ctx context.Context, order *com.CustomerOrder, expected
 		}
 	}
 	if err = saveParties(ctx, q, order); err != nil {
+		return 0, err
+	}
+	if err = saveRetention(ctx, q, order); err != nil {
 		return 0, err
 	}
 	return revision, nil
