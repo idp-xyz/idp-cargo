@@ -23,6 +23,10 @@ func (allowAll) AuthorizeRoleApproval(context.Context, string, string, string, s
 	return nil
 }
 
+func (allowAll) AuthorizePartyAction(context.Context, string, string, string, string) error {
+	return nil
+}
+
 func (allowAll) AuthorizeQuoteAction(context.Context, string, string, string, string) error {
 	return nil
 }

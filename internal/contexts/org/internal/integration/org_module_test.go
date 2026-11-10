@@ -22,6 +22,18 @@ func (testAuthorizer) AuthorizeRoleApproval(_ context.Context, _, actorID, _, _ 
 	return nil
 }
 
+// AuthorizePartyAction lets test-approved maintain address books and read contacts, and test-clerk
+// maintain address books without reading contacts.
+func (testAuthorizer) AuthorizePartyAction(_ context.Context, _, actorID, action, _ string) error {
+	switch {
+	case actorID == "test-approved":
+		return nil
+	case actorID == "test-clerk" && action != api.ActionReadPartyContacts:
+		return nil
+	}
+	return errors.New("test policy: forbidden")
+}
+
 // The module is ORG's only entry point for other code; its errors must classify into api kinds.
 func TestModuleApproveRoleThroughAPI(t *testing.T) {
 	db, _ := testDB(t)

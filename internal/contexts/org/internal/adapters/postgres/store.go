@@ -172,26 +172,40 @@ func (s CommandReceipts) Find(ctx context.Context, t org.TenantID, id string) (a
 	}
 	var hash, kind, party string
 	var rev int64
-	err = q.QueryRow(ctx, `SELECT request_sha256,result_type,result_id,result_revision
-       FROM cargo_org.command_receipt WHERE tenant_id=$1 AND command_id=$2`, string(t), id).Scan(&hash, &kind, &party, &rev)
+	var entry *string
+	var entryVersion *int64
+	err = q.QueryRow(ctx, `SELECT request_sha256,result_type,result_id,result_revision,result_entry_id,result_entry_version
+       FROM cargo_org.command_receipt WHERE tenant_id=$1 AND command_id=$2`, string(t), id).Scan(&hash, &kind, &party, &rev, &entry, &entryVersion)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return app.Receipt{}, false, nil
 	}
 	if err != nil {
 		return app.Receipt{}, false, err
 	}
-	if kind != "BusinessPartyRoleApproved" || rev <= 0 {
+	if (kind != app.ResultRoleApproval && kind != app.ResultAddressBook) || rev <= 0 {
 		return app.Receipt{}, false, errors.New("org: legacy or invalid receipt requires reconciliation")
 	}
-	return app.Receipt{CommandID: id, PartyID: org.PartyID(party), NewRevision: rev, RequestHash: hash}, true, nil
+	r := app.Receipt{CommandID: id, ResultType: kind, PartyID: org.PartyID(party), NewRevision: rev, RequestHash: hash}
+	if entry != nil && entryVersion != nil {
+		r.EntryID, r.EntryVersion = *entry, *entryVersion
+	}
+	return r, true, nil
 }
 func (s CommandReceipts) Save(ctx context.Context, t org.TenantID, r app.Receipt) error {
 	q, err := s.DB.RequireExecutor(ctx)
 	if err != nil {
 		return err
 	}
+	kind := r.ResultType
+	if kind == "" {
+		kind = app.ResultRoleApproval
+	}
+	var entry, entryVersion any
+	if r.EntryID != "" {
+		entry, entryVersion = r.EntryID, r.EntryVersion
+	}
 	_, err = q.Exec(ctx, `INSERT INTO cargo_org.command_receipt
-     (tenant_id,command_id,request_sha256,result_type,result_id,result_revision)
-     VALUES($1,$2,$3,'BusinessPartyRoleApproved',$4,$5)`, string(t), r.CommandID, r.RequestHash, string(r.PartyID), r.NewRevision)
+     (tenant_id,command_id,request_sha256,result_type,result_id,result_revision,result_entry_id,result_entry_version)
+     VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, string(t), r.CommandID, r.RequestHash, kind, string(r.PartyID), r.NewRevision, entry, entryVersion)
 	return err
 }
