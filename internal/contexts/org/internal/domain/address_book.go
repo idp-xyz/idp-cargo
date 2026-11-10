@@ -109,7 +109,10 @@ var (
 // Address is what ORG keeps of one address of a party (C9, privacy assessment V1.1 section 2): its short code,
 // purposes, the name and up to four lines as printed on documents, city, state or province, postcode and
 // country, optionally a UN/LOCODE in that country, whether it is a residential address, and optionally a
-// version in a local language, such as Chinese, sharing the postcode and country.
+// version in a local language, such as Chinese, sharing the postcode and country. Since ORG V0.4 an address
+// may carry the organization's phone and e-mail at that address, such as a switchboard or a shared mailbox,
+// which manifests require for the shipper; a residential address carries none, because there they would be
+// a person's, and persons are reached through contacts.
 type Address struct {
 	ShortCode   string
 	Purposes    []AddressPurpose
@@ -121,6 +124,8 @@ type Address struct {
 	CountryCode string
 	UNLocode    string
 	Residential bool
+	Phone       string
+	Email       string
 	Local       *LocalAddress
 }
 
@@ -737,7 +742,7 @@ func (p ContactPurpose) valid() bool {
 func (a Address) normalized() (Address, error) {
 	bad := func(field string) (Address, error) { return Address{}, fmt.Errorf("%w: %s", ErrInvalidAddress, field) }
 	out := Address{ShortCode: strings.TrimSpace(a.ShortCode), CountryCode: strings.TrimSpace(a.CountryCode),
-		UNLocode: strings.TrimSpace(a.UNLocode), Residential: a.Residential}
+		UNLocode: strings.TrimSpace(a.UNLocode), Residential: a.Residential, Phone: strings.TrimSpace(a.Phone), Email: strings.TrimSpace(a.Email)}
 	if !shortCodeForm.MatchString(out.ShortCode) {
 		return bad("short code")
 	}
@@ -766,6 +771,14 @@ func (a Address) normalized() (Address, error) {
 	case len(out.CountryCode) != 2 || !upperASCII(out.CountryCode):
 		return bad("country code")
 	}
+	switch {
+	case out.Phone != "" && !phone(out.Phone):
+		return bad("phone")
+	case out.Email != "" && !email(out.Email):
+		return bad("e-mail")
+	case out.Residential && (out.Phone != "" || out.Email != ""):
+		return bad("a residential address carries no phone or e-mail; record a contact")
+	}
 	if out.UNLocode != "" {
 		code := kernel.LocationCode{Scheme: kernel.UNLOCODE, Code: out.UNLocode}
 		if !code.Valid() || out.UNLocode[:2] != out.CountryCode {
@@ -789,7 +802,7 @@ func (a Address) normalized() (Address, error) {
 func (a Address) equal(o Address) bool {
 	same := a.ShortCode == o.ShortCode && slices.Equal(a.Purposes, o.Purposes) && a.Name == o.Name && slices.Equal(a.Lines, o.Lines) &&
 		a.City == o.City && a.Region == o.Region && a.Postcode == o.Postcode && a.CountryCode == o.CountryCode &&
-		a.UNLocode == o.UNLocode && a.Residential == o.Residential && (a.Local == nil) == (o.Local == nil)
+		a.UNLocode == o.UNLocode && a.Residential == o.Residential && a.Phone == o.Phone && a.Email == o.Email && (a.Local == nil) == (o.Local == nil)
 	if !same || a.Local == nil {
 		return same
 	}

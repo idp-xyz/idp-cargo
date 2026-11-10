@@ -25,12 +25,12 @@ func (s PartyStore) Load(ctx context.Context, tenant org.TenantID, party org.Par
 	if err != nil {
 		return nil, 0, err
 	}
-	var name, country, status string
+	var name, country, status, english string
 	var rev int64
 	// Under READ COMMITTED each statement takes a new snapshot; locking the root row keeps the role
-	// query below consistent with this revision. Concurrent commands on one party serialize here.
-	err = q.QueryRow(ctx, `SELECT legal_name,registration_country,status,revision FROM cargo_org.business_party
-        WHERE tenant_id=$1 AND party_id=$2 FOR NO KEY UPDATE`, string(tenant), string(party)).Scan(&name, &country, &status, &rev)
+	// and identifier queries below consistent with this revision. Concurrent commands on one party serialize here.
+	err = q.QueryRow(ctx, `SELECT legal_name,registration_country,status,revision,coalesce(english_name,'') FROM cargo_org.business_party
+        WHERE tenant_id=$1 AND party_id=$2 FOR NO KEY UPDATE`, string(tenant), string(party)).Scan(&name, &country, &status, &rev, &english)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, 0, bentorepo.ErrNotFound
 	}
@@ -64,7 +64,14 @@ func (s PartyStore) Load(ctx context.Context, tenant org.TenantID, party org.Par
 		return nil, 0, err
 	}
 	aggregate, err := org.RestoreParty(tenant, party, name, country, org.PartyStatus(status), roles)
-	return aggregate, rev, err
+	if err != nil {
+		return nil, 0, err
+	}
+	identifiers, err := activeIdentifiers(ctx, q, tenant, party)
+	if err != nil {
+		return nil, 0, err
+	}
+	return aggregate, rev, aggregate.RestoreIdentity(english, identifiers)
 }
 func (s PartyStore) Save(ctx context.Context, p *org.BusinessParty, expected int64) (int64, error) {
 	if p == nil || expected < 1 {
@@ -76,9 +83,9 @@ func (s PartyStore) Save(ctx context.Context, p *org.BusinessParty, expected int
 	}
 	var newRevision int64
 	err = q.QueryRow(ctx, `UPDATE cargo_org.business_party
-      SET legal_name=$3,status=$4,revision=revision+1,updated_at=now()
+      SET legal_name=$3,status=$4,english_name=$6,revision=revision+1,updated_at=now()
       WHERE tenant_id=$1 AND party_id=$2 AND revision=$5
-      RETURNING revision`, string(p.Tenant()), string(p.ID()), p.Name(), string(p.Status()), expected).Scan(&newRevision)
+      RETURNING revision`, string(p.Tenant()), string(p.ID()), p.Name(), string(p.Status()), expected, nullable(p.EnglishName())).Scan(&newRevision)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, bentorepo.ErrConflict
 	}
@@ -86,6 +93,9 @@ func (s PartyStore) Save(ctx context.Context, p *org.BusinessParty, expected int
 		return 0, err
 	}
 	if err = insertApprovedRoles(ctx, q, p); err != nil {
+		return 0, err
+	}
+	if err = saveIdentifiers(ctx, q, p, newRevision); err != nil {
 		return 0, err
 	}
 	return newRevision, nil
@@ -101,9 +111,9 @@ func (s PartyStore) Insert(ctx context.Context, p *org.BusinessParty) (int64, er
 		return 0, err
 	}
 	var revision int64
-	err = q.QueryRow(ctx, `INSERT INTO cargo_org.business_party (tenant_id,party_id,legal_name,registration_country,status)
-      VALUES ($1,$2,$3,$4,$5) RETURNING revision`,
-		string(p.Tenant()), string(p.ID()), p.Name(), p.Country(), string(p.Status())).Scan(&revision)
+	err = q.QueryRow(ctx, `INSERT INTO cargo_org.business_party (tenant_id,party_id,legal_name,registration_country,status,english_name)
+      VALUES ($1,$2,$3,$4,$5,$6) RETURNING revision`,
+		string(p.Tenant()), string(p.ID()), p.Name(), p.Country(), string(p.Status()), nullable(p.EnglishName())).Scan(&revision)
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "business_party_pkey" {
 		return 0, bentorepo.ErrAlreadyExists
@@ -112,6 +122,9 @@ func (s PartyStore) Insert(ctx context.Context, p *org.BusinessParty) (int64, er
 		return 0, err
 	}
 	if err = insertApprovedRoles(ctx, q, p); err != nil {
+		return 0, err
+	}
+	if err = saveIdentifiers(ctx, q, p, revision); err != nil {
 		return 0, err
 	}
 	return revision, nil
@@ -182,7 +195,7 @@ func (s CommandReceipts) Find(ctx context.Context, t org.TenantID, id string) (a
 	if err != nil {
 		return app.Receipt{}, false, err
 	}
-	if (kind != app.ResultRoleApproval && kind != app.ResultAddressBook) || rev <= 0 {
+	if (kind != app.ResultRoleApproval && kind != app.ResultAddressBook && kind != app.ResultPartyIdentity) || rev <= 0 {
 		return app.Receipt{}, false, errors.New("org: legacy or invalid receipt requires reconciliation")
 	}
 	r := app.Receipt{CommandID: id, ResultType: kind, PartyID: org.PartyID(party), NewRevision: rev, RequestHash: hash}

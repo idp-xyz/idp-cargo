@@ -89,6 +89,10 @@ func TestClassifyMapsCausesToAPIKinds(t *testing.T) {
 		{domain.ErrEntryNotActive, api.ErrRejected},
 		{domain.ErrNothingChanged, api.ErrRejected},
 		{domain.ErrPartyArchived, api.ErrRejected},
+		{domain.ErrInvalidIdentifier, api.ErrRejected},
+		{domain.ErrIdentifierExists, api.ErrRejected},
+		{domain.ErrUnknownIdentifier, api.ErrNotFound},
+		{domain.ErrIdentifierInUse, api.ErrConflict},
 	} {
 		got := classify(tc.cause)
 		if !errors.Is(got, tc.want) || !errors.Is(got, tc.cause) {
@@ -148,5 +152,35 @@ func TestAddressBookEventsMatchPublishedContract(t *testing.T) {
 		if payload != want[i] || envelope.Subject != "P" {
 			t.Fatalf("event %d payload = %+v, want %+v", i, payload, want[i])
 		}
+	}
+}
+
+// Party identity events are published under the api's names and never carry the code.
+func TestPartyIdentityEventsMatchPublishedContract(t *testing.T) {
+	for d, a := range map[string]string{domain.EventPartyIdentifierRecorded: api.PartyIdentifierRecorded,
+		domain.EventPartyIdentifierRetired: api.PartyIdentifierRetired, domain.EventPartyEnglishNameSet: api.PartyEnglishNameSet} {
+		if d != a {
+			t.Errorf("domain event %s is published as %s", d, a)
+		}
+	}
+	at := time.Date(2026, 11, 10, 8, 0, 0, 0, time.UTC)
+	party, err := domain.RestoreParty("T", "P", "Legal", "CN", domain.PartyActive, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = party.RecordIdentifier(domain.PartyIdentifier{Type: domain.IdentifierCNUSCC, Country: "CN", Value: "91350100M000100Y43", EvidenceRef: "e"}, "clerk", at); err != nil {
+		t.Fatal(err)
+	}
+	envelope, err := postgres.ORGEnvelope("cmd-1", party.Pending()[0], at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload api.EventPayload
+	if err = json.Unmarshal(envelope.Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(envelope.Payload), "91350100") || payload != (api.EventPayload{TenantID: "T", SubjectID: "P", EntryID: "CN_USCC:CN"}) ||
+		string(envelope.Type) != api.PartyIdentifierRecorded {
+		t.Fatalf("envelope %s %s", envelope.Type, envelope.Payload)
 	}
 }

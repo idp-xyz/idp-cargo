@@ -26,10 +26,12 @@ type Module struct {
 }
 
 var (
-	_ api.Commands            = (*Module)(nil)
-	_ api.Queries             = (*Module)(nil)
-	_ api.AddressBookCommands = (*Module)(nil)
-	_ api.AddressBookQueries  = (*Module)(nil)
+	_ api.Commands              = (*Module)(nil)
+	_ api.Queries               = (*Module)(nil)
+	_ api.AddressBookCommands   = (*Module)(nil)
+	_ api.AddressBookQueries    = (*Module)(nil)
+	_ api.PartyIdentityCommands = (*Module)(nil)
+	_ api.PartyIdentityQueries  = (*Module)(nil)
 )
 
 func New(db *bentopg.DB, auth api.Authorizer) (*Module, error) {
@@ -91,6 +93,7 @@ func (m *Module) ResolvePartyRole(ctx context.Context, q api.ResolvePartyRole) (
 		},
 		LegalName: party.Name(), CountryCode: party.Country(), RoleCode: string(role.Code),
 		Validity: role.Validity(), EvidenceRef: role.EvidenceRef,
+		EnglishName: party.EnglishName(), Identifiers: identifiersOf(party),
 	}, nil
 }
 
@@ -114,9 +117,11 @@ func classify(err error) error {
 		kind = api.ErrUnauthorized
 	case errors.Is(err, application.ErrIdempotencyConflict):
 		kind = api.ErrIdempotencyConflict
-	case errors.Is(err, domain.ErrConflict), errors.Is(err, bentorepo.ErrConflict), errors.Is(err, domain.ErrEntryExists):
+	case errors.Is(err, domain.ErrConflict), errors.Is(err, bentorepo.ErrConflict), errors.Is(err, domain.ErrEntryExists),
+		errors.Is(err, domain.ErrIdentifierInUse):
 		kind = api.ErrConflict
-	case errors.Is(err, bentorepo.ErrNotFound), errors.Is(err, domain.ErrUnknownAddress), errors.Is(err, domain.ErrUnknownContact):
+	case errors.Is(err, bentorepo.ErrNotFound), errors.Is(err, domain.ErrUnknownAddress), errors.Is(err, domain.ErrUnknownContact),
+		errors.Is(err, domain.ErrUnknownIdentifier):
 		kind = api.ErrNotFound
 	case errors.Is(err, domain.ErrInvalidIdentity), errors.Is(err, domain.ErrInvalidTransition),
 		errors.Is(err, domain.ErrRoleOverlap), errors.Is(err, domain.ErrMissingEvidence),
@@ -124,7 +129,8 @@ func classify(err error) error {
 		errors.Is(err, domain.ErrLegalEntityNotVerified), errors.Is(err, application.ErrInvalidQuery),
 		errors.Is(err, application.ErrInvalidCommand), errors.Is(err, domain.ErrInvalidAddress), errors.Is(err, domain.ErrInvalidContact),
 		errors.Is(err, domain.ErrInvalidChange), errors.Is(err, domain.ErrShortCodeInUse), errors.Is(err, domain.ErrEntryNotActive),
-		errors.Is(err, domain.ErrNothingChanged), errors.Is(err, domain.ErrPartyArchived):
+		errors.Is(err, domain.ErrNothingChanged), errors.Is(err, domain.ErrPartyArchived),
+		errors.Is(err, domain.ErrInvalidIdentifier), errors.Is(err, domain.ErrIdentifierExists):
 		kind = api.ErrRejected
 	default:
 		return err

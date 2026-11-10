@@ -95,7 +95,12 @@ type BusinessParty struct {
 	countryCode string
 	status      PartyStatus
 	roles       []Role
-	pending     []Event
+	englishName string
+	identifiers []PartyIdentifier // active ones
+	// recorded and retired since the party was loaded
+	newIdentifiers []PartyIdentifier
+	retirements    []IdentifierRetirement
+	pending        []Event
 }
 
 func RegisterParty(tenant TenantID, id PartyID, name, country string, at time.Time) (*BusinessParty, error) {
@@ -197,7 +202,8 @@ func (p *BusinessParty) Archive(reason string, at time.Time) error {
 func (p *BusinessParty) Pending() []Event { return append([]Event(nil), p.pending...) }
 
 // Acknowledge is permitted only after the transaction containing both aggregate write and outbox enqueue commits.
-func (p *BusinessParty) Acknowledge() { p.pending = nil }
+// It also forgets the identifiers recorded and retired since the party was loaded, which are stored by then.
+func (p *BusinessParty) Acknowledge() { p.pending, p.newIdentifiers, p.retirements = nil, nil, nil }
 func (p *BusinessParty) record(kind string, at time.Time) {
 	p.pending = append(p.pending, Event{Type: kind, At: at.UTC(), TenantID: p.tenantID, SubjectID: string(p.id)})
 }

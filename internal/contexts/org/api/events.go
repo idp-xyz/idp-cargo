@@ -22,6 +22,14 @@ const (
 	PartyDefaultContactSet  = "PartyDefaultContactSet.v1"
 )
 
+// Party identity events (ORG V0.4). The payload's entry names the identifier's type and issuing country, such
+// as CN_USCC:CN, never the code itself.
+const (
+	PartyIdentifierRecorded = "PartyIdentifierRecorded.v1"
+	PartyIdentifierRetired  = "PartyIdentifierRetired.v1"
+	PartyEnglishNameSet     = "PartyEnglishNameSet.v1"
+)
+
 // EventPayload is the payload of every ORG integration event. It carries identifiers only; legal
 // identifiers, addresses and personal data never leave ORG in events. The entry fields are set by address
 // book events only.
