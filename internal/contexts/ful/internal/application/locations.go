@@ -63,10 +63,18 @@ func resolveRoute(ctx context.Context, locations Locations, r ful.Route) (ful.Ro
 	return r, nil
 }
 
-// requestedModes asks COM for the planned obligations of a shipment, read at the expected revision, so that
-// a route's mode can be checked against what their orders request (C11).
-func requestedModes(ctx context.Context, d Deps, obligations Obligations, id ful.ShipmentID, expected int64, s Scope) ([]ful.ObligationRef, error) {
-	if obligations == nil {
+// RequestedModes asks COM which transport mode the order of an obligation version requests (C11), whatever the
+// version's status or reservations; empty when the order requests none. It is called outside FUL's
+// transactions.
+type RequestedModes interface {
+	RequestedMode(ctx context.Context, tenant ful.TenantID, id ful.ObligationID, version int64) (ful.TransportMode, error)
+}
+
+// requestedModes reads the obligations a shipment plans at the expected revision and asks COM what their
+// orders request, so that an amended route's mode can be checked (C11). It checks modes only: whether COM
+// still holds the obligations for the shipment is checked when the plan is confirmed, as before.
+func requestedModes(ctx context.Context, d Deps, modes RequestedModes, id ful.ShipmentID, expected int64, s Scope) ([]ful.ObligationRef, error) {
+	if modes == nil {
 		return nil, ErrMissingDependency
 	}
 	var planned []ful.ObligationRef
@@ -84,13 +92,10 @@ func requestedModes(ctx context.Context, d Deps, obligations Obligations, id ful
 	if err != nil {
 		return nil, err
 	}
-	refs := make([]ful.ObligationRef, 0, len(planned))
-	for _, ob := range planned {
-		fresh, err := obligations.Plannable(ctx, s.TenantID, ob.ObligationID, ob.ObligationVersion, id)
-		if err != nil {
+	for i, ob := range planned {
+		if planned[i].RequestedMode, err = modes.RequestedMode(ctx, s.TenantID, ob.ObligationID, ob.ObligationVersion); err != nil {
 			return nil, err
 		}
-		refs = append(refs, fresh)
 	}
-	return refs, nil
+	return planned, nil
 }

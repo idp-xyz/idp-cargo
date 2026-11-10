@@ -109,7 +109,7 @@ func (m *Module) ChangeShipmentPart(ctx context.Context, cmd api.ChangeShipmentP
 func (m *Module) AmendShipmentPlan(ctx context.Context, cmd api.AmendShipmentPlan) (api.Receipt, error) {
 	route := domain.Route{Mode: domain.TransportMode(cmd.TransportMode), Origin: cmd.Origin, Destination: cmd.Destination,
 		Departure: kernel.ValidityInterval{From: stored(cmd.DepartureWindow.From), Until: stored(cmd.DepartureWindow.Until)}}
-	receipt, err := application.AmendShipmentPlan{Deps: m.deps(cmd.TenantID, cmd.CommandID), Locations: m.locations, Obligations: m.obligations()}.Handle(ctx, application.AmendShipmentPlanCommand{
+	receipt, err := application.AmendShipmentPlan{Deps: m.deps(cmd.TenantID, cmd.CommandID), Locations: m.locations, Modes: comacl.Obligations{COM: m.com}}.Handle(ctx, application.AmendShipmentPlanCommand{
 		CommandID: cmd.CommandID, Scope: scope(cmd.TenantID, cmd.ActorID), ShipmentID: domain.ShipmentID(cmd.ShipmentID),
 		ExpectedRevision: cmd.ExpectedRevision, Route: route, Reason: cmd.Reason, OccurredAt: stored(cmd.OccurredAt),
 	})

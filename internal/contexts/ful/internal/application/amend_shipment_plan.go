@@ -22,8 +22,8 @@ type AmendShipmentPlanCommand struct {
 // planned obligations request (C11); both questions are asked outside FUL's transaction.
 type AmendShipmentPlan struct {
 	Deps
-	Locations   Locations
-	Obligations Obligations
+	Locations Locations
+	Modes     RequestedModes
 }
 
 func (h AmendShipmentPlan) Handle(ctx context.Context, c AmendShipmentPlanCommand) (Receipt, error) {
@@ -40,7 +40,7 @@ func (h AmendShipmentPlan) Handle(ctx context.Context, c AmendShipmentPlanComman
 	}
 	var refs []ful.ObligationRef
 	if route.Mode != "" {
-		if refs, err = requestedModes(ctx, h.Deps, h.Obligations, c.ShipmentID, c.ExpectedRevision, c.Scope); err != nil {
+		if refs, err = requestedModes(ctx, h.Deps, h.Modes, c.ShipmentID, c.ExpectedRevision, c.Scope); err != nil {
 			return Receipt{}, err
 		}
 	}

@@ -105,6 +105,11 @@ type comFake struct {
 	insideTx bool
 }
 
+// RequestedMode reports no requested mode: the fake orders leave the mode to FUL.
+func (c *comFake) RequestedMode(context.Context, ful.TenantID, ful.ObligationID, int64) (ful.TransportMode, error) {
+	return "", nil
+}
+
 func (c *comFake) Plannable(_ context.Context, _ ful.TenantID, id ful.ObligationID, version int64, shipment ful.ShipmentID) (ful.ObligationRef, error) {
 	c.calls = append(c.calls, string(id))
 	c.insideTx = c.insideTx || c.tx.depth > 0
@@ -201,7 +206,7 @@ func TestConfirmRechecksEveryPlannedObligationWithCOM(t *testing.T) {
 	}
 	route := ful.Route{Mode: ful.ModeSea, Origin: kernel.LocationCode{Scheme: kernel.UNLOCODE, Code: "CNSHA"},
 		Destination: kernel.LocationCode{Scheme: kernel.UNLOCODE, Code: "DEHAM"}, Departure: kernel.ValidityInterval{From: now.Add(72 * time.Hour), Until: now.Add(96 * time.Hour)}}
-	if _, err := (AmendShipmentPlan{Deps: f.deps, Locations: locationsFake{}, Obligations: f.com}).Handle(ctx, AmendShipmentPlanCommand{CommandID: "amend-1", Scope: planner, ShipmentID: "SH-1",
+	if _, err := (AmendShipmentPlan{Deps: f.deps, Locations: locationsFake{}, Modes: f.com}).Handle(ctx, AmendShipmentPlanCommand{CommandID: "amend-1", Scope: planner, ShipmentID: "SH-1",
 		ExpectedRevision: 2, Route: route, Reason: "schedule", OccurredAt: now.Add(2 * time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
