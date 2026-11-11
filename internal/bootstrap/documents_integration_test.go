@@ -14,6 +14,7 @@ import (
 	airapi "go.idp.xyz/idp-cargo/internal/contexts/air/api"
 	comapi "go.idp.xyz/idp-cargo/internal/contexts/com/api"
 	docapi "go.idp.xyz/idp-cargo/internal/contexts/doc/api"
+	finapi "go.idp.xyz/idp-cargo/internal/contexts/fin/api"
 	fulapi "go.idp.xyz/idp-cargo/internal/contexts/ful/api"
 	orgmodule "go.idp.xyz/idp-cargo/internal/contexts/org"
 	orgapi "go.idp.xyz/idp-cargo/internal/contexts/org/api"
@@ -23,6 +24,8 @@ import (
 )
 
 func (allowAll) AuthorizeDocAction(context.Context, string, string, string, string) error { return nil }
+
+func (allowAll) AuthorizeFinAction(context.Context, string, string, string, string) error { return nil }
 
 // DOC V0.1 with every real context (ORG, RATE, COM, FUL, PHY, BOOK, AIR, DOC), as the S1 API client runs the steps
 // (T6): house A is received, screened, tendered and weighed at the terminal; AIR finalizes the movement's facts.
@@ -61,7 +64,11 @@ func TestTransportDocumentsWithEveryContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	docModule, err := platform.DOC(airModule, comModule, orgModule, allowAll{})
+	finModule, err := platform.FIN(orgModule, rateModule, fulModule, allowAll{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	docModule, err := platform.DOC(airModule, comModule, orgModule, finModule, allowAll{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,6 +196,32 @@ func TestTransportDocumentsWithEveryContext(t *testing.T) {
 	_, err = docModule.ApproveTransportDocument(ctx, docapi.ApproveTransportDocument{CommandID: "approve-hawb", TenantID: tenant, ActorID: "doc-2",
 		DocumentID: "DOC-HAWB-A", ExpectedRevision: 1, OccurredAt: hours(19)})
 	must("approve HAWB", err)
+	// FIN V0.1: the legal entity's policy and estimate rate, the job of SH-A priced from the accepted quote Q-A, and the
+	// customer's credit account; DOC issues the HAWB on FIN's decision.
+	_, err = finModule.OpenFinancePolicy(ctx, finapi.OpenFinancePolicy{CommandID: "fin-policy", TenantID: tenant, ActorID: "acct-1", LegalEntityID: "LE",
+		FunctionalCurrency: "CNY", BookCode: "MAIN", OccurredAt: hours(19)})
+	must("finance policy", err)
+	_, err = finModule.RecordExchangeRate(ctx, finapi.RecordExchangeRate{CommandID: "fin-rate", TenantID: tenant, ActorID: "acct-1", LegalEntityID: "LE",
+		ExpectedRevision: 1, RateType: finapi.RateEstimate, From: "USD", Rate: 71_234, Scale: 4, FromDigits: 2, ToDigits: 2, ValidFrom: at,
+		ValidUntil: at.AddDate(0, 1, 0), Source: "CFETS central parity", OccurredAt: hours(19)})
+	must("estimate rate", err)
+	_, err = finModule.OpenFreightJob(ctx, finapi.OpenFreightJob{CommandID: "fin-job", TenantID: tenant, ActorID: "fin-1", JobID: "JOB-A", ShipmentID: "SH-A",
+		OccurredAt: hours(19)})
+	must("freight job", err)
+	_, err = finModule.ApplyPricingBasis(ctx, finapi.ApplyPricingBasis{CommandID: "fin-quote", TenantID: tenant, ActorID: "fin-1", JobID: "JOB-A",
+		ExpectedRevision: 1, QuoteID: "Q-A", OrderID: "O-A", OccurredAt: hours(19)})
+	must("pricing basis from the accepted quote", err)
+	profit, err := finModule.GetJobProfit(ctx, finapi.GetJobProfit{TenantID: tenant, JobID: "JOB-A"})
+	if err != nil || profit.Revenue.Minor != 712_340 || profit.Cost.Minor != 356_170 || profit.Profit.Minor != 356_170 || profit.Revenue.Currency != "CNY" {
+		t.Fatalf("the job's estimate from Q-A (USD 1000 sell, 500 cost at 7.1234): %+v %v", profit, err)
+	}
+	_, err = finModule.SetCreditTerms(ctx, finapi.SetCreditTerms{CommandID: "fin-terms", TenantID: tenant, ActorID: "credit-1", LegalEntityID: "LE",
+		DebtorPartyID: "party-a", Limit: kernel.Money{Currency: "CNY", Minor: 10_000_000}, PaymentDays: 30, PaymentBasis: finapi.TermsFromMonthEnd,
+		OccurredAt: hours(19)})
+	must("credit terms", err)
+	_, err = finModule.PlaceCreditHold(ctx, finapi.PlaceCreditHold{CommandID: "fin-hold", TenantID: tenant, ActorID: "credit-1", LegalEntityID: "LE",
+		DebtorPartyID: "party-a", ExpectedRevision: 1, Code: finapi.HoldOverdue, Reason: "October invoice unpaid", OccurredAt: hours(19)})
+	must("credit hold", err)
 	issueHAWB := func(command string, revision int64) error {
 		_, err := docModule.IssueTransportDocument(ctx, docapi.IssueTransportDocument{CommandID: command, TenantID: tenant, ActorID: "doc-2",
 			DocumentID: "DOC-HAWB-A", ExpectedRevision: revision, CreditOverrideReason: "FIN credit control not in service", OccurredAt: hours(20)})
@@ -200,7 +233,17 @@ func TestTransportDocumentsWithEveryContext(t *testing.T) {
 	_, err = comModule.LockOrderParties(ctx, comapi.LockOrderParties{CommandID: "lock-hawb", TenantID: tenant, ActorID: "doc-2", OrderID: "O-A",
 		ExpectedRevision: orderRevision(), HolderID: "DOC-HAWB-A", OccurredAt: hours(20)})
 	must("lock", err)
+	if err = issueHAWB("issue-hawb-held", 2); !errors.Is(err, docapi.ErrRejected) || !strings.Contains(err.Error(), "DOC_CREDIT_HOLD") {
+		t.Fatalf("FIN holds the customer's credit: %v", err)
+	}
+	_, err = finModule.ReleaseCreditHold(ctx, finapi.ReleaseCreditHold{CommandID: "fin-release", TenantID: tenant, ActorID: "credit-2", LegalEntityID: "LE",
+		DebtorPartyID: "party-a", ExpectedRevision: 2, Reason: "paid", OccurredAt: hours(20)})
+	must("release credit hold", err)
 	must("issue HAWB", issueHAWB("issue-hawb", 2))
+	if h, _ := docModule.GetTransportDocument(ctx, docapi.GetTransportDocument{TenantID: tenant, DocumentID: "DOC-HAWB-A"}); h.Versions[0].CreditBasis != docapi.CreditOK ||
+		h.Versions[0].CreditOverrideReason != "" {
+		t.Fatalf("issued on FIN's credit decision: %+v", h.Versions[0])
+	}
 	hawb, err := docModule.GetDocumentVersion(ctx, docapi.GetDocumentVersion{TenantID: tenant, DocumentID: "DOC-HAWB-A"})
 	must("HAWB version", err)
 	if d := hawb.Doc; d.Number != "SHA0000001" || d.MAWB != "781-12345675" || d.Shipper.PartyID != "shipper-co" || d.Consignee.PartyID != "consignee-us" ||

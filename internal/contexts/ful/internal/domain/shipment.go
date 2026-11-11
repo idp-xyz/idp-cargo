@@ -90,6 +90,10 @@ type ObligationRef struct {
 	// Description is the goods description of the order line, as COM reported it when FUL planned the version;
 	// empty for entries planned before FUL kept it (V2.36).
 	Description string
+	// QuoteID and QuoteRevision are the accepted quote COM's obligation snapshot named when FUL planned the
+	// version (CostDriver v1 for FIN); empty for entries planned before FUL kept them (V2.39).
+	QuoteID       string
+	QuoteRevision int64
 	// RequestedMode is the transport mode the order requests (C11), as COM reported it when FUL asked; empty
 	// when the order requests none. FUL does not store it: every check asks COM again.
 	RequestedMode TransportMode
@@ -99,7 +103,8 @@ func (o ObligationRef) valid() bool {
 	return (o.RequestedMode == "" || o.RequestedMode.Valid()) &&
 		identifier(string(o.ObligationID)) && o.ObligationVersion > 0 && identifier(o.OrderID) && identifier(o.CustomerPartyID) &&
 		identifier(o.LegalEntityID) && o.Packs > 0 && len(o.PackageType) == 2 && o.GrossWeight.Unit.Valid() && o.GrossWeight.Amount > 0 &&
-		(o.Volume == kernel.Quantity{} || o.Volume.Unit.Valid() && o.Volume.Amount > 0) && (o.Description == "" || text(o.Description))
+		(o.Volume == kernel.Quantity{} || o.Volume.Unit.Valid() && o.Volume.Amount > 0) && (o.Description == "" || text(o.Description)) &&
+		(o.QuoteID == "") == (o.QuoteRevision == 0) && (o.QuoteID == "" || identifier(o.QuoteID) && o.QuoteRevision > 0)
 }
 
 // Whole is the scope of all an obligation version commits.

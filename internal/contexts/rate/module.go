@@ -42,8 +42,9 @@ type Option func(*Module)
 func WithRecordWindow(w kernel.RecordWindow) Option { return func(m *Module) { m.window = w } }
 
 var (
-	_ api.Commands = (*Module)(nil)
-	_ api.Queries  = (*Module)(nil)
+	_ api.Commands            = (*Module)(nil)
+	_ api.Queries             = (*Module)(nil)
+	_ api.PricingBasisQueries = (*Module)(nil)
 )
 
 // New assembles RATE. org answers recipient checks; the composition root passes ORG's module.
@@ -122,6 +123,26 @@ func (m *Module) accepted(ctx context.Context, q api.GetQuoteSnapshot) (*domain.
 		return nil, 0, classify(err)
 	}
 	return quote, revision, nil
+}
+
+// GetPricingBasis answers PricingBasis v1 of purpose QUOTE_ACCEPTED, built from the accepted revision.
+func (m *Module) GetPricingBasis(ctx context.Context, q api.GetPricingBasis) (api.PricingBasis, error) {
+	quote, revision, err := m.accepted(ctx, api.GetQuoteSnapshot{TenantID: q.TenantID, QuoteID: q.QuoteID})
+	if err != nil {
+		return api.PricingBasis{}, err
+	}
+	s, a := quote.State(), quote.State().Acceptance
+	out := api.PricingBasis{TenantID: string(s.TenantID), BasisID: fmt.Sprintf("QUOTE:%s@%d", s.QuoteID, revision), Purpose: api.BasisQuoteAccepted,
+		QuoteID: string(s.QuoteID), QuoteRevision: revision, LegalEntityID: string(s.LegalEntityID),
+		Customer: api.CustomerRef{PartyID: s.Customer.PartyID, PartyRevision: a.CustomerRevision}, Currency: s.Currency, AcceptedAt: a.AcceptedAt}
+	for i, l := range s.Lines {
+		out.Lines = append(out.Lines, api.PricingLine{LineNo: i + 1, ChargeCode: string(l.ChargeCode), Sell: l.Sell, Cost: l.Cost, Discount: l.Discount()})
+	}
+	for _, r := range s.ExchangeRates {
+		out.ExchangeRates = append(out.ExchangeRates, api.ExchangeRate{From: r.From, Rate: r.Rate, Scale: r.Scale, FromDigits: r.FromDigits,
+			QuoteDigits: r.QuoteDigits, Source: r.Source, AsOf: r.AsOf})
+	}
+	return out, nil
 }
 
 func (m *Module) GetQuoteSnapshotV2(ctx context.Context, q api.GetQuoteSnapshot) (api.QuoteSnapshotV2, error) {

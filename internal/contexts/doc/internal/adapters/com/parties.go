@@ -30,7 +30,8 @@ func (p Parties) Order(ctx context.Context, tenant doc.TenantID, actor, order st
 	if got.OrderID != order {
 		return doc.OrderParties{}, fmt.Errorf("%w: COM answered for another order", app.ErrUnknownSource)
 	}
-	out := doc.OrderParties{OrderID: order, Revision: got.Revision, Transport: doc.Transport{Mode: got.Transport.Mode, Movement: got.Transport.Movement}}
+	out := doc.OrderParties{OrderID: order, Revision: got.Revision, Customer: got.CustomerPartyID,
+		Transport: doc.Transport{Mode: got.Transport.Mode, Movement: got.Transport.Movement}}
 	for _, v := range got.Parties {
 		party := partyOf(v)
 		switch v.Role {

@@ -22,6 +22,7 @@ import (
 	comapi "go.idp.xyz/idp-cargo/internal/contexts/com/api"
 	docmodule "go.idp.xyz/idp-cargo/internal/contexts/doc"
 	"go.idp.xyz/idp-cargo/internal/contexts/doc/api"
+	finapi "go.idp.xyz/idp-cargo/internal/contexts/fin/api"
 	orgapi "go.idp.xyz/idp-cargo/internal/contexts/org/api"
 	scope "go.idp.xyz/idp-cargo/internal/foundation/bento"
 	"go.idp.xyz/idp-cargo/internal/kernel"
@@ -76,6 +77,18 @@ type world struct {
 	safeguard string              // the kind of safeguard in force, if any
 	reserved  map[string][]string // the keys ORG holds by dispatch
 	crossNow  bool                // whether ORG's current consent of the shipper's contact covers going abroad
+	credit    map[string]string   // FIN's credit status by debtor; NO_ACCOUNT when absent
+}
+
+// GetCreditStatus answers FIN's CreditStatus v1 from the statuses the test sets.
+func (w *world) GetCreditStatus(_ context.Context, q finapi.GetCreditStatus) (finapi.CreditStatus, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	out := finapi.CreditStatus{LegalEntityID: q.LegalEntityID, DebtorPartyID: q.DebtorPartyID, Status: finapi.CreditNoAccount}
+	if s, ok := w.credit[q.DebtorPartyID]; ok {
+		out.Status, out.Revision, out.DecisionID = s, 3, q.LegalEntityID+"/"+q.DebtorPartyID+"@3"
+	}
+	return out, nil
 }
 
 func (w *world) GetAirDocFacts(_ context.Context, q airapi.GetAirDocFacts) (airapi.AirDocFacts, error) {
@@ -191,8 +204,9 @@ func view(role, party, country string, version int64) comapi.OrderPartyView {
 func (w *world) order(id string, consigneeVersion int64, locks ...string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	o := comapi.OrderParties{OrderID: id, Revision: 3 + consigneeVersion, Transport: comapi.Transport{Mode: comapi.ModeAir, Movement: comapi.PortToPort},
-		Parties: []comapi.OrderPartyView{view(comapi.PartyShipper, "shipper-"+id, "CN", 1), view(comapi.PartyConsignee, "consignee-"+id, "US", consigneeVersion)}}
+	o := comapi.OrderParties{OrderID: id, Revision: 3 + consigneeVersion, CustomerPartyID: "customer-" + id,
+		Transport: comapi.Transport{Mode: comapi.ModeAir, Movement: comapi.PortToPort},
+		Parties:   []comapi.OrderPartyView{view(comapi.PartyShipper, "shipper-"+id, "CN", 1), view(comapi.PartyConsignee, "consignee-"+id, "US", consigneeVersion)}}
 	for _, h := range locks {
 		o.Locks = append(o.Locks, comapi.PartyLock{HolderID: h, LockedBy: "doc-1", LockedAt: w.at})
 	}
@@ -224,7 +238,7 @@ func newFixture(t *testing.T) *fixture {
 	at := time.Now().UTC().Add(-24 * time.Hour).Truncate(time.Microsecond)
 	f := &fixture{db: testDB(t), at: at, tenant: "cargo-doc-" + time.Now().UTC().Format("20060102T150405.000000000"),
 		w: &world{at: at, facts: map[string]airapi.AirDocFacts{}, orders: map[string]comapi.OrderParties{}}}
-	m, err := docmodule.New(f.db, f.w, f.w, f.w, allow{})
+	m, err := docmodule.New(f.db, f.w, f.w, f.w, f.w, allow{})
 	if err != nil {
 		t.Fatal(err)
 	}

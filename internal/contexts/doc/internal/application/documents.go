@@ -233,14 +233,16 @@ func (d Deps) Issue(ctx context.Context, c Command, overrideReason string, amend
 		if gate.Orders, err = d.orders(ctx, c.Scope, latest); err != nil {
 			return err
 		}
-		var ids []string
-		for _, o := range latest.Doc.Orders {
-			ids = append(ids, o.OrderID)
+		var debtors []string
+		for _, o := range gate.Orders {
+			if o.Customer != "" && !slices.Contains(debtors, o.Customer) {
+				debtors = append(debtors, o.Customer)
+			}
 		}
-		if gate.Credit, err = d.Credit.Decision(ctx, c.Scope.TenantID, ids); err != nil {
+		if gate.Credit, err = d.Credit.Decision(ctx, c.Scope.TenantID, m.State().LegalEntityID, debtors); err != nil {
 			return err
 		}
-		if gate.Credit.Status != "OK" && overrideReason != "" {
+		if gate.Credit.Status != "OK" && gate.Credit.Status != "HOLD" && overrideReason != "" { // a hold is never overridden
 			gate.OverrideReason = overrideReason
 			return d.authorize(ctx, c.Scope, ActionOverrideCredit, c.Subject)
 		}

@@ -343,6 +343,19 @@ func TestQuoteV03OnPostgres(t *testing.T) {
 		v2.AcceptanceRecordedAt.Before(before.Truncate(time.Microsecond)) || v2.AcceptanceRecordedAt.After(time.Now().UTC()) {
 		t.Fatalf("snapshot v2 %+v", v2)
 	}
+	// PricingBasis v1 for FIN: the accepted revision's sell and cost lines, costs included
+	basis, err := f.module.GetPricingBasis(ctx, api.GetPricingBasis{TenantID: f.tenant, QuoteID: "Q-FX"})
+	wantBasis := []api.PricingLine{
+		{LineNo: 1, ChargeCode: "OCEAN_FREIGHT", Sell: usd(150_000), Cost: usd(100_000)},
+		{LineNo: 2, ChargeCode: "THC", Sell: cny(80_000), Cost: cny(60_000)},
+		{LineNo: 3, ChargeCode: "DOC_FEE", Sell: cny(0), Cost: cny(0)},
+		{LineNo: 4, ChargeCode: "LOYALTY_DISCOUNT", Sell: cny(-10_000), Cost: cny(0), Discount: true},
+	}
+	if err != nil || basis.Purpose != api.BasisQuoteAccepted || basis.BasisID != fmt.Sprintf("QUOTE:Q-FX@%d", basis.QuoteRevision) || basis.QuoteRevision != 3 ||
+		basis.LegalEntityID != "LE" || basis.Customer.PartyID != "P-AGENT" || basis.Currency != "CNY" || !reflect.DeepEqual(basis.Lines, wantBasis) ||
+		len(basis.ExchangeRates) != 1 {
+		t.Fatalf("pricing basis %+v %v", basis, err)
+	}
 	v1, err := f.module.GetQuoteSnapshot(ctx, api.GetQuoteSnapshot{TenantID: f.tenant, QuoteID: "Q-FX"})
 	if err != nil || v1.Total != cny(1_138_510) || v1.Lines[0].Amount != usd(150_000) {
 		t.Fatalf("snapshot v1 keeps line currencies and totals in the quote currency: %+v, %v", v1, err)
