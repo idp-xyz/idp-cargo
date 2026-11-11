@@ -72,6 +72,8 @@ type obligationRow struct {
 	ReleasedBy        string    `json:"released_by"`
 	ReleasedAt        time.Time `json:"released_at"`
 	GoodsDescription  string    `json:"goods_description"`
+	QuoteID           string    `json:"quote_id"`
+	QuoteRevision     int64     `json:"quote_revision"`
 }
 
 type planRow struct {
@@ -247,7 +249,7 @@ func readShipment(ctx context.Context, q queryRower, tenant ful.TenantID, id ful
 			ObligationRef: ful.ObligationRef{ObligationID: ful.ObligationID(o.ObligationID), ObligationVersion: o.ObligationVersion,
 				OrderID: o.OrderID, CustomerPartyID: o.CustomerPartyID, LegalEntityID: o.LegalEntityID, Packs: o.Packs,
 				PackageType: o.PackageType, GrossWeight: quantity(o.GrossWeightUnit, o.GrossWeight), Volume: quantity(o.VolumeUnit, o.Volume),
-				Description: o.GoodsDescription},
+				Description: o.GoodsDescription, QuoteID: o.QuoteID, QuoteRevision: o.QuoteRevision},
 			Part:    ful.CargoScope{Packs: o.PartPacks, GrossWeight: quantity(o.GrossWeightUnit, o.PartGrossWeight), Volume: quantity(o.VolumeUnit, o.PartVolume)},
 			AddedBy: o.AddedBy, AddedAt: utc(o.AddedAt), ReleasedBy: o.ReleasedBy, ReleasedAt: utc(o.ReleasedAt)})
 	}
@@ -349,12 +351,12 @@ func (s ShipmentStore) writeAdded(ctx context.Context, q bentopg.Executor, shipm
 	for i, p := range shipment.AddedObligations() {
 		_, err := q.Exec(ctx, `INSERT INTO cargo_ful.shipment_obligation (tenant_id,shipment_id,entry_no,obligation_id,obligation_version,
             order_id,customer_party_id,legal_entity_id,packs,package_type,gross_weight_unit,gross_weight,volume_unit,volume,
-            part_packs,part_gross_weight,part_volume,added_by,added_at,released_by,released_at,goods_description)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
+            part_packs,part_gross_weight,part_volume,added_by,added_at,released_by,released_at,goods_description,quote_id,quote_revision)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)`,
 			string(st.TenantID), string(st.ShipmentID), first+i+1, string(p.ObligationID), p.ObligationVersion,
 			p.OrderID, p.CustomerPartyID, p.LegalEntityID, p.Packs, p.PackageType, string(p.GrossWeight.Unit), p.GrossWeight.Amount,
 			orNull(string(p.Volume.Unit)), orNull(p.Volume.Amount), p.Part.Packs, p.Part.GrossWeight.Amount, orNull(p.Part.Volume.Amount),
-			p.AddedBy, p.AddedAt, orNull(p.ReleasedBy), orNull(p.ReleasedAt), orNull(p.Description))
+			p.AddedBy, p.AddedAt, orNull(p.ReleasedBy), orNull(p.ReleasedAt), orNull(p.Description), orNull(p.QuoteID), orNull(p.QuoteRevision))
 		var pgErr *pgconn.PgError
 		switch {
 		case errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "shipment_obligation_one_live_part":

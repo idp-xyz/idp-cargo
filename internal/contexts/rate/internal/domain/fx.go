@@ -2,7 +2,6 @@ package domain
 
 import (
 	"fmt"
-	"math/big"
 	"time"
 	"unicode/utf8"
 
@@ -32,22 +31,14 @@ func (r ExchangeRate) valid(quote kernel.CurrencyCode) bool {
 }
 
 // convert returns amount × Rate × 10^(QuoteDigits − FromDigits − Scale) in quote minor units, rounded half
-// away from zero.
+// away from zero (kernel.ConvertMinor).
 func (r ExchangeRate) convert(amount int64, quote kernel.CurrencyCode) (kernel.Money, error) {
-	num := new(big.Int).Mul(big.NewInt(amount), big.NewInt(r.Rate))
-	num.Mul(num, pow10(r.QuoteDigits))
-	den := new(big.Int).Mul(pow10(r.FromDigits), pow10(r.Scale))
-	q, rem := new(big.Int).QuoRem(num, den, new(big.Int))
-	if twice := new(big.Int).Mul(new(big.Int).Abs(rem), big.NewInt(2)); twice.Cmp(den) >= 0 {
-		q.Add(q, big.NewInt(int64(num.Sign())))
+	minor, err := kernel.ConvertMinor(amount, r.Rate, r.Scale, r.FromDigits, r.QuoteDigits)
+	if err != nil {
+		return kernel.Money{}, err
 	}
-	if !q.IsInt64() {
-		return kernel.Money{}, kernel.ErrAmountOverflow
-	}
-	return kernel.Money{Currency: quote, Minor: q.Int64()}, nil
+	return kernel.Money{Currency: quote, Minor: minor}, nil
 }
-
-func pow10(n int) *big.Int { return new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(n)), nil) }
 
 // converter turns line amounts into the quote currency with the quote's frozen rates.
 type converter struct {

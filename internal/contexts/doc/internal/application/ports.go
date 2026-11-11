@@ -173,9 +173,10 @@ type DispatchStore interface {
 	Provisions(ctx context.Context, tenant doc.TenantID, from, until time.Time) ([]*doc.Dispatch, error)
 }
 
-// Credit reads FIN's credit decision for the ordering parties of orders (CreditStatus v1, FIN -> DOC).
+// Credit reads FIN's credit decision for the ordering parties of a house document's orders with the issuing legal
+// entity (CreditStatus v1, FIN -> DOC), outside DOC's transactions.
 type Credit interface {
-	Decision(ctx context.Context, tenant doc.TenantID, orders []string) (doc.CreditDecision, error)
+	Decision(ctx context.Context, tenant doc.TenantID, legalEntity string, debtors []string) (doc.CreditDecision, error)
 }
 
 // Clock tells the time DOC records a command (T1).

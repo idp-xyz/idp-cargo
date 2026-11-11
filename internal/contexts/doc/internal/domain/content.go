@@ -70,6 +70,7 @@ func (f Facts) house(shipment string) (FactsHouse, bool) {
 type OrderParties struct {
 	OrderID   string
 	Revision  int64
+	Customer  string // the ordering party, whose credit FIN decides (C7)
 	Transport Transport
 	Shipper   *Party
 	Consignee *Party

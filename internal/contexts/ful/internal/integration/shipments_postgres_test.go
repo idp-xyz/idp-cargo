@@ -261,6 +261,12 @@ func TestShipmentLifecycleOnPostgres(t *testing.T) {
 	if !reflect.DeepEqual(s, want) || !s.DepartureWindow.From.Equal(f.at.Add(72*time.Hour)) || !s.PlannedAt.Equal(f.at.Add(2*time.Hour)) {
 		t.Fatalf("snapshot %+v", s)
 	}
+	// CostDriver v1 (kind SHIPMENT_PLANNED) for FIN: one order, its accepted quote as COM named it at planning
+	if d, err := f.module.GetShipmentCostDriver(ctx, api.GetShipmentCostDriver{TenantID: f.tenant, ShipmentID: "SH-1"}); err != nil ||
+		d.Kind != api.DriverShipmentPlanned || d.Status != api.StatusPlanned || d.PlanVersion != 3 || d.LegalEntityID != "LE" || d.CustomerPartyID != "P-1" ||
+		d.TransportMode != api.ModeSea || d.Packs != 4 || !reflect.DeepEqual(d.Orders, []api.CostOrder{{OrderID: "O-1", QuoteID: "Q-1", QuoteRevision: 3, Packs: 4}}) {
+		t.Fatalf("cost driver %+v %v", d, err)
+	}
 	release := api.ReleaseObligationFromShipment{CommandID: "release-1", TenantID: f.tenant, ActorID: "planner-1", ShipmentID: "SH-1",
 		ExpectedRevision: 4, ObligationID: "OB-1", ObligationVersion: 1, OccurredAt: f.at.Add(4 * time.Hour)}
 	if r, err = f.module.ReleaseObligationFromShipment(ctx, release); err != nil || r.NewRevision != 5 {
@@ -281,6 +287,13 @@ func TestShipmentLifecycleOnPostgres(t *testing.T) {
 	}
 	if s = f.snapshot(t, "SH-1"); s.Status != api.StatusCancelled || len(s.Obligations) != 0 || s.Packs != 0 || s.PlanVersion != 4 {
 		t.Fatalf("cancelled snapshot %+v", s)
+	}
+	if d, err := f.module.GetShipmentCostDriver(ctx, api.GetShipmentCostDriver{TenantID: f.tenant, ShipmentID: "SH-1"}); err != nil ||
+		d.Status != api.StatusCancelled || len(d.Orders) != 0 || d.Packs != 0 || d.CancelledAt.IsZero() {
+		t.Fatalf("cancelled cost driver %+v %v", d, err)
+	}
+	if _, err = f.module.GetShipmentCostDriver(ctx, api.GetShipmentCostDriver{TenantID: f.tenant, ShipmentID: "SH-404"}); !errors.Is(err, api.ErrNotFound) {
+		t.Fatalf("an unknown shipment: %v", err)
 	}
 	wantEvents := []string{api.ShipmentCreated, api.ShipmentObligationAdded, api.ShipmentPlanAmended, api.ShipmentPlanConfirmed,
 		api.ShipmentObligationReleased, api.ShipmentCreated, api.ShipmentCancelled}

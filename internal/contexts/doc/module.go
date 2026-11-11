@@ -24,13 +24,14 @@ import (
 	"go.idp.xyz/idp-cargo/internal/contexts/doc/internal/adapters/postgres"
 	"go.idp.xyz/idp-cargo/internal/contexts/doc/internal/application"
 	"go.idp.xyz/idp-cargo/internal/contexts/doc/internal/domain"
+	finapi "go.idp.xyz/idp-cargo/internal/contexts/fin/api"
 	"go.idp.xyz/idp-cargo/internal/foundation/bento"
 	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
 // Module wires DOC's use cases to PostgreSQL through IDP-Bento-Go, to AIR's AirDocFacts v1, COM's OrderParties v1
-// and ORG's legal entities, parties and contact transfer register, and renders with the IDP-AWB-V1 template. FIN is
-// not built: no credit decision exists (C7, OD-3 B).
+// and ORG's legal entities, parties and contact transfer register, to FIN's CreditStatus v1 (C7; a debtor without a
+// credit account still needs an override, OD-3 B), and renders with the IDP-AWB-V1 template.
 type Module struct {
 	db        *bentopg.DB
 	outbox    *bentooutbox.Store
@@ -57,16 +58,17 @@ var (
 
 // New assembles DOC. air answers AirDocFacts v1 (relationship 11), com OrderParties v1 and org LegalEntityRef v1,
 // PartyRef v1 and ContactTransferRegister v1; DOC writes to none of them.
-func New(db *bentopg.DB, air airapi.AirDocFactsQueries, com comapi.OrderPartyQueries, org orgacl.ORG, auth api.Authorizer, opts ...Option) (*Module, error) {
-	if db == nil || air == nil || com == nil || org == nil || auth == nil {
-		return nil, errors.New("doc: module needs a database, AIR's facts, COM's parties, ORG and an authorizer")
+func New(db *bentopg.DB, air airapi.AirDocFactsQueries, com comapi.OrderPartyQueries, org orgacl.ORG, fin finapi.CreditStatusQueries, auth api.Authorizer,
+	opts ...Option) (*Module, error) {
+	if db == nil || air == nil || com == nil || org == nil || fin == nil || auth == nil {
+		return nil, errors.New("doc: module needs a database, AIR's facts, COM's parties, ORG, FIN's credit status and an authorizer")
 	}
 	outbox, err := bentooutbox.NewStore(db)
 	if err != nil {
 		return nil, err
 	}
 	m := &Module{db: db, outbox: outbox, facts: airacl.Facts{AIR: air}, parties: comacl.Parties{COM: com}, directory: orgacl.Directory{ORG: org},
-		credit: finacl.NoCreditControl{}, renderer: pdf.Renderer{}, auth: auth, window: kernel.DefaultRecordWindow}
+		credit: finacl.Credit{FIN: fin}, renderer: pdf.Renderer{}, auth: auth, window: kernel.DefaultRecordWindow}
 	for _, opt := range opts {
 		opt(m)
 	}
