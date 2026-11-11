@@ -104,9 +104,17 @@ type Facts interface {
 	Latest(ctx context.Context, tenant doc.TenantID, movement string) (doc.Facts, error)
 }
 
-// Parties reads COM's OrderParties v1 of an order (COM -> DOC), outside DOC's transactions, without contacts.
+// Parties reads COM's OrderParties v1 of an order (COM -> DOC), outside DOC's transactions: without contacts for a
+// version, and with them, for the purpose DOCUMENTS and the actor's authorization (COM logs the read), for a copy.
 type Parties interface {
 	Order(ctx context.Context, tenant doc.TenantID, actor, order string) (doc.OrderParties, error)
+	Contacts(ctx context.Context, tenant doc.TenantID, actor, order string) (OrderContacts, error)
+}
+
+// OrderContacts are the contacts frozen on an order's parties, with the ordering party.
+type OrderContacts struct {
+	OrderingParty string
+	Contacts      []doc.ContactSource
 }
 
 // Directory reads ORG (ORG -> DOC): the issuing legal entity (LegalEntityRef v1) and a destination agent in the
@@ -114,6 +122,55 @@ type Parties interface {
 type Directory interface {
 	Issuer(ctx context.Context, tenant doc.TenantID, legalEntity string) (doc.Issuer, error)
 	Agent(ctx context.Context, tenant doc.TenantID, party, legalEntity string, at time.Time) (doc.Party, error)
+	// Country is a party's registration country (PartyRef v1).
+	Country(ctx context.Context, tenant doc.TenantID, party string) (string, error)
+	// Register reads the current year of ContactTransferRegister v1, with the keys a dispatch holds.
+	Register(ctx context.Context, tenant doc.TenantID, dispatch string) (doc.RegisterView, error)
+	// Consents reads the current consent of a party's contacts in ORG's address book, by contact id, for the purpose
+	// DOCUMENTS with the actor's own authorization (ORG logs the read).
+	Consents(ctx context.Context, tenant doc.TenantID, actor, party string) (map[string]ORGConsent, error)
+}
+
+// ORGConsent is the current consent of a contact of ORG's address book; Erased when ORG erased the contact.
+type ORGConsent struct {
+	Consent *doc.Consent
+	Erased  bool
+}
+
+// Renderer renders a version to PDF under its template.
+type Renderer interface {
+	Template() string
+	Render(r Rendering) ([]byte, error)
+}
+
+// Rendering is what a rendering shows: a version with its status and issue time and, on a dispatch copy, the
+// contacts provided with consent.
+type Rendering struct {
+	Doc      doc.Content
+	Version  int
+	SHA256   string
+	Status   string
+	IssuedAt time.Time
+	Contacts []CopyContact
+}
+
+// CopyContact is a contact printed on a copy; DOC never stores it.
+type CopyContact struct {
+	Role   string
+	Name   string
+	Phone  string
+	Mobile string
+	Email  string
+}
+
+// DispatchStore loads and writes dispatches; Load locks the dispatch row.
+type DispatchStore interface {
+	Load(context.Context, doc.TenantID, string) (*doc.Dispatch, int64, error)
+	Read(context.Context, doc.TenantID, string) (*doc.Dispatch, int64, error)
+	Insert(context.Context, *doc.Dispatch) (int64, error)
+	Save(context.Context, *doc.Dispatch, int64) (int64, error)
+	List(ctx context.Context, tenant doc.TenantID, document doc.DocumentID) ([]*doc.Dispatch, error)
+	Provisions(ctx context.Context, tenant doc.TenantID, from, until time.Time) ([]*doc.Dispatch, error)
 }
 
 // Credit reads FIN's credit decision for the ordering parties of orders (CreditStatus v1, FIN -> DOC).
@@ -138,6 +195,8 @@ type Deps struct {
 	Parties     Parties
 	Directory   Directory
 	Credit      Credit
+	Dispatches  DispatchStore
+	Renderer    Renderer
 }
 
 // Command is what every DOC command states; Payload is the command as the caller sent it.

@@ -68,10 +68,14 @@ func unlocode(code string) kernel.LocationCode {
 // world stands in for AIR, COM and ORG: AirDocFacts by movement, order parties by order, the issuing legal entity
 // and the destination agent, which tests change.
 type world struct {
-	mu     sync.Mutex
-	at     time.Time
-	facts  map[string]airapi.AirDocFacts
-	orders map[string]comapi.OrderParties
+	mu        sync.Mutex
+	at        time.Time
+	facts     map[string]airapi.AirDocFacts
+	orders    map[string]comapi.OrderParties
+	register  string              // the register's state; OK when empty
+	safeguard string              // the kind of safeguard in force, if any
+	reserved  map[string][]string // the keys ORG holds by dispatch
+	crossNow  bool                // whether ORG's current consent of the shipper's contact covers going abroad
 }
 
 func (w *world) GetAirDocFacts(_ context.Context, q airapi.GetAirDocFacts) (airapi.AirDocFacts, error) {
@@ -93,6 +97,14 @@ func (w *world) GetOrderParties(_ context.Context, q comapi.GetOrderParties) (co
 		return comapi.OrderParties{}, fmt.Errorf("%w: stub", comapi.ErrNotFound)
 	}
 	o.Locks = append([]comapi.PartyLock(nil), o.Locks...)
+	o.Parties = append([]comapi.OrderPartyView(nil), o.Parties...)
+	for i := range o.Parties {
+		if !q.WithContacts {
+			o.Parties[i].Contact = nil
+		} else if q.Purpose != kernel.PurposeDocuments {
+			return comapi.OrderParties{}, errors.New("stub: DOC reads contacts for DOCUMENTS")
+		}
+	}
 	return o, nil
 }
 
@@ -120,8 +132,19 @@ func (w *world) GetPartyAddress(context.Context, orgapi.GetPartyAddress) (orgapi
 	return orgapi.PartyAddress{}, errors.New("not used")
 }
 
-func (w *world) GetPartyContacts(context.Context, orgapi.GetPartyContacts) (orgapi.PartyContacts, error) {
-	return orgapi.PartyContacts{}, errors.New("not used")
+// GetPartyContacts answers ORG's current consent of the shipper's contact C-SH, consenting to go abroad while crossNow.
+func (w *world) GetPartyContacts(_ context.Context, q orgapi.GetPartyContacts) (orgapi.PartyContacts, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if q.Purpose != kernel.PurposeDocuments || q.ActorID == "" {
+		return orgapi.PartyContacts{}, errors.New("stub: DOC reads ORG's contacts for DOCUMENTS, as an actor")
+	}
+	if q.PartyID != "shipper-O-A" {
+		return orgapi.PartyContacts{PartyID: q.PartyID}, nil
+	}
+	return orgapi.PartyContacts{PartyID: q.PartyID, Revision: 3, Contacts: []orgapi.PartyContact{{ContactID: "C-SH", Version: 2, Status: "ACTIVE",
+		Consent: &orgapi.ContactConsent{NoticeVersion: "PI-2026-02", ProvideToOthers: true, CrossBorder: w.crossNow, Basis: orgapi.ConsentSubjectConfirmed,
+			EvidenceRef: "consent/C-SH", Revision: 3}}}}, nil
 }
 
 // finalize publishes AirDocFacts version v of AM-1: MU587 PVG-JFK with houses SH-A and SH-B, 318 kg each, FINAL

@@ -1,6 +1,6 @@
-// Package api is the published language of DOC (Transport Documents) V0.1, the N1 air line: the house air
-// waybill (HAWB) and the master air waybill (MAWB) of an air consolidation. It imports only the standard library
-// and the kernel.
+// Package api is the published language of DOC (Transport Documents) V0.2, the N1 air line: the house air
+// waybill (HAWB) and the master air waybill (MAWB) of an air consolidation, rendered to PDF and dispatched with the
+// P5 records (dispatch.go). It imports only the standard library and the kernel.
 //
 // A document is drafted from AIR's finalized facts (AirDocFacts v1, relationship 11): a HAWB from the house of one
 // FUL shipment, with the shipper, consignee and notify party COM froze on the orders of its parts (OrderParties

@@ -1,5 +1,5 @@
-// Package postgres persists DOC documents, issuance authorities, command receipts and Outbox events in the
-// tenant's RLS scope.
+// Package postgres persists DOC documents, issuance authorities, dispatches with their provision records, command
+// receipts and Outbox events in the tenant's RLS scope.
 package postgres
 
 import (
@@ -494,7 +494,7 @@ func (o Outbox) EnqueueDOCEvent(ctx context.Context, e doc.Event) error {
 func DOCEnvelope(commandID string, e doc.Event, recordedAt time.Time) (eventing.Envelope, error) {
 	digest := sha256.Sum256([]byte(commandID + "\x00" + e.Type + "\x00" + string(e.TenantID) + "\x00" + e.DocumentID + "\x00" + strconv.Itoa(e.Version)))
 	payload, err := json.Marshal(api.EventPayload{TenantID: string(e.TenantID), SubjectID: e.DocumentID, Kind: e.Kind, Version: e.Version,
-		ShipmentID: e.ShipmentID, ConsolidationID: e.ConsolidationID, MovementID: e.MovementID})
+		ShipmentID: e.ShipmentID, ConsolidationID: e.ConsolidationID, MovementID: e.MovementID, DocumentID: e.DocumentRef})
 	if err != nil {
 		return eventing.Envelope{}, err
 	}
@@ -508,5 +508,6 @@ func DOCEnvelope(commandID string, e doc.Event, recordedAt time.Time) (eventing.
 func Conflict(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "23514" &&
-		(pgErr.ConstraintName == "transport_document_consistent" || pgErr.ConstraintName == "document_records_with_document")
+		(pgErr.ConstraintName == "transport_document_consistent" || pgErr.ConstraintName == "document_records_with_document" ||
+			pgErr.ConstraintName == "document_dispatch_consistent" || pgErr.ConstraintName == "dispatch_records_with_dispatch")
 }

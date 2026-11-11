@@ -1,6 +1,6 @@
-// Package org is DOC's anticorruption layer for ORG (ORG -> DOC): the issuing legal entity (LegalEntityRef v1) and
-// a destination agent in the OVERSEAS_AGENT role with its office address (PartyRef v1). ORG's error kinds are kept
-// as text only.
+// Package org is DOC's anticorruption layer for ORG (ORG -> DOC): the issuing legal entity (LegalEntityRef v1),
+// a destination agent in the OVERSEAS_AGENT role with its office address and a recipient's country (PartyRef v1),
+// and the tenant's ContactTransferRegister v1. ORG's error kinds are kept as text only.
 package org
 
 import (
@@ -13,6 +13,7 @@ import (
 	app "go.idp.xyz/idp-cargo/internal/contexts/doc/internal/application"
 	doc "go.idp.xyz/idp-cargo/internal/contexts/doc/internal/domain"
 	orgapi "go.idp.xyz/idp-cargo/internal/contexts/org/api"
+	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
 // ORG is what DOC asks ORG.
@@ -20,6 +21,8 @@ type ORG interface {
 	orgapi.Queries
 	orgapi.LegalEntityQueries
 	orgapi.AddressBookQueries
+	orgapi.PartyIdentityQueries
+	orgapi.ContactTransferRegisterQueries
 }
 
 // Directory reads ORG. Call it outside DOC's transactions.
@@ -41,6 +44,46 @@ func (d Directory) Issuer(ctx context.Context, tenant doc.TenantID, legalEntity 
 	}
 	return doc.Issuer{LegalEntityID: le.LegalEntityID, Revision: le.Revision, Name: le.RegisteredName, Jurisdiction: le.Jurisdiction,
 		Verified: le.Status == orgapi.LegalEntityVerified}, nil
+}
+
+func (d Directory) Country(ctx context.Context, tenant doc.TenantID, party string) (string, error) {
+	got, err := d.ORG.GetPartyIdentity(ctx, orgapi.GetPartyIdentity{TenantID: string(tenant), PartyID: party})
+	if err != nil {
+		return "", unknown("party "+party, err)
+	}
+	if got.PartyID != party || len(got.CountryCode) != 2 {
+		return "", fmt.Errorf("%w: party %s has no registration country", app.ErrUnknownSource, party)
+	}
+	return got.CountryCode, nil
+}
+
+func (d Directory) Register(ctx context.Context, tenant doc.TenantID, dispatch string) (doc.RegisterView, error) {
+	got, err := d.ORG.GetContactTransferRegister(ctx, orgapi.GetContactTransferRegister{TenantID: string(tenant), DispatchID: dispatch})
+	if err != nil {
+		return doc.RegisterView{}, err
+	}
+	out := doc.RegisterView{Year: got.Year, Persons: got.Persons, State: got.State, DispatchKeys: got.DispatchKeys}
+	if got.Safeguard != nil {
+		out.SafeguardKind = got.Safeguard.Kind
+	}
+	return out, nil
+}
+
+func (d Directory) Consents(ctx context.Context, tenant doc.TenantID, actor, party string) (map[string]app.ORGConsent, error) {
+	got, err := d.ORG.GetPartyContacts(ctx, orgapi.GetPartyContacts{TenantID: string(tenant), ActorID: actor, PartyID: party, Purpose: kernel.PurposeDocuments})
+	if err != nil {
+		return nil, unknown("contacts of "+party, err)
+	}
+	out := map[string]app.ORGConsent{}
+	for _, c := range got.Contacts {
+		v := app.ORGConsent{Erased: c.Status == orgapi.StatusErased}
+		if k := c.Consent; k != nil {
+			v.Consent = &doc.Consent{NoticeVersion: k.NoticeVersion, ProvideToOthers: k.ProvideToOthers, CrossBorder: k.CrossBorder, Basis: k.Basis,
+				ORGRevision: k.Revision}
+		}
+		out[c.ContactID] = v
+	}
+	return out, nil
 }
 
 func (d Directory) Agent(ctx context.Context, tenant doc.TenantID, party, legalEntity string, at time.Time) (doc.Party, error) {

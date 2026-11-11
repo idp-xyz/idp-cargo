@@ -134,6 +134,7 @@ type Event struct {
 	ShipmentID      string
 	ConsolidationID string
 	MovementID      string
+	DocumentRef     string // a dispatch event's document
 }
 
 const (
