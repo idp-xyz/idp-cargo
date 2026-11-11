@@ -138,6 +138,8 @@ func TestLoadEvidenceOnPostgres(t *testing.T) {
 		{`DELETE FROM cargo_ful.shipment_load_evidence WHERE tenant_id=$1`, "42501", ""},
 		{`UPDATE cargo_ful.shipment_load_evidence_screening SET reference='x' WHERE tenant_id=$1`, "42501", ""},
 		{`UPDATE cargo_ful.shipment_obligation SET goods_description='x' WHERE tenant_id=$1`, "42501", ""},
+		{`INSERT INTO cargo_ful.shipment_load_evidence_screening (tenant_id,shipment_id,evidence_no,screening_no,lot_id,outcome,screener,method,reference,
+            screened_at) VALUES ($1,'SH-1',1,1,'L-1','PASSED','x','XRY','r',now())`, "23514", "shipment_load_evidence_screening_with_evidence"},
 		{`INSERT INTO cargo_ful.shipment_load_evidence (tenant_id,shipment_id,evidence_no,digest,lots,receipt_complete,received_packs,received_weight,
             received_volume,tendered_packs,tendered_weight,tendered_volume,departed,arrived,offloaded,open_discrepancies,execution_status,recorded_by,
             recorded_at,entered_at,departed_final) VALUES ($1,'SH-1',9,repeat('a',64),0,false,0,0,0,0,0,0,0,0,0,0,'NOT_STARTED','x',now(),now(),0)`, "23514", ""},

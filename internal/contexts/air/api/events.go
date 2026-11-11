@@ -15,8 +15,11 @@ const (
 	AirMovementCancelled         = "AirMovementCancelled.v1"
 	HawbSeriesRegistered         = "HawbSeriesRegistered.v1"
 	// AirDocFactsFinalized: the movement's facts were finalized for DOC as version FactsVersion of AirDocFacts v1;
-	// DOC reads it with GetAirDocFacts. A later version supersedes it.
+	// DOC reads it with GetAirDocFacts.
 	AirDocFactsFinalized = "AirDocFactsFinalized.v1"
+	// AirDocFactsSuperseded: a change returned the FINAL movement to OPEN; version FactsVersion is superseded and DOC
+	// marks documents built on it stale. The next finalization publishes the next version.
+	AirDocFactsSuperseded = "AirDocFactsSuperseded.v1"
 )
 
 // EventPayload is the JSON payload of every AIR event: identifiers only, never MAWB or HAWB numbers, names or

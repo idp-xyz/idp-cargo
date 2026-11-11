@@ -6,9 +6,11 @@ package integration
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -586,38 +588,99 @@ func TestDocFactsOnPostgres(t *testing.T) {
 	if _, err = f.module.GetAirDocFacts(ctx, api.GetAirDocFacts{TenantID: f.tenant, MovementID: "AM-1", Version: 3}); !errors.Is(err, api.ErrNotFound) {
 		t.Fatalf("no version 3: %v", err)
 	}
+	// From FINAL, a house associated and then ended: version 2 is superseded once, and version 3 finalized.
+	f.w.plan("SH-3", "C-1", 2)
+	if _, err = f.module.AssociateHouseWaybill(ctx, api.AssociateHouseWaybill{CommandID: "assoc-3", TenantID: f.tenant, ActorID: "ops-1",
+		MovementID: "AM-1", ExpectedRevision: 9, ShipmentID: "SH-3", OccurredAt: f.at.Add(7 * time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := f.module.GetAirDocFacts(ctx, api.GetAirDocFacts{TenantID: f.tenant, MovementID: "AM-1"}); v.Version != 2 || v.Status != api.DocFactsSuperseded {
+		t.Fatalf("associated from FINAL: %+v", v)
+	}
+	f.w.plan("SH-3", "C-2", 2)
+	if _, err = f.module.EndHouseWaybillAssociation(ctx, api.EndHouseWaybillAssociation{CommandID: "end-3", TenantID: f.tenant, ActorID: "ops-1",
+		MovementID: "AM-1", ExpectedRevision: 10, ShipmentID: "SH-3", OccurredAt: f.at.Add(7 * time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if r, err = finalize("fin-3", 11, 8); err != nil || r.FactsVersion != 3 || r.NewRevision != 12 {
+		t.Fatalf("version 3: %+v %v", r, err)
+	}
+	v3, err := f.module.GetAirDocFacts(ctx, api.GetAirDocFacts{TenantID: f.tenant, MovementID: "AM-1"})
+	if err != nil || v3.Status != api.DocFactsFinal || len(v3.Houses) != 2 || fmt.Sprintf("%x", sha256.Sum256(v3.Content)) != v3.SHA256 {
+		t.Fatalf("version 3: %+v %v", v3, err)
+	}
 	var stored string
 	if err = f.within(t, func(ctx context.Context, e bentopg.Executor) error {
-		return e.QueryRow(ctx, `SELECT string_agg(content->>'mawb' || ':' || content_sha256, ',' ORDER BY version_no) FROM cargo_air.air_doc_facts_version
-          WHERE tenant_id=$1`, f.tenant).Scan(&stored)
-	}); err != nil || stored != "781-12345675:"+v1.SHA256+",781-12345675:"+v2.SHA256 {
+		return e.QueryRow(ctx, `SELECT string_agg(content::jsonb->>'mawb' || ':' || content_sha256 || ':' || movement_revision, ',' ORDER BY version_no)
+          FROM cargo_air.air_doc_facts_version WHERE tenant_id=$1`, f.tenant).Scan(&stored)
+	}); err != nil || stored != "781-12345675:"+v1.SHA256+":6,781-12345675:"+v2.SHA256+":9,781-12345675:"+v3.SHA256+":12" {
 		t.Fatalf("stored versions: %s %v", stored, err)
 	}
 	want := []string{api.AirMovementOpened, api.MawbAssigned, api.FlightSegmentsLinked, api.HawbSeriesRegistered, api.HouseWaybillAssociated,
 		api.HouseWaybillAssociated, api.HouseWaybillFactsRefreshed, api.HouseWaybillFactsRefreshed, api.AirDocFactsFinalized,
-		api.HouseWaybillFactsRefreshed, api.HouseWaybillFactsRefreshed, api.AirDocFactsFinalized}
+		api.AirDocFactsSuperseded, api.HouseWaybillFactsRefreshed, api.HouseWaybillFactsRefreshed, api.AirDocFactsFinalized,
+		api.AirDocFactsSuperseded, api.HouseWaybillAssociated, api.HouseWaybillAssociationEnded, api.AirDocFactsFinalized}
 	if got := f.outboxTypes(t); !slices.Equal(got, want) {
 		t.Fatalf("outbox %v", got)
 	}
 
-	// Past AIR on the application role: versions and screenings are immutable; a version needs a FINAL movement
-	// and a FINAL movement its version.
+	// Read on a session in another time zone: the same bytes, the same reading, still current.
+	cfg, err := pgxpool.ParseConfig(os.Getenv("IDP_CARGO_POSTGRES_DSN"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.ConnConfig.RuntimeParams["timezone"] = "Asia/Shanghai"
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	shanghaiDB, err := bentopg.NewDB(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shanghai, err := airmodule.New(shanghaiDB, f.w, f.w, allow{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	there, err := shanghai.GetAirDocFacts(ctx, api.GetAirDocFacts{TenantID: f.tenant, MovementID: "AM-1"})
+	if err != nil || !reflect.DeepEqual(there, v3) {
+		t.Fatalf("read in Asia/Shanghai: %+v %v", there, err)
+	}
+	if m, err := shanghai.GetAirMovement(ctx, api.GetAirMovement{TenantID: f.tenant, MovementID: "AM-1"}); err != nil || m.State != api.StateFinal ||
+		!reflect.DeepEqual(m.Houses, f.get(t, "AM-1").Houses) {
+		t.Fatalf("movement read in Asia/Shanghai: %v", err)
+	}
+
+	// Past AIR on the application role: versions and screenings are immutable; a version needs a FINAL movement at
+	// its revision, and a FINAL movement its version; a house's screenings and parts are written with its entry.
 	f.w.booking("BK-3", "C-3", "781-34567890", 1, f.at.Add(72*time.Hour))
 	if _, err = f.open("AM-3", "C-3", "BK-3"); err != nil {
 		t.Fatal(err)
 	}
+	version := func(movement string, no, revision int) string {
+		return fmt.Sprintf(`INSERT INTO cargo_air.air_doc_facts_version (tenant_id,movement_id,version_no,content,content_sha256,movement_revision,
+            finalized_by,finalized_at,entered_at) SELECT $1,'%[1]s',%[2]d,c,encode(sha256(convert_to(c,'UTF8')),'hex'),%[3]d,'x',now(),now()
+            FROM (VALUES ('{"version":%[2]d,"movement_id":"%[1]s","houses":[{}]}')) t(c)`, movement, no, revision)
+	}
+	entry := `(SELECT max(entry_no) FROM cargo_air.house_waybill WHERE tenant_id=$1 AND movement_id='AM-1' AND ended_at IS NULL)`
 	for name, tc := range map[string]struct {
 		sql   string
 		state string
 	}{
-		"version immutable":   {`UPDATE cargo_air.air_doc_facts_version SET finalized_by='x' WHERE tenant_id=$1`, "42501|23001"},
-		"version deleted":     {`DELETE FROM cargo_air.air_doc_facts_version WHERE tenant_id=$1`, "42501|23001"},
-		"screening immutable": {`UPDATE cargo_air.house_waybill_screening SET reference='x' WHERE tenant_id=$1`, "42501|23001"},
-		"FINAL without facts": {`UPDATE cargo_air.air_movement SET state='FINAL' WHERE tenant_id=$1 AND movement_id='AM-3'`, "23514"},
-		"facts of an OPEN movement": {`INSERT INTO cargo_air.air_doc_facts_version (tenant_id,movement_id,version_no,content,content_sha256,finalized_by,
-            finalized_at,entered_at) VALUES ($1,'AM-3',1,'{"version":1,"movement_id":"AM-3","houses":[{}]}',repeat('a',64),'x',now(),now())`, "23514"},
-		"version gap": {`INSERT INTO cargo_air.air_doc_facts_version (tenant_id,movement_id,version_no,content,content_sha256,finalized_by,
-            finalized_at,entered_at) VALUES ($1,'AM-1',4,'{"version":4,"movement_id":"AM-1","houses":[{}]}',repeat('a',64),'x',now(),now())`, "23514"},
+		"version immutable":         {`UPDATE cargo_air.air_doc_facts_version SET finalized_by='x' WHERE tenant_id=$1`, "42501|23001"},
+		"version deleted":           {`DELETE FROM cargo_air.air_doc_facts_version WHERE tenant_id=$1`, "42501|23001"},
+		"screening immutable":       {`UPDATE cargo_air.house_waybill_screening SET reference='x' WHERE tenant_id=$1`, "42501|23001"},
+		"FINAL without facts":       {`UPDATE cargo_air.air_movement SET state='FINAL' WHERE tenant_id=$1 AND movement_id='AM-3'`, "23514"},
+		"facts of an OPEN movement": {version("AM-3", 1, 1), "23514"},
+		"a version beside FINAL":    {version("AM-1", 4, 99), "23514"},
+		"digest of other bytes": {`INSERT INTO cargo_air.air_doc_facts_version (tenant_id,movement_id,version_no,content,content_sha256,movement_revision,
+            finalized_by,finalized_at,entered_at) VALUES ($1,'AM-3',1,'{"version":1,"movement_id":"AM-3","houses":[{}]}',repeat('a',64),1,'x',now(),now())`, "23514"},
+		"FINAL changed behind AIR": {`UPDATE cargo_air.air_movement SET revision=revision+1 WHERE tenant_id=$1 AND movement_id='AM-1'`, "23514"},
+		"screening added later": {`INSERT INTO cargo_air.house_waybill_screening (tenant_id,movement_id,entry_no,screening_no,lot_id,outcome,screener,method,
+            reference,screened_at) VALUES ($1,'AM-1',` + entry + `,9,'L-X','PASSED','x','XRY','r',now())`, "23514"},
+		"part added later": {`INSERT INTO cargo_air.house_waybill_part (tenant_id,movement_id,entry_no,part_no,obligation_id,obligation_version,order_id,packs,
+            package_type,gross_weight_unit,gross_weight) VALUES ($1,'AM-1',` + entry + `,9,'OB-X',1,'O-X',1,'CT','KGM',1)`, "23514"},
 		"FINAL cancelled": {`UPDATE cargo_air.air_movement SET state='CANCELLED',mawb_status='VOIDED',cancel_reason='x',cancelled_by='x',cancelled_at=now()
             WHERE tenant_id=$1 AND movement_id='AM-1'`, "23001"},
 	} {

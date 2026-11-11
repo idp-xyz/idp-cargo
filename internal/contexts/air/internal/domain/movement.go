@@ -186,6 +186,7 @@ const (
 	eventEnded      = "HouseWaybillAssociationEnded.v1"
 	eventCancelled  = "AirMovementCancelled.v1"
 	eventFinalized  = "AirDocFactsFinalized.v1"
+	eventSuperseded = "AirDocFactsSuperseded.v1"
 )
 
 // OpenMovement opens the air movement of a consolidation from its booking: an air consolidation booking in force,
@@ -274,7 +275,7 @@ func (m *Movement) LinkBooking(b Booking, by string, at time.Time) error {
 	if err := m.changeable(by, at); err != nil {
 		return err
 	}
-	m.reopen()
+	m.reopen(at)
 	m.addLink(b, by, at)
 	m.record(eventLinked, at, "", 0, "")
 	return nil
@@ -374,7 +375,7 @@ func (m *Movement) Associate(p Plan, hawb, by string, at time.Time) error {
 	if err = m.changeable(by, at); err != nil {
 		return err
 	}
-	m.reopen()
+	m.reopen(at)
 	no := m.addEntry(p, hawb, f, StartAssociated, 0, by, at)
 	m.record(eventAssociated, at, p.ShipmentID, no, "")
 	return nil
@@ -400,7 +401,7 @@ func (m *Movement) Refresh(p Plan, by string, at time.Time) error {
 	if err = m.changeable(by, at); err != nil {
 		return err
 	}
-	m.reopen()
+	m.reopen(at)
 	old := m.state.Entries[i]
 	m.end(i, EndRefreshed, len(m.state.Entries)+1, by, at) // entries are numbered across the movement
 	no := m.addEntry(p, old.HAWB, f, StartRefreshed, old.No, by, at)
@@ -430,7 +431,7 @@ func (m *Movement) EndAssociation(p Plan, by string, at time.Time) error {
 	if err = m.changeable(by, at); err != nil {
 		return err
 	}
-	m.reopen()
+	m.reopen(at)
 	m.end(i, kind, 0, by, at)
 	m.record(eventEnded, at, p.ShipmentID, m.state.Entries[i].No, kind)
 	return nil
@@ -650,7 +651,7 @@ func (m *Movement) validate() error {
 			return fmt.Errorf("entry %d end", i+1)
 		}
 	}
-	return m.validateDocFacts()
+	return m.readDocFacts()
 }
 
 // State returns a copy of the movement for persistence and read models.

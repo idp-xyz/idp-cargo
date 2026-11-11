@@ -139,8 +139,10 @@ type AirMovement struct {
 }
 
 // AirDocFacts statuses: FINAL while the version is the movement's latest and the movement has not changed since;
-// SUPERSEDED once a change returned the movement to OPEN or a later version was finalized. DOC marks documents
-// built on a superseded version stale.
+// SUPERSEDED once a change returned the movement to OPEN (AirDocFactsSuperseded.v1) or a later version was
+// finalized. DOC marks documents built on a superseded version stale. FINAL speaks for AIR only: AIR does not yet
+// follow FUL's events, so a house takes FUL's newer facts when it is refreshed (by the API client, T6), and that
+// refresh supersedes the version.
 const (
 	DocFactsFinal      = "FINAL"
 	DocFactsSuperseded = "SUPERSEDED"
@@ -158,14 +160,15 @@ const MAWBSourceBookingConfirmation = "BOOKING_CONFIRMATION"
 // route, flights, totals with the chargeable weight computed on them, security status) and every live house
 // (HAWB, the FUL plan and evidence versions its facts came from, PHY's measures with the documented chargeable
 // weight, security status with the screening evidence, and its parts with their goods descriptions). Weights are
-// in GRM and volumes in CMQ; a zero volume is unknown. It carries no parties, contacts, charges, declared values
-// or handling codes: DOC takes parties from COM and ORG. SHA256 is the digest of the version's content as AIR
-// stored it, unchanged for ever.
+// in GRM and volumes in CMQ, every house's volume measured. It carries no parties, contacts, charges, declared
+// values or handling codes: DOC takes parties from COM and ORG. Content is the version's JSON exactly as AIR
+// published and stored it, and SHA256 its SHA-256, unchanged for ever; the fields below are read from it.
 type AirDocFacts struct {
 	TenantID               string
 	MovementID             string
 	Version                int
 	Status                 string // DocFactsFinal or DocFactsSuperseded
+	Content                []byte
 	SHA256                 string
 	FinalizedBy            string
 	FinalizedAt            time.Time
@@ -185,7 +188,7 @@ type AirDocFacts struct {
 	Flights                []DocFlight
 	Pieces                 int64
 	GrossWeight            kernel.Quantity // GRM
-	Volume                 kernel.Quantity // CMQ; zero when unknown
+	Volume                 kernel.Quantity // CMQ
 	ChargeableWeight       kernel.Quantity // GRM
 	ChargeableRule         string
 	SecurityStatus         string // SecuritySPX
@@ -210,7 +213,7 @@ type DocHouse struct {
 	Basis            string // BasisReceived or BasisTendered
 	Pieces           int64
 	GrossWeight      kernel.Quantity // GRM
-	Volume           kernel.Quantity // CMQ; zero when unknown
+	Volume           kernel.Quantity // CMQ
 	ChargeableWeight kernel.Quantity // GRM
 	SecurityStatus   string          // SecuritySPX
 	Screenings       []Screening

@@ -65,7 +65,8 @@ func TestTheModelEmitsThePublishedEventTypes(t *testing.T) {
 	}
 	measured := plan(2, "C-1", "PLANNED")
 	measured.EvidenceVersion, measured.MeasuredBasis, measured.MeasuredPieces, measured.Security = 1, "TENDERED", 2, "CLEARED"
-	measured.MeasuredWeight, measured.Parts[0].GoodsDescription = measured.GrossWeight, "Spare parts"
+	measured.MeasuredWeight, measured.MeasuredVolume, measured.Parts[0].GoodsDescription = measured.GrossWeight, kernel.Quantity{Unit: "MTQ", Amount: 1},
+		"Spare parts"
 	measured.Screenings = []domain.Screening{{LotID: "L-1", Outcome: "PASSED", Screener: "PVG security", Method: "XRY", Reference: "X-1", ScreenedAt: at}}
 	m, err := domain.OpenMovement("T", "AM-1", "C-1", booking(1), "ops", at)
 	if err != nil {
@@ -81,7 +82,7 @@ func TestTheModelEmitsThePublishedEventTypes(t *testing.T) {
 	}
 	published := map[string]bool{api.AirMovementOpened: true, api.FlightSegmentsLinked: true, api.MawbAssigned: true, api.MawbVoided: true,
 		api.HouseWaybillAssociated: true, api.HouseWaybillFactsRefreshed: true, api.HouseWaybillAssociationEnded: true, api.AirMovementCancelled: true,
-		api.HawbSeriesRegistered: true, api.AirDocFactsFinalized: true}
+		api.HawbSeriesRegistered: true, api.AirDocFactsFinalized: true, api.AirDocFactsSuperseded: true}
 	emitted := map[string]bool{}
 	for _, e := range append(m.Pending(), s.Pending()...) {
 		if !published[e.Type] {

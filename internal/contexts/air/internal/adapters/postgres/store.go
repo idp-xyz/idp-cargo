@@ -107,12 +107,12 @@ type (
 		ScreenedAt  time.Time `json:"screened_at"`
 	}
 	docFactsRow struct {
-		VersionNo   int             `json:"version_no"`
-		Content     json.RawMessage `json:"content"`
-		SHA256      string          `json:"content_sha256"`
-		FinalizedBy string          `json:"finalized_by"`
-		FinalizedAt time.Time       `json:"finalized_at"`
-		EnteredAt   time.Time       `json:"entered_at"`
+		VersionNo   int       `json:"version_no"`
+		Content     string    `json:"content"` // the JSON as published, kept as text so that its bytes keep their digest
+		SHA256      string    `json:"content_sha256"`
+		FinalizedBy string    `json:"finalized_by"`
+		FinalizedAt time.Time `json:"finalized_at"`
+		EnteredAt   time.Time `json:"entered_at"`
 	}
 )
 
@@ -246,11 +246,8 @@ func readMovement(ctx context.Context, q queryRower, tenant air.TenantID, id air
 		st.Entries = append(st.Entries, entry)
 	}
 	for _, d := range dr {
-		v := air.DocFactsVersion{No: d.VersionNo, SHA256: d.SHA256, By: d.FinalizedBy, At: utc(d.FinalizedAt), EnteredAt: utc(d.EnteredAt)}
-		if err = json.Unmarshal(d.Content, &v.Facts); err != nil {
-			return nil, 0, fmt.Errorf("doc facts version %d of %s: %w", d.VersionNo, id, err)
-		}
-		st.DocFacts = append(st.DocFacts, v)
+		st.DocFacts = append(st.DocFacts, air.DocFactsVersion{No: d.VersionNo, Content: []byte(d.Content), SHA256: d.SHA256, By: d.FinalizedBy,
+			At: utc(d.FinalizedAt), EnteredAt: utc(d.EnteredAt)})
 	}
 	m, err := air.RestoreMovement(st)
 	return m, revision, err
@@ -284,7 +281,7 @@ func (s MovementStore) Insert(ctx context.Context, m *air.Movement) (int64, erro
 	if err != nil {
 		return 0, err
 	}
-	return revision, s.writeAdded(ctx, q, m)
+	return revision, s.writeAdded(ctx, q, m, revision)
 }
 
 // Save writes the state and what the movement added or ended since it was loaded, if the stored revision is
@@ -309,10 +306,12 @@ func (s MovementStore) Save(ctx context.Context, m *air.Movement, expected int64
 	if err != nil {
 		return 0, err
 	}
-	return revision, s.writeAdded(ctx, q, m)
+	return revision, s.writeAdded(ctx, q, m, revision)
 }
 
-func (s MovementStore) writeAdded(ctx context.Context, q bentopg.Executor, m *air.Movement) error {
+// writeAdded writes what the movement added or ended; a doc facts version names the movement revision the
+// transaction writes, which the commit checks hold a FINAL movement to.
+func (s MovementStore) writeAdded(ctx context.Context, q bentopg.Executor, m *air.Movement, revision int64) error {
 	st := m.State()
 	exec := func(sql string, args ...any) error {
 		_, err := q.Exec(ctx, sql, append([]any{string(st.TenantID), string(st.MovementID)}, args...)...)
@@ -377,12 +376,8 @@ func (s MovementStore) writeAdded(ctx context.Context, q bentopg.Executor, m *ai
 		}
 	}
 	for _, v := range m.AddedDocFacts() {
-		content, err := json.Marshal(v.Facts)
-		if err != nil {
-			return err
-		}
-		if err = exec(`INSERT INTO cargo_air.air_doc_facts_version (tenant_id,movement_id,version_no,content,content_sha256,finalized_by,finalized_at,
-            entered_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, v.No, content, v.SHA256, v.By, v.At, v.EnteredAt); err != nil {
+		if err := exec(`INSERT INTO cargo_air.air_doc_facts_version (tenant_id,movement_id,version_no,content,content_sha256,movement_revision,finalized_by,
+            finalized_at,entered_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, v.No, string(v.Content), v.SHA256, revision, v.By, v.At, v.EnteredAt); err != nil {
 			return err
 		}
 	}

@@ -256,7 +256,8 @@ func screenings(in []domain.Screening) []api.Screening {
 
 func docFactsView(tenant string, v domain.DocFactsVersion, current bool) api.AirDocFacts {
 	f := v.Facts
-	out := api.AirDocFacts{TenantID: tenant, MovementID: f.MovementID, Version: v.No, Status: api.DocFactsSuperseded, SHA256: v.SHA256,
+	out := api.AirDocFacts{TenantID: tenant, MovementID: f.MovementID, Version: v.No, Status: api.DocFactsSuperseded,
+		Content: append([]byte(nil), v.Content...), SHA256: v.SHA256,
 		FinalizedBy: v.By, FinalizedAt: v.At, ConsolidationID: f.ConsolidationID, OperatingLegalEntityID: f.OperatingLegalEntityID,
 		AirlinePartyID: f.Airline.PartyID, AirlinePartyRevision: f.Airline.PartyRevision, AirlineDesignator: f.Airline.Designator,
 		AWBPrefix: f.Airline.AWBPrefix, MAWB: f.MAWB, MAWBSource: f.MAWBSource, BookingID: f.BookingID, CapacityVersion: f.CapacityVersion,

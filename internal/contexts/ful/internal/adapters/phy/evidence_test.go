@@ -29,7 +29,8 @@ func TestEvidenceIsSummedAsFULKeepsIt(t *testing.T) {
 	got := phyapi.PhysicalLoadEvidence{TenantID: "T", ShipmentID: "SH-1",
 		Lots: []phyapi.LotEvidence{
 			{LotID: "L-1", Completed: true, ReceivedPacks: 4, Measurement: phyapi.Measurement{Version: 2, GrossWeight: kg(200), Volume: m3(1)},
-				Screening: phyapi.Screening{ResultNo: 1, Outcome: phyapi.ScreeningPassed, Screener: "PVG security", Method: "XRAY", Reference: "AQ-1", RecordedAt: at}},
+				Screening: phyapi.Screening{ResultNo: 1, Outcome: phyapi.ScreeningPassed, Screener: "PVG security", Method: "XRAY", Reference: "AQ-1",
+					Evidence: phyapi.Evidence{Source: "PVG-SECURITY", Reference: "AQ-1", OccurredAt: at.Add(-time.Hour)}, RecordedAt: at}},
 			{LotID: "L-2", Completed: true, ReceivedPacks: 2, Measurement: phyapi.Measurement{Version: 1, GrossWeight: kg(110), Volume: m3(2)},
 				Screening: phyapi.Screening{ResultNo: 1, Outcome: phyapi.ScreeningNotRequired, Screener: "PVG security", Method: "EXEMPT", Reference: "AQ-2",
 					RecordedAt: at}, OpenDiscrepancies: []phyapi.Discrepancy{{DiscrepancyNo: 1}}},
@@ -42,7 +43,7 @@ func TestEvidenceIsSummedAsFULKeepsIt(t *testing.T) {
 	e, err := Evidence{PHY: evidenceStub{got: got}}.Evidence(context.Background(), "T", "SH-1", "C-1", true)
 	want := ful.LoadEvidence{Lots: 2, ReceiptComplete: true, Received: ful.CargoScope{Packs: 6, GrossWeight: kg(310), Volume: m3(3)},
 		ConsolidationID: "C-1", Tendered: ful.CargoScope{Packs: 6, GrossWeight: kg(312), Volume: m3(3)}, Departed: 6, Security: ful.SecurityCleared,
-		OpenDiscrepancies: 2, Screenings: []ful.Screening{{LotID: "L-1", Outcome: "PASSED", Screener: "PVG security", Method: "XRAY", Reference: "AQ-1", ScreenedAt: at},
+		OpenDiscrepancies: 2, Screenings: []ful.Screening{{LotID: "L-1", Outcome: "PASSED", Screener: "PVG security", Method: "XRAY", Reference: "AQ-1", ScreenedAt: at.Add(-time.Hour)},
 			{LotID: "L-2", Outcome: "NOT_REQUIRED", Screener: "PVG security", Method: "EXEMPT", Reference: "AQ-2", ScreenedAt: at}}}
 	if err != nil || !reflect.DeepEqual(e, want) {
 		t.Fatalf("summed:\n%+v\nwant\n%+v (%v)", e, want, err)

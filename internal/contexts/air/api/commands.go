@@ -103,10 +103,11 @@ type EndHouseWaybillAssociation struct {
 // FinalizeAirDocFacts finalizes the movement's facts for DOC as the next version of AirDocFacts v1 and makes the
 // movement FINAL. AIR first reads FUL's AirOperationPlan v1 of every live house (T3): each must still report the
 // house attached with the plan version and measures AIR froze (else refresh or end it first). The movement needs
-// at least one live house, and every house PHY's measures (basis RECEIVED or TENDERED), screening cleared with the
-// lots' screening evidence (security status SPX), the goods description of every part, and a departure window
-// that contains the first flight's ETD. Any later change to the movement (flights, houses) returns it to OPEN;
-// the version stays as published and is superseded by the next finalization. The receipt names the version.
+// at least one live house, and every house PHY's measures (basis RECEIVED or TENDERED) with a measured volume,
+// screening cleared with the lots' screening evidence (security status SPX), the goods description of every part,
+// and a departure window that contains the first flight's ETD. Any later change to the movement (flights, houses)
+// returns it to OPEN and supersedes the version, which stays as published; the next finalization publishes the
+// next version. The receipt names the version.
 type FinalizeAirDocFacts struct {
 	CommandID        string
 	TenantID         string

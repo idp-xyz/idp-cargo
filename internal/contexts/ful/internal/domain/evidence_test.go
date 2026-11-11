@@ -119,3 +119,21 @@ func TestExecutionStatusIsDerived(t *testing.T) {
 		}
 	}
 }
+
+// Evidence without screenings keeps the digest FUL V0.4 (V2.35) gave it, so versions recorded before FUL kept
+// screenings, and SEA shipments, are not recorded again; screenings, when present, are part of it.
+func TestEvidenceDigestKeepsItsV235Form(t *testing.T) {
+	kg := func(n int64) kernel.Quantity { return kernel.Quantity{Unit: "KGM", Amount: n} }
+	e := LoadEvidence{Lots: 1, ReceiptComplete: true, Received: CargoScope{Packs: 6, GrossWeight: kg(303), Volume: kernel.Quantity{Unit: "MTQ", Amount: 2}},
+		ConsolidationID: "C-1", Tendered: CargoScope{Packs: 6, GrossWeight: kg(318), Volume: kernel.Quantity{Unit: "MTQ", Amount: 1}}, Departed: 6,
+		Security: SecurityCleared}
+	const v235 = "6bbcd9d5d2d7d67ee35c736129783a72d9b16c4439716c3b4962c8aedcb14605" // computed by e610b4f's code
+	if got := e.Digest(); got != v235 {
+		t.Fatalf("digest %s, V2.35 gave %s", got, v235)
+	}
+	e.Screenings = []Screening{{LotID: "L-1", Outcome: "PASSED", Screener: "PVG security", Method: "XRY", Reference: "AQ-1",
+		ScreenedAt: time.Date(2026, 11, 10, 8, 0, 0, 0, time.UTC)}}
+	if e.Digest() == v235 {
+		t.Fatal("screenings are part of the digest")
+	}
+}

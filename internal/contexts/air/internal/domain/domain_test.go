@@ -1,7 +1,6 @@
 package domain
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand/v2"
@@ -366,6 +365,7 @@ func TestFinalizeDocFacts(t *testing.T) {
 		{"pending", func(p *Plan) { p.Security = SecurityPending }},
 		{"no evidence", func(p *Plan) { p.Screenings = nil }},
 		{"failed lot", func(p *Plan) { p.Screenings = append(p.Screenings, screened("L-2", "FAILED", "X-2")) }},
+		{"no volume", func(p *Plan) { p.MeasuredVolume = kernel.Quantity{} }},
 	} {
 		p := ready("SH-1")
 		tc.change(&p)
@@ -401,7 +401,7 @@ func TestFinalizeDocFacts(t *testing.T) {
 	}
 	v, current, ok := m.LatestDocFacts()
 	f := v.Facts
-	if !ok || !current || m.State().State != StateFinal || v.No != 1 || v.SHA256 != f.SHA256() || v.By != "ops-2" {
+	if !ok || !current || m.State().State != StateFinal || v.No != 1 || v.SHA256 != Digest(v.Content) || v.By != "ops-2" {
 		t.Fatalf("version 1: %+v %v %v", v, current, ok)
 	}
 	if f.MAWB != "781-12345675" || f.MAWBSource != MAWBSourceBooking || f.SecurityStatus != SecuritySPX || f.Pieces != 12 || f.GrossWeightGrams != 636_000 ||
@@ -424,26 +424,37 @@ func TestFinalizeDocFacts(t *testing.T) {
 	if err := m.Cancel("no cargo", "ops-2", at.Add(time.Minute)); !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("cancel a FINAL movement: %v", err)
 	}
-	// stored content round-trips to the same digest; a changed one or a FINAL movement changed since does not restore
-	blob, _ := json.Marshal(f)
-	var back DocFacts
-	if err := json.Unmarshal(blob, &back); err != nil || back.SHA256() != v.SHA256 {
-		t.Fatalf("round trip: %v", err)
-	}
-	if _, err := RestoreMovement(m.State()); err != nil {
+	// a stored version is read back from its published bytes alone, whatever the facts type renders today; bytes
+	// that do not match their digest do not restore; a FINAL movement whose houses are not those of its latest
+	// version restores, and the version reads as not current
+	stored := m.State()
+	stored.DocFacts = []DocFactsVersion{{No: 1, Content: v.Content, SHA256: v.SHA256, By: v.By, At: v.At}}
+	back, err := RestoreMovement(stored)
+	if err != nil {
 		t.Fatal(err)
 	}
-	tampered := m.State()
-	tampered.DocFacts = append([]DocFactsVersion(nil), tampered.DocFacts...)
-	tampered.DocFacts[0].Facts.Houses = tampered.DocFacts[0].Facts.Houses[:1]
-	if _, err := RestoreMovement(tampered); err == nil {
-		t.Fatal("content that does not match its digest")
+	if rv, current, _ := back.LatestDocFacts(); !current || rv.Facts.Houses[1].Parts[0].GoodsDescription != "Auto parts, cartons" || rv.Facts.MAWB != f.MAWB {
+		t.Fatalf("read back: %+v", rv.Facts)
+	}
+	extended := stored
+	extended.DocFacts = []DocFactsVersion{{No: 1, Content: append([]byte(`{"future_field":1,`), v.Content[1:]...), By: v.By, At: v.At}}
+	extended.DocFacts[0].SHA256 = Digest(extended.DocFacts[0].Content)
+	if _, err = RestoreMovement(extended); err != nil {
+		t.Fatalf("content with a field this code does not know: %v", err)
+	}
+	tampered := stored
+	tampered.DocFacts = []DocFactsVersion{{No: 1, Content: append(append([]byte(nil), v.Content[:len(v.Content)-1]...), ' ', '}'), SHA256: v.SHA256,
+		By: v.By, At: v.At}}
+	if _, err = RestoreMovement(tampered); err == nil {
+		t.Fatal("bytes that do not match their digest")
 	}
 	drifted := m.State()
 	drifted.Entries = append([]Entry(nil), drifted.Entries...)
-	drifted.Entries[len(drifted.Entries)-1].Facts.Pieces = 5
-	if _, err := RestoreMovement(drifted); err == nil {
-		t.Fatal("FINAL with houses that changed since")
+	drifted.Entries[len(drifted.Entries)-1].PlanVersion = 9
+	if d, err := RestoreMovement(drifted); err != nil {
+		t.Fatal(err)
+	} else if _, current, _ := d.LatestDocFacts(); current {
+		t.Fatal("a version that no longer describes the houses is not current")
 	}
 	// a new screening reference is a change: the movement is OPEN again and version 1 superseded
 	rescreened := ready("SH-2")
@@ -453,6 +464,9 @@ func TestFinalizeDocFacts(t *testing.T) {
 	}
 	if _, current, _ := m.LatestDocFacts(); current || m.State().State != StateOpen {
 		t.Fatal("a change returns the movement to OPEN")
+	}
+	if p := m.Pending(); p[len(p)-2].Type != eventSuperseded || p[len(p)-2].FactsVersion != 1 || p[len(p)-1].Type != eventRefreshed {
+		t.Fatalf("superseded, then refreshed: %+v", p[len(p)-2:])
 	}
 	if err := m.Finalize([]Plan{ready("SH-1"), rescreened}, "ops-2", at.Add(3*time.Minute)); err != nil {
 		t.Fatal(err)

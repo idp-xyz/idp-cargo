@@ -65,8 +65,12 @@ func (e Evidence) Evidence(ctx context.Context, tenant ful.TenantID, shipment fu
 			receivedWeight.unknown, receivedVolume.unknown = true, true
 		}
 		if s := lot.Screening; s.ResultNo > 0 {
+			screened := s.Evidence.OccurredAt // when the screening party screened, which PHY records no later than the result
+			if screened.IsZero() {
+				screened = s.RecordedAt
+			}
 			out.Screenings = append(out.Screenings, ful.Screening{LotID: lot.LotID, Outcome: s.Outcome, Screener: s.Screener, Method: s.Method,
-				Reference: s.Reference, ScreenedAt: s.RecordedAt.UTC()})
+				Reference: s.Reference, ScreenedAt: screened.UTC()})
 		}
 		switch lot.Screening.Outcome {
 		case phyapi.ScreeningFailed:

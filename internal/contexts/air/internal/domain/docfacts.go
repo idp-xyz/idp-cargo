@@ -28,7 +28,9 @@ const MAWBSourceBooking = "BOOKING_CONFIRMATION"
 
 // DocFacts is the content of AirDocFacts v1 as published: the master with its airline, MAWB, route, flights,
 // totals and security status, and every live house in HAWB order. It carries no parties, contacts, charges or declared
-// values (DOC takes parties from COM and ORG).
+// values (DOC takes parties from COM and ORG). Its JSON form is the published contract and is frozen: a change is
+// a new contract version. A version keeps the exact bytes it was published with; they, not this type, are what
+// its SHA-256 covers, so stored versions stay readable whatever this code becomes.
 type DocFacts struct {
 	Version                int         `json:"version"`
 	MovementID             string      `json:"movement_id"`
@@ -99,16 +101,17 @@ type DocPart struct {
 	GoodsDescription  string `json:"goods_description"`
 }
 
-// SHA256 is the SHA-256 of the facts' canonical JSON.
-func (f DocFacts) SHA256() string {
-	blob, _ := json.Marshal(f)
-	sum := sha256.Sum256(blob)
+// Digest is the SHA-256 of a version's published bytes, in hexadecimal.
+func Digest(content []byte) string {
+	sum := sha256.Sum256(content)
 	return hex.EncodeToString(sum[:])
 }
 
-// DocFactsVersion is one immutable published version.
+// DocFactsVersion is one immutable published version: Content is the JSON as published, SHA256 its digest, and
+// Facts the content read back.
 type DocFactsVersion struct {
 	No        int
+	Content   []byte
 	Facts     DocFacts
 	SHA256    string
 	By        string
@@ -139,7 +142,8 @@ func (m *Movement) Finalize(current []Plan, by string, at time.Time) error {
 			return fmt.Errorf("%w: FUL's plan of %s was not read", ErrNotFinalizable, h.ShipmentID)
 		}
 		if err := m.admits(p); err != nil {
-			return fmt.Errorf("%w: STALE_HOUSE: %s %s: %v; end its association first", ErrNotFinalizable, h.HAWB, h.ShipmentID, err)
+			return fmt.Errorf("%w: STALE_HOUSE: FUL no longer reports %s %s as AIR froze it (%v); once FUL's plan is confirmed, refresh the house, or end its association",
+				ErrNotFinalizable, h.HAWB, h.ShipmentID, err)
 		}
 		if f, err := facts(p); err != nil || p.PlanVersion != h.PlanVersion || !sameMeasures(f, h.Facts) {
 			return fmt.Errorf("%w: STALE_HOUSE: FUL reports newer facts of %s %s; refresh it first", ErrNotFinalizable, h.HAWB, h.ShipmentID)
@@ -148,8 +152,14 @@ func (m *Movement) Finalize(current []Plan, by string, at time.Time) error {
 		switch {
 		case f.Basis == BasisPlanned:
 			return fmt.Errorf("%w: %s %s is on planned quantities; FUL relays PHY's measures first", ErrNotFinalizable, h.HAWB, h.ShipmentID)
-		case f.Security != SecurityCleared || len(f.Screenings) == 0:
-			return fmt.Errorf("%w: %s %s is not cleared by screening (%q)", ErrNotFinalizable, h.HAWB, h.ShipmentID, f.Security)
+		case f.Security != SecurityCleared:
+			return fmt.Errorf("%w: %s %s is not cleared by screening (security %q)", ErrNotFinalizable, h.HAWB, h.ShipmentID, f.Security)
+		case len(f.Screenings) == 0:
+			return fmt.Errorf("%w: %s %s has no screening evidence; FUL records PHY's evidence again and the house is refreshed first", ErrNotFinalizable,
+				h.HAWB, h.ShipmentID)
+		case f.Volume.Amount < 1:
+			return fmt.Errorf("%w: %s %s has no measured volume, so neither it nor the master has a chargeable weight; PHY measures it first",
+				ErrNotFinalizable, h.HAWB, h.ShipmentID)
 		case m.WindowDrift(h):
 			return fmt.Errorf("%w: WINDOW_DRIFT: %s %s does not depart within its window; FUL re-plans it first", ErrNotFinalizable, h.HAWB, h.ShipmentID)
 		}
@@ -160,8 +170,8 @@ func (m *Movement) Finalize(current []Plan, by string, at time.Time) error {
 		}
 		for _, p := range f.Parts {
 			if blank(p.GoodsDescription) {
-				return fmt.Errorf("%w: %s %s has no goods description for %s; FUL re-plans it from COM first", ErrNotFinalizable, h.HAWB, h.ShipmentID,
-					p.ObligationID)
+				return fmt.Errorf("%w: %s %s has no goods description for %s (FUL planned the part before it kept COM's description)",
+					ErrNotFinalizable, h.HAWB, h.ShipmentID, p.ObligationID)
 			}
 		}
 	}
@@ -169,7 +179,12 @@ func (m *Movement) Finalize(current []Plan, by string, at time.Time) error {
 		return err
 	}
 	facts := m.docFacts(len(m.state.DocFacts) + 1)
-	m.state.DocFacts = append(m.state.DocFacts, DocFactsVersion{No: facts.Version, Facts: facts, SHA256: facts.SHA256(), By: by, At: at.UTC()})
+	content, err := json.Marshal(facts)
+	if err != nil {
+		return err
+	}
+	m.state.DocFacts = append(m.state.DocFacts, DocFactsVersion{No: facts.Version, Content: content, Facts: facts, SHA256: Digest(content), By: by,
+		At: at.UTC()})
 	m.state.State = StateFinal
 	m.record(eventFinalized, at, "", 0, "")
 	m.pending[len(m.pending)-1].FactsVersion = facts.Version
@@ -211,46 +226,77 @@ func (m *Movement) docFacts(version int) DocFacts {
 	return f
 }
 
-// reopen returns a FINAL movement to OPEN on any change: the published version stays as it was and the next
-// finalization publishes the next one.
-func (m *Movement) reopen() {
+// reopen returns a FINAL movement to OPEN on any change and says so (AirDocFactsSuperseded.v1): the published
+// version stays as it was, DOC marks documents built on it stale, and the next finalization publishes the next one.
+func (m *Movement) reopen(at time.Time) {
 	if m.state.State == StateFinal {
 		m.state.State = StateOpen
+		m.record(eventSuperseded, at, "", 0, "")
+		m.pending[len(m.pending)-1].FactsVersion = len(m.state.DocFacts)
 	}
 }
 
 // open reports whether the movement takes changes: OPEN, or FINAL (which a change returns to OPEN).
 func (m *Movement) open() bool { return m.state.State == StateOpen || m.state.State == StateFinal }
 
-func (m *Movement) validateDocFacts() error {
-	for i, v := range m.state.DocFacts {
-		if v.No != i+1 || v.Facts.Version != v.No || v.Facts.MovementID != string(m.state.MovementID) || v.SHA256 != v.Facts.SHA256() ||
-			blank(v.By) || v.At.IsZero() || (i > 0 && v.At.Before(m.state.DocFacts[i-1].At)) {
+// readDocFacts reads each stored version's content back from its published bytes, which must match the digest.
+// Only the bytes are checked, never a rendering by today's code, so a stored version always reads.
+func (m *Movement) readDocFacts() error {
+	for i := range m.state.DocFacts {
+		v := &m.state.DocFacts[i]
+		var f DocFacts
+		if v.No != i+1 || len(v.Content) == 0 || Digest(v.Content) != v.SHA256 || json.Unmarshal(v.Content, &f) != nil {
+			return fmt.Errorf("doc facts version %d content", i+1)
+		}
+		v.Facts = f
+		if v.Facts.Version != v.No || v.Facts.MovementID != string(m.state.MovementID) || blank(v.By) || v.At.IsZero() ||
+			(i > 0 && v.At.Before(m.state.DocFacts[i-1].At)) {
 			return fmt.Errorf("doc facts version %d", i+1)
 		}
 	}
-	if n := len(m.state.DocFacts); m.state.State == StateFinal && (n == 0 || m.docFacts(n).SHA256() != m.state.DocFacts[n-1].SHA256) {
-		return fmt.Errorf("FINAL without its doc facts as they stand")
+	if m.state.State == StateFinal && len(m.state.DocFacts) == 0 {
+		return fmt.Errorf("FINAL without doc facts")
 	}
 	return nil
+}
+
+// describes reports whether a version names the movement's current booking link and exactly its live houses at
+// their plan and evidence versions. The database holds a FINAL movement to its latest version; this guards reads.
+func (m *Movement) describes(f DocFacts) bool {
+	link, houses := m.Current(), m.Houses()
+	if f.BookingID != link.BookingID || f.CapacityVersion != link.CapacityVersion || len(f.Houses) != len(houses) {
+		return false
+	}
+	type key struct {
+		shipment, hawb string
+		plan, evidence int
+	}
+	live := map[key]bool{}
+	for _, h := range houses {
+		live[key{h.ShipmentID, h.HAWB, h.PlanVersion, h.Facts.Evidence}] = true
+	}
+	for _, h := range f.Houses {
+		if !live[key{h.ShipmentID, h.HAWB, h.PlanVersion, h.EvidenceVersion}] {
+			return false
+		}
+	}
+	return true
 }
 
 // LatestDocFacts returns the latest published version and whether it is current: the movement is FINAL and has
 // not changed since. A version that is not current is SUPERSEDED for DOC.
 func (m *Movement) LatestDocFacts() (DocFactsVersion, bool, bool) {
-	n := len(m.state.DocFacts)
-	if n == 0 {
-		return DocFactsVersion{}, false, false
-	}
-	return m.state.DocFacts[n-1], m.state.State == StateFinal, true
+	return m.DocFactsVersion(len(m.state.DocFacts))
 }
 
 // DocFactsVersion returns a published version by number and whether it is current.
 func (m *Movement) DocFactsVersion(no int) (DocFactsVersion, bool, bool) {
-	if no < 1 || no > len(m.state.DocFacts) {
+	n := len(m.state.DocFacts)
+	if no < 1 || no > n {
 		return DocFactsVersion{}, false, false
 	}
-	return m.state.DocFacts[no-1], no == len(m.state.DocFacts) && m.state.State == StateFinal, true
+	v := m.state.DocFacts[no-1]
+	return v, no == n && m.state.State == StateFinal && m.describes(v.Facts), true
 }
 
 func sameScreenings(a, b []Screening) bool {
