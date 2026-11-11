@@ -54,6 +54,15 @@ internal/contexts/phy/          PHY bounded context (Physical Logistics); in V0.
   internal/adapters/ful/        a shipment's LoadIntent v1 from FUL (anticorruption layer)
   internal/adapters/reference/  routes resolved against the location reference data
   internal/integration/         PG16 tests with a stand-in for FUL, including attaches racing a close
+internal/contexts/air/          AIR bounded context (Air Freight); in V0.1 the air movement of an air consolidation: MAWB, flights and house waybills
+  module.go                     assembles AIR; BOOK's CarrierBooking v1 and FUL's AirOperationPlan v1 are passed in as query ports
+  api/                          AIR's contract: movement, house waybill and HAWB series commands, queries, events, error kinds, Authorizer port
+  internal/domain/              AirMovement: booking links with flights, MAWB, immutable house waybill entries; HawbSeries
+  internal/application/         command and query use cases, the HAWB a house takes, and their ports
+  internal/adapters/postgres/   movements, series, the HAWB register, receipts and Outbox in cargo_air
+  internal/adapters/book/       the booking's MAWB, airline and flights from BOOK (anticorruption layer)
+  internal/adapters/ful/        a house's plan and consolidation from FUL (anticorruption layer)
+  internal/integration/         PG16 tests with stand-ins for BOOK and FUL, including concurrent draws from one series
 internal/contexts/book/         BOOK bounded context (Carrier Booking); in V0.1 bookings for consolidations, recorded as sent and answered
   module.go                     assembles BOOK; ORG's query side and the location reference data are passed in
   api/                          BOOK's contract: booking commands, CarrierBooking v1, events, error kinds, Authorizer port
@@ -74,6 +83,7 @@ migrations/com/                 COM migrations 000001–000008
 migrations/ful/                 FUL migrations 000001–000004
 migrations/phy/                 PHY migrations, starting with 000001_phy_consolidation_membership
 migrations/book/                BOOK migrations, starting with 000001_book_carrier_bookings
+migrations/air/                 AIR migrations, starting with 000001_air_movement_waybills
 migrations/ref/                 reference data: location tables and the S1 location subset
 migrations/manifest/            order in which the contexts' migrations run
 tools/dependency-check/         package rules of the structure baseline; cross-context allowlist generated from the Context Map
@@ -81,7 +91,7 @@ tools/dependency-check/         package rules of the structure baseline; cross-c
 ```
 
 - Other contexts, transports, cross-context processes and the AI capability layer import `internal/contexts/org/api` only; the compiler rejects imports of `internal/contexts/org/internal/...` from outside ORG, and `tools/dependency-check` rejects the rest of what the layering and the Context Map do not allow.
-- Further contexts (AIR, SEA, DOC, …), `internal/processes/` and `internal/ai/` get directories when their first real code lands; no empty scaffolding.
+- Further contexts (SEA, DOC, CUS, …), `internal/processes/` and `internal/ai/` get directories when their first real code lands; no empty scaffolding.
 - Design documents, review reports and evidence logs are kept in the IDP-Cargo master archive and are not published in this repository.
 
 ## Status of evidence
@@ -191,6 +201,14 @@ GitHub Actions, `ubuntu-24.04` runner, workflow `org-pg16-contract.yml`, on ever
   - Migrations `org/000010_org_carrier_codes` and `book/000001_book_carrier_bookings`. The database keeps request versions, steps, capacity and allocation versions immutable, lets a reference only stop being live, never changes an ended booking, and checks at commit that the pointers name the latest versions, that exactly one allocation is active on the current capacity while the booking is in force, and that an air consolidation's confirmed booking has its MAWB number.
   - Tests: the booking rules and a property test of random command sequences (the status follows the steps, at most one allocation active, never two MAWB numbers); PG16 tests with stand-ins for ORG, writes past BOOK refused, eight bookings racing for one MAWB number (one wins) and eight reassignments of one booking (one wins); a PG16 slice with ORG, PHY and BOOK in which an airline gets its codes and role, an air consolidation is booked and confirmed with its MAWB, found again by the MAWB, and a co-load needs a CO_LOADER.
   - Not yet: AIR (MAWB/HAWB, linking the booking's flights), electronic booking channels, booking contacts and their provision records (P5), direct bookings for a shipment, and FUL's capacity links.
+- V2.33 implements AIR V0.1 and FUL's AirOperationPlan v1: the master and house air waybills of an air consolidation, step 3 of the N1 forwarder daily loop (PHY tactical candidate V0.1, backlog PB5 without the document facts), with the decisions N1-PHY OD-2, OD-7, OD-8, OD-10 and N1-HAWB of 2026-11-10.
+  - `OpenAirMovement` opens the air movement of a consolidation from its booking: BOOK must report the booking AIR_CONSOL, in force with confirmed capacity, allocated to the consolidation and holding its MAWB number. The movement takes the airline with its IATA designator and AWB prefix, the operating legal entity, the airport route, the MAWB and the flights from CarrierBooking v1 (OD-7). One open movement per consolidation and one per MAWB. `LinkCarrierBooking` takes a newer capacity version of the same booking (a retimed flight under the same MAWB): the flights are replaced and kept as superseded, the houses stay. Another airline or MAWB is another movement.
+  - `AssociateHouseWaybill` associates a house: FUL's AirOperationPlan v1 must report the shipment PLANNED by AIR, attached to the consolidation (membership reaches AIR through FUL, OD-2), on the movement's route (OD-8) and of its legal entity (OD-10). The house takes the HAWB number it holds under the legal entity, the one given, or the next of the entity's series (`RegisterHawbSeries`), drawn under the series' lock; a number belongs to one shipment for good and moves with it to another movement (N1-HAWB). Its planned pieces, gross weight and volume and its documented chargeable weight (6,000 cm3 per kg, rounded up to the half kilogram) are frozen; master totals and the master chargeable weight are computed on the live houses.
+  - `RefreshHouseWaybillFacts` takes a newer FUL plan version into a new entry with the same HAWB; `EndHouseWaybillAssociation` ends an entry once FUL reports the shipment detached, transferred or cancelled; `CancelAirMovement` cancels a movement without houses and voids its MAWB. A house whose departure window no longer contains the first flight's ETD is flagged.
+  - Queries: `GetAirMovement`, `FindAirMovementByMAWB`, `FindHouseWaybill`, `GetHawbSeries`. FUL adds `GetAirOperationPlan` (AirOperationPlan v1 with the PHY membership revision of the attachment).
+  - Migration `air/000001_air_movement_waybills`. The database keeps links, flights, parts and the HAWB register immutable, lets a series only move forward and an entry end only once, never changes a cancelled movement, and checks at commit that a live entry belongs to an open movement and carries its shipment's registered HAWB, and that a cancelled movement keeps no house.
+  - Tests: the chargeable weight, movement and house rules in the domain and a property test of random associations, refreshes and ends; PG16 tests with stand-ins for BOOK and FUL, writes past AIR refused, eight houses drawing from one series at once (eight numbers in order, none lost) and eight movements racing for one consolidation (one wins); a PG16 slice with every context from two customers' orders to their houses under the airline's MAWB, a retimed flight, and a house rolled to another consolidation's MAWB with its HAWB.
+  - Not yet: AirDocFacts v1 for DOC (FINAL needs PHY's measures and screening, backlog PB3), carrier status facts, split bookings across flights, and reference data for chargeable-weight rules (PB8).
 
 Bento testkit contracts:
 

@@ -140,6 +140,41 @@ type LoadIntent struct {
 	MembershipEntryNo int
 }
 
+// AirOperationPlan is AirOperationPlan v1 (relationship 9, FUL -> AIR): a shipment's plan as AIR needs it to
+// associate the house with the master waybill of its consolidation: the plan with its parts and package types,
+// and the consolidation FUL recorded the shipment attached to, with the PHY membership entry and revision
+// (decision N1-PHY OD-2, option A: membership reaches AIR through FUL). Quantities are planned; the measures PHY
+// verifies are relayed here once PHY receives cargo. It carries no names.
+type AirOperationPlan struct {
+	TenantID           string
+	ShipmentID         string
+	Revision           int64
+	Status             string
+	PlanVersion        int
+	CustomerPartyID    string
+	LegalEntityID      string
+	TransportMode      string
+	Origin             kernel.LocationCode
+	Destination        kernel.LocationCode
+	OriginIATA         string
+	DestinationIATA    string
+	LocationEdition    string
+	DepartureWindow    kernel.ValidityInterval
+	Packs              int64
+	GrossWeight        kernel.Quantity
+	Volume             kernel.Quantity
+	Parts              []LoadIntentPart // none once cancelled
+	Stage              string
+	ConsolidationID    string // empty when FUL records no attachment on the stage
+	MembershipEntryNo  int
+	MembershipRevision int64
+}
+
+// AirOperationPlanQueries is FUL's AirOperationPlan v1 for AIR. An unknown shipment yields ErrNotFound.
+type AirOperationPlanQueries interface {
+	GetAirOperationPlan(ctx context.Context, q GetShipmentPlanSnapshot) (AirOperationPlan, error)
+}
+
 // LoadIntentQueries is FUL's LoadIntent v1 for PHY (FUL V0.4). An unknown shipment yields ErrNotFound.
 type LoadIntentQueries interface {
 	GetLoadIntent(ctx context.Context, q GetShipmentPlanSnapshot) (LoadIntent, error)
