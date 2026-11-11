@@ -193,3 +193,35 @@ func TestBoxesGrowWithTheirText(t *testing.T) {
 		t.Fatalf("a short shipper keeps the 96-point box")
 	}
 }
+
+// A header box with more lines than the page has room for continues after the cargo: nothing is drawn off the page
+// or over the execution box, and nothing is lost.
+func TestLongHeaderBoxesContinueAfterTheCargo(t *testing.T) {
+	r := house(2)
+	for i := range 70 {
+		r.Doc.Security.Screenings = append(r.Doc.Security.Screenings, doc.Screening{Screener: "PVG", Method: "XRAY", Reference: fmt.Sprintf("AQ-%03d", i),
+			ScreenedAt: t0})
+	}
+	r.Doc.HandlingInformation = strings.Repeat("Keep dry and away from heat, stow upright, do not stack more than two high. ", 12)
+	pdf, err := Renderer{}.Render(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, pages := structure(t, pdf)
+	s := string(pdf)
+	for i := range 70 {
+		if !strings.Contains(s, fmt.Sprintf("AQ-%03d", i)) {
+			t.Fatalf("screening AQ-%03d lost", i)
+		}
+	}
+	if pages < 2 || !strings.Contains(s, "(Security status \\(continued\\):)") || !strings.Contains(s, "(Handling information \\(continued\\):)") ||
+		!strings.Contains(s, "\\(continued after the cargo\\)") {
+		t.Fatalf("%d pages, continuation missing", pages)
+	}
+	// every text sits on the page
+	for _, m := range regexp.MustCompile(` (-?[0-9.]+) (-?[0-9.]+) Tm `).FindAllStringSubmatch(s, -1) {
+		if y, _ := strconv.ParseFloat(m[2], 64); y < 20 || y > PageHeight {
+			t.Fatalf("text at y %v", y)
+		}
+	}
+}

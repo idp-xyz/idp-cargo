@@ -72,6 +72,28 @@ const (
 	bottom    = 50.0  // nor below this on other pages
 )
 
+// Header boxes hold at most this many lines; the rest continues after the cargo, so the header always fits the first
+// page with room for the cargo table.
+const (
+	partyLinesMax = 12
+	routeLinesMax = 6
+	handlingMax   = 4
+)
+
+// overflow is a box's text that did not fit, continued after the cargo.
+type overflow struct{ label, text string }
+
+// clip keeps the lines of a box's text that fit in maxLines, ending with a pointer to the continuation when some do
+// not, and returns the rest.
+func clip(text string, w float64, maxLines int, label string, rest *[]overflow) string {
+	lines := wrap(text, w-8, boxText)
+	if len(lines) <= maxLines {
+		return text
+	}
+	*rest = append(*rest, overflow{label, strings.Join(lines[maxLines-1:], "\n")})
+	return strings.Join(lines[:maxLines-1], "\n") + "\n(continued after the cargo)"
+}
+
 // height is the height a box needs for its text, at least min.
 func height(w, min float64, text string) float64 {
 	return max(min, 21+float64(len(wrap(text, w-8, boxText)))*boxText*lineGap+2)
@@ -84,8 +106,10 @@ func box(p *Page, x, top, w, h float64, label, text string) {
 	p.Wrap(x+4, top-21, w-8, boxText, text)
 }
 
-// pair draws two boxes side by side as high as the taller needs, at least min, and returns the top below them.
-func pair(p *Page, x, top, w1, w2, min float64, label1, text1, label2, text2 string) float64 {
+// pair draws two boxes side by side as high as the taller needs, at least min, with at most maxLines each, and
+// returns the top below them.
+func pair(p *Page, x, top, w1, w2, min float64, maxLines int, label1, text1, label2, text2 string, rest *[]overflow) float64 {
+	text1, text2 = clip(text1, w1, maxLines, label1, rest), clip(text2, w2, maxLines, label2, rest)
 	h := max(height(w1, min, text1), height(w2, min, text2))
 	box(p, x, top, w1, h, label1, text1)
 	box(p, x+w1, top, w2, h, label2, text2)
@@ -117,29 +141,32 @@ func (Renderer) Render(r app.Rendering) ([]byte, error) {
 	if c.IssuerCapacity == "AGENT_OF_CARRIER" {
 		capacity = fmt.Sprintf("As agent of the carrier %s (prefix %s)", c.Airline.Designator, c.Airline.AWBPrefix)
 	}
-	top = pair(page, left, top, half, half, 96, "Shipper's name and address", partyLines(c.Shipper), "Issued by",
-		c.Issuer.Name+"\n"+capacity+"\n"+c.Issuer.Jurisdiction)
+	var rest []overflow
+	top = pair(page, left, top, half, half, 96, partyLinesMax, "Shipper's name and address", partyLines(c.Shipper), "Issued by",
+		c.Issuer.Name+"\n"+capacity+"\n"+c.Issuer.Jurisdiction, &rest)
 	notify := ""
 	if c.Notify != nil {
 		notify = partyLines(*c.Notify)
 	}
-	top = pair(page, left, top, half, half, 96, "Consignee's name and address", partyLines(c.Consignee), "Notify party", notify)
+	top = pair(page, left, top, half, half, 96, partyLinesMax, "Consignee's name and address", partyLines(c.Consignee), "Notify party", notify, &rest)
 	var flights []string
 	for _, f := range c.Flights {
 		flights = append(flights, fmt.Sprintf("%s %s-%s %s", f.Flight, f.From.IATA, f.To.IATA, f.ETD.In(chinaTime).Format("2006-01-02")))
 	}
-	airports := height(half, 40, strings.Join(flights, "\n"))
+	flown := clip(strings.Join(flights, "\n"), half, routeLinesMax, "Flights", &rest)
+	airports := height(half, 40, flown)
 	box(page, left, top, half/2, airports, "Airport of departure", c.Origin.IATA+"  "+c.Origin.Code)
 	box(page, left+half/2, top, half/2, airports, "Airport of destination", c.Destination.IATA+"  "+c.Destination.Code)
-	box(page, left+half, top, half, airports, "Flights", strings.Join(flights, "\n"))
+	box(page, left+half, top, half, airports, "Flights", flown)
 	top -= airports
 	security := c.Security.Status
 	for _, s := range c.Security.Screenings {
 		security += fmt.Sprintf("\n%s %s %s %s", s.Screener, s.Method, s.Reference, s.ScreenedAt.In(chinaTime).Format("2006-01-02 15:04"))
 	}
-	top = pair(page, left, top, half, half, 40, "Accounting information", "Freight "+c.PaymentIndicator, "Security status", security)
-	handling := height(width, 30, c.HandlingInformation)
-	box(page, left, top, width, handling, "Handling information", c.HandlingInformation)
+	top = pair(page, left, top, half, half, 40, routeLinesMax, "Accounting information", "Freight "+c.PaymentIndicator, "Security status", security, &rest)
+	handlingText := clip(c.HandlingInformation, width, handlingMax, "Handling information", &rest)
+	handling := height(width, 30, handlingText)
+	box(page, left, top, width, handling, "Handling information", handlingText)
 	top -= handling
 
 	// cargo
@@ -179,6 +206,12 @@ func (Renderer) Render(r app.Rendering) ([]byte, error) {
 	}
 	if c.Kind == string(doc.KindMAWB) {
 		write(left+4, 4, width-8, boxText, fmt.Sprintf("CONSOLIDATION AS PER ATTACHED MANIFEST: %d HOUSE(S)", len(c.Cargo.Lines)))
+	}
+	for _, o := range rest {
+		write(left+4, 8, width-8, boxText, o.label+" (continued):")
+		for _, line := range strings.Split(o.text, "\n") {
+			write(left+12, 0, width-16, boxText, line)
+		}
 	}
 	for i, k := range r.Contacts {
 		if i == 0 {
