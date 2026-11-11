@@ -69,6 +69,7 @@ var (
 	_ api.ConsolAttachmentCommands = (*Module)(nil)
 	_ api.Queries                  = (*Module)(nil)
 	_ api.LoadIntentQueries        = (*Module)(nil)
+	_ api.AirOperationPlanQueries  = (*Module)(nil)
 )
 
 // New assembles FUL. com answers which obligation versions a shipment may plan; the composition root
@@ -183,6 +184,11 @@ func (m *Module) GetLoadIntent(ctx context.Context, q api.GetShipmentPlanSnapsho
 	if err != nil {
 		return api.LoadIntent{}, err
 	}
+	return loadIntent(shipment, revision), nil
+}
+
+// loadIntent is LoadIntent v1 of a shipment read at a revision.
+func loadIntent(shipment *domain.Shipment, revision int64) api.LoadIntent {
 	st, plan := shipment.State(), shipment.Latest()
 	intent := api.LoadIntent{
 		TenantID: string(st.TenantID), ShipmentID: string(st.ShipmentID), Revision: revision, Status: string(st.Status),
@@ -204,7 +210,26 @@ func (m *Module) GetLoadIntent(ctx context.Context, q api.GetShipmentPlanSnapsho
 	if a, ok := shipment.Attachment(domain.StageMain); ok {
 		intent.ConsolidationID, intent.MembershipEntryNo = a.ConsolidationID, a.MembershipEntryNo
 	}
-	return intent, nil
+	return intent
+}
+
+// GetAirOperationPlan answers AirOperationPlan v1 for AIR: the LoadIntent of the shipment with the PHY membership
+// revision of its current attachment.
+func (m *Module) GetAirOperationPlan(ctx context.Context, q api.GetShipmentPlanSnapshot) (api.AirOperationPlan, error) {
+	shipment, revision, err := m.shipment(ctx, q)
+	if err != nil {
+		return api.AirOperationPlan{}, err
+	}
+	intent := loadIntent(shipment, revision)
+	plan := api.AirOperationPlan{TenantID: intent.TenantID, ShipmentID: intent.ShipmentID, Revision: intent.Revision, Status: intent.Status,
+		PlanVersion: intent.PlanVersion, CustomerPartyID: intent.CustomerPartyID, LegalEntityID: intent.LegalEntityID, TransportMode: intent.TransportMode,
+		Origin: intent.Origin, Destination: intent.Destination, OriginIATA: intent.OriginIATA, DestinationIATA: intent.DestinationIATA,
+		LocationEdition: intent.LocationEdition, DepartureWindow: intent.DepartureWindow, Packs: intent.Packs, GrossWeight: intent.GrossWeight,
+		Volume: intent.Volume, Parts: intent.Parts, Stage: intent.Stage, ConsolidationID: intent.ConsolidationID, MembershipEntryNo: intent.MembershipEntryNo}
+	if a, ok := shipment.Attachment(domain.StageMain); ok && a.ConsolidationID == intent.ConsolidationID {
+		plan.MembershipRevision = a.MembershipRevision
+	}
+	return plan, nil
 }
 
 func (m *Module) GetShipmentPlanSnapshot(ctx context.Context, q api.GetShipmentPlanSnapshot) (api.ShipmentPlanSnapshot, error) {

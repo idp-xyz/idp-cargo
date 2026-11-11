@@ -13,6 +13,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	bentopg "go.idp.xyz/idp-bento-go/postgres"
 	bentooutbox "go.idp.xyz/idp-bento-go/postgres/outbox"
+	"go.idp.xyz/idp-cargo/internal/contexts/air"
+	airapi "go.idp.xyz/idp-cargo/internal/contexts/air/api"
 	"go.idp.xyz/idp-cargo/internal/contexts/book"
 	bookapi "go.idp.xyz/idp-cargo/internal/contexts/book/api"
 	"go.idp.xyz/idp-cargo/internal/contexts/com"
@@ -175,6 +177,16 @@ func (p *Platform) BOOK(org orgapi.Queries, auth bookapi.Authorizer, opts ...boo
 		return nil, err
 	}
 	return book.New(db, org, auth, append([]book.Option{book.WithLocations(locations)}, opts...)...)
+}
+
+// AIR assembles the AIR bounded context. book answers CarrierBooking v1 (relationship 5) and ful AirOperationPlan
+// v1 (relationship 9), each through its query side.
+func (p *Platform) AIR(book bookapi.Queries, ful fulapi.AirOperationPlanQueries, auth airapi.Authorizer, opts ...air.Option) (*air.Module, error) {
+	db, err := p.newDB()
+	if err != nil {
+		return nil, err
+	}
+	return air.New(db, book, ful, auth, opts...)
 }
 
 // Locations assembles the read-only location reference data (repository structure baseline §11).

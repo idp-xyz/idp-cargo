@@ -55,7 +55,7 @@ jobs:
           psql -h 127.0.0.1 -U postgres -d cargo_contract -v ON_ERROR_STOP=1 <<'SQL'
           CREATE ROLE cargo_app LOGIN PASSWORD 'ci-app-only' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
           GRANT CONNECT ON DATABASE cargo_contract TO cargo_app;
-          GRANT USAGE ON SCHEMA cargo_org,cargo_rate,cargo_com,cargo_ful,cargo_phy,cargo_book,bento,cargo_ref TO cargo_app;
+          GRANT USAGE ON SCHEMA cargo_org,cargo_rate,cargo_com,cargo_ful,cargo_phy,cargo_book,cargo_air,bento,cargo_ref TO cargo_app;
           GRANT SELECT ON ALL TABLES IN SCHEMA cargo_ref TO cargo_app;
           GRANT SELECT ON ALL TABLES IN SCHEMA cargo_org TO cargo_app;
           DO $role_grant$ DECLARE tab text; BEGIN
@@ -91,6 +91,10 @@ jobs:
           GRANT SELECT,INSERT ON ALL TABLES IN SCHEMA cargo_book TO cargo_app;
           GRANT UPDATE (status,current_request_version,current_capacity_version,consumer_id,withdraw_reason,withdrawn_by,withdrawn_at,revision,updated_at) ON cargo_book.carrier_booking TO cargo_app;
           GRANT UPDATE (live) ON cargo_book.carrier_reference TO cargo_app;
+          GRANT SELECT,INSERT ON ALL TABLES IN SCHEMA cargo_air TO cargo_app;
+          GRANT UPDATE (state,mawb_status,cancel_reason,cancelled_by,cancelled_at,revision,updated_at) ON cargo_air.air_movement TO cargo_app;
+          GRANT UPDATE (end_kind,ended_by,ended_at,end_entered_at,successor_no) ON cargo_air.house_waybill TO cargo_app;
+          GRANT UPDATE (next_seq,revision) ON cargo_air.hawb_series TO cargo_app;
           GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA bento TO cargo_app;
           GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA bento TO cargo_app;
           SQL

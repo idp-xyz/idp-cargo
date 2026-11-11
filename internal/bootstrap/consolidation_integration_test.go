@@ -8,11 +8,8 @@ import (
 	"testing"
 	"time"
 
-	comapi "go.idp.xyz/idp-cargo/internal/contexts/com/api"
 	fulapi "go.idp.xyz/idp-cargo/internal/contexts/ful/api"
-	orgapi "go.idp.xyz/idp-cargo/internal/contexts/org/api"
 	phyapi "go.idp.xyz/idp-cargo/internal/contexts/phy/api"
-	rateapi "go.idp.xyz/idp-cargo/internal/contexts/rate/api"
 	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
@@ -54,69 +51,9 @@ func TestHousesShareAnAirConsolidation(t *testing.T) {
 	unlocode := func(code string) kernel.LocationCode { return kernel.LocationCode{Scheme: kernel.UNLOCODE, Code: code} }
 
 	// One planned AIR shipment per customer: 6 cartons of 300 kg, PVG to JFK, departing within days 3 to 5.
-	plan := func(party, suffix string) {
-		t.Helper()
-		kg := kernel.Quantity{Unit: "KGM", Amount: 300}
-		if err := errors.Join(
-			func() error {
-				_, err := orgModule.ApproveRole(ctx, orgapi.ApproveRole{CommandID: "role-" + suffix, TenantID: tenant, ActorID: "org-officer",
-					LegalEntityID: "LE", PartyID: party, ExpectedRevision: 1, RoleCode: "CUSTOMER", ValidFrom: at, EvidenceRef: "contract", OccurredAt: at})
-				return err
-			}(),
-			func() error {
-				_, err := rateModule.CreateQuote(ctx, rateapi.CreateQuote{CommandID: "quote-" + suffix, TenantID: tenant, ActorID: "sales-1",
-					QuoteID: "Q-" + suffix, LegalEntityID: "LE", CustomerPartyID: party, Currency: "USD",
-					Lines:    []rateapi.QuoteLine{{ChargeCode: "FREIGHT", Sell: usd(100_000), Cost: usd(50_000)}},
-					Validity: kernel.ValidityInterval{From: at, Until: at.Add(14 * 24 * time.Hour)}, OccurredAt: at.Add(time.Minute)})
-				return err
-			}(),
-			func() error {
-				_, err := rateModule.AcceptQuote(ctx, rateapi.AcceptQuote{CommandID: "accept-" + suffix, TenantID: tenant, ActorID: "sales-1",
-					QuoteID: "Q-" + suffix, ExpectedRevision: 1, EvidenceKind: rateapi.EvidenceEmail, EvidenceRef: "mail", OccurredAt: at.Add(time.Hour)})
-				return err
-			}(),
-			func() error {
-				_, err := comModule.RecordCustomerOrder(ctx, comapi.RecordCustomerOrder{CommandID: "order-" + suffix, TenantID: tenant, ActorID: "cs-1",
-					OrderID: "O-" + suffix, QuoteID: "Q-" + suffix, CustomerPartyID: party, OccurredAt: at.Add(2 * time.Hour),
-					Transport: comapi.Transport{Mode: comapi.ModeAir},
-					Lines:     []comapi.OrderLine{{Description: "Cartons of electronics", Packs: 6, PackageType: "CT", GrossWeight: kg}}})
-				return err
-			}(),
-			func() error {
-				_, err := comModule.AllocateOrderToObligation(ctx, comapi.AllocateOrderToObligation{CommandID: "allocate-" + suffix, TenantID: tenant,
-					ActorID: "planner-1", OrderID: "O-" + suffix, ExpectedRevision: 1, LineNo: 1, ObligationID: "OB-" + suffix, Packs: 6,
-					GrossWeight: kg, OccurredAt: at.Add(3 * time.Hour)})
-				return err
-			}(),
-			func() error {
-				_, err := comModule.ReserveObligationForFulfillment(ctx, comapi.ReserveObligationForFulfillment{CommandID: "reserve-" + suffix,
-					TenantID: tenant, ActorID: "fulfilment", ObligationID: "OB-" + suffix, ObligationVersion: 1, ShipmentID: "SH-" + suffix,
-					OccurredAt: at.Add(4 * time.Hour)})
-				return err
-			}(),
-			func() error {
-				_, err := fulModule.CreateShipmentFromObligation(ctx, fulapi.CreateShipmentFromObligation{CommandID: "create-" + suffix, TenantID: tenant,
-					ActorID: "planner-1", ShipmentID: "SH-" + suffix, ObligationID: "OB-" + suffix, ObligationVersion: 1, OccurredAt: at.Add(5 * time.Hour)})
-				return err
-			}(),
-			func() error {
-				_, err := fulModule.AmendShipmentPlan(ctx, fulapi.AmendShipmentPlan{CommandID: "plan-" + suffix, TenantID: tenant, ActorID: "planner-1",
-					ShipmentID: "SH-" + suffix, ExpectedRevision: 1, TransportMode: fulapi.ModeAir, Origin: iata("PVG"), Destination: iata("JFK"),
-					DepartureWindow: kernel.ValidityInterval{From: departs, Until: departs.Add(48 * time.Hour)}, Reason: "flight booked",
-					OccurredAt: at.Add(6 * time.Hour)})
-				return err
-			}(),
-			func() error {
-				_, err := fulModule.ConfirmShipmentPlan(ctx, fulapi.ConfirmShipmentPlan{CommandID: "confirm-" + suffix, TenantID: tenant,
-					ActorID: "planner-2", ShipmentID: "SH-" + suffix, ExpectedRevision: 2, OccurredAt: at.Add(7 * time.Hour)})
-				return err
-			}(),
-		); err != nil {
-			t.Fatal(err)
-		}
-	}
-	plan("party-a", "A")
-	plan("party-b", "B")
+	contexts := slice{org: orgModule, rate: rateModule, com: comModule, ful: fulModule, tenant: tenant, at: at, departs: departs}
+	contexts.planAir(t, "party-a", "A")
+	contexts.planAir(t, "party-b", "B")
 
 	create := func(id string, departure time.Time) {
 		t.Helper()
