@@ -35,6 +35,17 @@ type Module struct {
 	window    kernel.RecordWindow
 	locations application.Locations         // location reference data (F2); nil until wired
 	consols   application.ConsolMemberships // PHY's ConsolMembership v1 (V0.4); nil until wired
+	evidence  application.PhysicalEvidence  // PHY's PhysicalLoadEvidence v1 (V0.4); nil until wired
+}
+
+// WithPhysicalEvidence gives FUL PHY's PhysicalLoadEvidence v1 (relationship 8), which it reads before
+// recording a shipment's verified load evidence. Without it that command is refused.
+func WithPhysicalEvidence(q phyapi.PhysicalLoadEvidenceQueries) Option {
+	return func(m *Module) {
+		if q != nil {
+			m.evidence = phyacl.Evidence{PHY: q}
+		}
+	}
 }
 
 // Option configures a Module.
@@ -67,6 +78,7 @@ func WithConsolMemberships(q phyapi.ConsolMembershipQueries) Option {
 var (
 	_ api.Commands                 = (*Module)(nil)
 	_ api.ConsolAttachmentCommands = (*Module)(nil)
+	_ api.LoadEvidenceCommands     = (*Module)(nil)
 	_ api.Queries                  = (*Module)(nil)
 	_ api.LoadIntentQueries        = (*Module)(nil)
 	_ api.AirOperationPlanQueries  = (*Module)(nil)
@@ -168,6 +180,13 @@ func (m *Module) RecordConsolAttachment(ctx context.Context, cmd api.RecordConso
 	return toReceipt(receipt, err)
 }
 
+func (m *Module) RecordVerifiedLoadEvidence(ctx context.Context, cmd api.RecordVerifiedLoadEvidence) (api.Receipt, error) {
+	receipt, err := application.RecordVerifiedLoadEvidence{Deps: m.deps(cmd.TenantID, cmd.CommandID), Evidence: m.evidence}.Handle(ctx,
+		application.RecordVerifiedLoadEvidenceCommand{CommandID: cmd.CommandID, Scope: scope(cmd.TenantID, cmd.ActorID),
+			ShipmentID: domain.ShipmentID(cmd.ShipmentID), ExpectedRevision: cmd.ExpectedRevision, OccurredAt: stored(cmd.OccurredAt)})
+	return toReceipt(receipt, err)
+}
+
 func (m *Module) RecordConsolDetachment(ctx context.Context, cmd api.RecordConsolDetachment) (api.Receipt, error) {
 	receipt, err := application.RecordConsolDetachment{Deps: m.deps(cmd.TenantID, cmd.CommandID), Memberships: m.consols}.Handle(ctx,
 		application.RecordConsolDetachmentCommand{
@@ -228,6 +247,13 @@ func (m *Module) GetAirOperationPlan(ctx context.Context, q api.GetShipmentPlanS
 		Volume: intent.Volume, Parts: intent.Parts, Stage: intent.Stage, ConsolidationID: intent.ConsolidationID, MembershipEntryNo: intent.MembershipEntryNo}
 	if a, ok := shipment.Attachment(domain.StageMain); ok && a.ConsolidationID == intent.ConsolidationID {
 		plan.MembershipRevision = a.MembershipRevision
+	}
+	plan.ExecutionStatus = string(shipment.Execution())
+	if v, ok := shipment.LatestEvidence(); ok {
+		plan.EvidenceVersion, plan.SecurityStatus = v.No, string(v.Evidence.Security)
+		if basis, measured, ok := shipment.Measured(); ok {
+			plan.MeasuredBasis, plan.MeasuredPacks, plan.MeasuredGrossWeight, plan.MeasuredVolume = basis, measured.Packs, measured.GrossWeight, measured.Volume
+		}
 	}
 	return plan, nil
 }
@@ -367,7 +393,9 @@ func classify(err error) error {
 		errors.Is(err, kernel.ErrUnitMismatch), errors.Is(err, kernel.ErrAmountOverflow),
 		errors.Is(err, domain.ErrUnresolvedRoute), errors.Is(err, domain.ErrModeMismatch), errors.Is(err, application.ErrLocationRefused),
 		errors.Is(err, kernel.ErrOutsideRecordWindow),
-		errors.Is(err, domain.ErrConsolPlanMismatch), errors.Is(err, domain.ErrNotAttached), errors.Is(err, application.ErrMembershipMismatch):
+		errors.Is(err, domain.ErrConsolPlanMismatch), errors.Is(err, domain.ErrNotAttached), errors.Is(err, application.ErrMembershipMismatch),
+		errors.Is(err, domain.ErrShipmentCancelled), errors.Is(err, domain.ErrDeparted), errors.Is(err, domain.ErrInvalidEvidence),
+		errors.Is(err, application.ErrEvidenceUnavailable):
 		kind = api.ErrRejected
 	default:
 		return err

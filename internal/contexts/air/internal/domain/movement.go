@@ -70,6 +70,13 @@ type Plan struct {
 	Volume          kernel.Quantity
 	Parts           []Part
 	ConsolidationID string
+	// PHY's verified measures as FUL relays them (AirOperationPlan v1); MeasuredBasis is empty while none.
+	EvidenceVersion int
+	MeasuredBasis   string
+	MeasuredPieces  int64
+	MeasuredWeight  kernel.Quantity
+	MeasuredVolume  kernel.Quantity
+	Security        string
 }
 
 // Facts are a house's frozen quantities with its documented chargeable weight in grams.
@@ -80,6 +87,8 @@ type Facts struct {
 	ChargeableGrams int64
 	Rule            string
 	Basis           string
+	Evidence        int    // FUL's evidence version the measures came from; 0 for PLANNED
+	Security        string // the security state FUL relayed with them
 	Parts           []Part
 }
 
@@ -286,20 +295,41 @@ func (m *Movement) admits(p Plan) error {
 	return nil
 }
 
+// facts are the quantities AIR freezes for a house: PHY's measures when FUL relays them, else FUL's plan; the
+// parts stay as planned (PHY counts a house's packs, not its parts').
 func facts(p Plan) (Facts, error) {
-	grams, err := Grams(p.GrossWeight)
+	f := Facts{Pieces: p.Pieces, GrossWeight: p.GrossWeight, Volume: p.Volume, Basis: BasisPlanned, Evidence: p.EvidenceVersion,
+		Security: p.Security, Rule: ChargeableRule, Parts: append([]Part(nil), p.Parts...)}
+	if p.MeasuredBasis != "" {
+		if !basisValid(p.MeasuredBasis) || p.MeasuredBasis == BasisPlanned || p.EvidenceVersion < 1 || p.MeasuredPieces < 1 {
+			return Facts{}, fmt.Errorf("%w: measures of %s", ErrInvalidChange, p.ShipmentID)
+		}
+		f.Pieces, f.GrossWeight, f.Volume, f.Basis = p.MeasuredPieces, p.MeasuredWeight, p.MeasuredVolume, p.MeasuredBasis
+	}
+	if !securityValid(f.Security) || f.Evidence < 0 {
+		return Facts{}, fmt.Errorf("%w: security %q", ErrInvalidChange, f.Security)
+	}
+	if f.Volume.Amount == 0 {
+		f.Volume = kernel.Quantity{}
+	}
+	grams, err := Grams(f.GrossWeight)
 	if err != nil {
 		return Facts{}, err
 	}
-	cm3, err := CubicCentimetres(p.Volume)
+	cm3, err := CubicCentimetres(f.Volume)
 	if err != nil {
 		return Facts{}, err
 	}
 	if grams < 1 {
 		return Facts{}, fmt.Errorf("%w: a house needs its gross weight", ErrInvalidChange)
 	}
-	return Facts{Pieces: p.Pieces, GrossWeight: p.GrossWeight, Volume: p.Volume, ChargeableGrams: Chargeable(grams, cm3), Rule: ChargeableRule,
-		Basis: BasisPlanned, Parts: append([]Part(nil), p.Parts...)}, nil
+	f.ChargeableGrams = Chargeable(grams, cm3)
+	return f, nil
+}
+
+// sameMeasures reports whether two facts document the same quantities and security state.
+func sameMeasures(a, b Facts) bool {
+	return a.Pieces == b.Pieces && a.GrossWeight == b.GrossWeight && a.Volume == b.Volume && a.Basis == b.Basis && a.Security == b.Security
 }
 
 // Associate associates a house that FUL reports attached to the consolidation, with its HAWB number.
@@ -327,7 +357,8 @@ func (m *Movement) Associate(p Plan, hawb, by string, at time.Time) error {
 	return nil
 }
 
-// Refresh takes FUL's newer plan version of a live house into a new entry with the same HAWB.
+// Refresh takes FUL's newer plan version of a live house, or the measures FUL newly relays from PHY, into a new
+// entry with the same HAWB.
 func (m *Movement) Refresh(p Plan, by string, at time.Time) error {
 	i, err := m.live(p.ShipmentID)
 	if err != nil {
@@ -336,12 +367,12 @@ func (m *Movement) Refresh(p Plan, by string, at time.Time) error {
 	if err = m.admits(p); err != nil {
 		return err
 	}
-	if p.PlanVersion == m.state.Entries[i].PlanVersion {
-		return ErrNothingToRefresh
-	}
 	f, err := facts(p)
 	if err != nil {
 		return err
+	}
+	if p.PlanVersion == m.state.Entries[i].PlanVersion && sameMeasures(f, m.state.Entries[i].Facts) {
+		return ErrNothingToRefresh
 	}
 	if err = m.changeable(by, at); err != nil {
 		return err
@@ -542,7 +573,8 @@ func (m *Movement) validate() error {
 	live := map[string]bool{}
 	for i, e := range st.Entries {
 		if e.No != i+1 || !identifier(e.ShipmentID) || !ValidHAWB(e.HAWB) || e.FULRevision < 1 || e.PlanVersion < 1 || e.Facts.Pieces < 1 ||
-			e.Facts.ChargeableGrams < 1 || blank(e.By) || e.At.IsZero() {
+			e.Facts.ChargeableGrams < 1 || blank(e.By) || e.At.IsZero() || !basisValid(e.Facts.Basis) || e.Facts.Evidence < 0 ||
+			(e.Facts.Basis != BasisPlanned && e.Facts.Evidence < 1) || !securityValid(e.Facts.Security) {
 			return fmt.Errorf("entry %d", i+1)
 		}
 		switch e.Start {

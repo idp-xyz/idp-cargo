@@ -1,5 +1,5 @@
-// Package air assembles the AIR (Air Freight) bounded context, V0.1. Code outside AIR uses it through package
-// api; everything under internal/ is private to AIR.
+// Package air assembles the AIR (Air Freight) bounded context, V0.1 with V0.2's measured house facts. Code
+// outside AIR uses it through package api; everything under internal/ is private to AIR.
 package air
 
 import (
@@ -226,7 +226,8 @@ func view(mv *domain.Movement, revision int64) api.AirMovement {
 	for _, e := range mv.Houses() {
 		h := api.House{EntryNo: e.No, ShipmentID: e.ShipmentID, HAWB: e.HAWB, FULRevision: e.FULRevision, PlanVersion: e.PlanVersion, Pieces: e.Facts.Pieces,
 			GrossWeight: e.Facts.GrossWeight, Volume: e.Facts.Volume, ChargeableWeight: kernel.Quantity{Unit: "GRM", Amount: e.Facts.ChargeableGrams},
-			ChargeableRule: e.Facts.Rule, Basis: e.Facts.Basis, Start: e.Start, AssociatedAt: e.At, WindowDrift: mv.WindowDrift(e)}
+			ChargeableRule: e.Facts.Rule, Basis: e.Facts.Basis, EvidenceVersion: e.Facts.Evidence, SecurityStatus: e.Facts.Security, Start: e.Start,
+			AssociatedAt: e.At, WindowDrift: mv.WindowDrift(e)}
 		for _, p := range e.Facts.Parts {
 			h.Parts = append(h.Parts, api.HousePart{ObligationID: p.ObligationID, ObligationVersion: p.ObligationVersion, OrderID: p.OrderID, Packs: p.Packs,
 				PackageType: p.PackageType, GrossWeight: p.GrossWeight, Volume: p.Volume})

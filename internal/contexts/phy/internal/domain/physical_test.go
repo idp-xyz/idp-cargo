@@ -450,3 +450,79 @@ func TestPhysicalDeadEndsAreOpen(t *testing.T) {
 		}
 	}
 }
+
+// TestEvidenceForFUL covers what PhysicalLoadEvidence v1 tells FUL of a house in a tender: the pieces the
+// carrier's evidence shows departed (the house's own reports summed over flights, else the master's when they
+// cover the tender), and the measures at the lot's latest measurement, so a terminal weight after the tender
+// counts.
+func TestEvidenceForFUL(t *testing.T) {
+	at := t0.Add(5 * time.Hour)
+	tendered := func(t *testing.T) *LoadExecution {
+		t.Helper()
+		c, entry, x := tender(t)
+		if err := errors.Join(x.Load(LoadLine{Packs: 6, Evidence: ev("TD", at)}, c, received(t), entry, LotLoad{}, 0, "ops", at),
+			x.Close(ev("TR", at), "ops", at)); err != nil {
+			t.Fatal(err)
+		}
+		return x
+	}
+	report := func(x *LoadExecution, fact CarrierFact, shipment ShipmentID, pieces int64, flight, ref string) {
+		t.Helper()
+		if _, _, err := x.RecordCarrierEvidence(CarrierEvidence{Fact: fact, ShipmentID: shipment, Pieces: pieces, Transport: flight,
+			Evidence: Evidence{Source: "MU", Reference: ref, OccurredAt: at}}, "ops", at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	x := tendered(t)
+	if p := x.HousePieces("SH-1"); p != (HousePieces{}) {
+		t.Fatalf("nothing reported: %+v", p)
+	}
+	report(x, CarrierDeparted, "", 4, "MU587", "M-1")
+	if p := x.HousePieces("SH-1"); p.Departed != 0 {
+		t.Fatalf("4 of 6 departed, not attributable: %+v", p)
+	}
+	report(x, CarrierOffloaded, "SH-1", 2, "MU587", "H-1")
+	if p := x.HousePieces("SH-1"); p.Departed != 4 || p.Offloaded != 2 {
+		t.Fatalf("the master covers the tender less the offloaded: %+v", p)
+	}
+	report(x, CarrierDeparted, "", 2, "MU589", "M-2")
+	report(x, CarrierArrived, "", 6, "MU587", "M-3")
+	if p := x.HousePieces("SH-1"); p.Departed != 6 || p.Arrived != 6 {
+		t.Fatalf("the offloaded pieces flew on MU589: %+v", p)
+	}
+	own := tendered(t)
+	report(own, CarrierDeparted, "SH-1", 5, "MU587", "H-5")
+	report(own, CarrierDeparted, "SH-1", 5, "MU587", "H-5B") // the same departure from a second source
+	report(own, CarrierDeparted, "SH-1", 1, "MU589", "H-6")
+	if p := own.HousePieces("SH-1"); p.Departed != 6 {
+		t.Fatalf("the house's own reports, largest per flight, summed: %+v", p)
+	}
+
+	c, entry, y := tender(t)
+	lot := received(t)
+	if err := y.Load(LoadLine{Packs: 4, Evidence: ev("TD-1", at)}, c, lot, entry, LotLoad{}, 0, "ops", at); err != nil {
+		t.Fatal(err)
+	}
+	lots := map[CargoLotID]*CargoLot{lot.ID(): lot}
+	if packs, w, _ := y.HouseMeasure("SH-1", lots); packs != 4 || w != kg(200) {
+		t.Fatalf("4 of 6 at 300 kg: %d %+v", packs, w)
+	}
+	if err := lot.Measure(Measurement{GrossWeight: kg(312), Method: MethodTerminalWeight, Evidence: ev("PVG-SCALE", at)}, "ops", at); err != nil {
+		t.Fatal(err)
+	}
+	if err := y.Load(LoadLine{Packs: 2, Evidence: ev("TD-2", at)}, c, lot, entry, LotLoad{Packs: 4, GrossWeight: 200}, 4, "ops", at); err != nil {
+		t.Fatal(err)
+	}
+	if packs, w, _ := y.HouseMeasure("SH-1", lots); packs != 6 || w != kg(312) {
+		t.Fatalf("the whole lot at its terminal weight: %d %+v", packs, w)
+	}
+	if err := y.Unload(2, 2, ReversalMisloaded, ev("UN", at), lot, "ops", at); err != nil {
+		t.Fatal(err)
+	}
+	if err := y.Load(LoadLine{Packs: 2, GrossWeight: kg(110), Evidence: ev("TD-3", at)}, c, lot, entry, LotLoad{Packs: 4, GrossWeight: 200}, 4, "ops", at); err != nil {
+		t.Fatal(err)
+	}
+	if packs, w, _ := y.HouseMeasure("SH-1", lots); packs != 6 || w != kg(208+110) {
+		t.Fatalf("4 of 6 at 312 kg and a line weighed at 110 kg: %d %+v", packs, w)
+	}
+}

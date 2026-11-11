@@ -59,8 +59,9 @@ type RegisterHawbSeries struct {
 // AssociateHouseWaybill associates a house with the movement. FUL's AirOperationPlan v1 must report the
 // shipment PLANNED by AIR, attached to the movement's consolidation, on its route (OD-8) and of its operating
 // legal entity (OD-10). The house keeps the HAWB number it had under the legal entity; otherwise HAWB is the
-// number given, or empty to draw the next one from the entity's series. Its planned packs, gross weight and
-// volume and its documented chargeable weight are frozen; PHY's measures replace them once relayed.
+// number given, or empty to draw the next one from the entity's series. Its pieces, gross weight and volume and
+// its documented chargeable weight are frozen: PHY's measures when FUL relays them (basis RECEIVED or TENDERED),
+// else FUL's plan (PLANNED).
 type AssociateHouseWaybill struct {
 	CommandID        string
 	TenantID         string
@@ -72,7 +73,9 @@ type AssociateHouseWaybill struct {
 	OccurredAt       time.Time
 }
 
-// RefreshHouseWaybillFacts takes a newer FUL plan of a house (a shortload, a changed part) into a new entry.
+// RefreshHouseWaybillFacts takes a newer FUL plan of a house (a shortload, a changed part), or measures FUL newly
+// relays from PHY (received, tendered, a terminal weight, a screening result), into a new entry with the same
+// HAWB; the same plan version and measures again are refused as nothing to refresh.
 type RefreshHouseWaybillFacts struct {
 	CommandID        string
 	TenantID         string

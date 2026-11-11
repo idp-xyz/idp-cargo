@@ -45,6 +45,7 @@ const (
 	ActionCancelShipment                ShipmentAction = "CancelShipment"
 	ActionRecordConsolAttachment        ShipmentAction = "RecordConsolAttachment"
 	ActionRecordConsolDetachment        ShipmentAction = "RecordConsolDetachment"
+	ActionRecordVerifiedLoadEvidence    ShipmentAction = "RecordVerifiedLoadEvidence"
 )
 
 type Receipt struct {
@@ -166,6 +167,9 @@ func (d Deps) changeIn(ctx context.Context, s Scope, commandID, hash string, ent
 		}
 		if err = apply(txCtx, shipment); err != nil {
 			return nil, 0, err
+		}
+		if len(shipment.Pending()) == 0 { // nothing changed (the same evidence again): the revision stays
+			return shipment, revision, nil
 		}
 		shipment.Stamp(entered)
 		newRevision, err := d.Shipments.Save(txCtx, shipment, revision)

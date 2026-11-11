@@ -22,8 +22,21 @@ const (
 	EntryShipmentCancelled = "SHIPMENT_CANCELLED"
 )
 
-// Bases of a house's quantities: PLANNED from FUL's plan until PHY's measures are relayed (MEASURED, later).
-const BasisPlanned = "PLANNED"
+// Bases of a house's quantities: PLANNED from FUL's plan; RECEIVED (the lots' latest measures once every lot
+// completed receipt) and TENDERED (what was tendered in the consolidation, at the lots' latest measures) from
+// PHY's evidence as FUL relays it (decision N1-PHY OD-2, option A).
+const (
+	BasisPlanned  = "PLANNED"
+	BasisReceived = "RECEIVED"
+	BasisTendered = "TENDERED"
+)
+
+// Security states of a house's cargo, from PHY's screening results as FUL relays them.
+const (
+	SecurityPending = "PENDING"
+	SecurityCleared = "CLEARED"
+	SecurityFailed  = "FAILED"
+)
 
 // Airport is an airport as AIR froze it: its UN/LOCODE and IATA code.
 type Airport struct {
@@ -57,7 +70,8 @@ type HousePart struct {
 }
 
 // House is a house air waybill association: the FUL shipment, its HAWB number and the facts frozen from FUL's
-// plan version, with the documented chargeable weight (in grams) and the rule it was computed by.
+// plan version or from PHY's measures FUL relayed (Basis, with FUL's EvidenceVersion and the SecurityStatus),
+// with the documented chargeable weight (in grams) and the rule it was computed by. Parts stay as planned.
 type House struct {
 	EntryNo          int
 	ShipmentID       string
@@ -70,6 +84,8 @@ type House struct {
 	ChargeableWeight kernel.Quantity // GRM
 	ChargeableRule   string
 	Basis            string
+	EvidenceVersion  int    // FUL's evidence version the measures came from; 0 for PLANNED
+	SecurityStatus   string // "", SecurityPending, SecurityCleared or SecurityFailed
 	Parts            []HousePart
 	Start            string
 	AssociatedAt     time.Time

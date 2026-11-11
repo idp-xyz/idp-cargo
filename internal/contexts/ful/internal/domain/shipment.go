@@ -57,6 +57,8 @@ const (
 	// FUL V0.4
 	eventConsolAttachmentRecorded = "ShipmentConsolAttachmentRecorded.v1"
 	eventConsolDetachmentRecorded = "ShipmentConsolDetachmentRecorded.v1"
+	eventLoadEvidenceRecorded     = "ShipmentLoadEvidenceRecorded.v1"
+	eventExecutionStatusChanged   = "ShipmentExecutionStatusChanged.v1"
 )
 
 // Event carries identifiers only; the Outbox adapter maps it to a Bento envelope.
@@ -67,8 +69,9 @@ type Event struct {
 	SubjectID         string
 	ObligationID      ObligationID
 	ObligationVersion int64
-	Stage             string // events about a consol attachment (V0.4)
+	Stage             string // events about a consol attachment or load evidence (V0.4)
 	ConsolidationID   string
+	EvidenceNo        int // events about load evidence (V0.4)
 }
 
 // ObligationRef is a COM obligation version as FUL plans it, taken from ObligationSnapshot v2: the order
@@ -173,6 +176,7 @@ type ShipmentState struct {
 	CancelledAt     time.Time
 	CancelReason    string
 	Attachments     []ConsolAttachment // FUL V0.4, in the order recorded
+	Evidence        []EvidenceVersion  // FUL V0.4, PHY's verified evidence in the order recorded
 }
 
 // Shipment is the aggregate root. Plan versions and confirmations are only added; a planned obligation
@@ -186,6 +190,7 @@ type Shipment struct {
 	attachments   int   // consol attachments already persisted
 	// persisted consol attachments ended since, by index
 	endedAttachments []int
+	evidence         int // evidence versions already persisted
 	pending          []Event
 }
 
@@ -269,6 +274,11 @@ func (s *Shipment) ChangePart(id ObligationID, version int64, part, elsewhere Ca
 	if s.state.Status == ShipmentCancelled {
 		return ErrInvalidTransition
 	}
+	if i := s.planning(id); i >= 0 {
+		if err := s.stillPlannable(s.Latest().Scope.Packs - s.state.Obligations[i].Part.Packs + part.Packs); err != nil {
+			return err
+		}
+	}
 	i := s.planning(id)
 	if i < 0 || s.state.Obligations[i].ObligationVersion != version {
 		return fmt.Errorf("%w: %s version %d", ErrNotPlanned, id, version)
@@ -301,10 +311,13 @@ func (s *Shipment) ChangePart(id ObligationID, version int64, part, elsewhere Ca
 }
 
 // AmendPlan writes a new plan version with a changed route and the reason for the change. A confirmed
-// plan that changes must be confirmed again.
+// plan that changes must be confirmed again; once packs departed the route stays.
 func (s *Shipment) AmendPlan(route Route, reason, by string, at time.Time) error {
 	if s.state.Status == ShipmentCancelled {
 		return ErrInvalidTransition
+	}
+	if s.Departed() > 0 {
+		return fmt.Errorf("%w: the route stays", ErrDeparted)
 	}
 	if !route.valid() || !text(reason) || route.Same(s.Latest().Route) {
 		return ErrInvalidPlan
@@ -355,6 +368,9 @@ func (s *Shipment) ReleaseObligation(id ObligationID, version int64, by string, 
 	if len(s.Planned()) == 1 {
 		return ErrLastObligation
 	}
+	if err := s.stillPlannable(s.Latest().Scope.Packs - s.state.Obligations[i].Part.Packs); err != nil {
+		return err
+	}
 	if err := s.changeable(by, at); err != nil {
 		return err
 	}
@@ -369,10 +385,14 @@ func (s *Shipment) ReleaseObligation(id ObligationID, version int64, by string, 
 	return nil
 }
 
-// Cancel cancels the shipment for good and releases every obligation it plans. The plan history stays.
+// Cancel cancels the shipment for good and releases every obligation it plans. The plan history stays. A
+// shipment with departed packs is not cancelled.
 func (s *Shipment) Cancel(reason, by string, at time.Time) error {
 	if s.state.Status == ShipmentCancelled {
 		return ErrInvalidTransition
+	}
+	if s.Departed() > 0 {
+		return ErrDeparted
 	}
 	if !text(reason) {
 		return ErrInvalidChange
@@ -429,6 +449,9 @@ func (s *Shipment) Stamp(entered time.Time) {
 			a.EndEnteredAt = entered.UTC()
 		}
 	}
+	for i := s.evidence; i < len(s.state.Evidence); i++ {
+		s.state.Evidence[i].EnteredAt = entered.UTC()
+	}
 }
 
 // changeable checks who changes the shipment and that nothing recorded for it is later than at.
@@ -475,6 +498,9 @@ func (s *Shipment) lastChange() time.Time {
 	}
 	for _, a := range s.state.Attachments {
 		last = later(later(last, a.RecordedAt), a.EndedAt)
+	}
+	for _, v := range s.state.Evidence {
+		last = later(last, v.At)
 	}
 	return later(last, s.state.CancelledAt)
 }
@@ -525,8 +551,9 @@ func RestoreShipment(st ShipmentState) (*Shipment, error) {
 	st.Plans = append([]PlanVersion(nil), st.Plans...)
 	st.Confirmations = append([]Confirmation(nil), st.Confirmations...)
 	st.Attachments = append([]ConsolAttachment(nil), st.Attachments...)
+	st.Evidence = append([]EvidenceVersion(nil), st.Evidence...)
 	s := &Shipment{state: st, obligations: len(st.Obligations), plans: len(st.Plans), confirmations: len(st.Confirmations),
-		attachments: len(st.Attachments)}
+		attachments: len(st.Attachments), evidence: len(st.Evidence)}
 	if err := s.validate(); err != nil {
 		return nil, err
 	}
@@ -579,7 +606,10 @@ func (s *Shipment) validate() error {
 	if derived := s.derivedStatus(); st.Status != derived {
 		return fmt.Errorf("%w: status %s, but the plan makes it %s", ErrInvalidShipment, st.Status, derived)
 	}
-	return s.validateAttachments()
+	if err := s.validateAttachments(); err != nil {
+		return err
+	}
+	return s.validateEvidence()
 }
 
 // State returns a copy of the shipment for persistence and read models.
@@ -589,6 +619,7 @@ func (s *Shipment) State() ShipmentState {
 	st.Plans = append([]PlanVersion(nil), st.Plans...)
 	st.Confirmations = append([]Confirmation(nil), st.Confirmations...)
 	st.Attachments = append([]ConsolAttachment(nil), st.Attachments...)
+	st.Evidence = append([]EvidenceVersion(nil), st.Evidence...)
 	return st
 }
 
@@ -625,6 +656,7 @@ func (s *Shipment) Acknowledge() {
 	s.pending, s.released, s.endedAttachments = nil, nil, nil
 	s.obligations, s.plans, s.confirmations = len(s.state.Obligations), len(s.state.Plans), len(s.state.Confirmations)
 	s.attachments = len(s.state.Attachments)
+	s.evidence = len(s.state.Evidence)
 }
 
 func (s *Shipment) record(kind string, at time.Time, ob *ObligationRef) {
