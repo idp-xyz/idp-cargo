@@ -243,7 +243,9 @@ func TestAddressBookContactsReadAuthorizationAndErasure(t *testing.T) {
 		t.Fatalf("erasure keeps the versions: %d, want 3", n)
 	}
 	for _, needle := range []string{"Test Person", "example.test", "5555", "139 0000"} {
-		if n := countRows(t, db, tenant, `SELECT count(*) FROM bento.outbox WHERE scope=$1 AND payload::text LIKE '%'||$2||'%'`, needle); n != 0 {
+		// the tenant id, which every payload carries, is a timestamp that may itself contain "5555"
+		if n := countRows(t, db, tenant, `SELECT count(*) FROM bento.outbox WHERE scope=$1 AND replace(payload::text, $1, '') LIKE '%'||$2||'%'`,
+			needle); n != 0 {
 			t.Fatalf("an event payload carries %q", needle)
 		}
 		if n := countRows(t, db, tenant, `SELECT count(*) FROM cargo_org.command_receipt WHERE tenant_id=$1 AND
