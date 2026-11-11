@@ -204,7 +204,7 @@ func readOrder(ctx context.Context, q queryRower, tenant com.TenantID, id com.Or
 	var roleUntil, cancelledAt, closedAt, enteredAt *time.Time
 	var cancelledBy, closedBy, rule, version, place, incotermsSource, service, serviceSource, policyEntity *string
 	var revision int64
-	var lineJSON, amendmentJSON, obligationJSON, reservationJSON, retentionJSON, erasureJSON, transportJSON, partyJSON []byte
+	var lineJSON, amendmentJSON, obligationJSON, reservationJSON, retentionJSON, erasureJSON, transportJSON, partyJSON, lockJSON []byte
 	err := q.QueryRow(ctx, `SELECT o.legal_entity_id,o.customer_party_id,o.customer_party_revision,o.customer_legal_name,
         o.customer_country_code,o.customer_role_code,o.customer_role_valid_from,o.customer_role_valid_until,o.customer_role_evidence_ref,
         o.quote_id,o.quote_revision,o.quote_customer_revision,o.quote_recipient_role,o.quote_currency,o.quote_total_minor,o.quote_valid_from,
@@ -228,7 +228,7 @@ func readOrder(ctx context.Context, q queryRower, tenant com.TenantID, id com.Or
 		&rule, &version, &place, &incotermsSource, &service, &serviceSource,
 		&scope, &policyEntity, &s.Policy.Version, &s.Policy.MaxOrdersPerQuote, &s.Policy.GraceDays,
 		&s.RecordedBy, &s.RecordedAt, &enteredAt, &status, &revision, &cancelledBy, &cancelledAt, &closedBy, &closedAt,
-		&lineJSON, &amendmentJSON, &obligationJSON, &reservationJSON, &retentionJSON, &erasureJSON, &transportJSON, &partyJSON)
+		&lineJSON, &amendmentJSON, &obligationJSON, &reservationJSON, &retentionJSON, &erasureJSON, &transportJSON, &partyJSON, &lockJSON)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, 0, bentorepo.ErrNotFound
 	}
@@ -304,6 +304,9 @@ func readOrder(ctx context.Context, q queryRower, tenant com.TenantID, id com.Or
 			ReleasedBy: r.ReleasedBy, ReleasedAt: utc(r.ReleasedAt)})
 	}
 	if err = restoreParties(&s, transportJSON, partyJSON); err != nil {
+		return nil, 0, err
+	}
+	if err = restoreLocks(&s, lockJSON); err != nil {
 		return nil, 0, err
 	}
 	order, err := com.RestoreOrder(s)
@@ -463,6 +466,9 @@ func (s OrderStore) Save(ctx context.Context, order *com.CustomerOrder, expected
 		}
 	}
 	if err = saveParties(ctx, q, order); err != nil {
+		return 0, err
+	}
+	if err = saveLocks(ctx, q, order); err != nil {
 		return 0, err
 	}
 	if err = saveRetention(ctx, q, order); err != nil {

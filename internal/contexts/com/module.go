@@ -365,7 +365,7 @@ func classify(err error) error {
 		kind = api.ErrConflict
 	case errors.Is(err, bentorepo.ErrNotFound), errors.Is(err, domain.ErrUnknownObligation):
 		kind = api.ErrNotFound
-	case errors.Is(err, domain.ErrInvalidParty), errors.Is(err, domain.ErrPartyRule), errors.Is(err, domain.ErrAddressRequired),
+	case errors.Is(err, domain.ErrInvalidParty), errors.Is(err, domain.ErrPartyRule), errors.Is(err, domain.ErrPartiesLocked), errors.Is(err, domain.ErrAddressRequired),
 		errors.Is(err, application.ErrPartyNotConfirmed):
 		kind = api.ErrRejected
 	case errors.Is(err, domain.ErrInvalidOrder), errors.Is(err, domain.ErrQuoteMismatch), errors.Is(err, domain.ErrOutsideQuoteValidity),

@@ -98,6 +98,8 @@ func TestTheModelEmitsThePublishedEventTypes(t *testing.T) {
 		o.ReleaseReservation("OB-1", 1, "S-1", "fulfilment", at),
 		o.Amend("OB-1", "OB-2", pallets, "planner-1", at),
 		o.Revoke("OB-2", "planner-1", at),
+		o.LockParties("DOC-H1", "doc-1", at, at),
+		o.ReleasePartyLock("DOC-H1", "doc-1", at, at),
 		o.Cancel("sales-1", at, domain.MinContactRetentionMonths),
 		o.EraseContacts("privacy-officer", erasable, erasable),
 		closed.Allocate(1, "OB-9", pallets, "planner-1", at),
@@ -107,7 +109,8 @@ func TestTheModelEmitsThePublishedEventTypes(t *testing.T) {
 	}
 	published := map[string]bool{api.CustomerOrderRecorded: true, api.CustomerOrderCancelled: true, api.FulfillmentObligationAllocated: true,
 		api.FulfillmentObligationRevoked: true, api.ObligationReserved: true, api.ObligationReservationReleased: true,
-		api.CustomerOrderLineAmended: true, api.CustomerOrderLineAdded: true, api.CustomerOrderClosed: true, api.CustomerOrderContactsErased: true}
+		api.CustomerOrderLineAmended: true, api.CustomerOrderLineAdded: true, api.CustomerOrderClosed: true, api.CustomerOrderContactsErased: true,
+		api.OrderPartiesLocked: true, api.OrderPartyLockReleased: true}
 	emitted := map[string]bool{}
 	for _, e := range append(o.Pending(), closed.Pending()...) {
 		if !published[e.Type] {

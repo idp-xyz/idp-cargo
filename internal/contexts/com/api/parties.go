@@ -47,9 +47,11 @@ const (
 
 // Actions an Authorizer decides on, besides those of commands.go.
 const (
-	ActionSetOrderParty        = "SetOrderParty"
-	ActionChangeOrderTransport = "ChangeOrderTransport"
-	ActionReadOrderContacts    = "ReadOrderContacts"
+	ActionSetOrderParty         = "SetOrderParty"
+	ActionChangeOrderTransport  = "ChangeOrderTransport"
+	ActionReadOrderContacts     = "ReadOrderContacts"
+	ActionLockOrderParties      = "LockOrderParties"
+	ActionReleaseOrderPartyLock = "ReleaseOrderPartyLock"
 )
 
 // Transport is the requested transport mode and movement type of an order; either may be empty.
@@ -173,12 +175,41 @@ type ChangeOrderTransport struct {
 	OccurredAt       time.Time
 }
 
-// OrderPartyCommands is COM's entry point for order parties and transport (C9, C11-C14). Errors:
-// ErrRejected for a party or address ORG does not confirm, a rule of the transport broken, or a missing
-// address; ErrConflict for a stale revision; ErrUnauthorized also when ORG refuses the caller its contacts.
+// LockOrderParties locks the order's parties and transport for a transport document, OrderPartyLock v1 (C12,
+// DOC OD-2 option A): from the document's issue until it is cancelled or amended with other parties, COM
+// refuses SetOrderParty and ChangeOrderTransport (ORDER_PARTIES_LOCKED). HolderID is the DOC document id;
+// ExpectedRevision is the order revision the caller read the parties at. A holder holds one lock per order;
+// several documents may each hold one. COM never asks DOC: the API client locks for the document (T6).
+type LockOrderParties struct {
+	CommandID        string
+	TenantID         string
+	ActorID          string
+	OrderID          string
+	ExpectedRevision int64
+	HolderID         string
+	OccurredAt       time.Time
+}
+
+// ReleaseOrderPartyLock releases the lock a transport document holds on the order's parties.
+type ReleaseOrderPartyLock struct {
+	CommandID        string
+	TenantID         string
+	ActorID          string
+	OrderID          string
+	ExpectedRevision int64
+	HolderID         string
+	OccurredAt       time.Time
+}
+
+// OrderPartyCommands is COM's entry point for order parties and transport (C9, C11-C14) and their locks (C12).
+// Errors: ErrRejected for a party or address ORG does not confirm, a rule of the transport broken, a missing
+// address, or parties a transport document holds locked; ErrConflict for a stale revision; ErrUnauthorized also
+// when ORG refuses the caller its contacts.
 type OrderPartyCommands interface {
 	SetOrderParty(ctx context.Context, cmd SetOrderParty) (Receipt, error)
 	ChangeOrderTransport(ctx context.Context, cmd ChangeOrderTransport) (Receipt, error)
+	LockOrderParties(ctx context.Context, cmd LockOrderParties) (Receipt, error)
+	ReleaseOrderPartyLock(ctx context.Context, cmd ReleaseOrderPartyLock) (Receipt, error)
 }
 
 // GetOrderParties asks for an order's transport and current parties. WithContacts adds the frozen contacts,
@@ -252,13 +283,22 @@ type OrderPartyView struct {
 	SetAt         time.Time
 }
 
-// OrderParties is an order's transport and current parties at Revision, and where its contacts stand.
+// PartyLock is a lock in force on the order's parties and transport: the transport document holding it.
+type PartyLock struct {
+	HolderID string
+	LockedBy string
+	LockedAt time.Time
+}
+
+// OrderParties is an order's transport and current parties at Revision, where its contacts stand, and the
+// locks transport documents hold on them (C12).
 type OrderParties struct {
 	OrderID   string
 	Revision  int64
 	Transport Transport
 	Parties   []OrderPartyView
 	Contacts  ContactsStatus
+	Locks     []PartyLock
 }
 
 // OrderPartyQueries is the read side of order parties.

@@ -69,6 +69,31 @@ func (r PartyReader) Read(ctx context.Context, tenant org.TenantID, party org.Pa
 	return aggregate, revision, aggregate.RestoreIdentity(english, stored)
 }
 
+// LegalEntityRecord is a legal entity row as LegalEntityRef v1 publishes it.
+type LegalEntityRecord struct {
+	Revision       int64
+	RegisteredName string
+	Jurisdiction   string
+	Status         string
+}
+
+// LegalEntityRecords reads legal entities for queries.
+type LegalEntityRecords struct{ DB *bentopg.DB }
+
+func (s LegalEntityRecords) Read(ctx context.Context, tenant org.TenantID, id org.LegalEntityID) (LegalEntityRecord, error) {
+	q, err := s.DB.ReadExecutor(ctx)
+	if err != nil {
+		return LegalEntityRecord{}, err
+	}
+	var r LegalEntityRecord
+	err = q.QueryRow(ctx, `SELECT revision,registered_name,jurisdiction,status FROM cargo_org.legal_entity WHERE tenant_id=$1 AND legal_entity_id=$2`,
+		string(tenant), string(id)).Scan(&r.Revision, &r.RegisteredName, &r.Jurisdiction, &r.Status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return LegalEntityRecord{}, bentorepo.ErrNotFound
+	}
+	return r, err
+}
+
 // LegalEntityStatuses reads legal entity status for queries.
 type LegalEntityStatuses struct{ DB *bentopg.DB }
 

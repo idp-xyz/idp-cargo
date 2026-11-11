@@ -117,6 +117,8 @@ const (
 	eventLineAdded           = "CustomerOrderLineAdded.v1"
 	eventPartySet            = "OrderPartySet.v1"
 	eventTransportChanged    = "OrderTransportChanged.v1"
+	eventPartiesLocked       = "OrderPartiesLocked.v1"
+	eventPartyLockReleased   = "OrderPartyLockReleased.v1"
 	eventOrderClosed         = "CustomerOrderClosed.v1"
 	eventContactsErased      = "CustomerOrderContactsErased.v1"
 )
@@ -135,8 +137,9 @@ type Event struct {
 	PartyRole         string
 	PartyVersion      int64
 	PartyKind         string
-	Overridden        bool  // the party version carries an address or contact given on the order (C9; screening trigger, X1)
-	TransportVersion  int64 // set for transport events
+	Overridden        bool   // the party version carries an address or contact given on the order (C9; screening trigger, X1)
+	TransportVersion  int64  // set for transport events
+	HolderID          string // set for party lock events: the transport document
 }
 
 // OrderDraft is what a new order is recorded from. Lines are numbered in the order given. Requested are the
@@ -178,6 +181,8 @@ type OrderState struct {
 	// Every version of the order's transport and parties, in the order written (C9, C11, C12).
 	TransportVersions []TransportVersion
 	Parties           []OrderParty
+	// Locks transport documents hold on the parties and transport (C12, COM V0.9).
+	PartyLocks []PartyLock
 }
 
 // CustomerOrder is the aggregate root. What the quote, the ordering party, the terms and the policy say
@@ -194,6 +199,8 @@ type CustomerOrder struct {
 	storedTransport int   // transport versions already persisted
 	retained        bool  // the retention is persisted
 	erased          bool  // the erasure is persisted
+	storedLocks     int   // party locks already persisted
+	releasedLocks   []int // persisted party locks released since, by index
 	pending         []Event
 }
 
@@ -341,6 +348,9 @@ func RestoreOrder(s OrderState) (*CustomerOrder, error) {
 	if err := o.restoreParties(); err != nil {
 		return nil, err
 	}
+	if err := o.restorePartyLocks(); err != nil {
+		return nil, err
+	}
 	return o, nil
 }
 
@@ -383,6 +393,7 @@ func (o *CustomerOrder) State() OrderState {
 	s.Reservations = append([]Reservation(nil), s.Reservations...)
 	s.TransportVersions = append([]TransportVersion(nil), s.TransportVersions...)
 	s.Parties = append([]OrderParty(nil), s.Parties...)
+	s.PartyLocks = append([]PartyLock(nil), s.PartyLocks...)
 	s.Retention, s.Erasure = copyOf(s.Retention), copyOf(s.Erasure)
 	return s
 }
@@ -402,6 +413,7 @@ func (o *CustomerOrder) Acknowledge() {
 	o.pending, o.storedChanges, o.stored, o.reserved, o.released = nil, len(o.state.LineChanges), len(o.state.Obligations), len(o.state.Reservations), nil
 	o.storedParties, o.storedTransport = len(o.state.Parties), len(o.state.TransportVersions)
 	o.retained, o.erased = o.state.Retention != nil, o.state.Erasure != nil
+	o.storedLocks, o.releasedLocks = len(o.state.PartyLocks), nil
 }
 
 func (o *CustomerOrder) event(kind string, at time.Time) Event {

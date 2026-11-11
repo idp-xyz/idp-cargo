@@ -33,6 +33,7 @@ var (
 	_ api.PartyIdentityCommands = (*Module)(nil)
 	_ api.PartyIdentityQueries  = (*Module)(nil)
 	_ api.ContactAccessQueries  = (*Module)(nil)
+	_ api.LegalEntityQueries    = (*Module)(nil)
 )
 
 func New(db *bentopg.DB, auth api.Authorizer) (*Module, error) {
@@ -96,6 +97,24 @@ func (m *Module) ResolvePartyRole(ctx context.Context, q api.ResolvePartyRole) (
 		Validity: role.Validity(), EvidenceRef: role.EvidenceRef,
 		EnglishName: party.EnglishName(), Identifiers: identifiersOf(party),
 	}, nil
+}
+
+// GetLegalEntity answers LegalEntityRef v1.
+func (m *Module) GetLegalEntity(ctx context.Context, q api.GetLegalEntity) (api.LegalEntityRef, error) {
+	if q.TenantID == "" || q.LegalEntityID == "" {
+		return api.LegalEntityRef{}, classify(application.ErrInvalidQuery)
+	}
+	var r postgres.LegalEntityRecord
+	err := (bento.TenantTransactor{DB: m.db, Tenant: q.TenantID}).WithinTransaction(ctx, func(txCtx context.Context) error {
+		var err error
+		r, err = postgres.LegalEntityRecords{DB: m.db}.Read(txCtx, domain.TenantID(q.TenantID), domain.LegalEntityID(q.LegalEntityID))
+		return err
+	})
+	if err != nil {
+		return api.LegalEntityRef{}, classify(err)
+	}
+	return api.LegalEntityRef{TenantID: q.TenantID, LegalEntityID: q.LegalEntityID, Revision: r.Revision, RegisteredName: r.RegisteredName,
+		Jurisdiction: r.Jurisdiction, Status: r.Status}, nil
 }
 
 type authorizer struct{ api.Authorizer }

@@ -22,8 +22,9 @@ const InternationalIssuer = "ZZ"
 
 // Partner role codes other contexts ask ResolvePartyRole about, besides those of RATE and COM.
 const (
-	RoleCarrier  = "CARRIER"   // an airline, shipping line or other carrier
-	RoleCoLoader = "CO_LOADER" // another consolidator selling LCL or air consolidation space (BOOK OD-4)
+	RoleCarrier       = "CARRIER"        // an airline, shipping line or other carrier
+	RoleCoLoader      = "CO_LOADER"      // another consolidator selling LCL or air consolidation space (BOOK OD-4)
+	RoleOverseasAgent = "OVERSEAS_AGENT" // the destination agent a master air waybill or bill is consigned to (DOC)
 )
 
 // Party identity actions an Authorizer decides on.

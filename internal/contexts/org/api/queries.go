@@ -50,3 +50,33 @@ type PartyRole struct {
 type Queries interface {
 	ResolvePartyRole(ctx context.Context, q ResolvePartyRole) (PartyRole, error)
 }
+
+// Legal entity statuses (MD-02): only a VERIFIED legal entity contracts, quotes and issues documents.
+const (
+	LegalEntityDraft     = "DRAFT"
+	LegalEntityVerified  = "VERIFIED"
+	LegalEntitySuspended = "SUSPENDED"
+)
+
+// GetLegalEntity asks for a legal entity of the tenant. TenantID must come from a verified principal.
+type GetLegalEntity struct {
+	TenantID      string
+	LegalEntityID string
+}
+
+// LegalEntityRef is LegalEntityRef v1: a legal entity at a revision, with the registered name and
+// jurisdiction a holder freezes into its own snapshot (MD-02, MD-05), such as DOC for the issuer of a
+// document.
+type LegalEntityRef struct {
+	TenantID       string
+	LegalEntityID  string
+	Revision       int64
+	RegisteredName string
+	Jurisdiction   string // ISO 3166-1 alpha-2
+	Status         string
+}
+
+// LegalEntityQueries is ORG's read side of legal entities. An unknown legal entity yields ErrNotFound.
+type LegalEntityQueries interface {
+	GetLegalEntity(ctx context.Context, q GetLegalEntity) (LegalEntityRef, error)
+}
