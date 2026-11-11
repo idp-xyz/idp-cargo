@@ -195,7 +195,7 @@ func (s CommandReceipts) Find(ctx context.Context, t org.TenantID, id string) (a
 	if err != nil {
 		return app.Receipt{}, false, err
 	}
-	if (kind != app.ResultRoleApproval && kind != app.ResultAddressBook && kind != app.ResultPartyIdentity) || rev <= 0 {
+	if (kind != app.ResultRoleApproval && kind != app.ResultAddressBook && kind != app.ResultPartyIdentity && kind != app.ResultTransferRegister) || rev <= 0 {
 		return app.Receipt{}, false, errors.New("org: legacy or invalid receipt requires reconciliation")
 	}
 	r := app.Receipt{CommandID: id, ResultType: kind, PartyID: org.PartyID(party), NewRevision: rev, RequestHash: hash}

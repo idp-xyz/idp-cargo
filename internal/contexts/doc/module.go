@@ -1,5 +1,6 @@
-// Package doc assembles the DOC (Transport Documents) bounded context, V0.1: the HAWB and MAWB of the N1 air line.
-// Code outside DOC uses it through package api; everything under internal/ is private to DOC.
+// Package doc assembles the DOC (Transport Documents) bounded context, V0.2: the HAWB and MAWB of the N1 air line,
+// rendered to PDF and dispatched with the P5 records. Code outside DOC uses it through package api; everything under
+// internal/ is private to DOC.
 package doc
 
 import (
@@ -19,6 +20,7 @@ import (
 	comacl "go.idp.xyz/idp-cargo/internal/contexts/doc/internal/adapters/com"
 	finacl "go.idp.xyz/idp-cargo/internal/contexts/doc/internal/adapters/fin"
 	orgacl "go.idp.xyz/idp-cargo/internal/contexts/doc/internal/adapters/org"
+	"go.idp.xyz/idp-cargo/internal/contexts/doc/internal/adapters/pdf"
 	"go.idp.xyz/idp-cargo/internal/contexts/doc/internal/adapters/postgres"
 	"go.idp.xyz/idp-cargo/internal/contexts/doc/internal/application"
 	"go.idp.xyz/idp-cargo/internal/contexts/doc/internal/domain"
@@ -27,7 +29,8 @@ import (
 )
 
 // Module wires DOC's use cases to PostgreSQL through IDP-Bento-Go, to AIR's AirDocFacts v1, COM's OrderParties v1
-// and ORG's legal entities and parties. FIN is not built: no credit decision exists (C7, OD-3 B).
+// and ORG's legal entities, parties and contact transfer register, and renders with the IDP-AWB-V1 template. FIN is
+// not built: no credit decision exists (C7, OD-3 B).
 type Module struct {
 	db        *bentopg.DB
 	outbox    *bentooutbox.Store
@@ -35,6 +38,7 @@ type Module struct {
 	parties   application.Parties
 	directory application.Directory
 	credit    application.Credit
+	renderer  application.Renderer
 	auth      api.Authorizer
 	clock     bento.SystemClock
 	window    kernel.RecordWindow
@@ -51,8 +55,8 @@ var (
 	_ api.Queries  = (*Module)(nil)
 )
 
-// New assembles DOC. air answers AirDocFacts v1 (relationship 11), com OrderParties v1 and org LegalEntityRef v1 and
-// PartyRef v1; DOC writes to none of them.
+// New assembles DOC. air answers AirDocFacts v1 (relationship 11), com OrderParties v1 and org LegalEntityRef v1,
+// PartyRef v1 and ContactTransferRegister v1; DOC writes to none of them.
 func New(db *bentopg.DB, air airapi.AirDocFactsQueries, com comapi.OrderPartyQueries, org orgacl.ORG, auth api.Authorizer, opts ...Option) (*Module, error) {
 	if db == nil || air == nil || com == nil || org == nil || auth == nil {
 		return nil, errors.New("doc: module needs a database, AIR's facts, COM's parties, ORG and an authorizer")
@@ -62,7 +66,7 @@ func New(db *bentopg.DB, air airapi.AirDocFactsQueries, com comapi.OrderPartyQue
 		return nil, err
 	}
 	m := &Module{db: db, outbox: outbox, facts: airacl.Facts{AIR: air}, parties: comacl.Parties{COM: com}, directory: orgacl.Directory{ORG: org},
-		credit: finacl.NoCreditControl{}, auth: auth, window: kernel.DefaultRecordWindow}
+		credit: finacl.NoCreditControl{}, renderer: pdf.Renderer{}, auth: auth, window: kernel.DefaultRecordWindow}
 	for _, opt := range opts {
 		opt(m)
 	}
@@ -253,6 +257,8 @@ func (m *Module) deps(tenant, commandID string) application.Deps {
 		Parties:     m.parties,
 		Directory:   m.directory,
 		Credit:      m.credit,
+		Dispatches:  postgres.DispatchStore{DB: m.db},
+		Renderer:    m.renderer,
 	}
 }
 
@@ -288,6 +294,8 @@ func classify(err error) error {
 		errors.Is(err, domain.ErrPartiesDiverge), errors.Is(err, domain.ErrIncomplete), errors.Is(err, domain.ErrNotLocked),
 		errors.Is(err, domain.ErrCreditHold), errors.Is(err, domain.ErrCreditUndecided), errors.Is(err, domain.ErrIssuanceBlocked),
 		errors.Is(err, domain.ErrIssuerNotVerified), errors.Is(err, domain.ErrInvalidAuthority), errors.Is(err, domain.ErrNumberIssued),
+		errors.Is(err, domain.ErrNotDispatchable), errors.Is(err, domain.ErrTransferBlocked), errors.Is(err, domain.ErrTransferNotReserved),
+		errors.Is(err, domain.ErrInvalidDispatch), errors.Is(err, domain.ErrCopyChanged),
 		errors.Is(err, application.ErrInvalidQuery), errors.Is(err, application.ErrInvalidCommand), errors.Is(err, application.ErrUnknownSource),
 		errors.Is(err, kernel.ErrOutsideRecordWindow):
 		kind = api.ErrRejected

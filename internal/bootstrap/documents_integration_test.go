@@ -3,8 +3,10 @@
 package bootstrap
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +15,7 @@ import (
 	comapi "go.idp.xyz/idp-cargo/internal/contexts/com/api"
 	docapi "go.idp.xyz/idp-cargo/internal/contexts/doc/api"
 	fulapi "go.idp.xyz/idp-cargo/internal/contexts/ful/api"
+	orgmodule "go.idp.xyz/idp-cargo/internal/contexts/org"
 	orgapi "go.idp.xyz/idp-cargo/internal/contexts/org/api"
 	phyapi "go.idp.xyz/idp-cargo/internal/contexts/phy/api"
 	"go.idp.xyz/idp-cargo/internal/foundation/bento"
@@ -28,11 +31,13 @@ func (allowAll) AuthorizeDocAction(context.Context, string, string, string, stri
 // (C12), with a credit override while FIN is not built (OD-3 B), under the forwarder's authority at PVG; COM then
 // refuses to change the parties. The MAWB is issued under MU's agency. To add a notify party, the HAWB is amended:
 // the client releases the lock, and setting the party races the client locking again; whichever wins, the
-// document ends consistent with COM.
+// document ends consistent with COM. DOC V0.2 then sends the HAWB to the destination agent in the US: the shipper's
+// contact, consenting to go abroad, is on the copy once the client has reserved it in ORG's register; the
+// consignee's, consenting only to be provided in China, is left off.
 func TestTransportDocumentsWithEveryContext(t *testing.T) {
 	ctx := context.Background()
 	platform := openPlatform(t)
-	orgModule, err := platform.ORG(allowAll{})
+	orgModule, err := platform.ORG(allowAll{}, orgmodule.WithTransferThresholds(1, 5, 10))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,6 +98,16 @@ func TestTransportDocumentsWithEveryContext(t *testing.T) {
 		must("office "+party, err)
 	}
 
+	// The shipper's documents contact, consenting to be provided and to go abroad.
+	_, err = orgModule.AddPartyContact(ctx, orgapi.AddPartyContact{CommandID: "contact-shipper", TenantID: tenant, ActorID: "org-officer", PartyID: "shipper-co",
+		ExpectedRevision: 1, ContactID: "CT-SHIPPER", Contact: orgapi.Contact{Purposes: []string{orgapi.ContactDocuments}, Name: "Test Person A",
+			Mobile: "+86 138 0000 0001", Email: "a@shipper.test"}, DefaultFor: []string{orgapi.ContactDocuments}})
+	must("shipper contact", err)
+	_, err = orgModule.RecordContactConsent(ctx, orgapi.RecordContactConsent{CommandID: "consent-shipper", TenantID: tenant, ActorID: "org-officer",
+		PartyID: "shipper-co", ExpectedRevision: 2, ContactID: "CT-SHIPPER", Consent: orgapi.ContactConsent{NoticeVersion: "PI-RULES-2026.1",
+			ProvideToOthers: true, CrossBorder: true, Basis: orgapi.ConsentSubjectConfirmed, EvidenceRef: "signed notice N-1"}})
+	must("shipper consent", err)
+
 	// House A to AirDocFacts version 1, as in the measures slice.
 	contexts := slice{org: orgModule, rate: rateModule, com: comModule, ful: fulModule, tenant: tenant, at: at, departs: departs}
 	contexts.planAir(t, "party-a", "A")
@@ -102,7 +117,10 @@ func TestTransportDocumentsWithEveryContext(t *testing.T) {
 		must("order parties", err)
 		return p.Revision
 	}
-	for _, p := range []comapi.OrderParty{{Role: comapi.PartyShipper, PartyID: "shipper-co"}, {Role: comapi.PartyConsignee, PartyID: "consignee-us"}} {
+	inChina := comapi.ContactConsent{NoticeVersion: "PI-RULES-2026.1", ProvideToOthers: true, Basis: comapi.ConsentCustomerUndertaking, EvidenceRef: "contract C-1"}
+	for _, p := range []comapi.OrderParty{{Role: comapi.PartyShipper, PartyID: "shipper-co"}, {Role: comapi.PartyConsignee, PartyID: "consignee-us",
+		Contact: comapi.ContactChoice{Use: comapi.ContactOverride, Override: &comapi.Contact{Name: "Test Person B", Phone: "+1 718 555 0002"}, Consent: &inChina,
+			Reason: "the consignee's import desk"}}} {
 		_, err = comModule.SetOrderParty(ctx, comapi.SetOrderParty{CommandID: "set-" + p.Role, TenantID: tenant, ActorID: "cs-1", OrderID: "O-A",
 			ExpectedRevision: orderRevision(), Party: p, OccurredAt: hours(7)})
 		must("set "+p.Role, err)
@@ -319,5 +337,62 @@ func TestTransportDocumentsWithEveryContext(t *testing.T) {
 	if docs, err := docModule.ListDocumentsForShipment(ctx, docapi.ListDocumentsForShipment{TenantID: tenant, ShipmentID: "SH-A"}); err != nil || len(docs) != 1 ||
 		docs[0].DocumentID != "DOC-HAWB-A" {
 		t.Fatalf("documents of SH-A: %+v %v", docs, err)
+	}
+
+	// DOC V0.2: the HAWB to the destination agent in the US, by e-mail (T6: the client reserves in ORG, sends, records).
+	dispatch := func(command, id string, h int) docapi.DocumentDispatch {
+		t.Helper()
+		_, err := docModule.PrepareDocumentDispatch(ctx, docapi.PrepareDocumentDispatch{CommandID: command, TenantID: tenant, ActorID: "doc-1", DispatchID: id,
+			DocumentID: "DOC-HAWB-A", RecipientParty: "agent-ny", RecipientRole: docapi.RecipientDestinationAgent, Channel: docapi.ChannelEmailPDF,
+			OccurredAt: hours(h)})
+		must("prepare "+id, err)
+		d, err := docModule.GetDispatch(ctx, docapi.GetDispatch{TenantID: tenant, DispatchID: id})
+		must("dispatch "+id, err)
+		return d
+	}
+	d := dispatch("dispatch-agent", "DSP-AGENT", 26)
+	if d.Version != h.CurrentVersion || d.Recipient.Country != "US" || len(d.Contacts) != 2 || d.Contacts[0].Key != "ORG:CT-SHIPPER" ||
+		d.Contacts[0].Classification != docapi.ContactCrossBorder || d.Contacts[0].Status != docapi.ContactIncluded || d.Contacts[0].Consent.ORGRevision != 3 ||
+		d.Contacts[1].PartyRole != comapi.PartyConsignee || d.Contacts[1].OmitReason != docapi.OmitNoTransferConsent ||
+		!slices.Equal(d.CrossBorderKeys, []string{"ORG:CT-SHIPPER"}) || d.RegisterState != orgapi.TransferOK {
+		t.Fatalf("dispatch to the agent: %+v", d)
+	}
+	copied, err := docModule.GetDispatchCopy(ctx, docapi.GetDispatchCopy{TenantID: tenant, ActorID: "doc-1", DispatchID: "DSP-AGENT"})
+	must("copy", err)
+	if !bytes.Contains(copied.PDF, []byte("(SHIPPER: Test Person A, +86 138 0000 0001, a@shipper.test)")) || bytes.Contains(copied.PDF, []byte("Test Person B")) ||
+		!bytes.Contains(copied.PDF, []byte("(SHA0000001)")) {
+		t.Fatal("the agent's copy carries the shipper's contact and not the consignee's")
+	}
+	outcome := func(command, id, outcome string, revision int64, h int) error {
+		_, err := docModule.RecordDispatchOutcome(ctx, docapi.RecordDispatchOutcome{CommandID: command, TenantID: tenant, ActorID: "doc-1", DispatchID: id,
+			ExpectedRevision: revision, Outcome: outcome, Reference: "smtp:" + command, OccurredAt: hours(h)})
+		return err
+	}
+	if err = outcome("sent-early", "DSP-AGENT", docapi.DispatchSent, 1, 26); !errors.Is(err, docapi.ErrRejected) || !strings.Contains(err.Error(), "NOT_RESERVED") {
+		t.Fatalf("sent before ORG's reservation: %v", err)
+	}
+	reserved, err := orgModule.ReserveContactTransfers(ctx, orgapi.ReserveContactTransfers{CommandID: "reserve-agent", TenantID: tenant, ActorID: "doc-1",
+		DispatchID: "DSP-AGENT", ContactKeys: d.CrossBorderKeys, OccurredAt: hours(26)})
+	if err != nil || reserved.Persons != 1 || reserved.State != orgapi.TransferWarning {
+		t.Fatalf("reservation: %+v %v", reserved, err)
+	}
+	must("sent", outcome("sent", "DSP-AGENT", docapi.DispatchSent, 1, 26))
+	// a second copy to the agent bounces: the person stays counted once, the client releases the reservation
+	d2 := dispatch("dispatch-agent-2", "DSP-AGENT-2", 27)
+	if d2.RegisterState != orgapi.TransferWarning {
+		t.Fatalf("the register's state at the second dispatch: %+v", d2)
+	}
+	if reserved, err = orgModule.ReserveContactTransfers(ctx, orgapi.ReserveContactTransfers{CommandID: "reserve-agent-2", TenantID: tenant, ActorID: "doc-1",
+		DispatchID: "DSP-AGENT-2", ContactKeys: d2.CrossBorderKeys, OccurredAt: hours(27)}); err != nil || reserved.Persons != 1 {
+		t.Fatalf("the same person again: %+v %v", reserved, err)
+	}
+	must("failed", outcome("bounced", "DSP-AGENT-2", docapi.DispatchFailed, 1, 27))
+	if reserved, err = orgModule.ReleaseContactTransfers(ctx, orgapi.ReleaseContactTransfers{CommandID: "release-agent-2", TenantID: tenant, ActorID: "doc-1",
+		DispatchID: "DSP-AGENT-2", OccurredAt: hours(27)}); err != nil || reserved.Persons != 1 {
+		t.Fatalf("release: %+v %v", reserved, err)
+	}
+	if provisions, err := docModule.ListContactProvisions(ctx, docapi.ListContactProvisions{TenantID: tenant, ActorID: "privacy-officer", From: at,
+		Until: hours(48)}); err != nil || len(provisions) != 2 || provisions[0].State != docapi.DispatchSent || provisions[1].State != docapi.DispatchFailed {
+		t.Fatalf("provision records: %+v %v", provisions, err)
 	}
 }

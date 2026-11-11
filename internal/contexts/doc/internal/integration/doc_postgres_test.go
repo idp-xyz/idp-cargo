@@ -68,10 +68,13 @@ func unlocode(code string) kernel.LocationCode {
 // world stands in for AIR, COM and ORG: AirDocFacts by movement, order parties by order, the issuing legal entity
 // and the destination agent, which tests change.
 type world struct {
-	mu     sync.Mutex
-	at     time.Time
-	facts  map[string]airapi.AirDocFacts
-	orders map[string]comapi.OrderParties
+	mu        sync.Mutex
+	at        time.Time
+	facts     map[string]airapi.AirDocFacts
+	orders    map[string]comapi.OrderParties
+	register  string              // the register's state; OK when empty
+	safeguard string              // the kind of safeguard in force, if any
+	reserved  map[string][]string // the keys ORG holds by dispatch
 }
 
 func (w *world) GetAirDocFacts(_ context.Context, q airapi.GetAirDocFacts) (airapi.AirDocFacts, error) {
@@ -93,6 +96,14 @@ func (w *world) GetOrderParties(_ context.Context, q comapi.GetOrderParties) (co
 		return comapi.OrderParties{}, fmt.Errorf("%w: stub", comapi.ErrNotFound)
 	}
 	o.Locks = append([]comapi.PartyLock(nil), o.Locks...)
+	o.Parties = append([]comapi.OrderPartyView(nil), o.Parties...)
+	for i := range o.Parties {
+		if !q.WithContacts {
+			o.Parties[i].Contact = nil
+		} else if q.Purpose != kernel.PurposeDocuments {
+			return comapi.OrderParties{}, errors.New("stub: DOC reads contacts for DOCUMENTS")
+		}
+	}
 	return o, nil
 }
 

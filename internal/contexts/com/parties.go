@@ -54,8 +54,9 @@ func (m *Module) GetOrderParties(ctx context.Context, q api.GetOrderParties) (ap
 		return api.OrderParties{}, classify(err)
 	}
 	t := order.Transport()
-	out := api.OrderParties{OrderID: string(order.ID()), Revision: revision, Transport: api.Transport{Mode: string(t.Mode), Movement: string(t.Movement)},
-		Contacts: api.ContactsStatus{State: api.ContactsInUse}}
+	out := api.OrderParties{OrderID: string(order.ID()), Revision: revision, CustomerPartyID: order.State().Customer.PartyID,
+		Transport: api.Transport{Mode: string(t.Mode), Movement: string(t.Movement)},
+		Contacts:  api.ContactsStatus{State: api.ContactsInUse}}
 	if r, ok := order.Retention(); ok {
 		out.Contacts = api.ContactsStatus{State: api.ContactsRestricted, RetainedUntil: r.RetainedUntil}
 	}

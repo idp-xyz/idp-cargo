@@ -16,6 +16,12 @@ const (
 	TransportDocumentCancelled          = "TransportDocumentCancelled.v1"
 	IssuanceAuthorityRecorded           = "IssuanceAuthorityRecorded.v1"
 	IssuanceAuthorityWithdrawn          = "IssuanceAuthorityWithdrawn.v1"
+	// Dispatch events (DOC V0.2) have the dispatch as subject and name the document and version; never a recipient's
+	// name or a contact.
+	DocumentDispatchPrepared       = "DocumentDispatchPrepared.v1"
+	DocumentDispatched             = "DocumentDispatched.v1"
+	DocumentDispatchFailed         = "DocumentDispatchFailed.v1"
+	DocumentDispatchOutcomeUnknown = "DocumentDispatchOutcomeUnknown.v1"
 )
 
 // EventPayload is the JSON payload of every DOC event: identifiers only, never numbers, names, addresses or
@@ -28,4 +34,5 @@ type EventPayload struct {
 	ShipmentID      string `json:"shipment_id,omitempty"`
 	ConsolidationID string `json:"consolidation_id,omitempty"`
 	MovementID      string `json:"movement_id,omitempty"`
+	DocumentID      string `json:"document_id,omitempty"`
 }

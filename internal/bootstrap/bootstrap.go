@@ -75,12 +75,12 @@ func Open(ctx context.Context, cfg Config) (*Platform, error) {
 func (p *Platform) Close() { p.pool.Close() }
 
 // ORG assembles the ORG bounded context.
-func (p *Platform) ORG(auth orgapi.Authorizer) (*org.Module, error) {
+func (p *Platform) ORG(auth orgapi.Authorizer, opts ...org.Option) (*org.Module, error) {
 	db, err := p.newDB()
 	if err != nil {
 		return nil, err
 	}
-	return org.New(db, auth)
+	return org.New(db, auth, opts...)
 }
 
 // RATE assembles the RATE bounded context. org is used only through its query side.
@@ -200,11 +200,14 @@ func (p *Platform) AIR(book bookapi.Queries, ful fulapi.AirOperationPlanQueries,
 	return air.New(db, book, ful, auth, opts...)
 }
 
-// ORGForDOC is what DOC reads of ORG: legal entities, party roles and address books.
+// ORGForDOC is what DOC reads of ORG: legal entities, party roles, address books, party identities and the contact
+// transfer register.
 type ORGForDOC interface {
 	orgapi.Queries
 	orgapi.LegalEntityQueries
 	orgapi.AddressBookQueries
+	orgapi.PartyIdentityQueries
+	orgapi.ContactTransferRegisterQueries
 }
 
 // DOC assembles the DOC bounded context. air answers AirDocFacts v1 (relationship 11), com OrderParties v1 and org

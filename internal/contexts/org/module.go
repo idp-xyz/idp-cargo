@@ -19,24 +19,38 @@ import (
 
 // Module wires ORG's application services to PostgreSQL through IDP-Bento-Go.
 type Module struct {
-	db     *bentopg.DB
-	outbox *bentooutbox.Store
-	auth   api.Authorizer
-	clock  bento.SystemClock
+	db         *bentopg.DB
+	outbox     *bentooutbox.Store
+	auth       api.Authorizer
+	clock      bento.SystemClock
+	thresholds domain.TransferThresholds
+}
+
+// Option configures a Module.
+type Option func(*Module)
+
+// WithTransferThresholds sets the persons a year from which ContactTransferRegister v1 warns, blocks without a
+// safeguard, and blocks always; for tests only, since the law sets 80,000, 100,000 and 1,000,000.
+func WithTransferThresholds(warning, block, assessment int64) Option {
+	return func(m *Module) {
+		m.thresholds = domain.TransferThresholds{Warning: warning, Block: block, Assessment: assessment}
+	}
 }
 
 var (
-	_ api.Commands              = (*Module)(nil)
-	_ api.Queries               = (*Module)(nil)
-	_ api.AddressBookCommands   = (*Module)(nil)
-	_ api.AddressBookQueries    = (*Module)(nil)
-	_ api.PartyIdentityCommands = (*Module)(nil)
-	_ api.PartyIdentityQueries  = (*Module)(nil)
-	_ api.ContactAccessQueries  = (*Module)(nil)
-	_ api.LegalEntityQueries    = (*Module)(nil)
+	_ api.Commands                        = (*Module)(nil)
+	_ api.Queries                         = (*Module)(nil)
+	_ api.AddressBookCommands             = (*Module)(nil)
+	_ api.AddressBookQueries              = (*Module)(nil)
+	_ api.PartyIdentityCommands           = (*Module)(nil)
+	_ api.PartyIdentityQueries            = (*Module)(nil)
+	_ api.ContactAccessQueries            = (*Module)(nil)
+	_ api.LegalEntityQueries              = (*Module)(nil)
+	_ api.ContactTransferRegisterCommands = (*Module)(nil)
+	_ api.ContactTransferRegisterQueries  = (*Module)(nil)
 )
 
-func New(db *bentopg.DB, auth api.Authorizer) (*Module, error) {
+func New(db *bentopg.DB, auth api.Authorizer, opts ...Option) (*Module, error) {
 	if db == nil || auth == nil {
 		return nil, errors.New("org: module needs a database and an authorizer")
 	}
@@ -44,7 +58,14 @@ func New(db *bentopg.DB, auth api.Authorizer) (*Module, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Module{db: db, outbox: outbox, auth: auth}, nil
+	m := &Module{db: db, outbox: outbox, auth: auth, thresholds: domain.DefaultTransferThresholds}
+	for _, opt := range opts {
+		opt(m)
+	}
+	if !m.thresholds.Valid() {
+		return nil, errors.New("org: transfer thresholds must rise from warning to block to assessment")
+	}
+	return m, nil
 }
 
 func (m *Module) ApproveRole(ctx context.Context, cmd api.ApproveRole) (api.Receipt, error) {
@@ -150,7 +171,8 @@ func classify(err error) error {
 		errors.Is(err, application.ErrInvalidCommand), errors.Is(err, domain.ErrInvalidAddress), errors.Is(err, domain.ErrInvalidContact),
 		errors.Is(err, domain.ErrInvalidChange), errors.Is(err, domain.ErrShortCodeInUse), errors.Is(err, domain.ErrEntryNotActive),
 		errors.Is(err, domain.ErrNothingChanged), errors.Is(err, domain.ErrPartyArchived),
-		errors.Is(err, domain.ErrInvalidIdentifier), errors.Is(err, domain.ErrIdentifierExists), errors.Is(err, domain.ErrInvalidConsent):
+		errors.Is(err, domain.ErrInvalidIdentifier), errors.Is(err, domain.ErrIdentifierExists), errors.Is(err, domain.ErrInvalidConsent),
+		errors.Is(err, domain.ErrInvalidTransfer), errors.Is(err, domain.ErrTransferThreshold), errors.Is(err, domain.ErrTransferAssessment):
 		kind = api.ErrRejected
 	default:
 		return err

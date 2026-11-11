@@ -291,14 +291,16 @@ type PartyLock struct {
 }
 
 // OrderParties is an order's transport and current parties at Revision, where its contacts stand, and the
-// locks transport documents hold on them (C12).
+// locks transport documents hold on them (C12). CustomerPartyID is the ordering party: a copy of a document sent to
+// it provides no one's contacts to others (P5).
 type OrderParties struct {
-	OrderID   string
-	Revision  int64
-	Transport Transport
-	Parties   []OrderPartyView
-	Contacts  ContactsStatus
-	Locks     []PartyLock
+	OrderID         string
+	Revision        int64
+	CustomerPartyID string
+	Transport       Transport
+	Parties         []OrderPartyView
+	Contacts        ContactsStatus
+	Locks           []PartyLock
 }
 
 // OrderPartyQueries is the read side of order parties.

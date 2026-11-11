@@ -1,6 +1,6 @@
-// Package org is DOC's anticorruption layer for ORG (ORG -> DOC): the issuing legal entity (LegalEntityRef v1) and
-// a destination agent in the OVERSEAS_AGENT role with its office address (PartyRef v1). ORG's error kinds are kept
-// as text only.
+// Package org is DOC's anticorruption layer for ORG (ORG -> DOC): the issuing legal entity (LegalEntityRef v1),
+// a destination agent in the OVERSEAS_AGENT role with its office address and a recipient's country (PartyRef v1),
+// and the tenant's ContactTransferRegister v1. ORG's error kinds are kept as text only.
 package org
 
 import (
@@ -20,6 +20,8 @@ type ORG interface {
 	orgapi.Queries
 	orgapi.LegalEntityQueries
 	orgapi.AddressBookQueries
+	orgapi.PartyIdentityQueries
+	orgapi.ContactTransferRegisterQueries
 }
 
 // Directory reads ORG. Call it outside DOC's transactions.
@@ -41,6 +43,29 @@ func (d Directory) Issuer(ctx context.Context, tenant doc.TenantID, legalEntity 
 	}
 	return doc.Issuer{LegalEntityID: le.LegalEntityID, Revision: le.Revision, Name: le.RegisteredName, Jurisdiction: le.Jurisdiction,
 		Verified: le.Status == orgapi.LegalEntityVerified}, nil
+}
+
+func (d Directory) Country(ctx context.Context, tenant doc.TenantID, party string) (string, error) {
+	got, err := d.ORG.GetPartyIdentity(ctx, orgapi.GetPartyIdentity{TenantID: string(tenant), PartyID: party})
+	if err != nil {
+		return "", unknown("party "+party, err)
+	}
+	if got.PartyID != party || len(got.CountryCode) != 2 {
+		return "", fmt.Errorf("%w: party %s has no registration country", app.ErrUnknownSource, party)
+	}
+	return got.CountryCode, nil
+}
+
+func (d Directory) Register(ctx context.Context, tenant doc.TenantID, dispatch string) (doc.RegisterView, error) {
+	got, err := d.ORG.GetContactTransferRegister(ctx, orgapi.GetContactTransferRegister{TenantID: string(tenant), DispatchID: dispatch})
+	if err != nil {
+		return doc.RegisterView{}, err
+	}
+	out := doc.RegisterView{Year: got.Year, Persons: got.Persons, State: got.State, DispatchKeys: got.DispatchKeys}
+	if got.Safeguard != nil {
+		out.SafeguardKind = got.Safeguard.Kind
+	}
+	return out, nil
 }
 
 func (d Directory) Agent(ctx context.Context, tenant doc.TenantID, party, legalEntity string, at time.Time) (doc.Party, error) {
