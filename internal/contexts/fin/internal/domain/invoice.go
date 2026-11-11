@@ -14,12 +14,14 @@ const (
 	NoteCancelled = "CANCELLED_BY_CREDIT_NOTE"
 )
 
-// DocumentRef is the issued house document a debit note bills on, from DOC's TransportDocumentSnapshot v1.
+// DocumentRef is the issued house document a debit note bills on, from DOC's TransportDocumentSnapshot v1, with the
+// time that version was issued.
 type DocumentRef struct {
 	DocumentID   string
 	Version      int
 	Number       string
 	MasterNumber string
+	IssuedAt     time.Time
 }
 
 // TaxRef is the tax treatment version a note line was billed under.
@@ -78,8 +80,9 @@ type Note struct {
 }
 
 const (
-	eventDebitNoteIssued  = "DebtorInvoiceIssued.v1"
-	eventCreditNoteIssued = "CreditNoteIssued.v1"
+	eventDebitNoteIssued    = "DebtorInvoiceIssued.v1"
+	eventDebitNoteCancelled = "DebtorInvoiceCancelled.v1"
+	eventCreditNoteIssued   = "CreditNoteIssued.v1"
 )
 
 // Draw takes the next number of the legal entity's series of a note kind, under the series' lock.
@@ -147,8 +150,11 @@ func (j *FreightJob) IssueDebitNote(in DebitNoteInput, p *FinancePolicy, draw Dr
 		return fmt.Errorf("%w: the invoice date is the date of the issue", ErrInvalid)
 	case in.Profile.No < 1:
 		return fmt.Errorf("%w: %s", ErrNoBillingProfile, in.DebtorPartyID)
-	case !identifier(in.Document.DocumentID) || in.Document.Version < 1 || !identifier(in.Document.Number):
+	case !identifier(in.Document.DocumentID) || in.Document.Version < 1 || !identifier(in.Document.Number) || in.Document.IssuedAt.IsZero():
 		return fmt.Errorf("%w: shipment %s", ErrNoIssuedDocument, st.ShipmentID)
+	case at.Before(in.Document.IssuedAt):
+		return fmt.Errorf("%w: house document %s was issued at %s, after the note's business time", ErrNoIssuedDocument, in.Document.Number,
+			in.Document.IssuedAt.UTC().Format(time.RFC3339))
 	case j.note(in.ID) != nil:
 		return fmt.Errorf("%w: note %s exists", ErrInvalidTransition, in.ID)
 	case p.State().LegalEntityID != st.LegalEntityID:
@@ -216,32 +222,37 @@ func (j *FreightJob) IssueDebitNote(in DebitNoteInput, p *FinancePolicy, draw Dr
 	if n.Number, n.Seq, err = draw(KindDebitNote); err != nil {
 		return err
 	}
+	st.Notes = append(st.Notes, n)
+	j.recordNote(eventDebitNoteIssued, at, n)
 	for _, line := range n.Lines {
 		l := &st.Lines[line.JobLineNo-1]
 		prev := l.Sell[len(l.Sell)-1]
 		l.Sell = append(l.Sell, SideVersion{Side: SideSell, No: line.SideVersion, PartyID: prev.PartyID, PartyRevision: in.DebtorRevision,
 			Amount: prev.Amount, Local: line.Local, FX: line.FX, Status: StatusInvoiced, Reason: "debit note " + n.Number, InvoiceID: n.ID,
 			InvoiceLineNo: line.No, By: by, At: at.UTC()})
+		j.recordLine(eventSideRevised, at, l.No, SideSell, line.SideVersion)
 	}
-	st.Notes = append(st.Notes, n)
-	j.recordNote(eventDebitNoteIssued, at, n)
 	return nil
 }
 
 // CreditNoteInput is a credit note as asked: the debit note and its lines to reverse, the reason and the invoice date.
+// WriteOff returns the reversed sides at zero (a waived charge, not billed again) instead of at their amount.
 type CreditNoteInput struct {
 	ID          string
 	DebitNoteID string
 	LineNos     []int
 	Reason      string
 	InvoiceDate time.Time
+	WriteOff    bool
 }
 
 // IssueCreditNote reverses whole lines of an ISSUED debit note of the job with a reason (ISSUE_CREDIT_NOTE): each line
-// once, every amount negated under the debit note's conversion and tax. The note takes the next number of the credit
-// note series; each reversed sell side returns to ESTIMATED as a new version at the ESTIMATE rate in force, to be
-// revised or billed again; a debit note with every line reversed is CANCELLED_BY_CREDIT_NOTE. Fapiao and their
-// red-letter records come later (FB6), so none is asked for yet.
+// once, every amount negated under the debit note's conversion and tax. A credit note reduces what the debtor owes (its
+// total is negative), and the lines it leaves on the debit note still total more than zero, so a discount line is
+// reversed with, or after, the lines it discounts. The note takes the next number of the credit note series; each
+// reversed sell side returns to ESTIMATED as a new version, at its amount converted at the ESTIMATE rate in force
+// (FIN_RATE_MISSING without one), to be revised or billed again, or at zero for a write-off; a debit note with every line
+// reversed is CANCELLED_BY_CREDIT_NOTE. Fapiao and their red-letter records come later (FB6), so none is asked for yet.
 func (j *FreightJob) IssueCreditNote(in CreditNoteInput, p *FinancePolicy, draw Draw, by string, at time.Time) error {
 	if err := j.open(by, at); err != nil {
 		return err
@@ -265,8 +276,10 @@ func (j *FreightJob) IssueCreditNote(in CreditNoteInput, p *FinancePolicy, draw 
 		return fmt.Errorf("%w: a credit note is dated on or after debit note %s", ErrInvalid, d.Number)
 	}
 	credited := map[int]bool{}
+	remaining := d.Total
 	for _, o := range st.Notes {
 		if o.CreditsID == d.ID {
+			remaining += o.Total
 			for _, l := range o.Lines {
 				credited[l.CreditsLineNo] = true
 			}
@@ -287,7 +300,11 @@ func (j *FreightJob) IssueCreditNote(in CreditNoteInput, p *FinancePolicy, draw 
 		if v.Status != StatusInvoiced || v.InvoiceID != d.ID || v.InvoiceLineNo != dl.No {
 			return fmt.Errorf("%w: the sell side of line %d is not the one debit note %s invoiced", ErrInvalid, dl.JobLineNo, d.Number)
 		}
-		back, err := j.side(SideSell, v.PartyID, v.PartyRevision, v.Amount, StatusEstimated, "credit note", p, v.No+1, by, at)
+		amount := v.Amount
+		if in.WriteOff {
+			amount.Minor = 0
+		}
+		back, err := j.side(SideSell, v.PartyID, v.PartyRevision, amount, StatusEstimated, "credit note", p, v.No+1, by, at)
 		if err != nil {
 			return err
 		}
@@ -302,20 +319,35 @@ func (j *FreightJob) IssueCreditNote(in CreditNoteInput, p *FinancePolicy, draw 
 		}
 		n.Lines = append(n.Lines, line)
 	}
+	switch remaining += n.Total; {
+	case n.Total >= 0:
+		return fmt.Errorf("%w: a credit note reduces what the debtor owes; reverse a discount line with the lines it discounts", ErrInvalid)
+	case len(credited) < len(d.Lines) && remaining <= 0:
+		return fmt.Errorf("%w: the lines left on debit note %s would total %d; reverse its discount lines with them", ErrInvalid, d.Number, remaining)
+	}
 	if n.Number, n.Seq, err = draw(KindCreditNote); err != nil {
 		return err
 	}
-	for i, back := range returned {
-		back.Reason = "credit note " + n.Number
-		l := &st.Lines[n.Lines[i].JobLineNo-1]
-		l.Sell = append(l.Sell, back)
-	}
-	if len(credited) == len(d.Lines) {
-		d.State = NoteCancelled
+	cancelled := len(credited) == len(d.Lines)
+	if cancelled {
+		d.State = NoteCancelled // before the append below, which may move the notes d points into
 		j.cancelled = append(j.cancelled, d.ID)
 	}
+	debit := *d
 	st.Notes = append(st.Notes, n)
 	j.recordNote(eventCreditNoteIssued, at, n)
+	if cancelled {
+		j.recordNote(eventDebitNoteCancelled, at, debit)
+	}
+	for i, back := range returned {
+		back.Reason = "credit note " + n.Number
+		if in.WriteOff {
+			back.Reason = "credit note " + n.Number + ", written off"
+		}
+		l := &st.Lines[n.Lines[i].JobLineNo-1]
+		l.Sell = append(l.Sell, back)
+		j.recordLine(eventSideRevised, at, l.No, SideSell, back.No)
+	}
 	return nil
 }
 

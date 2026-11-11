@@ -53,7 +53,7 @@ CREATE TABLE cargo_fin.billing_profile_version (
  registered_phone text CHECK (registered_phone ~ '^[0-9+() -]{3,30}$'),
  bank_name text CHECK (length(btrim(bank_name)) BETWEEN 1 AND 200),
  bank_account text CHECK (bank_account ~ '^[0-9A-Z ]{4,40}$'),
- evidence_ref text NOT NULL CHECK (length(btrim(evidence_ref)) BETWEEN 1 AND 500),
+ evidence_ref text NOT NULL CHECK (evidence_ref ~ '^[A-Za-z0-9][A-Za-z0-9 ._:/#-]{0,199}$'),
  set_by text NOT NULL CHECK (length(btrim(set_by)) > 0),
  set_at timestamptz NOT NULL,
  entered_at timestamptz NOT NULL,
@@ -61,7 +61,10 @@ CREATE TABLE cargo_fin.billing_profile_version (
  -- A Chinese enterprise's taxpayer number is its unified social credit code (GB 32100 characters; ORG checked it).
  CONSTRAINT billing_profile_taxpayer CHECK ((buyer_kind = 'CN_ENTERPRISE' AND taxpayer_number IS NOT NULL AND taxpayer_number ~ '^[0-9A-HJ-NP-RTUW-Y]{18}$')
    OR (buyer_kind = 'FOREIGN' AND taxpayer_number IS NULL)),
- CONSTRAINT billing_profile_bank CHECK ((bank_name IS NULL) = (bank_account IS NULL))
+ CONSTRAINT billing_profile_bank CHECK ((bank_name IS NULL) = (bank_account IS NULL)),
+ -- A sole trader's (individual industrial and commercial household, code 92...) phone and account are a person's data.
+ CONSTRAINT billing_profile_sole_trader CHECK (taxpayer_number IS NULL OR taxpayer_number NOT LIKE '92%'
+   OR (registered_phone IS NULL AND bank_account IS NULL))
 );
 
 CREATE TABLE cargo_fin.debtor_invoice (
@@ -85,6 +88,7 @@ CREATE TABLE cargo_fin.debtor_invoice (
  document_version integer CHECK (document_version > 0),
  document_number text CHECK (length(btrim(document_number)) BETWEEN 1 AND 128),
  master_number text CHECK (length(btrim(master_number)) BETWEEN 1 AND 128),
+ document_issued_at timestamptz,
  credits_invoice_id text,
  reason text CHECK (length(btrim(reason)) BETWEEN 1 AND 500),
  total_minor bigint NOT NULL CHECK (abs(total_minor) <= 1000000000000000),
@@ -101,10 +105,11 @@ CREATE TABLE cargo_fin.debtor_invoice (
  CONSTRAINT debtor_invoice_number UNIQUE (tenant_id, legal_entity_id, number),
  CONSTRAINT debtor_invoice_kind CHECK (CASE kind
    WHEN 'DEBIT_NOTE' THEN due_date IS NOT NULL AND payment_days IS NOT NULL AND payment_basis IS NOT NULL AND document_id IS NOT NULL
-     AND document_version IS NOT NULL AND document_number IS NOT NULL AND credits_invoice_id IS NULL AND reason IS NULL AND total_minor > 0
+     AND document_version IS NOT NULL AND document_number IS NOT NULL AND document_issued_at IS NOT NULL AND issued_at >= document_issued_at
+     AND credits_invoice_id IS NULL AND reason IS NULL AND total_minor > 0
    ELSE due_date IS NULL AND payment_days IS NULL AND payment_basis IS NULL AND terms_version IS NULL AND document_id IS NULL
-     AND document_version IS NULL AND document_number IS NULL AND master_number IS NULL AND credits_invoice_id IS NOT NULL AND reason IS NOT NULL
-     AND total_minor < 0 AND state = 'ISSUED' END)
+     AND document_version IS NULL AND document_number IS NULL AND master_number IS NULL AND document_issued_at IS NULL
+     AND credits_invoice_id IS NOT NULL AND reason IS NOT NULL AND total_minor < 0 AND state = 'ISSUED' END)
 );
 CREATE INDEX debtor_invoice_by_debtor ON cargo_fin.debtor_invoice (tenant_id, legal_entity_id, debtor_party_id);
 CREATE INDEX debtor_invoice_by_job ON cargo_fin.debtor_invoice (tenant_id, job_id);
@@ -153,8 +158,10 @@ ALTER TABLE cargo_fin.charge_side_version DROP CONSTRAINT charge_side_version_st
   ADD CONSTRAINT charge_side_version_status_check CHECK (status IN ('ESTIMATED','INVOICED','ACCRUED'));
 ALTER TABLE cargo_fin.charge_side_version DROP CONSTRAINT charge_side_sell,
   ADD CONSTRAINT charge_side_sell CHECK (side <> 'SELL' OR (party_id IS NOT NULL AND status IN ('ESTIMATED','INVOICED')));
+-- An estimate converts at the ESTIMATE rate, an invoiced side at its debit note's INVOICE or ACCOUNTING rate.
 ALTER TABLE cargo_fin.charge_side_version ADD CONSTRAINT charge_side_invoice CHECK ((status = 'INVOICED') = (invoice_id IS NOT NULL)
   AND (invoice_id IS NULL) = (invoice_line_no IS NULL)),
+  ADD CONSTRAINT charge_side_rate_type CHECK (rate_type IS NULL OR (status = 'INVOICED') = (rate_type IN ('INVOICE','ACCOUNTING'))),
   ADD CONSTRAINT charge_side_invoice_line FOREIGN KEY (tenant_id, invoice_id, invoice_line_no) REFERENCES cargo_fin.debtor_invoice_line (tenant_id, invoice_id, line_no);
 
 ALTER TABLE cargo_fin.command_receipt ADD COLUMN result_number text CHECK (length(result_number) BETWEEN 5 AND 20);
@@ -245,12 +252,14 @@ BEGIN
   RETURN NULL;
 END $fn$;
 
--- At commit, a new tax treatment version starts after every debit note of the legal entity billing its charge code.
+-- At commit, a new tax treatment version starts after every debit note line of the legal entity billing its charge code
+-- that no credit note reversed (a treatment is corrected by reversing the lines billed under the wrong one).
 CREATE FUNCTION cargo_fin.check_tax_at_commit() RETURNS trigger LANGUAGE plpgsql AS $fn$
 BEGIN
   IF EXISTS (SELECT 1 FROM cargo_fin.debtor_invoice_line l JOIN cargo_fin.debtor_invoice n ON n.tenant_id = l.tenant_id AND n.invoice_id = l.invoice_id
        WHERE n.tenant_id = NEW.tenant_id AND n.legal_entity_id = NEW.legal_entity_id AND n.kind = 'DEBIT_NOTE' AND l.charge_code = NEW.charge_code
-         AND n.invoice_date >= NEW.effective_from) THEN
+         AND n.invoice_date >= NEW.effective_from AND NOT EXISTS (SELECT 1 FROM cargo_fin.debtor_invoice_line c WHERE c.tenant_id = l.tenant_id
+           AND c.credits_invoice_id = l.invoice_id AND c.credits_line_no = l.line_no)) THEN
     RAISE EXCEPTION 'cargo_fin: tax treatment %/%/% starts on or before a debit note billing %', NEW.tenant_id, NEW.legal_entity_id, NEW.version_no,
       NEW.charge_code USING ERRCODE = 'check_violation', CONSTRAINT = 'charge_tax_treatment_in_use';
   END IF;
@@ -291,17 +300,18 @@ CREATE CONSTRAINT TRIGGER billing_profile_consistent AFTER INSERT ON cargo_fin.b
 -- (b) its number is its series' format of a sequence value drawn; (c) its invoice date is the issue's date in some time
 -- zone (UTC-12 to UTC+14);
 -- (d) a debit note's due date follows its payment terms, those of the debtor's credit account version it names or none
--- (due on the invoice date), and it is CANCELLED_BY_CREDIT_NOTE exactly when every line is reversed;
+-- (due on the invoice date), and it is CANCELLED_BY_CREDIT_NOTE exactly when every line is reversed; a cancelled job has
+-- no ISSUED debit note;
 -- (e) a debit note line bills the sell side version it names, which was written with it as INVOICED for the note's
 -- debtor at the line's amount and conversion and follows an ESTIMATED version of that debtor and amount; it converts as
 -- the note's currency asks (none in the functional currency; the INVOICE rate into the functional currency; the
--- ACCOUNTING rate from a foreign note currency) at an entry of the policy in force at the issue, and bills under the
--- charge code's tax treatment in force at the invoice date;
+-- ACCOUNTING rate from a foreign note currency) at an entry of the policy in force at the issue, and, unless reversed,
+-- bills under the charge code's tax treatment in force at the invoice date;
 -- (f) a credit note reverses lines of a debit note of the job to the same debtor, profile and currency, dated on or
 -- after it, each line negating its debit note line under the same conversion and tax;
 -- (g) every INVOICED side version is billed by the debit note line it names;
 -- (h) the version after an INVOICED one exists exactly when a credit note reverses its debit note line, and is the
--- ESTIMATED version of the same debtor and amount that credit note wrote.
+-- ESTIMATED version of the same debtor and amount (or zero, written off) that credit note wrote.
 CREATE FUNCTION cargo_fin.check_job_invoices_at_commit() RETURNS trigger LANGUAGE plpgsql AS $fn$
 DECLARE
   j cargo_fin.freight_job;
@@ -323,6 +333,7 @@ BEGIN
              ELSE NOT EXISTS (SELECT 1 FROM cargo_fin.credit_terms_version t WHERE t.tenant_id = n.tenant_id AND t.legal_entity_id = n.legal_entity_id
                AND t.debtor_party_id = n.debtor_party_id AND t.version_no = n.terms_version AND t.payment_days = n.payment_days
                AND t.payment_basis = n.payment_basis) END
+         OR (j.state = 'CANCELLED' AND n.state = 'ISSUED')
          OR (n.state = 'CANCELLED_BY_CREDIT_NOTE') <> NOT EXISTS (SELECT 1 FROM cargo_fin.debtor_invoice_line l WHERE l.tenant_id = n.tenant_id
              AND l.invoice_id = n.invoice_id AND NOT EXISTS (SELECT 1 FROM cargo_fin.debtor_invoice_line c WHERE c.tenant_id = l.tenant_id
                AND c.credits_invoice_id = l.invoice_id AND c.credits_line_no = l.line_no))))
@@ -357,8 +368,10 @@ BEGIN
          OR NOT EXISTS (SELECT 1 FROM cargo_fin.charge_tax_treatment t WHERE t.tenant_id = j.tenant_id AND t.legal_entity_id = j.legal_entity_id
              AND t.version_no = l.tax_version AND t.charge_code = l.charge_code AND t.treatment = l.treatment AND t.rate_bp IS NOT DISTINCT FROM l.rate_bp
              AND t.effective_from <= n.invoice_date
-             AND NOT EXISTS (SELECT 1 FROM cargo_fin.charge_tax_treatment x WHERE x.tenant_id = t.tenant_id AND x.legal_entity_id = t.legal_entity_id
-               AND x.charge_code = t.charge_code AND x.effective_from > t.effective_from AND x.effective_from <= n.invoice_date))))
+             AND (EXISTS (SELECT 1 FROM cargo_fin.debtor_invoice_line c WHERE c.tenant_id = l.tenant_id AND c.credits_invoice_id = l.invoice_id
+                 AND c.credits_line_no = l.line_no)
+               OR NOT EXISTS (SELECT 1 FROM cargo_fin.charge_tax_treatment x WHERE x.tenant_id = t.tenant_id AND x.legal_entity_id = t.legal_entity_id
+                 AND x.charge_code = t.charge_code AND x.effective_from > t.effective_from AND x.effective_from <= n.invoice_date)))))
      AND NOT EXISTS (SELECT 1 FROM cargo_fin.debtor_invoice n JOIN cargo_fin.debtor_invoice d ON d.tenant_id = n.tenant_id AND d.invoice_id = n.credits_invoice_id
        WHERE n.tenant_id = j.tenant_id AND n.job_id = j.job_id AND n.kind = 'CREDIT_NOTE'
          AND (d.kind <> 'DEBIT_NOTE' OR d.job_id <> n.job_id OR d.debtor_party_id <> n.debtor_party_id OR d.debtor_revision <> n.debtor_revision
@@ -384,7 +397,7 @@ BEGIN
          JOIN cargo_fin.charge_side_version w ON w.tenant_id = v.tenant_id AND w.job_id = v.job_id AND w.line_no = v.line_no AND w.side = 'SELL'
            AND w.version_no = v.version_no + 1
          WHERE c.tenant_id = v.tenant_id AND c.credits_invoice_id = v.invoice_id AND c.credits_line_no = v.invoice_line_no AND w.status = 'ESTIMATED'
-           AND w.recorded_at = cn.issued_at AND w.party_id = v.party_id AND w.currency = v.currency AND w.amount_minor = v.amount_minor))
+           AND w.recorded_at = cn.issued_at AND w.party_id = v.party_id AND w.currency = v.currency AND w.amount_minor IN (v.amount_minor, 0)))
     INTO ok;
   IF NOT ok THEN
     RAISE EXCEPTION 'cargo_fin: the notes of freight job %/% are inconsistent at commit', j.tenant_id, j.job_id

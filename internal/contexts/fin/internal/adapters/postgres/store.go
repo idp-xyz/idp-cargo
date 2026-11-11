@@ -91,6 +91,7 @@ type seriesRow struct {
 	Prefix    string    `json:"prefix"`
 	Width     int       `json:"width"`
 	Start     int64     `json:"start_seq"`
+	Next      int64     `json:"next_seq"`
 	By        string    `json:"registered_by"`
 	At        time.Time `json:"registered_at"`
 	EnteredAt time.Time `json:"entered_at"`
@@ -138,7 +139,7 @@ func readPolicy(ctx context.Context, q bentopg.Querier, tenant fin.TenantID, le,
 			By: t.By, At: utc(t.At), EnteredAt: utc(t.EnteredAt)})
 	}
 	for _, x := range sr {
-		st.Series = append(st.Series, fin.Series{Kind: x.Kind, Prefix: x.Prefix, Width: x.Width, Start: x.Start, By: x.By, At: utc(x.At),
+		st.Series = append(st.Series, fin.Series{Kind: x.Kind, Prefix: x.Prefix, Width: x.Width, Start: x.Start, Next: x.Next, By: x.By, At: utc(x.At),
 			EnteredAt: utc(x.EnteredAt)})
 	}
 	st.FunctionalCurrency, st.OpenedAt, st.EnteredAt = kernel.CurrencyCode(currency), st.OpenedAt.UTC(), st.EnteredAt.UTC()
@@ -338,31 +339,32 @@ type (
 		EnteredAt     time.Time `json:"entered_at"`
 	}
 	noteRow struct {
-		ID             string    `json:"invoice_id"`
-		Kind           string    `json:"kind"`
-		Number         string    `json:"number"`
-		Seq            int64     `json:"number_seq"`
-		Debtor         string    `json:"debtor_party_id"`
-		DebtorRevision int64     `json:"debtor_revision"`
-		ProfileVersion int       `json:"profile_version"`
-		Currency       string    `json:"currency"`
-		InvoiceDate    string    `json:"invoice_date"`
-		DueDate        *string   `json:"due_date"`
-		PaymentDays    *int      `json:"payment_days"`
-		PaymentBasis   *string   `json:"payment_basis"`
-		TermsVersion   *int      `json:"terms_version"`
-		DocumentID     *string   `json:"document_id"`
-		DocumentVer    *int      `json:"document_version"`
-		DocumentNumber *string   `json:"document_number"`
-		MasterNumber   *string   `json:"master_number"`
-		CreditsID      *string   `json:"credits_invoice_id"`
-		Reason         *string   `json:"reason"`
-		Total          int64     `json:"total_minor"`
-		LocalTotal     int64     `json:"local_total_minor"`
-		State          string    `json:"state"`
-		By             string    `json:"issued_by"`
-		At             time.Time `json:"issued_at"`
-		EnteredAt      time.Time `json:"entered_at"`
+		ID             string     `json:"invoice_id"`
+		Kind           string     `json:"kind"`
+		Number         string     `json:"number"`
+		Seq            int64      `json:"number_seq"`
+		Debtor         string     `json:"debtor_party_id"`
+		DebtorRevision int64      `json:"debtor_revision"`
+		ProfileVersion int        `json:"profile_version"`
+		Currency       string     `json:"currency"`
+		InvoiceDate    string     `json:"invoice_date"`
+		DueDate        *string    `json:"due_date"`
+		PaymentDays    *int       `json:"payment_days"`
+		PaymentBasis   *string    `json:"payment_basis"`
+		TermsVersion   *int       `json:"terms_version"`
+		DocumentID     *string    `json:"document_id"`
+		DocumentVer    *int       `json:"document_version"`
+		DocumentNumber *string    `json:"document_number"`
+		MasterNumber   *string    `json:"master_number"`
+		DocumentAt     *time.Time `json:"document_issued_at"`
+		CreditsID      *string    `json:"credits_invoice_id"`
+		Reason         *string    `json:"reason"`
+		Total          int64      `json:"total_minor"`
+		LocalTotal     int64      `json:"local_total_minor"`
+		State          string     `json:"state"`
+		By             string     `json:"issued_by"`
+		At             time.Time  `json:"issued_at"`
+		EnteredAt      time.Time  `json:"entered_at"`
 	}
 	noteLineRow struct {
 		InvoiceID     string  `json:"invoice_id"`
@@ -426,7 +428,8 @@ func notesOf(nr []noteRow, lr []noteLineRow) ([]fin.Note, error) {
 		notes = append(notes, fin.Note{ID: n.ID, Kind: n.Kind, Number: n.Number, Seq: n.Seq, DebtorPartyID: n.Debtor, DebtorRevision: n.DebtorRevision,
 			ProfileVersion: n.ProfileVersion, Currency: kernel.CurrencyCode(n.Currency), InvoiceDate: invoice, DueDate: due, PaymentDays: deref(n.PaymentDays),
 			PaymentBasis: deref(n.PaymentBasis), TermsVersion: deref(n.TermsVersion), Document: fin.DocumentRef{DocumentID: deref(n.DocumentID),
-				Version: deref(n.DocumentVer), Number: deref(n.DocumentNumber), MasterNumber: deref(n.MasterNumber)}, CreditsID: deref(n.CreditsID),
+				Version: deref(n.DocumentVer), Number: deref(n.DocumentNumber), MasterNumber: deref(n.MasterNumber),
+				IssuedAt: utc(deref(n.DocumentAt))}, CreditsID: deref(n.CreditsID),
 			Reason: deref(n.Reason), State: n.State, Total: n.Total, LocalTotal: n.LocalTotal, By: n.By, At: utc(n.At), EnteredAt: utc(n.EnteredAt)})
 	}
 	for _, l := range lr {
@@ -705,11 +708,12 @@ func insertNote(ctx context.Context, q bentopg.Executor, st fin.JobState, n fin.
 	}
 	_, err := q.Exec(ctx, `INSERT INTO cargo_fin.debtor_invoice (tenant_id,invoice_id,kind,job_id,legal_entity_id,number,number_seq,debtor_party_id,
         debtor_revision,profile_version,currency,invoice_date,due_date,payment_days,payment_basis,terms_version,document_id,document_version,document_number,
-        master_number,credits_invoice_id,reason,total_minor,local_total_minor,state,issued_by,issued_at,entered_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)`,
+        master_number,document_issued_at,credits_invoice_id,reason,total_minor,local_total_minor,state,issued_by,issued_at,entered_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)`,
 		string(st.TenantID), n.ID, n.Kind, st.JobID, st.LegalEntityID, n.Number, n.Seq, n.DebtorPartyID, n.DebtorRevision, n.ProfileVersion,
 		string(n.Currency), n.InvoiceDate.Format(time.DateOnly), dateOrNull(n.DueDate), days, basis, orNull(n.TermsVersion), orNull(n.Document.DocumentID),
-		orNull(n.Document.Version), orNull(n.Document.Number), orNull(n.Document.MasterNumber), orNull(n.CreditsID), orNull(n.Reason), n.Total,
+		orNull(n.Document.Version), orNull(n.Document.Number), orNull(n.Document.MasterNumber), orNull(n.Document.IssuedAt), orNull(n.CreditsID),
+		orNull(n.Reason), n.Total,
 		n.LocalTotal, n.State, n.By, n.At, n.EnteredAt)
 	if err = noteConflict(err, n); err != nil {
 		return err
@@ -734,6 +738,9 @@ func insertNote(ctx context.Context, q bentopg.Executor, st fin.JobState, n fin.
 
 func noteConflict(err error, n fin.Note) error {
 	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23514" && pgErr.ConstraintName == "debtor_invoice_kind" {
+		return fmt.Errorf("%w: note %s breaks the rules of its kind: %v", fin.ErrInvalid, n.ID, pgErr.Message)
+	}
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 		switch pgErr.ConstraintName {
 		case "debtor_invoice_pkey":

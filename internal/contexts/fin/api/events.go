@@ -4,7 +4,8 @@ package api
 const Source = "idp-cargo.fin"
 
 // Published event types (FinanceEvent v1 carries them to EVT as identifiers). Policy events have the legal entity as
-// subject, job events the job, note events the note (with its job), billing profile events the debtor, credit events
+// subject (InvoiceSeriesRegistered <legal entity>/<kind>), job events the job (a note's billed and returned sides are
+// ChargeSideRevised too), note events the note (with its job), billing profile events the debtor, credit events
 // <legal entity>/<debtor>.
 const (
 	FinancePolicyOpened  = "FinancePolicyOpened.v1"
@@ -22,7 +23,8 @@ const (
 	ChargeTaxTreatmentSet   = "ChargeTaxTreatmentSet.v1"
 	InvoiceSeriesRegistered = "InvoiceSeriesRegistered.v1"
 	BillingProfileSet       = "BillingProfileSet.v1"
-	DebtorInvoiceIssued     = "DebtorInvoiceIssued.v1" // a debit note
+	DebtorInvoiceIssued     = "DebtorInvoiceIssued.v1"    // a debit note
+	DebtorInvoiceCancelled  = "DebtorInvoiceCancelled.v1" // a debit note whose every line a credit note reversed
 	CreditNoteIssued        = "CreditNoteIssued.v1"
 )
 

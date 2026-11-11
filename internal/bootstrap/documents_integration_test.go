@@ -37,7 +37,7 @@ func (allowAll) AuthorizeFinAction(context.Context, string, string, string, stri
 // document ends consistent with COM. DOC V0.2 then sends the HAWB to the destination agent in the US: the shipper's
 // contact, consenting to go abroad, is on the copy once the client has reserved it in ORG's register; the
 // consignee's, consenting only to be provided in China, is left off. FIN V0.2 then bills the job on the issued HAWB
-// with a debit note and reverses the document fee with a credit note.
+// with a debit note and waives the document fee with a credit note.
 func TestTransportDocumentsWithEveryContext(t *testing.T) {
 	ctx := context.Background()
 	platform := openPlatform(t)
@@ -448,7 +448,7 @@ func TestTransportDocumentsWithEveryContext(t *testing.T) {
 
 	// FIN V0.2: the HAWB is issued, so the job is billed on it. A debit note in CNY converts the USD freight at the
 	// INVOICE rate, under party-a's billing profile (a foreign buyer, as ORG registers it in the US), the charge codes'
-	// tax treatments and the legal entity's debit note series; a credit note then reverses the document fee.
+	// tax treatments and the legal entity's debit note series; a credit note then waives the document fee.
 	policyRevision := int64(2)
 	policyStep := func(name string) func(finapi.Receipt, error) {
 		return func(r finapi.Receipt, err error) {
@@ -474,7 +474,7 @@ func TestTransportDocumentsWithEveryContext(t *testing.T) {
 			ActorID: "acct-1", LegalEntityID: "LE", ExpectedRevision: policyRevision, Kind: x[0], Prefix: x[1], Width: 6, FirstNumber: 1, OccurredAt: hours(28)}))
 	}
 	_, err = finModule.SetBillingProfile(ctx, finapi.SetBillingProfile{CommandID: "fin-profile", TenantID: tenant, ActorID: "bill-1", DebtorPartyID: "party-a",
-		BuyerKind: finapi.BuyerForeign, EvidenceRef: "billing details from the customer's account opening form", OccurredAt: hours(28)})
+		BuyerKind: finapi.BuyerForeign, EvidenceRef: "account opening form AO-2026-118", OccurredAt: hours(28)})
 	must("billing profile", err)
 	r, err := finModule.RecordChargeLine(ctx, finapi.RecordChargeLine{CommandID: "fin-doc-fee", TenantID: tenant, ActorID: "fin-1", JobID: "JOB-A",
 		ExpectedRevision: 2, ChargeCode: "DOC_FEE", Sell: &finapi.ChargeSide{PartyID: "party-a", Amount: kernel.Money{Currency: "CNY", Minor: 30_000}},
@@ -496,12 +496,12 @@ func TestTransportDocumentsWithEveryContext(t *testing.T) {
 	}
 	r, err = finModule.IssueCreditNote(ctx, finapi.IssueCreditNote{CommandID: "fin-credit", TenantID: tenant, ActorID: "bill-1", JobID: "JOB-A",
 		ExpectedRevision: r.NewRevision, InvoiceID: "CN-A", DebitNoteID: "DN-A", LineNos: []int{2}, Reason: "fee waived for the first shipment",
-		InvoiceDate: invoiceDate, OccurredAt: hours(28)})
+		WriteOff: true, InvoiceDate: invoiceDate, OccurredAt: hours(28)})
 	if err != nil || r.Number != "SHACN000001" {
 		t.Fatalf("credit note: %+v %v", r, err)
 	}
 	account, err := finModule.GetCreditAccount(ctx, finapi.GetCreditAccount{TenantID: tenant, LegalEntityID: "LE", DebtorPartyID: "party-a"})
-	if err != nil || account.Billed.Minor != 720_000 || account.Unbilled.Minor != 30_000 {
+	if err != nil || account.Billed.Minor != 720_000 || account.Unbilled.Minor != 0 {
 		t.Fatalf("exposure after the credit note: %+v %v", account, err)
 	}
 }

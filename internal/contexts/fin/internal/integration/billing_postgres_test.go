@@ -88,9 +88,9 @@ func (b *billing) profile(id, debtor, kind string, expected int) (api.Receipt, e
 		EvidenceRef: "billing details confirmed by the customer", OccurredAt: b.hours(0)})
 }
 
-func houseDocument(tenant, shipment, number string) docapi.TransportDocumentSnapshot {
+func houseDocument(shipment, number string, issued time.Time) docapi.TransportDocumentSnapshot {
 	return docapi.TransportDocumentSnapshot{DocumentID: "DOC-" + shipment, Kind: "HAWB", Version: 1, VersionStatus: docapi.VersionIssued, Number: number,
-		MasterNumber: "781-12345675", ShipmentID: shipment, LegalEntityID: "LE", Origin: "CNSHA", Destination: "USJFK"}
+		MasterNumber: "781-12345675", ShipmentID: shipment, LegalEntityID: "LE", Origin: "CNSHA", Destination: "USJFK", IssuedAt: issued}
 }
 
 // newBilling opens the policy with the three USD rate types (ESTIMATE 7.1234, INVOICE 7.2000, ACCOUNTING 7.1000) and the
@@ -142,7 +142,12 @@ func TestDebitAndCreditNotesOnPostgres(t *testing.T) {
 	_, err := b.module.IssueDebitNote(ctx, dn1)
 	rejected("no issued house document", err, "FIN_NO_ISSUED_DOCUMENT")
 	b.w.mu.Lock()
-	b.w.documents["SH-A"] = houseDocument(b.tenant, "SH-A", "SHA0000001")
+	b.w.documents["SH-A"] = houseDocument("SH-A", "SHA0000001", b.hours(6))
+	b.w.mu.Unlock()
+	_, err = b.module.IssueDebitNote(ctx, dn1)
+	rejected("a HAWB issued after the note's time", err, "FIN_NO_ISSUED_DOCUMENT")
+	b.w.mu.Lock()
+	b.w.documents["SH-A"] = houseDocument("SH-A", "SHA0000001", b.hours(4))
 	b.w.mu.Unlock()
 	_, err = b.module.IssueDebitNote(ctx, dn1)
 	rejected("no billing profile", err, "FIN_NO_BILLING_PROFILE")
@@ -201,6 +206,7 @@ func TestDebitAndCreditNotesOnPostgres(t *testing.T) {
 	due := time.Date(invoiceDay.Year(), invoiceDay.Month()+1, 0, 0, 0, 0, 0, time.UTC).AddDate(0, 0, 30).Format(time.DateOnly)
 	// USD 1,200.00 at INVOICE 7.2000 = CNY 8,640.00, and CNY 300.00
 	if err != nil || note.Number != "DN000001" || note.Total != cny(894_000) || note.LocalTotal != cny(894_000) || note.Open != cny(894_000) ||
+		!note.Document.IssuedAt.Equal(b.hours(4)) ||
 		note.DueDate != due || note.TermsVersion != 1 || note.Document.Number != "SHA0000001" || note.Document.MasterNumber != "781-12345675" ||
 		note.BillingProfile.Title != "上海甲贸易有限公司" || len(note.Lines) != 2 || note.Lines[0].FX == nil || note.Lines[0].FX.RateType != api.RateInvoice ||
 		len(note.TaxTotals) != 2 || note.TaxTotals[1].RateBP != 600 || note.ShipmentID != "SH-A" {
@@ -287,6 +293,23 @@ func TestDebitAndCreditNotesOnPostgres(t *testing.T) {
 		len(items) != 1 || items[0].InvoiceID != "DN-3" {
 		t.Fatalf("open items after the debit note was cancelled: %+v %v", items, err)
 	}
+	// the database refuses to cancel a job with an issued debit note, even past FIN
+	if err = b.within(t, func(ctx context.Context, e bentopg.Executor) error {
+		for _, sql := range []string{
+			`UPDATE cargo_fin.job_basis SET live=false WHERE job_id='JOB-A'`,
+			`UPDATE cargo_fin.freight_job SET state='CANCELLED',cancel_reason='x',cancelled_by='x',cancelled_at=now(),cancel_entered_at=now(),
+               revision=revision+1 WHERE job_id='JOB-A'`,
+		} {
+			if _, err := e.Exec(ctx, sql); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err == nil {
+		t.Fatal("a job with an issued debit note cancelled")
+	} else if _, constraint := sqlState(err); constraint != "freight_job_invoices_consistent" {
+		t.Fatalf("cancelling a billed job past FIN: %v", err)
+	}
 	if note, err = b.module.GetDebtorInvoice(ctx, api.GetDebtorInvoice{TenantID: b.tenant, InvoiceID: "DN-1"}); err != nil || note.State != api.NoteCancelled ||
 		note.Open != cny(0) {
 		t.Fatalf("cancelled by credit notes: %+v %v", note, err)
@@ -295,12 +318,41 @@ func TestDebitAndCreditNotesOnPostgres(t *testing.T) {
 	_, err = b.tax("tax-doc-early", "DOC_FEE", api.TaxTaxable, 900, b.date(8))
 	rejected("a treatment from a billed date", err, "FIN_TAX_TREATMENT_IN_USE")
 	b.policyChange(t)(b.tax("tax-doc-later", "DOC_FEE", api.TaxTaxable, 900, b.date(48)))
+	// every AIR_FREIGHT line billed is reversed, so its treatment may be corrected for the dates billed
+	b.policyChange(t)(b.tax("tax-freight-fix", "AIR_FREIGHT", api.TaxPassThrough, 0, b.date(5)))
 	_, err = b.module.EndExchangeRate(ctx, api.EndExchangeRate{CommandID: "end-invoice-rate", TenantID: b.tenant, ActorID: "acct-1", LegalEntityID: "LE",
 		ExpectedRevision: b.policy, EntryNo: 2, ValidUntil: b.hours(4), Reason: "wrong rate", OccurredAt: b.hours(9)})
 	rejected("ending the INVOICE rate a debit note used", err, "FIN_RATE_IN_USE")
 
+	// the USD debit note to the agent (ACCOUNTING rate) is reversed after the ESTIMATE rate ended: the side cannot
+	// return at its amount without an estimate rate, but can be written off
+	b.policyChange(t)(b.module.EndExchangeRate(ctx, api.EndExchangeRate{CommandID: "end-estimate-rate", TenantID: b.tenant, ActorID: "acct-1",
+		LegalEntityID: "LE", ExpectedRevision: b.policy, EntryNo: 1, ValidUntil: b.hours(10), Reason: "estimate rates move to the monthly table",
+		OccurredAt: b.hours(10)}))
+	agentCredit := b.credit("CN-3", "DN-2", 11, 1)
+	_, err = b.module.IssueCreditNote(ctx, agentCredit)
+	rejected("returning a USD side without an ESTIMATE rate", err, "FIN_RATE_MISSING")
+	agentCredit.CommandID, agentCredit.WriteOff, agentCredit.Reason = "credit-CN-3-off", true, "collect charge waived by the agent"
+	if r, err = b.module.IssueCreditNote(ctx, agentCredit); err != nil || r.Number != "CN000003" {
+		t.Fatalf("written off: %+v %v", r, err)
+	}
+	b.job = r.NewRevision
+	if note, err = b.module.GetDebtorInvoice(ctx, api.GetDebtorInvoice{TenantID: b.tenant, InvoiceID: "CN-3"}); err != nil || note.Total != usd(-20_000) ||
+		note.LocalTotal != cny(-142_000) || note.Lines[0].FX.RateType != api.RateAccounting {
+		t.Fatalf("credit note of the USD note: %+v %v", note, err)
+	}
+	if job, err = b.module.GetFreightJob(ctx, api.GetFreightJob{TenantID: b.tenant, JobID: "JOB-A"}); err != nil ||
+		job.Lines[2].Sell[len(job.Lines[2].Sell)-1].Amount != usd(0) {
+		t.Fatalf("the agent's charge written off: %+v %v", job.Lines[2].Sell, err)
+	}
+	if items, err = b.module.ListOpenDebtorItems(ctx, api.ListOpenDebtorItems{TenantID: b.tenant, LegalEntityID: "LE", DebtorPartyID: "agent-ny"}); err != nil ||
+		len(items) != 0 {
+		t.Fatalf("the agent's open items: %+v %v", items, err)
+	}
+
 	types := b.outboxTypes(t)
-	for _, want := range []string{"ChargeTaxTreatmentSet", "InvoiceSeriesRegistered", "BillingProfileSet", "DebtorInvoiceIssued", "CreditNoteIssued"} {
+	for _, want := range []string{"ChargeTaxTreatmentSet", "InvoiceSeriesRegistered", "BillingProfileSet", "DebtorInvoiceIssued", "CreditNoteIssued",
+		"DebtorInvoiceCancelled"} {
 		if !slices.Contains(types, want) {
 			t.Errorf("no %s event in %v", want, types)
 		}
@@ -337,10 +389,11 @@ func TestDebitAndCreditNotesOnPostgres(t *testing.T) {
 			`WITH s AS (UPDATE cargo_fin.invoice_series SET next_seq=next_seq+1 WHERE kind='DEBIT_NOTE' RETURNING next_seq-1 AS seq, prefix, width)
              INSERT INTO cargo_fin.debtor_invoice (tenant_id,invoice_id,kind,job_id,legal_entity_id,number,number_seq,debtor_party_id,debtor_revision,
                profile_version,currency,invoice_date,due_date,payment_days,payment_basis,terms_version,document_id,document_version,document_number,
-               master_number,total_minor,local_total_minor,state,issued_by,issued_at,entered_at)
+               master_number,document_issued_at,total_minor,local_total_minor,state,issued_by,issued_at,entered_at)
              SELECT n.tenant_id,'DN-FORGED',n.kind,n.job_id,n.legal_entity_id,s.prefix||lpad(s.seq::text,s.width,'0'),s.seq,n.debtor_party_id,
                n.debtor_revision,n.profile_version,n.currency,n.invoice_date,n.due_date,n.payment_days,n.payment_basis,n.terms_version,n.document_id,
-               n.document_version,n.document_number,n.master_number,n.total_minor,n.local_total_minor,n.state,n.issued_by,n.issued_at,n.entered_at
+               n.document_version,n.document_number,n.master_number,n.document_issued_at,n.total_minor,n.local_total_minor,n.state,n.issued_by,n.issued_at,
+               n.entered_at
              FROM cargo_fin.debtor_invoice n, s WHERE n.invoice_id='DN-3'`,
 			`INSERT INTO cargo_fin.debtor_invoice_line (tenant_id,invoice_id,line_no,job_id,job_line_no,side_version,charge_code,currency,amount_minor,
                invoice_minor,local_minor,tax_version,treatment,rate_bp)
@@ -378,7 +431,7 @@ func TestDebitNotesDrawNumbersConcurrently(t *testing.T) {
 		shipment := fmt.Sprintf("SH-%d", i)
 		b.w.drivers[shipment] = fulapi.CostDriver{TenantID: b.tenant, ShipmentID: shipment, Kind: fulapi.DriverShipmentPlanned, Revision: 1,
 			Status: fulapi.StatusPlanned, PlanVersion: 1, TransportMode: "AIR", LegalEntityID: "LE", CustomerPartyID: "party-a", Packs: 1}
-		b.w.documents[shipment] = houseDocument(b.tenant, shipment, fmt.Sprintf("SHA000010%d", i))
+		b.w.documents[shipment] = houseDocument(shipment, fmt.Sprintf("SHA000010%d", i), b.hours(2))
 	}
 	b.w.mu.Unlock()
 	for i := range n {
@@ -423,6 +476,10 @@ func TestDebitNotesDrawNumbersConcurrently(t *testing.T) {
 			t.Fatalf("numbers %v: want %s at %d", numbers, want, i)
 		}
 	}
+	if policy, err := b.module.GetFinancePolicy(ctx, api.GetFinancePolicy{TenantID: b.tenant, LegalEntityID: "LE"}); err != nil || len(policy.Series) != 1 ||
+		policy.Series[0].NextNumber != 101+n || len(policy.TaxTreatments) != 1 {
+		t.Fatalf("policy after %d notes: %+v %v", n, policy.Series, err)
+	}
 
 	// two notes on JOB-0's second line at the same revision
 	r, err := b.module.RecordChargeLine(ctx, api.RecordChargeLine{CommandID: "line-JOB-0-2", TenantID: b.tenant, ActorID: "fin-1", JobID: "JOB-0",
@@ -466,7 +523,7 @@ func TestDebitNotesDrawNumbersConcurrently(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.w.mu.Lock()
-	c.w.documents["SH-A"] = houseDocument(c.tenant, "SH-A", "SHA0000001")
+	c.w.documents["SH-A"] = houseDocument("SH-A", "SHA0000001", c.hours(2))
 	c.w.mu.Unlock()
 	if r = c.issued(t, c.debit("DN-1", "JOB-A", 5, "party-a", "CNY", 1)); r.Number != "D9999" {
 		t.Fatalf("last number: %+v", r)
@@ -480,5 +537,86 @@ func TestDebitNotesDrawNumbersConcurrently(t *testing.T) {
 		return e.QueryRow(ctx, `SELECT next_seq FROM cargo_fin.invoice_series WHERE kind='DEBIT_NOTE'`).Scan(&next)
 	}); err != nil || next != 10_000 {
 		t.Fatalf("next number %d: %v", next, err)
+	}
+}
+
+// A tax treatment set while debit notes billing its code are issued: the policy lock orders them, so either the
+// treatment commits first and every note bills under it, or a note commits first and the treatment is refused as in
+// use; never a note under a treatment that a later version replaces for its date.
+func TestTaxTreatmentRacesDebitNotes(t *testing.T) {
+	ctx := context.Background()
+	b := newBilling(t)
+	from := b.at.AddDate(0, 0, -5).Format(time.DateOnly)
+	b.policyChange(t)(b.tax("tax-truck", "TRUCKING", api.TaxTaxable, 600, from))
+	b.policyChange(t)(b.series("series-dn", api.KindDebitNote, "DN", 6, 1))
+	if _, err := b.profile("profile-a", "party-a", api.BuyerCNEnterprise, 0); err != nil {
+		t.Fatal(err)
+	}
+	const n = 6
+	revisions := make([]int64, n)
+	b.w.mu.Lock()
+	for i := range n {
+		shipment := fmt.Sprintf("SH-%d", i)
+		b.w.drivers[shipment] = fulapi.CostDriver{TenantID: b.tenant, ShipmentID: shipment, Kind: fulapi.DriverShipmentPlanned, Revision: 1,
+			Status: fulapi.StatusPlanned, PlanVersion: 1, TransportMode: "AIR", LegalEntityID: "LE", CustomerPartyID: "party-a", Packs: 1}
+		b.w.documents[shipment] = houseDocument(shipment, fmt.Sprintf("SHA000020%d", i), b.hours(2))
+	}
+	b.w.mu.Unlock()
+	for i := range n {
+		job := fmt.Sprintf("JOB-%d", i)
+		if _, err := b.module.OpenFreightJob(ctx, api.OpenFreightJob{CommandID: "open-" + job, TenantID: b.tenant, ActorID: "fin-1", JobID: job,
+			ShipmentID: fmt.Sprintf("SH-%d", i), OccurredAt: b.hours(1)}); err != nil {
+			t.Fatal(err)
+		}
+		r, err := b.module.RecordChargeLine(ctx, api.RecordChargeLine{CommandID: "line-" + job, TenantID: b.tenant, ActorID: "fin-1", JobID: job,
+			ExpectedRevision: 1, ChargeCode: "TRUCKING", Sell: &api.ChargeSide{PartyID: "party-a", Amount: cny(10_000)}, Reason: "pickup",
+			OccurredAt: b.hours(2)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		revisions[i] = r.NewRevision
+	}
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	errs := make([]error, n)
+	var taxErr error
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			b2 := *b
+			b2.job = revisions[i]
+			_, errs[i] = b.module.IssueDebitNote(ctx, b2.debit(fmt.Sprintf("DN-%d", i), fmt.Sprintf("JOB-%d", i), 3, "party-a", "CNY", 1))
+		}()
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-start
+		_, taxErr = b.tax("tax-truck-9", "TRUCKING", api.TaxTaxable, 900, b.date(3))
+	}()
+	close(start)
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("note %d: %v", i, err)
+		}
+	}
+	versions := map[int]int{}
+	for i := range n {
+		note, err := b.module.GetDebtorInvoice(ctx, api.GetDebtorInvoice{TenantID: b.tenant, InvoiceID: fmt.Sprintf("DN-%d", i)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		versions[note.Lines[0].TaxVersion]++
+	}
+	switch {
+	case taxErr == nil && versions[2] == n:
+		t.Logf("the treatment committed first: %d notes at 9%%", n)
+	case errors.Is(taxErr, api.ErrRejected) && strings.Contains(taxErr.Error(), "FIN_TAX_TREATMENT_IN_USE") && versions[1] == n:
+		t.Logf("a note committed first: the treatment refused, %d notes at 6%%", n)
+	default:
+		t.Fatalf("treatment %v, notes per version %v", taxErr, versions)
 	}
 }

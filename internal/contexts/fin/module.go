@@ -219,7 +219,7 @@ func (m *Module) IssueCreditNote(ctx context.Context, cmd api.IssueCreditNote) (
 	}
 	r, err := m.deps(cmd.TenantID, cmd.CommandID).IssueCreditNote(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, api.ActionIssueCreditNote,
 		cmd.JobID, cmd.ExpectedRevision, cmd.OccurredAt, cmd), domain.CreditNoteInput{ID: cmd.InvoiceID, DebitNoteID: cmd.DebitNoteID,
-		LineNos: append([]int(nil), cmd.LineNos...), Reason: cmd.Reason, InvoiceDate: date})
+		LineNos: append([]int(nil), cmd.LineNos...), Reason: cmd.Reason, InvoiceDate: date, WriteOff: cmd.WriteOff})
 	return receipt(r, err)
 }
 
@@ -245,7 +245,7 @@ func (m *Module) GetFinancePolicy(ctx context.Context, q api.GetFinancePolicy) (
 			EffectiveFrom: t.EffectiveFrom.Format(time.DateOnly), SetBy: t.By, SetAt: t.At})
 	}
 	for _, x := range st.Series {
-		out.Series = append(out.Series, api.InvoiceSeries{Kind: x.Kind, Prefix: x.Prefix, Width: x.Width, FirstNumber: x.Start})
+		out.Series = append(out.Series, api.InvoiceSeries{Kind: x.Kind, Prefix: x.Prefix, Width: x.Width, FirstNumber: x.Start, NextNumber: x.Next})
 	}
 	return out, nil
 }

@@ -37,12 +37,13 @@ type ChargeTaxTreatment struct {
 	SetAt         time.Time
 }
 
-// InvoiceSeries is a number series of a note kind.
+// InvoiceSeries is a number series of a note kind; NextNumber is the sequence value the next note takes.
 type InvoiceSeries struct {
 	Kind        string
 	Prefix      string
 	Width       int
 	FirstNumber int64
+	NextNumber  int64
 }
 
 // FinancePolicy is a legal entity's policy.
@@ -238,12 +239,13 @@ type BillingProfile struct {
 	Versions      []BillingProfileVersion
 }
 
-// DocumentRef is the issued house document a debit note bills on.
+// DocumentRef is the issued house document a debit note bills on and when that version was issued.
 type DocumentRef struct {
 	DocumentID   string
 	Version      int
 	Number       string
 	MasterNumber string
+	IssuedAt     time.Time
 }
 
 // TaxTotal is a note's total under one tax treatment and rate, in the note's and the functional currency.

@@ -223,8 +223,10 @@ const (
 // SetBillingProfile records the next version of a debtor's billing profile (MD-21): FIN reads the debtor's identity
 // from ORG and freezes the invoice title (the registered name; a foreign buyer's English name when ORG has one) and,
 // for a Chinese enterprise, the taxpayer number (its unified social credit code in ORG, required). The registered
-// address, phone, bank and account are the enterprise's own, optional, never a person's contact; EvidenceRef names
-// what they were checked against. ExpectedVersion is the latest version read, 0 for a new profile.
+// address, phone, bank and account are the enterprise's own, optional, never a person's contact (a sole trader, code
+// 92..., takes neither phone nor account); EvidenceRef is the reference of the document they were checked against
+// (letters, digits, space and . _ : / # -, up to 200; no names). ExpectedVersion is the latest version read, 0 for a new
+// profile.
 type SetBillingProfile struct {
 	CommandID         string
 	TenantID          string
@@ -242,7 +244,8 @@ type SetBillingProfile struct {
 
 // IssueDebitNote bills sell sides of a job to one debtor (CargoWise INV): the job's lines in LineNos, whose latest sell
 // side is not billed, not zero and the debtor's. FIN asks DOC for the shipment's issued house document
-// (FIN_NO_ISSUED_DOCUMENT without one) and ORG for the debtor's role and identity; the debtor's billing profile must
+// (FIN_NO_ISSUED_DOCUMENT without one, or when it was issued after OccurredAt; DOC issues HAWBs only so far, so a SEA job
+// cannot be billed yet) and ORG for the debtor's role and identity; the debtor's billing profile must
 // name it as ORG does (FIN_NO_BILLING_PROFILE, FIN_BILLING_PROFILE_STALE). Currency is the functional currency, which
 // converts other lines at the INVOICE rate, or the currency of every line, converted into the functional currency at
 // the ACCOUNTING rate. Every charge code needs a tax treatment in force at InvoiceDate (YYYY-MM-DD, the date of the
@@ -264,9 +267,12 @@ type IssueDebitNote struct {
 }
 
 // IssueCreditNote reverses whole lines of an issued debit note of the job with a reason (CargoWise CRD): LineNos are
-// the debit note's lines, each reversed once, at the debit note's amounts, conversion and tax, negated. The note takes
-// the next number of the credit note series; the reversed sides return to ESTIMATED, to be revised or billed again,
-// and a debit note with every line reversed becomes CANCELLED_BY_CREDIT_NOTE.
+// the debit note's lines, each reversed once, at the debit note's amounts, conversion and tax, negated. A credit note
+// reduces what the debtor owes, and the lines it leaves on the debit note total more than zero (a discount line goes
+// with, or after, the lines it discounts). The note takes the next number of the credit note series. The reversed sides
+// return to ESTIMATED at their amount, converted at the ESTIMATE rate in force (FIN_RATE_MISSING without one), to be
+// revised or billed again; with WriteOff they return at zero, a waived charge. A debit note with every line reversed
+// becomes CANCELLED_BY_CREDIT_NOTE.
 type IssueCreditNote struct {
 	CommandID        string
 	TenantID         string
@@ -277,6 +283,7 @@ type IssueCreditNote struct {
 	DebitNoteID      string
 	LineNos          []int
 	Reason           string
+	WriteOff         bool
 	InvoiceDate      string
 	OccurredAt       time.Time
 }

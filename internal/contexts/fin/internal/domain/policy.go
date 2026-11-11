@@ -104,6 +104,7 @@ type Series struct {
 	Prefix    string
 	Width     int
 	Start     int64
+	Next      int64 // the next sequence value, as read; the series row keeps it
 	By        string
 	At        time.Time
 	EnteredAt time.Time
@@ -266,9 +267,10 @@ func (p *FinancePolicy) RegisterSeries(s Series, by string, at time.Time) error 
 			return fmt.Errorf("%w: prefix %s and the %s prefix %s start one another", ErrInvalid, s.Prefix, o.Kind, o.Prefix)
 		}
 	}
-	s.By, s.At, s.EnteredAt = by, at.UTC(), time.Time{}
+	s.Next, s.By, s.At, s.EnteredAt = s.Start, by, at.UTC(), time.Time{}
 	p.state.Series = append(p.state.Series, s)
-	p.record(eventSeriesRegistered, at, len(p.state.Series))
+	p.pending = append(p.pending, Event{Type: eventSeriesRegistered, At: at.UTC(), TenantID: p.state.TenantID, SubjectID: p.state.LegalEntityID + "/" + s.Kind,
+		LegalEntityID: p.state.LegalEntityID})
 	return nil
 }
 

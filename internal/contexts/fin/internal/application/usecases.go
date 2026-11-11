@@ -203,9 +203,13 @@ func (d Deps) IssueDebitNote(ctx context.Context, c Command, in DebitNoteAsk) (R
 		if document, err = d.Documents.HouseDocument(ctx, c.Scope.TenantID, st.ShipmentID); err != nil {
 			return err
 		}
-		if document.ShipmentID != st.ShipmentID || document.LegalEntityID != st.LegalEntityID {
+		switch {
+		case document.ShipmentID != st.ShipmentID || document.LegalEntityID != st.LegalEntityID:
 			return fmt.Errorf("%w: DOC reports house document %s of %s for %s", fin.ErrNoIssuedDocument, document.Number, document.LegalEntityID,
 				document.ShipmentID)
+		case c.OccurredAt.Before(document.IssuedAt):
+			return fmt.Errorf("%w: house document %s was issued at %s, after the note's business time", fin.ErrNoIssuedDocument, document.Number,
+				document.IssuedAt.Format(time.RFC3339))
 		}
 		if revision, err = d.Directory.PartyInRole(ctx, c.Scope.TenantID, in.Debtor, st.LegalEntityID, DebtorRoles, c.OccurredAt); err != nil {
 			return err

@@ -61,9 +61,14 @@ type ProfileVersion struct {
 }
 
 var (
-	phonePattern   = regexp.MustCompile(`^[0-9+()\- ]{3,30}$`)
-	accountPattern = regexp.MustCompile(`^[0-9A-Z ]{4,40}$`)
+	phonePattern    = regexp.MustCompile(`^[0-9+() -]{3,30}$`)
+	accountPattern  = regexp.MustCompile(`^[0-9A-Z ]{4,40}$`)
+	evidencePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9 ._:/#-]{0,199}$`)
 )
+
+// soleTrader reports whether a unified social credit code is an individual industrial and commercial household's
+// (个体工商户, registration authority 9, kind 2): its phone and bank account are a natural person's.
+func soleTrader(uscc string) bool { return len(uscc) == 18 && uscc[0] == '9' && uscc[1] == '2' }
 
 // ProfileState is a stored profile, for persistence.
 type ProfileState struct {
@@ -106,14 +111,17 @@ func (b *BillingProfile) Set(in ProfileInput, id PartyIdentity, by string, at ti
 		return fmt.Errorf("%w: a Chinese enterprise buyer is registered in CN with a unified social credit code in ORG", ErrInvalid)
 	case in.BuyerKind == BuyerForeign && id.CountryCode == "CN":
 		return fmt.Errorf("%w: a party registered in CN bills as a Chinese enterprise", ErrInvalid)
-	case !text(in.EvidenceRef),
+	case !evidencePattern.MatchString(in.EvidenceRef),
 		in.RegisteredAddress != "" && (!text(in.RegisteredAddress) || utf8.RuneCountInString(in.RegisteredAddress) > 300),
 		in.RegisteredPhone != "" && !phonePattern.MatchString(in.RegisteredPhone),
 		in.BankName != "" && (!text(in.BankName) || utf8.RuneCountInString(in.BankName) > 200),
 		in.BankAccount != "" && !accountPattern.MatchString(in.BankAccount),
 		(in.BankName == "") != (in.BankAccount == ""):
-		return fmt.Errorf("%w: a profile has its evidence; the registered address (300 characters), phone (digits, +, -, parentheses), and bank "+
-			"with account (capital letters and digits) are optional, the bank and account together", ErrInvalid)
+		return fmt.Errorf("%w: a profile has its evidence as a document reference (letters, digits, space and . _ : / # -, 200 characters, no "+
+			"names or contacts); the registered address (300 characters), phone (digits, +, -, parentheses), and bank with account (capital letters "+
+			"and digits) are optional, the bank and account together", ErrInvalid)
+	case in.BuyerKind == BuyerCNEnterprise && soleTrader(id.USCC) && (in.RegisteredPhone != "" || in.BankAccount != ""):
+		return fmt.Errorf("%w: a sole trader's phone and bank account are a person's data; they wait for the fapiao work (FB6)", ErrInvalid)
 	}
 	title := id.invoiceTitle(in.BuyerKind)
 	if utf8.RuneCountInString(title) > 300 || blank(title) {

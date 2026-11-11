@@ -32,6 +32,7 @@ func (d Documents) HouseDocument(ctx context.Context, tenant fin.TenantID, shipm
 	if s.VersionStatus != docapi.VersionIssued {
 		return app.HouseDocument{}, fmt.Errorf("%w: DOC answers version %d %s", fin.ErrNoIssuedDocument, s.Version, s.VersionStatus)
 	}
-	return app.HouseDocument{DocumentRef: fin.DocumentRef{DocumentID: s.DocumentID, Version: s.Version, Number: s.Number, MasterNumber: s.MasterNumber},
+	return app.HouseDocument{DocumentRef: fin.DocumentRef{DocumentID: s.DocumentID, Version: s.Version, Number: s.Number, MasterNumber: s.MasterNumber,
+		IssuedAt: s.IssuedAt.UTC()},
 		ShipmentID: s.ShipmentID, LegalEntityID: s.LegalEntityID}, nil
 }

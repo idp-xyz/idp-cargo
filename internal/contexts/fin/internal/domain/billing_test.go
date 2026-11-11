@@ -145,7 +145,7 @@ func billedJob(t *testing.T, p *FinancePolicy) *FreightJob {
 func debitNote(id, debtor string, currency string, lines ...int) DebitNoteInput {
 	return DebitNoteInput{ID: id, DebtorPartyID: debtor, DebtorRevision: 4, LineNos: lines, Currency: kernelCurrency(currency),
 		InvoiceDate: day("2026-11-11"), Profile: ProfileVersion{No: 1}, Document: DocumentRef{DocumentID: "DOC-H1", Version: 1, Number: "SHA0000001",
-			MasterNumber: "781-12345675"}}
+			MasterNumber: "781-12345675", IssuedAt: hour(1)}}
 }
 
 // A debit note bills a debtor's estimated sides on the issued house document: in the functional currency it converts
@@ -177,6 +177,12 @@ func TestDebitAndCreditNotes(t *testing.T) {
 		in   DebitNoteInput
 		want error
 	}{noDocument, ErrNoIssuedDocument}
+	early := debitNote("DN-X", "party-a", "CNY", 1)
+	early.Document.IssuedAt = hour(3)
+	refusals["before the document was issued"] = struct {
+		in   DebitNoteInput
+		want error
+	}{early, ErrNoIssuedDocument}
 	wrongDate := debitNote("DN-X", "party-a", "CNY", 1)
 	wrongDate.InvoiceDate = day("2026-11-13")
 	refusals["invoice date not the issue's"] = struct {
@@ -285,8 +291,22 @@ func TestDebitAndCreditNotes(t *testing.T) {
 	if err := issue(debitNote("DN-3", "party-a", "CNY", 2), 5); err != nil || j.State().Notes[3].Number != "DN000003" || j.State().Notes[3].Total != 25_000 {
 		t.Fatalf("billed again: %v", err)
 	}
+	if err := credit("CN-2", "DN-1", 6, 3); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("a discount line reversed alone raises what the debtor owes: %v", err)
+	}
+	if err := credit("CN-2", "DN-1", 6, 1); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("leaving the discount line alone on the debit note: %v", err)
+	}
 	if err := credit("CN-2", "DN-1", 6, 1, 3); err != nil {
 		t.Fatal(err)
+	}
+	var cancelledEvent, sideEvents bool
+	for _, e := range j.Pending() {
+		cancelledEvent = cancelledEvent || (e.Type == eventDebitNoteCancelled && e.SubjectID == "DN-1" && e.JobID == "JOB-1")
+		sideEvents = sideEvents || (e.Type == eventSideRevised && e.LineNo == 1 && e.Version == 3)
+	}
+	if !cancelledEvent || !sideEvents {
+		t.Fatalf("events: %+v", j.Pending())
 	}
 	if st := j.State(); st.Notes[0].State != NoteCancelled || st.Notes[4].Total != -854_000 || st.Notes[4].Number != "CN000002" {
 		t.Fatalf("every line reversed: %+v", st.Notes[0])
@@ -298,13 +318,25 @@ func TestDebitAndCreditNotes(t *testing.T) {
 	if err := credit("CN-3", "DN-1", 7, 1); !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("crediting a cancelled note: %v", err)
 	}
-	early := CreditNoteInput{ID: "CN-3", DebitNoteID: "DN-2", LineNos: []int{1}, Reason: "x", InvoiceDate: day("2026-11-10")}
-	if err := j.IssueCreditNote(early, p, numbers.draw(p), "bill-1", hour(7)); !errors.Is(err, ErrInvalid) {
+	dated := CreditNoteInput{ID: "CN-3", DebitNoteID: "DN-2", LineNos: []int{1}, Reason: "x", InvoiceDate: day("2026-11-10")}
+	if err := j.IssueCreditNote(dated, p, numbers.draw(p), "bill-1", hour(7)); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("a credit note dated before its debit note: %v", err)
 	}
 	// the returned sides are estimates again, at the ESTIMATE rate: USD 1,200.00 at 7.1234 and CNY -100.00
 	if unbilled, billed := j.Exposure("party-a"); unbilled != 854_808-10_000 || billed != 25_000 {
 		t.Fatalf("exposure after credits %d %d", unbilled, billed)
+	}
+	// the agreed fee waived: written off, its side returns at zero
+	waive := CreditNoteInput{ID: "CN-3", DebitNoteID: "DN-3", LineNos: []int{1}, Reason: "fee waived", InvoiceDate: day("2026-11-11"), WriteOff: true}
+	if err := j.IssueCreditNote(waive, p, numbers.draw(p), "bill-1", hour(7)); err != nil {
+		t.Fatal(err)
+	}
+	doc = j.State().Lines[1].Sell
+	if v := doc[len(doc)-1]; v.Status != StatusEstimated || v.Amount != cny(0) || v.Local != 0 || v.Reason != "credit note CN000003, written off" {
+		t.Fatalf("written off: %+v", v)
+	}
+	if unbilled, billed := j.Exposure("party-a"); unbilled != 854_808-10_000 || billed != 0 {
+		t.Fatalf("exposure after the write-off %d %d", unbilled, billed)
 	}
 
 	back, err := RestoreJob(j.State())
@@ -324,7 +356,7 @@ func TestDebitAndCreditNotes(t *testing.T) {
 	failing := func(string) (string, int64, error) { return "", 0, ErrSeriesExhausted }
 	before := len(j.State().Lines[0].Sell)
 	if err = j.IssueDebitNote(debitNote("DN-4", "party-a", "CNY", 1), p, failing, "bill-1", hour(8)); !errors.Is(err, ErrSeriesExhausted) ||
-		len(j.State().Notes) != 5 || len(j.State().Lines[0].Sell) != before {
+		len(j.State().Notes) != 6 || len(j.State().Lines[0].Sell) != before {
 		t.Fatalf("a failed draw: %v", err)
 	}
 	// a code without a treatment on the invoice date
@@ -335,6 +367,12 @@ func TestDebitAndCreditNotes(t *testing.T) {
 	if err = j.IssueDebitNote(debitNote("DN-4", "party-a", "CNY", 5), p, numbers.draw(p), "bill-1", hour(8)); !errors.Is(err, ErrTaxMissing) {
 		t.Fatalf("no tax treatment: %v", err)
 	}
+}
+
+func soleTraderIdentity() PartyIdentity {
+	id := orgIdentity()
+	id.LegalName, id.USCC = "上海某五金店", "92310000MA1FL8TQ2X"
+	return id
 }
 
 func orgIdentity() PartyIdentity {
@@ -366,8 +404,12 @@ func TestBillingProfile(t *testing.T) {
 		"no evidence":       {ProfileInput{BuyerKind: BuyerCNEnterprise}, orgIdentity()},
 		"bank alone":        {ProfileInput{BuyerKind: BuyerCNEnterprise, BankName: "中国银行", EvidenceRef: "x"}, orgIdentity()},
 		"letters in phone":  {ProfileInput{BuyerKind: BuyerCNEnterprise, RegisteredPhone: "call me", EvidenceRef: "x"}, orgIdentity()},
-		"another party":     {in, PartyIdentity{PartyID: "party-b", Revision: 1, Status: "ACTIVE", CountryCode: "CN", USCC: "91310000MA1FL8TQ2X"}},
-		"archived":          {in, PartyIdentity{PartyID: "party-a", Revision: 4, Status: "ARCHIVED", CountryCode: "CN", USCC: "91310000MA1FL8TQ2X"}},
+		"evidence in prose": {ProfileInput{BuyerKind: BuyerCNEnterprise, EvidenceRef: "张三 13800000000 确认"}, orgIdentity()},
+		"sole trader phone": {ProfileInput{BuyerKind: BuyerCNEnterprise, RegisteredPhone: "021-5888 0000", EvidenceRef: "x"}, soleTraderIdentity()},
+		"sole trader bank": {ProfileInput{BuyerKind: BuyerCNEnterprise, BankName: "中国银行", BankAccount: "4567 8901", EvidenceRef: "x"},
+			soleTraderIdentity()},
+		"another party": {in, PartyIdentity{PartyID: "party-b", Revision: 1, Status: "ACTIVE", CountryCode: "CN", USCC: "91310000MA1FL8TQ2X"}},
+		"archived":      {in, PartyIdentity{PartyID: "party-a", Revision: 4, Status: "ARCHIVED", CountryCode: "CN", USCC: "91310000MA1FL8TQ2X"}},
 	} {
 		if err = b.Set(c.in, c.id, "bill-1", hour(1)); !errors.Is(err, ErrInvalid) {
 			t.Errorf("%s: %v", name, err)
@@ -401,6 +443,11 @@ func TestBillingProfile(t *testing.T) {
 	}
 	if v, _ = agent.Current(); v.Title != "NY Forwarding" || v.TaxpayerNumber != "" || !strings.HasPrefix(v.EvidenceRef, "agency") {
 		t.Fatalf("foreign buyer: %+v", v)
+	}
+	trader, _ := NewProfile("T", "party-a")
+	if err = trader.Set(ProfileInput{BuyerKind: BuyerCNEnterprise, RegisteredAddress: "上海市某区某路1号", EvidenceRef: "licence 2026/11"}, soleTraderIdentity(),
+		"bill-1", hour(1)); err != nil {
+		t.Fatalf("a sole trader without phone or account: %v", err)
 	}
 	back, err := RestoreProfile(b.State())
 	if err != nil || len(back.Added()) != 0 {
