@@ -13,9 +13,11 @@ import (
 
 // Order party actions an Authorizer decides on (C9, C11-C14).
 const (
-	ActionSetOrderParty        OrderAction = "SetOrderParty"
-	ActionChangeOrderTransport OrderAction = "ChangeOrderTransport"
-	ActionReadOrderContacts    OrderAction = "ReadOrderContacts"
+	ActionSetOrderParty         OrderAction = "SetOrderParty"
+	ActionChangeOrderTransport  OrderAction = "ChangeOrderTransport"
+	ActionReadOrderContacts     OrderAction = "ReadOrderContacts"
+	ActionLockOrderParties      OrderAction = "LockOrderParties"
+	ActionReleaseOrderPartyLock OrderAction = "ReleaseOrderPartyLock"
 )
 
 // ORG address purposes and the contact purpose an order carries (C9).
@@ -318,6 +320,56 @@ func (h ChangeOrderTransport) Handle(ctx context.Context, c ChangeOrderTransport
 			return com.ErrConflict
 		}
 		return order.ChangeTransport(c.Transport, c.Reason, c.Scope.ActorID, c.OccurredAt, entered)
+	})
+}
+
+// PartyLockCommand locks or releases the order's parties for a transport document (C12, COM V0.9).
+type PartyLockCommand struct {
+	CommandID        string
+	Scope            Scope
+	OrderID          com.OrderID
+	ExpectedRevision int64
+	HolderID         string
+	OccurredAt       time.Time
+}
+
+// LockOrderParties locks the order's parties and transport for a transport document at the revision the
+// document's holder read (C12). COM refuses to set a party or change the transport while a lock is held.
+type LockOrderParties struct{ Deps }
+
+func (h LockOrderParties) Handle(ctx context.Context, c PartyLockCommand) (Receipt, error) {
+	return h.partyLock(ctx, c, ActionLockOrderParties, func(o *com.CustomerOrder, entered time.Time) error {
+		return o.LockParties(c.HolderID, c.Scope.ActorID, c.OccurredAt, entered)
+	})
+}
+
+// ReleaseOrderPartyLock releases the lock a transport document holds, once it is cancelled or amended with other
+// parties (C12).
+type ReleaseOrderPartyLock struct{ Deps }
+
+func (h ReleaseOrderPartyLock) Handle(ctx context.Context, c PartyLockCommand) (Receipt, error) {
+	return h.partyLock(ctx, c, ActionReleaseOrderPartyLock, func(o *com.CustomerOrder, entered time.Time) error {
+		return o.ReleasePartyLock(c.HolderID, c.Scope.ActorID, c.OccurredAt, entered)
+	})
+}
+
+func (d Deps) partyLock(ctx context.Context, c PartyLockCommand, action OrderAction, apply func(*com.CustomerOrder, time.Time) error) (Receipt, error) {
+	hash, stored, replayed, err := d.begin(ctx, c.Scope, c.CommandID, c.OccurredAt, c)
+	if err != nil || replayed {
+		return stored, err
+	}
+	entered, err := d.admit(c.OccurredAt)
+	if err != nil {
+		return Receipt{}, err
+	}
+	if err = d.authorize(ctx, c.Scope, action, c.OrderID); err != nil {
+		return Receipt{}, err
+	}
+	return d.change(ctx, c.Scope, c.CommandID, hash, c.OrderID, func(order *com.CustomerOrder, revision int64) error {
+		if revision != c.ExpectedRevision {
+			return com.ErrConflict
+		}
+		return apply(order, entered)
 	})
 }
 

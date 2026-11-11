@@ -3,9 +3,14 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
+
 	bentopg "go.idp.xyz/idp-bento-go/postgres"
+	bentorepo "go.idp.xyz/idp-bento-go/repository"
 	com "go.idp.xyz/idp-cargo/internal/contexts/com/internal/domain"
 )
 
@@ -14,7 +19,65 @@ const partyColumns = `,
         (SELECT coalesce(json_agg(v ORDER BY v.version), '[]') FROM cargo_com.order_transport v
           WHERE v.tenant_id=o.tenant_id AND v.order_id=o.order_id),
         (SELECT coalesce(json_agg(p ORDER BY p.role, p.version), '[]') FROM cargo_com.order_party p
-          WHERE p.tenant_id=o.tenant_id AND p.order_id=o.order_id)`
+          WHERE p.tenant_id=o.tenant_id AND p.order_id=o.order_id),
+        (SELECT coalesce(json_agg(k ORDER BY k.lock_no), '[]') FROM cargo_com.order_party_lock k
+          WHERE k.tenant_id=o.tenant_id AND k.order_id=o.order_id)`
+
+type lockRow struct {
+	LockNo           int       `json:"lock_no"`
+	HolderID         string    `json:"holder_id"`
+	LockedBy         string    `json:"locked_by"`
+	LockedAt         time.Time `json:"locked_at"`
+	EnteredAt        time.Time `json:"entered_at"`
+	ReleasedBy       *string   `json:"released_by"`
+	ReleasedAt       time.Time `json:"released_at"`
+	ReleaseEnteredAt time.Time `json:"release_entered_at"`
+}
+
+// PartiesLocked reports whether a commit failed because a party or transport version was written while a
+// transport document held the order's parties locked (C12).
+func PartiesLocked(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23514" && pgErr.ConstraintName == "order_parties_locked"
+}
+
+func restoreLocks(s *com.OrderState, lockJSON []byte) error {
+	var locks []lockRow
+	if err := json.Unmarshal(lockJSON, &locks); err != nil {
+		return err
+	}
+	for _, l := range locks {
+		s.PartyLocks = append(s.PartyLocks, com.PartyLock{No: l.LockNo, HolderID: l.HolderID, LockedBy: l.LockedBy, LockedAt: utc(l.LockedAt),
+			EnteredAt: utc(l.EnteredAt), ReleasedBy: deref(l.ReleasedBy), ReleasedAt: utc(l.ReleasedAt), ReleaseEnteredAt: utc(l.ReleaseEnteredAt)})
+	}
+	return nil
+}
+
+func saveLocks(ctx context.Context, q bentopg.Executor, order *com.CustomerOrder) error {
+	tenant, id := string(order.Tenant()), string(order.ID())
+	for _, l := range order.AddedPartyLocks() {
+		var by, at, entered any
+		if !l.Held() {
+			by, at, entered = l.ReleasedBy, l.ReleasedAt, l.ReleaseEnteredAt
+		}
+		if _, err := q.Exec(ctx, `INSERT INTO cargo_com.order_party_lock (tenant_id,order_id,lock_no,holder_id,locked_by,locked_at,entered_at,
+            released_by,released_at,release_entered_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, tenant, id, l.No, l.HolderID, l.LockedBy, l.LockedAt,
+			l.EnteredAt, by, at, entered); err != nil {
+			return err
+		}
+	}
+	for _, l := range order.ReleasedPartyLocks() {
+		tag, err := q.Exec(ctx, `UPDATE cargo_com.order_party_lock SET released_by=$4,released_at=$5,release_entered_at=$6
+          WHERE tenant_id=$1 AND order_id=$2 AND lock_no=$3 AND released_at IS NULL`, tenant, id, l.No, l.ReleasedBy, l.ReleasedAt, l.ReleaseEnteredAt)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() != 1 {
+			return fmt.Errorf("%w: party lock %d of order %s", bentorepo.ErrConflict, l.No, id)
+		}
+	}
+	return nil
+}
 
 type transportRow struct {
 	Version   int64     `json:"version"`

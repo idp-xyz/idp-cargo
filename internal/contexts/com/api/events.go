@@ -17,6 +17,8 @@ const (
 	OrderTransportChanged          = "OrderTransportChanged.v1"
 	CustomerOrderClosed            = "CustomerOrderClosed.v1"
 	CustomerOrderContactsErased    = "CustomerOrderContactsErased.v1"
+	OrderPartiesLocked             = "OrderPartiesLocked.v1"
+	OrderPartyLockReleased         = "OrderPartyLockReleased.v1"
 )
 
 // EventPayload is the JSON payload of every COM event: identifiers only. SubjectID is the order. Events
@@ -41,4 +43,6 @@ type EventPayload struct {
 	Overridden   bool   `json:"overridden,omitempty"`
 	// OrderTransportChanged.v1 names the transport version written.
 	TransportVersion int64 `json:"transport_version,omitempty"`
+	// OrderPartiesLocked.v1 and OrderPartyLockReleased.v1 name the transport document holding the lock (C12).
+	HolderID string `json:"holder_id,omitempty"`
 }

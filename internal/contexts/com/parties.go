@@ -29,6 +29,22 @@ func (m *Module) ChangeOrderTransport(ctx context.Context, cmd api.ChangeOrderTr
 	return toReceipt(receipt, err)
 }
 
+func (m *Module) LockOrderParties(ctx context.Context, cmd api.LockOrderParties) (api.Receipt, error) {
+	receipt, err := application.LockOrderParties{Deps: m.deps(cmd.TenantID, cmd.CommandID)}.Handle(ctx, application.PartyLockCommand{
+		CommandID: cmd.CommandID, Scope: scope(cmd.TenantID, cmd.ActorID), OrderID: domain.OrderID(cmd.OrderID),
+		ExpectedRevision: cmd.ExpectedRevision, HolderID: cmd.HolderID, OccurredAt: stored(cmd.OccurredAt),
+	})
+	return toReceipt(receipt, err)
+}
+
+func (m *Module) ReleaseOrderPartyLock(ctx context.Context, cmd api.ReleaseOrderPartyLock) (api.Receipt, error) {
+	receipt, err := application.ReleaseOrderPartyLock{Deps: m.deps(cmd.TenantID, cmd.CommandID)}.Handle(ctx, application.PartyLockCommand{
+		CommandID: cmd.CommandID, Scope: scope(cmd.TenantID, cmd.ActorID), OrderID: domain.OrderID(cmd.OrderID),
+		ExpectedRevision: cmd.ExpectedRevision, HolderID: cmd.HolderID, OccurredAt: stored(cmd.OccurredAt),
+	})
+	return toReceipt(receipt, err)
+}
+
 func (m *Module) GetOrderParties(ctx context.Context, q api.GetOrderParties) (api.OrderParties, error) {
 	order, revision, contacts, err := application.GetOrderParties{
 		Tx: bento.TenantTransactor{DB: m.db, Tenant: q.TenantID}, Orders: postgres.PartyReader{DB: m.db}, Auth: authorizer{m.auth},
@@ -45,6 +61,9 @@ func (m *Module) GetOrderParties(ctx context.Context, q api.GetOrderParties) (ap
 	}
 	if e, ok := order.Erasure(); ok {
 		out.Contacts.State, out.Contacts.ErasedAt = api.ContactsErased, e.ErasedAt
+	}
+	for _, l := range order.PartyLocks() {
+		out.Locks = append(out.Locks, api.PartyLock{HolderID: l.HolderID, LockedBy: l.LockedBy, LockedAt: l.LockedAt})
 	}
 	for _, p := range order.Parties() {
 		v := api.OrderPartyView{Role: p.Role, Version: p.Version, Kind: string(p.Kind), ToOrder: p.ToOrderText, HasContact: p.HasContact,

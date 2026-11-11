@@ -19,6 +19,8 @@ import (
 	bookapi "go.idp.xyz/idp-cargo/internal/contexts/book/api"
 	"go.idp.xyz/idp-cargo/internal/contexts/com"
 	comapi "go.idp.xyz/idp-cargo/internal/contexts/com/api"
+	"go.idp.xyz/idp-cargo/internal/contexts/doc"
+	docapi "go.idp.xyz/idp-cargo/internal/contexts/doc/api"
 	"go.idp.xyz/idp-cargo/internal/contexts/ful"
 	fulapi "go.idp.xyz/idp-cargo/internal/contexts/ful/api"
 	"go.idp.xyz/idp-cargo/internal/contexts/org"
@@ -196,6 +198,23 @@ func (p *Platform) AIR(book bookapi.Queries, ful fulapi.AirOperationPlanQueries,
 		return nil, err
 	}
 	return air.New(db, book, ful, auth, opts...)
+}
+
+// ORGForDOC is what DOC reads of ORG: legal entities, party roles and address books.
+type ORGForDOC interface {
+	orgapi.Queries
+	orgapi.LegalEntityQueries
+	orgapi.AddressBookQueries
+}
+
+// DOC assembles the DOC bounded context. air answers AirDocFacts v1 (relationship 11), com OrderParties v1 and org
+// LegalEntityRef v1 and PartyRef v1, each through its query side.
+func (p *Platform) DOC(air airapi.AirDocFactsQueries, com comapi.OrderPartyQueries, org ORGForDOC, auth docapi.Authorizer, opts ...doc.Option) (*doc.Module, error) {
+	db, err := p.newDB()
+	if err != nil {
+		return nil, err
+	}
+	return doc.New(db, air, com, org, auth, opts...)
 }
 
 // Locations assembles the read-only location reference data (repository structure baseline §11).

@@ -45,11 +45,14 @@ func COMEnvelope(commandID string, e com.Event, recordedAt time.Time) (eventing.
 	if e.TransportVersion != 0 {
 		key += "\x00transport:" + strconv.FormatInt(e.TransportVersion, 10)
 	}
+	if e.HolderID != "" {
+		key += "\x00holder:" + e.HolderID
+	}
 	digest := sha256.Sum256([]byte(key))
 	payload, err := json.Marshal(api.EventPayload{TenantID: string(e.TenantID), SubjectID: e.SubjectID,
 		ObligationID: string(e.ObligationID), ObligationVersion: e.ObligationVersion, ShipmentID: e.ShipmentID,
 		LineNo: e.LineNo, LineVersion: e.LineVersion, PartyRole: e.PartyRole, PartyVersion: e.PartyVersion, PartyKind: e.PartyKind,
-		Overridden: e.Overridden, TransportVersion: e.TransportVersion})
+		Overridden: e.Overridden, TransportVersion: e.TransportVersion, HolderID: e.HolderID})
 	if err != nil {
 		return eventing.Envelope{}, err
 	}

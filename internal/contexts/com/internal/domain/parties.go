@@ -237,6 +237,9 @@ func (o *CustomerOrder) SetParty(p OrderParty, by string, at, entered time.Time)
 	if err := o.open(); err != nil {
 		return err
 	}
+	if err := o.unlocked(); err != nil {
+		return err
+	}
 	if blank(by) || at.IsZero() || entered.IsZero() {
 		return ErrInvalidChange
 	}
@@ -267,6 +270,9 @@ func (o *CustomerOrder) SetParty(p OrderParty, by string, at, entered time.Time)
 // starts or ends at a door (C14).
 func (o *CustomerOrder) ChangeTransport(t Transport, reason, by string, at, entered time.Time) error {
 	if err := o.open(); err != nil {
+		return err
+	}
+	if err := o.unlocked(); err != nil {
 		return err
 	}
 	if blank(by) || blank(reason) || utf8.RuneCountInString(reason) > maxText || at.IsZero() || entered.IsZero() {
