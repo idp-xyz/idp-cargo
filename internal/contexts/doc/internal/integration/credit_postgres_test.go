@@ -30,18 +30,22 @@ func TestHouseIssueAsksFINForCredit(t *testing.T) {
 		DocumentID: "DOC-H1", ExpectedRevision: 1, OccurredAt: f.hours(2)}); err != nil {
 		t.Fatal(err)
 	}
-	issue := func(command, reason string) error {
-		_, err := f.module.IssueTransportDocument(ctx, api.IssueTransportDocument{CommandID: command, TenantID: f.tenant, ActorID: "doc-2", DocumentID: "DOC-H1",
+	issue := func(command, actor, reason string) error {
+		_, err := f.module.IssueTransportDocument(ctx, api.IssueTransportDocument{CommandID: command, TenantID: f.tenant, ActorID: actor, DocumentID: "DOC-H1",
 			ExpectedRevision: 2, CreditOverrideReason: reason, OccurredAt: f.hours(3)})
 		return err
 	}
-	if err := issue("issue-held", "the customer pays cash"); !errors.Is(err, api.ErrRejected) || !strings.Contains(err.Error(), "DOC_CREDIT_HOLD") {
+	if err := issue("issue-held", "doc-2", "the customer pays cash"); !errors.Is(err, api.ErrRejected) || !strings.Contains(err.Error(), "DOC_CREDIT_HOLD") {
 		t.Fatalf("a hold refuses even with an override: %v", err)
+	}
+	if err := issue("issue-held-junior", "doc-junior", "the customer pays cash"); !errors.Is(err, api.ErrRejected) ||
+		!strings.Contains(err.Error(), "DOC_CREDIT_HOLD") {
+		t.Fatalf("a hold, not the override permission, refuses an actor who may not override: %v", err)
 	}
 	f.w.mu.Lock()
 	f.w.credit["customer-O-A"] = finapi.CreditOK
 	f.w.mu.Unlock()
-	if err := issue("issue-ok", ""); err != nil {
+	if err := issue("issue-ok", "doc-2", ""); err != nil {
 		t.Fatalf("issued on FIN's decision: %v", err)
 	}
 	d := f.get(t, "DOC-H1")

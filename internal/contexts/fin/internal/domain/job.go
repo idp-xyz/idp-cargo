@@ -180,9 +180,15 @@ func (j *FreightJob) side(side string, party string, revision int64, amount kern
 	if !amount.Currency.Valid() || (side == SideSell && !identifier(party)) || (party != "" && !identifier(party)) || revision < 0 {
 		return SideVersion{}, fmt.Errorf("%w: a %s side names its currency and, for a sell side, its debtor", ErrInvalid, side)
 	}
+	if amount.Minor > MaxAmount || amount.Minor < -MaxAmount {
+		return SideVersion{}, fmt.Errorf("%w: an amount beyond %d minor units", ErrInvalid, MaxAmount)
+	}
 	local, fx, err := conv.Local(amount, RateEstimate, at)
 	if err != nil {
 		return SideVersion{}, err
+	}
+	if local > MaxAmount || local < -MaxAmount {
+		return SideVersion{}, fmt.Errorf("%w: a local amount beyond %d minor units", ErrInvalid, MaxAmount)
 	}
 	return SideVersion{Side: side, No: no, PartyID: party, PartyRevision: revision, Amount: amount, Local: local, FX: fx, Status: status, Reason: reason,
 		By: by, At: at.UTC()}, nil
@@ -197,8 +203,9 @@ type BasisLine struct {
 }
 
 // ApplyBasis applies an accepted quote for one of the shipment's orders: every line becomes a charge line with a
-// sell side for the job's customer and, when it has a cost, a cost side, both estimates from the quote. A quote and
-// order are applied to the job once (FIN_BASIS_APPLIED; the database also keeps them to one job of the tenant).
+// sell side for the job's customer and, when it has a cost, a cost side, both estimates from the quote. A quote is
+// applied to a job once, whichever order (FIN_BASIS_APPLIED), and a quote and order to one job of the tenant (the
+// database keeps both).
 func (j *FreightJob) ApplyBasis(b Basis, customer string, customerRevision int64, lines []BasisLine, conv Converter, by string, at time.Time) error {
 	if err := j.open(by, at); err != nil {
 		return err
@@ -210,8 +217,8 @@ func (j *FreightJob) ApplyBasis(b Basis, customer string, customerRevision int64
 		return fmt.Errorf("%w: the quote is for %s, the job for %s", ErrNotPriceable, customer, j.state.CustomerPartyID)
 	}
 	for _, o := range j.state.Bases {
-		if o.QuoteID == b.QuoteID && o.OrderID == b.OrderID {
-			return fmt.Errorf("%w: basis %d", ErrBasisApplied, o.No)
+		if o.QuoteID == b.QuoteID {
+			return fmt.Errorf("%w: basis %d applies quote %s to the job for order %s", ErrBasisApplied, o.No, o.QuoteID, o.OrderID)
 		}
 	}
 	b.No, b.By, b.At = len(j.state.Bases)+1, by, at.UTC()
@@ -235,7 +242,7 @@ func (j *FreightJob) ApplyBasis(b Basis, customer string, customerRevision int64
 			line.Cost = []SideVersion{cost}
 		}
 		j.state.Lines = append(j.state.Lines, line)
-		j.record(eventLineRecorded, at, line.No)
+		j.recordLine(eventLineRecorded, at, line.No, "", 1)
 	}
 	j.record(eventBasisApplied, at, b.No)
 	return nil
@@ -276,7 +283,7 @@ func (j *FreightJob) RecordLine(code, description string, sell, cost *SideInput,
 		line.Cost = []SideVersion{v}
 	}
 	j.state.Lines = append(j.state.Lines, line)
-	j.record(eventLineRecorded, at, line.No)
+	j.recordLine(eventLineRecorded, at, line.No, "", 1)
 	return nil
 }
 
@@ -297,8 +304,11 @@ func (j *FreightJob) ReviseSide(lineNo int, side string, expected int, in SideIn
 	if expected != len(*versions) {
 		return fmt.Errorf("%w: %s side of line %d is at version %d", ErrSideVersion, side, lineNo, len(*versions))
 	}
-	discount := side == SideSell && len(line.Sell) > 0 && line.Sell[0].Amount.Minor < 0 && line.Source == SourceQuote
-	if in.Amount.Minor < 0 && !discount {
+	discountLine := line.Source == SourceQuote && len(line.Sell) > 0 && line.Sell[0].Amount.Minor < 0
+	switch {
+	case side == SideCost && discountLine:
+		return fmt.Errorf("%w: a discount line has no cost (R9)", ErrInvalid)
+	case in.Amount.Minor < 0 && !(side == SideSell && discountLine):
 		return fmt.Errorf("%w: a %s amount is not negative except on a quote's discount line", ErrInvalid, side)
 	}
 	v, err := j.side(side, in.PartyID, in.PartyRevision, in.Amount, status, reason, conv, expected+1, by, at)
@@ -306,7 +316,7 @@ func (j *FreightJob) ReviseSide(lineNo int, side string, expected int, in SideIn
 		return err
 	}
 	*versions = append(*versions, v)
-	j.record(eventSideRevised, at, lineNo)
+	j.recordLine(eventSideRevised, at, lineNo, side, v.No)
 	return nil
 }
 
@@ -383,9 +393,25 @@ func (j *FreightJob) SellEstimate(debtor string) int64 {
 	return sum
 }
 
+// Debtors lists the debtors of the job's sell sides, as their latest versions name them.
+func (j *FreightJob) Debtors() []string {
+	var out []string
+	for _, l := range j.state.Lines {
+		if n := len(l.Sell); n > 0 && !slices.Contains(out, l.Sell[n-1].PartyID) {
+			out = append(out, l.Sell[n-1].PartyID)
+		}
+	}
+	return out
+}
+
 func (j *FreightJob) record(kind string, at time.Time, version int) {
+	j.recordLine(kind, at, 0, "", version)
+}
+
+// recordLine records an event of the job; line and side events name the line, the side and its version.
+func (j *FreightJob) recordLine(kind string, at time.Time, line int, side string, version int) {
 	j.pending = append(j.pending, Event{Type: kind, At: at.UTC(), TenantID: j.state.TenantID, SubjectID: j.state.JobID,
-		LegalEntityID: j.state.LegalEntityID, Version: version, ShipmentID: j.state.ShipmentID})
+		LegalEntityID: j.state.LegalEntityID, Version: version, ShipmentID: j.state.ShipmentID, LineNo: line, Side: side})
 }
 
 // Stamp records when FIN entered what was written since the job was loaded (T1).

@@ -1,11 +1,11 @@
 -- IDP-Cargo FIN V0.1 / PostgreSQL 16. Run only as the migrator role, never at service start.
 -- Freight job economics, first part (FIN candidate 26: FB1 in part, FB2 without rating, FB8; decisions N1-FIN OD-1 A,
 -- OD-5 B, OD-7 A, OD-8 A): each legal entity's finance policy (functional currency and book, fixed once; exchange
--- rate entries that never overlap per type and currency), the freight job of a house shipment (one per shipment and
--- legal entity that is not cancelled) with charge lines whose sell and cost sides are immutable versions of
--- estimates, the quotes applied to them (a quote and order on one job only), and debtors' credit accounts with
--- terms versions and holds released once. Money in minor units with its currency; rates as integers with a scale.
--- No foreign key leaves cargo_fin.
+-- rate entries of at most a year that never overlap per type and currency, ended earlier once to correct them), the
+-- freight job of a house shipment (one per shipment and legal entity that is not cancelled) with charge lines whose
+-- sell and cost sides are immutable versions of estimates, the quotes applied to them (a quote once per job, a quote
+-- and order on one job only), and debtors' credit accounts with terms versions and holds released once. Money in
+-- minor units with its currency, at most 10^15; rates as integers with a scale. No foreign key leaves cargo_fin.
 CREATE SCHEMA IF NOT EXISTS cargo_fin;
 
 CREATE TABLE cargo_fin.finance_policy (
@@ -31,14 +31,20 @@ CREATE TABLE cargo_fin.exchange_rate_entry (
  from_digits integer NOT NULL CHECK (from_digits BETWEEN 0 AND 4),
  to_digits integer NOT NULL CHECK (to_digits BETWEEN 0 AND 4),
  valid_from timestamptz NOT NULL,
- valid_until timestamptz,
+ valid_until timestamptz NOT NULL,
  source text NOT NULL CHECK (length(btrim(source)) BETWEEN 1 AND 500),
  recorded_by text NOT NULL CHECK (length(btrim(recorded_by)) > 0),
  recorded_at timestamptz NOT NULL,
  entered_at timestamptz NOT NULL,
+ ended_by text CHECK (length(btrim(ended_by)) > 0),
+ ended_at timestamptz,
+ end_reason text CHECK (length(btrim(end_reason)) BETWEEN 1 AND 500),
+ end_entered_at timestamptz,
  PRIMARY KEY (tenant_id, legal_entity_id, entry_no),
  FOREIGN KEY (tenant_id, legal_entity_id) REFERENCES cargo_fin.finance_policy (tenant_id, legal_entity_id),
- CONSTRAINT exchange_rate_entry_period CHECK (valid_until IS NULL OR valid_until > valid_from)
+ CONSTRAINT exchange_rate_entry_period CHECK (valid_until > valid_from AND valid_until - valid_from <= interval '366 days'),
+ CONSTRAINT exchange_rate_entry_end CHECK ((ended_at IS NULL) = (ended_by IS NULL) AND (ended_at IS NULL) = (end_reason IS NULL)
+   AND (ended_at IS NULL) = (end_entered_at IS NULL))
 );
 
 CREATE TABLE cargo_fin.freight_job (
@@ -85,8 +91,10 @@ CREATE TABLE cargo_fin.job_basis (
  PRIMARY KEY (tenant_id, job_id, basis_no),
  FOREIGN KEY (tenant_id, job_id) REFERENCES cargo_fin.freight_job (tenant_id, job_id)
 );
--- A quote and order are priced on one job that is not cancelled (cancelling a job frees its bases).
+-- A quote and order are priced on one job that is not cancelled (cancelling a job frees its bases), and a quote once on
+-- a job.
 CREATE UNIQUE INDEX job_basis_once ON cargo_fin.job_basis (tenant_id, quote_id, order_id) WHERE live;
+CREATE UNIQUE INDEX job_basis_quote_once_per_job ON cargo_fin.job_basis (tenant_id, job_id, quote_id) WHERE live;
 
 CREATE TABLE cargo_fin.charge_line (
  tenant_id text NOT NULL,
@@ -117,8 +125,8 @@ CREATE TABLE cargo_fin.charge_side_version (
  party_id text CHECK (length(btrim(party_id)) BETWEEN 1 AND 128),
  party_revision bigint NOT NULL CHECK (party_revision >= 0),
  currency char(3) NOT NULL CHECK (currency ~ '^[A-Z]{3}$'),
- amount_minor bigint NOT NULL,
- local_minor bigint NOT NULL,
+ amount_minor bigint NOT NULL CHECK (abs(amount_minor) <= 1000000000000000),
+ local_minor bigint NOT NULL CHECK (abs(local_minor) <= 1000000000000000),
  rate_entry_no integer,
  rate_type text CHECK (rate_type IN ('ESTIMATE','INVOICE','ACCOUNTING')),
  rate bigint CHECK (rate > 0),
@@ -198,9 +206,10 @@ CREATE TABLE cargo_fin.command_receipt (
  PRIMARY KEY (tenant_id, command_id)
 );
 
--- Rows change only where a column says so: a policy its revision; a job its state, cancellation, revision and
--- updated_at, and never once cancelled; a basis only stops being live, once, with its job's cancellation; an account
--- its state, revision and updated_at; a hold is only released, once. Everything else is immutable.
+-- Rows change only where a column says so: a policy its revision; a rate entry only ends earlier, once; a job its
+-- state, cancellation, revision and updated_at, and never once cancelled; a basis only stops being live, once, with
+-- its job's cancellation; an account its state, revision and updated_at; a hold is only released, once. Everything
+-- else is immutable.
 CREATE FUNCTION cargo_fin.reject_row_change() RETURNS trigger LANGUAGE plpgsql AS $fn$
 BEGIN
   RAISE EXCEPTION 'cargo_fin: % rows are immutable', TG_TABLE_NAME USING ERRCODE = 'restrict_violation';
@@ -218,13 +227,17 @@ BEGIN
   IF o - changeable IS DISTINCT FROM n - changeable
      OR (TG_TABLE_NAME = 'freight_job' AND o->>'state' = 'CANCELLED')
      OR (TG_TABLE_NAME = 'job_basis' AND (NOT (o->>'live')::boolean OR (n->>'live')::boolean))
-     OR (TG_TABLE_NAME = 'credit_hold' AND (o->>'released_at' IS NOT NULL OR n->>'released_at' IS NULL)) THEN
+     OR (TG_TABLE_NAME = 'credit_hold' AND (o->>'released_at' IS NOT NULL OR n->>'released_at' IS NULL))
+     OR (TG_TABLE_NAME = 'exchange_rate_entry' AND (o->>'ended_at' IS NOT NULL OR n->>'ended_at' IS NULL
+       OR (n->>'valid_until')::timestamptz >= (o->>'valid_until')::timestamptz)) THEN
     RAISE EXCEPTION 'cargo_fin: % changes only %', TG_TABLE_NAME, changeable USING ERRCODE = 'restrict_violation';
   END IF;
   RETURN NEW;
 END $fn$;
 CREATE TRIGGER finance_policy_rules BEFORE UPDATE OR DELETE ON cargo_fin.finance_policy
   FOR EACH ROW EXECUTE FUNCTION cargo_fin.change_only('revision');
+CREATE TRIGGER exchange_rate_entry_rules BEFORE UPDATE OR DELETE ON cargo_fin.exchange_rate_entry
+  FOR EACH ROW EXECUTE FUNCTION cargo_fin.change_only('valid_until','ended_by','ended_at','end_reason','end_entered_at');
 CREATE TRIGGER freight_job_rules BEFORE UPDATE OR DELETE ON cargo_fin.freight_job
   FOR EACH ROW EXECUTE FUNCTION cargo_fin.change_only('state','cancel_reason','cancelled_by','cancelled_at','cancel_entered_at','revision','updated_at');
 CREATE TRIGGER job_basis_rules BEFORE UPDATE OR DELETE ON cargo_fin.job_basis
@@ -236,7 +249,7 @@ CREATE TRIGGER credit_hold_rules BEFORE UPDATE OR DELETE ON cargo_fin.credit_hol
 DO $immutable$
 DECLARE tbl text;
 BEGIN
-  FOREACH tbl IN ARRAY ARRAY['exchange_rate_entry','charge_line','charge_side_version','credit_terms_version'] LOOP
+  FOREACH tbl IN ARRAY ARRAY['charge_line','charge_side_version','credit_terms_version'] LOOP
     EXECUTE format('CREATE TRIGGER %I BEFORE UPDATE OR DELETE ON cargo_fin.%I FOR EACH ROW EXECUTE FUNCTION cargo_fin.reject_row_change()',
       tbl || '_immutable', tbl);
   END LOOP;
@@ -269,10 +282,24 @@ END $fn$;
 CREATE CONSTRAINT TRIGGER finance_policy_consistent AFTER INSERT OR UPDATE ON cargo_fin.finance_policy
   DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION cargo_fin.check_policy_at_commit();
 
+-- At commit, an entry ended earlier was used by no charge at or after its new end.
+CREATE FUNCTION cargo_fin.check_rate_end_at_commit() RETURNS trigger LANGUAGE plpgsql AS $fn$
+BEGIN
+  IF EXISTS (SELECT 1 FROM cargo_fin.charge_side_version v JOIN cargo_fin.freight_job j ON j.tenant_id = v.tenant_id AND j.job_id = v.job_id
+       WHERE v.tenant_id = NEW.tenant_id AND j.legal_entity_id = NEW.legal_entity_id AND v.rate_entry_no = NEW.entry_no AND v.recorded_at >= NEW.valid_until) THEN
+    RAISE EXCEPTION 'cargo_fin: exchange rate entry %/%/% converted a charge at or after its new end', NEW.tenant_id, NEW.legal_entity_id, NEW.entry_no
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'exchange_rate_entry_in_use';
+  END IF;
+  RETURN NULL;
+END $fn$;
+CREATE CONSTRAINT TRIGGER exchange_rate_entry_in_use AFTER UPDATE ON cargo_fin.exchange_rate_entry
+  DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION cargo_fin.check_rate_end_at_commit();
+
 -- At commit: a job's lines, bases and side versions are numbered from 1 without gaps; every line has a side; a QUOTE
--- line's basis is the job's; a side's local amount is its amount when in the functional currency, and otherwise
--- converted at an entry of the job's policy of that type, rate and digits; the job's functional currency and book
--- are its policy's; a cancelled job has no live basis and an open one only live bases.
+-- line's basis is the job's; a side's local amount is its amount when in the functional currency or zero, and
+-- otherwise its amount converted (halves away from zero) at an entry of the job's policy of that type, rate and digits
+-- in force when the side was recorded; the job's functional currency and book are its policy's; a cancelled job has no
+-- live basis and an open one only live bases.
 CREATE FUNCTION cargo_fin.check_job_at_commit() RETURNS trigger LANGUAGE plpgsql AS $fn$
 DECLARE
   j cargo_fin.freight_job;
@@ -289,11 +316,12 @@ BEGIN
      AND NOT EXISTS (SELECT 1 FROM (SELECT line_no, side, count(*) AS n, max(version_no) AS m FROM cargo_fin.charge_side_version v
        WHERE v.tenant_id = j.tenant_id AND v.job_id = j.job_id GROUP BY line_no, side) s WHERE s.n <> s.m)
      AND NOT EXISTS (SELECT 1 FROM cargo_fin.charge_side_version v WHERE v.tenant_id = j.tenant_id AND v.job_id = j.job_id
-       AND CASE WHEN v.currency = j.functional_currency THEN v.rate IS NOT NULL OR v.local_minor <> v.amount_minor
+       AND CASE WHEN v.currency = j.functional_currency OR v.rate IS NULL
+           THEN v.rate IS NOT NULL OR v.local_minor <> v.amount_minor OR (v.currency <> j.functional_currency AND v.amount_minor <> 0)
          ELSE NOT EXISTS (SELECT 1 FROM cargo_fin.exchange_rate_entry e WHERE e.tenant_id = j.tenant_id AND e.legal_entity_id = j.legal_entity_id
            AND e.entry_no = v.rate_entry_no AND e.rate_type = v.rate_type AND e.from_currency = v.currency AND e.rate = v.rate AND e.scale = v.scale
-           AND e.from_digits = v.from_digits AND e.to_digits = v.to_digits AND e.valid_from <= v.recorded_at
-           AND (e.valid_until IS NULL OR v.recorded_at < e.valid_until)) END)
+           AND e.from_digits = v.from_digits AND e.to_digits = v.to_digits AND e.valid_from <= v.recorded_at AND v.recorded_at < e.valid_until
+           AND v.local_minor = round(v.amount_minor::numeric * e.rate * power(10::numeric, e.to_digits - e.from_digits - e.scale))) END)
     INTO ok;
   IF NOT ok THEN
     RAISE EXCEPTION 'cargo_fin: freight job %/% is inconsistent at commit (state %)', j.tenant_id, j.job_id, j.state

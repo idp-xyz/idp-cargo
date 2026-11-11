@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"fmt"
+	"time"
 
 	fin "go.idp.xyz/idp-cargo/internal/contexts/fin/internal/domain"
 	"go.idp.xyz/idp-cargo/internal/kernel"
@@ -75,11 +76,36 @@ func (d Deps) RecordRate(ctx context.Context, c Command, e fin.RateEntry) (Recei
 }
 
 func (d Deps) policy(ctx context.Context, tenant fin.TenantID, legalEntity string) (*fin.FinancePolicy, error) {
-	p, _, err := d.Policies.Read(ctx, tenant, legalEntity)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %s: %v", ErrNoPolicy, legalEntity, err)
+	p, found, err := d.Policies.Find(ctx, tenant, legalEntity)
+	if err == nil && !found {
+		return nil, fmt.Errorf("%w: %s", ErrNoPolicy, legalEntity)
 	}
-	return p, nil
+	return p, err
+}
+
+// EndRate ends a rate entry's period earlier, once, under the policy's lock.
+func (d Deps) EndRate(ctx context.Context, c Command, no int, until time.Time, reason string) (Receipt, error) {
+	hash, entered, stored, replayed, err := d.begin(ctx, c)
+	if err != nil || replayed {
+		return stored, err
+	}
+	return d.write(ctx, c, hash, "FinancePolicy", func(txCtx context.Context) (Receipt, aggregate, error) {
+		p, revision, err := d.Policies.Load(txCtx, c.Scope.TenantID, c.Subject)
+		if err != nil {
+			return Receipt{}, nil, err
+		}
+		if revision != c.ExpectedRevision {
+			return Receipt{}, nil, fin.ErrConflict
+		}
+		if err = p.EndRate(no, until, reason, c.Scope.ActorID, c.OccurredAt); err != nil {
+			return Receipt{}, nil, err
+		}
+		p.Stamp(entered)
+		if revision, err = d.Policies.Save(txCtx, p, revision); err != nil {
+			return Receipt{}, nil, err
+		}
+		return Receipt{SubjectID: c.Subject, NewRevision: revision, Version: no}, p, nil
+	})
 }
 
 // OpenJob opens the job of a shipment: FIN reads FUL's CostDriver v1 and ORG's legal entity first (T3).
@@ -249,7 +275,7 @@ func (d Deps) RecordLine(ctx context.Context, c Command, in LineInput) (Receipt,
 	})
 }
 
-// ReviseInput is a side revision as asked; an empty sell party keeps the debtor.
+// ReviseInput is a side revision as asked; an empty party keeps the side's debtor or creditor.
 type ReviseInput struct {
 	LineNo   int
 	Side     string
@@ -265,9 +291,13 @@ func (d Deps) Revise(ctx context.Context, c Command, in ReviseInput) (Receipt, e
 	}
 	return d.change(ctx, c, func(ctx context.Context, j *fin.FreightJob) (err error) {
 		st := j.State()
-		if in.Side == fin.SideSell && in.Value.PartyID == "" && in.LineNo >= 1 && in.LineNo <= len(st.Lines) {
-			if sell := st.Lines[in.LineNo-1].Sell; len(sell) > 0 {
-				in.Value.PartyID, in.Value.PartyRevision = sell[len(sell)-1].PartyID, sell[len(sell)-1].PartyRevision
+		if in.Value.PartyID == "" && in.LineNo >= 1 && in.LineNo <= len(st.Lines) {
+			versions := st.Lines[in.LineNo-1].Sell
+			if in.Side == fin.SideCost {
+				versions = st.Lines[in.LineNo-1].Cost
+			}
+			if n := len(versions); n > 0 {
+				in.Value.PartyID, in.Value.PartyRevision = versions[n-1].PartyID, versions[n-1].PartyRevision
 				return nil
 			}
 		}

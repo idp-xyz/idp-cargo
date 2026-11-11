@@ -21,6 +21,8 @@ type ExchangeRateEntry struct {
 	Source     string
 	RecordedBy string
 	RecordedAt time.Time
+	EndedBy    string // set when the period was ended earlier
+	EndReason  string
 }
 
 // FinancePolicy is a legal entity's policy.
@@ -160,7 +162,8 @@ type CreditHold struct {
 }
 
 // CreditAccount is a debtor's account with a legal entity; Exposure is the estimated sell of the debtor's open jobs
-// of the legal entity (V0.1 has no invoices).
+// of the legal entity (V0.1 has no invoices). In ListCreditExposure a debtor with exposure and no account has Status
+// NO_ACCOUNT and no terms.
 type CreditAccount struct {
 	LegalEntityID string
 	DebtorPartyID string
@@ -179,8 +182,8 @@ type (
 	GetJobProfit        struct{ TenantID, JobID string }
 	ListJobsForShipment struct{ TenantID, ShipmentID string }
 	GetCreditAccount    struct{ TenantID, LegalEntityID, DebtorPartyID string }
-	// ListCreditExposure lists a legal entity's credit accounts with their exposure, the over-limit ones first, for
-	// the daily review OD-8 A asks for.
+	// ListCreditExposure lists a legal entity's debtors with an account or with exposure, over-limit and accountless
+	// ones first, for the daily review OD-8 A asks for.
 	ListCreditExposure struct{ TenantID, LegalEntityID string }
 )
 

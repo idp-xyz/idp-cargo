@@ -112,6 +112,7 @@ jobs:
           GRANT UPDATE (state,revision,updated_at) ON cargo_doc.document_dispatch TO cargo_app;
           GRANT SELECT,INSERT ON ALL TABLES IN SCHEMA cargo_fin TO cargo_app;
           GRANT UPDATE (revision) ON cargo_fin.finance_policy TO cargo_app;
+          GRANT UPDATE (valid_until,ended_by,ended_at,end_reason,end_entered_at) ON cargo_fin.exchange_rate_entry TO cargo_app;
           GRANT UPDATE (state,cancel_reason,cancelled_by,cancelled_at,cancel_entered_at,revision,updated_at) ON cargo_fin.freight_job TO cargo_app;
           GRANT UPDATE (live) ON cargo_fin.job_basis TO cargo_app;
           GRANT UPDATE (state,revision,updated_at) ON cargo_fin.credit_account TO cargo_app;

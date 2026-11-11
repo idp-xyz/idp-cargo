@@ -4,6 +4,7 @@ package fin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -27,8 +28,11 @@ func (c Credit) Decision(ctx context.Context, tenant doc.TenantID, legalEntity s
 	var ids []string
 	for _, debtor := range debtors {
 		s, err := c.FIN.GetCreditStatus(ctx, finapi.GetCreditStatus{TenantID: string(tenant), LegalEntityID: legalEntity, DebtorPartyID: debtor})
-		if err != nil {
+		if errors.Is(err, finapi.ErrNotFound) || errors.Is(err, finapi.ErrRejected) {
 			return doc.CreditDecision{}, fmt.Errorf("%w: credit of %s: %v", app.ErrUnknownSource, debtor, err.Error())
+		}
+		if err != nil {
+			return doc.CreditDecision{}, err
 		}
 		if s.DebtorPartyID != debtor || s.LegalEntityID != legalEntity {
 			return doc.CreditDecision{}, fmt.Errorf("%w: FIN answered for another debtor", app.ErrUnknownSource)

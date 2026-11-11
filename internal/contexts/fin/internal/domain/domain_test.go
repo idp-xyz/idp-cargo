@@ -32,9 +32,20 @@ func policy(t *testing.T) *FinancePolicy {
 // a missing rate refuses instead of falling back to another type.
 func TestFinancePolicyRates(t *testing.T) {
 	p := policy(t)
-	overlap := RateEntry{Type: RateEstimate, From: "USD", Rate: 71_000, Scale: 4, FromDigits: 2, ToDigits: 2, ValidFrom: t0.AddDate(0, 0, 10), Source: "bank"}
+	overlap := RateEntry{Type: RateEstimate, From: "USD", Rate: 71_000, Scale: 4, FromDigits: 2, ToDigits: 2, ValidFrom: t0.AddDate(0, 0, 10),
+		ValidUntil: t0.AddDate(0, 2, 0), Source: "bank"}
 	if err := p.RecordRate(overlap, "acct-1", hour(1)); !errors.Is(err, ErrRateOverlap) {
 		t.Fatalf("overlap: %v", err)
+	}
+	for name, e := range map[string]RateEntry{
+		"open end":         {Type: RateEstimate, From: "EUR", Rate: 78_000, Scale: 4, FromDigits: 2, ToDigits: 2, ValidFrom: t0, Source: "bank"},
+		"over a year":      {Type: RateEstimate, From: "EUR", Rate: 78_000, Scale: 4, FromDigits: 2, ToDigits: 2, ValidFrom: t0, ValidUntil: t0.AddDate(1, 1, 0), Source: "bank"},
+		"wrong digits":     {Type: RateEstimate, From: "JPY", Rate: 480, Scale: 4, FromDigits: 2, ToDigits: 2, ValidFrom: t0, ValidUntil: t0.AddDate(0, 1, 0), Source: "bank"},
+		"unknown currency": {Type: RateEstimate, From: "XXX", Rate: 1, Scale: 0, FromDigits: 2, ToDigits: 2, ValidFrom: t0, ValidUntil: t0.AddDate(0, 1, 0), Source: "bank"},
+	} {
+		if err := p.RecordRate(e, "acct-1", hour(1)); !errors.Is(err, ErrInvalid) {
+			t.Errorf("%s: %v", name, err)
+		}
 	}
 	accounting := overlap
 	accounting.Type = RateAccounting
@@ -60,9 +71,32 @@ func TestFinancePolicyRates(t *testing.T) {
 	if _, _, err := p.Local(usd(1), RateEstimate, t0.AddDate(0, 2, 0)); !errors.Is(err, ErrRateMissing) {
 		t.Fatalf("after the period: %v", err)
 	}
+	if local, fx, err := p.Local(kernel.Money{Currency: "EUR", Minor: 0}, RateEstimate, hour(2)); err != nil || local != 0 || fx != nil {
+		t.Fatalf("a zero amount needs no rate: %d %v", local, err)
+	}
 	back, err := RestorePolicy(p.State())
 	if err != nil || len(back.AddedRates()) != 0 || len(back.State().Rates) != 2 {
 		t.Fatalf("restore: %v", err)
+	}
+	// a wrong entry is ended early, once, and a corrected one follows
+	if err = back.EndRate(1, t0.AddDate(0, 2, 0), "wrong", "acct-1", hour(3)); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("an end after the current end: %v", err)
+	}
+	if err = back.EndRate(1, hour(3), "the bank quoted the wrong pair", "acct-1", hour(3)); err != nil {
+		t.Fatal(err)
+	}
+	if err = back.EndRate(1, hour(2), "again", "acct-1", hour(3)); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("ended twice: %v", err)
+	}
+	if ended := back.EndedRates(); len(ended) != 1 || !ended[0].ValidUntil.Equal(hour(3)) {
+		t.Fatalf("ended %+v", ended)
+	}
+	if err = back.RecordRate(RateEntry{Type: RateEstimate, From: "USD", Rate: 71_100, Scale: 4, FromDigits: 2, ToDigits: 2, ValidFrom: hour(3),
+		ValidUntil: t0.AddDate(0, 1, 0), Source: "corrected"}, "acct-1", hour(3)); err != nil {
+		t.Fatalf("the corrected entry: %v", err)
+	}
+	if _, fx, _ := back.Local(usd(100), RateEstimate, hour(4)); fx == nil || fx.EntryNo != 3 {
+		t.Fatalf("the corrected entry converts after the end: %+v", fx)
 	}
 }
 
@@ -100,6 +134,11 @@ func TestFreightJobCharges(t *testing.T) {
 	if err := j.ApplyBasis(basis, "party-a", 1, quoteLines, p, "fin-1", hour(2)); !errors.Is(err, ErrBasisApplied) {
 		t.Fatalf("the same quote and order twice: %v", err)
 	}
+	other := basis
+	other.OrderID = "O-B"
+	if err := j.ApplyBasis(other, "party-a", 1, quoteLines, p, "fin-1", hour(2)); !errors.Is(err, ErrBasisApplied) {
+		t.Fatalf("the same quote for another order of the shipment: %v", err)
+	}
 	st := j.State()
 	if len(st.Lines) != 3 || st.Lines[0].Sell[0].Local != 854_808 || st.Lines[0].Cost[0].Local != 676_723 || st.Lines[0].Cost[0].PartyID != "" ||
 		len(st.Lines[1].Cost) != 0 || st.Lines[2].Sell[0].Local != -10_000 || st.Lines[0].Source != SourceQuote || st.Lines[0].BasisNo != 1 {
@@ -134,6 +173,12 @@ func TestFreightJobCharges(t *testing.T) {
 	}
 	if err := j.ReviseSide(2, SideSell, 1, SideInput{PartyID: "party-a", Amount: cny(-1)}, "x", p, "fin-1", hour(4)); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("a non-discount sell turned negative: %v", err)
+	}
+	if err := j.ReviseSide(3, SideCost, 0, SideInput{Amount: cny(1)}, "x", p, "fin-1", hour(4)); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("a cost on a discount line: %v", err)
+	}
+	if err := j.RecordLine("X", "", &SideInput{PartyID: "party-a", Amount: cny(MaxAmount + 1)}, nil, "r", p, "fin-1", hour(4)); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("an amount beyond the cap: %v", err)
 	}
 	profit := j.Profit()
 	// revenue 854808 + 30000 - 5000 + 80000; cost 683846 (USD 960 at 7.1234) + 5000 + 60000

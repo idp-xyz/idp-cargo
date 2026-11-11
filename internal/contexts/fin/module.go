@@ -99,6 +99,15 @@ func (m *Module) RecordExchangeRate(ctx context.Context, cmd api.RecordExchangeR
 	return receipt(r, err)
 }
 
+func (m *Module) EndExchangeRate(ctx context.Context, cmd api.EndExchangeRate) (api.Receipt, error) {
+	r, err := m.deps(cmd.TenantID, cmd.CommandID).EndRate(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, api.ActionEndExchangeRate,
+		cmd.LegalEntityID, cmd.ExpectedRevision, cmd.OccurredAt, cmd), cmd.EntryNo, stored(cmd.ValidUntil), cmd.Reason)
+	if postgres.RateInUse(err) {
+		err = fmt.Errorf("%w: entry %d", domain.ErrRateInUse, cmd.EntryNo)
+	}
+	return receipt(r, err)
+}
+
 func (m *Module) OpenFreightJob(ctx context.Context, cmd api.OpenFreightJob) (api.Receipt, error) {
 	r, err := m.deps(cmd.TenantID, cmd.CommandID).OpenJob(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, api.ActionOpenFreightJob, cmd.JobID, 0,
 		cmd.OccurredAt, cmd), cmd.ShipmentID)
@@ -171,7 +180,8 @@ func (m *Module) GetFinancePolicy(ctx context.Context, q api.GetFinancePolicy) (
 	out := api.FinancePolicy{LegalEntityID: st.LegalEntityID, Revision: revision, FunctionalCurrency: st.FunctionalCurrency, BookCode: st.BookCode}
 	for _, e := range st.Rates {
 		out.Rates = append(out.Rates, api.ExchangeRateEntry{EntryNo: e.No, RateType: e.Type, From: e.From, Rate: e.Rate, Scale: e.Scale, FromDigits: e.FromDigits,
-			ToDigits: e.ToDigits, ValidFrom: e.ValidFrom, ValidUntil: e.ValidUntil, Source: e.Source, RecordedBy: e.By, RecordedAt: e.At})
+			ToDigits: e.ToDigits, ValidFrom: e.ValidFrom, ValidUntil: e.ValidUntil, Source: e.Source, RecordedBy: e.By, RecordedAt: e.At, EndedBy: e.EndedBy,
+			EndReason: e.EndReason})
 	}
 	return out, nil
 }
@@ -302,27 +312,48 @@ func (m *Module) ListCreditExposure(ctx context.Context, q api.ListCreditExposur
 		if err != nil {
 			return err
 		}
-		for i, a := range accounts {
-			var exposure int64
-			for _, j := range jobs {
-				exposure += j.SellEstimate(a.State().DebtorPartyID)
+		exposure := map[string]int64{}
+		var debtors []string
+		for _, j := range jobs {
+			for _, d := range j.Debtors() {
+				if _, ok := exposure[d]; !ok {
+					debtors = append(debtors, d)
+				}
+				exposure[d] += j.SellEstimate(d)
 			}
-			out = append(out, accountView(a, revisions[i], exposure))
+		}
+		held := map[string]bool{}
+		for i, a := range accounts {
+			held[a.State().DebtorPartyID] = true
+			out = append(out, accountView(a, revisions[i], exposure[a.State().DebtorPartyID]))
+		}
+		policy, found, err := d.Policies.Find(txCtx, domain.TenantID(q.TenantID), q.LegalEntityID)
+		if err != nil || !found {
+			return err
+		}
+		currency := policy.State().FunctionalCurrency
+		slices.Sort(debtors)
+		for _, d := range debtors {
+			if !held[d] && exposure[d] != 0 {
+				out = append(out, api.CreditAccount{LegalEntityID: q.LegalEntityID, DebtorPartyID: d, Status: api.CreditNoAccount,
+					Exposure: kernel.Money{Currency: currency, Minor: exposure[d]}})
+			}
 		}
 		return nil
 	})
 	if err != nil {
 		return nil, classify(err)
 	}
-	slices.SortStableFunc(out, func(a, b api.CreditAccount) int {
+	rank := func(a api.CreditAccount) int {
 		switch {
-		case a.OverLimit && !b.OverLimit:
-			return -1
-		case b.OverLimit && !a.OverLimit:
+		case a.OverLimit:
+			return 0
+		case a.Status == api.CreditNoAccount:
 			return 1
 		}
-		return 0
-	})
+		return 2
+	}
+	slices.SortStableFunc(out, func(a, b api.CreditAccount) int { return rank(a) - rank(b) })
 	return out, nil
 }
 
@@ -399,7 +430,7 @@ func classify(err error) error {
 		kind = api.ErrNotFound
 	case errors.Is(err, domain.ErrInvalid), errors.Is(err, domain.ErrInvalidTransition), errors.Is(err, domain.ErrRateMissing),
 		errors.Is(err, domain.ErrRateOverlap), errors.Is(err, domain.ErrBasisApplied), errors.Is(err, domain.ErrNotPriceable),
-		errors.Is(err, domain.ErrNotOpenable), errors.Is(err, domain.ErrPartyRole), errors.Is(err, domain.ErrSideVersion),
+		errors.Is(err, domain.ErrNotOpenable), errors.Is(err, domain.ErrPartyRole), errors.Is(err, domain.ErrSideVersion), errors.Is(err, domain.ErrRateInUse),
 		errors.Is(err, application.ErrInvalidQuery), errors.Is(err, application.ErrUnknownSource), errors.Is(err, application.ErrNoPolicy),
 		errors.Is(err, application.ErrNotVerified), errors.Is(err, kernel.ErrOutsideRecordWindow), errors.Is(err, kernel.ErrAmountOverflow):
 		kind = api.ErrRejected

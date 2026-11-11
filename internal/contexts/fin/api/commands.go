@@ -37,9 +37,10 @@ const (
 )
 
 // RecordExchangeRate adds an exchange rate to a legal entity's policy: one unit of From is Rate × 10^−Scale units of
-// the functional currency in [ValidFrom, ValidUntil) (no end when ValidUntil is zero), FromDigits and ToDigits the
-// ISO 4217 minor digits. Entries of one type and currency never overlap (FIN_RATE_OVERLAP); an entry never
-// changes. OD-5 B: the ACCOUNTING rate is a monthly rate set by the accountant.
+// the functional currency in [ValidFrom, ValidUntil), a period of at most a year; FromDigits and ToDigits are the two
+// currencies' ISO 4217 minor digits, which the kernel checks. Entries of one type and currency never overlap
+// (FIN_RATE_OVERLAP); an entry's rate never changes. OD-5 B: the ACCOUNTING rate is a monthly rate set by the
+// accountant.
 type RecordExchangeRate struct {
 	CommandID        string
 	TenantID         string
@@ -58,6 +59,21 @@ type RecordExchangeRate struct {
 	OccurredAt       time.Time
 }
 
+// EndExchangeRate ends an entry's period earlier, once, with a reason, to correct a wrong entry: the new end lies
+// within the entry's period, and no charge may have been converted at the entry at or after it (FIN_RATE_IN_USE). A
+// corrected entry is then recorded from the new end.
+type EndExchangeRate struct {
+	CommandID        string
+	TenantID         string
+	ActorID          string
+	LegalEntityID    string
+	ExpectedRevision int64
+	EntryNo          int
+	ValidUntil       time.Time
+	Reason           string
+	OccurredAt       time.Time
+}
+
 // OpenFreightJob opens the job of a house shipment under the shipment's legal entity (OD-1 A: one job per shipment
 // and legal entity that is not cancelled). FIN reads FUL's CostDriver v1 (the shipment DRAFT or PLANNED, by AIR or
 // SEA) and the legal entity's policy; the job freezes the legal entity, functional currency, book and customer.
@@ -73,8 +89,9 @@ type OpenFreightJob struct {
 // ApplyPricingBasis applies an accepted quote to the job for one of the shipment's orders: FIN reads RATE's
 // PricingBasis v1 and FUL's CostDriver v1 first; the quote must back the order in the shipment, for the job's legal
 // entity and customer (FIN_NOT_PRICEABLE). Each quote line becomes a charge line with a sell estimate for the
-// customer and a cost estimate when it has one, converted at FIN's ESTIMATE rate (FIN_RATE_MISSING). A quote and
-// order are applied once across jobs (FIN_BASIS_APPLIED): another shipment of the order takes manual lines.
+// customer and a cost estimate when it has one, converted at FIN's ESTIMATE rate (FIN_RATE_MISSING). A quote is applied
+// to a job once, and a quote and order to one job of the tenant (FIN_BASIS_APPLIED): another shipment of the order, or
+// another order of the quote in the same shipment, takes manual lines.
 type ApplyPricingBasis struct {
 	CommandID        string
 	TenantID         string
@@ -116,7 +133,8 @@ const (
 )
 
 // ReviseChargeSide writes the next version of a line's side with a reason; ExpectedSideVersion 0 adds the side the
-// line lacks. A sell side keeps its debtor unless Side.PartyID names another.
+// line lacks (never a cost on a quote's discount line). A side keeps its debtor or creditor unless Value.PartyID names
+// another. Amounts are bounded by 10^15 minor units.
 type ReviseChargeSide struct {
 	CommandID           string
 	TenantID            string
@@ -196,8 +214,9 @@ type ReleaseCreditHold struct {
 }
 
 // Receipt confirms a committed command; replaying the command returns it again. SubjectID is the legal entity
-// (policy), the job, or <legal entity>/<debtor> (credit account); Version the rate entry, charge line or side
-// version, terms version or hold the command wrote.
+// (policy), the job, or <legal entity>/<debtor> (credit account); Version is the rate entry recorded or ended, the
+// pricing basis applied, the charge line recorded, the side version written, the terms version set or the hold placed
+// or released (0 for opening a policy or job and cancelling a job).
 type Receipt struct {
 	CommandID   string
 	SubjectID   string
@@ -209,6 +228,7 @@ type Receipt struct {
 type Commands interface {
 	OpenFinancePolicy(ctx context.Context, cmd OpenFinancePolicy) (Receipt, error)
 	RecordExchangeRate(ctx context.Context, cmd RecordExchangeRate) (Receipt, error)
+	EndExchangeRate(ctx context.Context, cmd EndExchangeRate) (Receipt, error)
 	OpenFreightJob(ctx context.Context, cmd OpenFreightJob) (Receipt, error)
 	ApplyPricingBasis(ctx context.Context, cmd ApplyPricingBasis) (Receipt, error)
 	RecordChargeLine(ctx context.Context, cmd RecordChargeLine) (Receipt, error)
@@ -223,6 +243,7 @@ type Commands interface {
 const (
 	ActionOpenFinancePolicy  = "OpenFinancePolicy"
 	ActionRecordExchangeRate = "RecordExchangeRate"
+	ActionEndExchangeRate    = "EndExchangeRate"
 	ActionOpenFreightJob     = "OpenFreightJob"
 	ActionApplyPricingBasis  = "ApplyPricingBasis"
 	ActionRecordChargeLine   = "RecordChargeLine"

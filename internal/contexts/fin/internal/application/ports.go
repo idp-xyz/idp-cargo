@@ -54,6 +54,8 @@ type TxRunner interface {
 type PolicyStore interface {
 	Load(ctx context.Context, tenant fin.TenantID, legalEntity string) (*fin.FinancePolicy, int64, error)
 	Read(ctx context.Context, tenant fin.TenantID, legalEntity string) (*fin.FinancePolicy, int64, error)
+	// Find reads a policy and reports whether the legal entity has one.
+	Find(ctx context.Context, tenant fin.TenantID, legalEntity string) (*fin.FinancePolicy, bool, error)
 	Insert(context.Context, *fin.FinancePolicy) (int64, error)
 	Save(context.Context, *fin.FinancePolicy, int64) (int64, error)
 }

@@ -242,7 +242,7 @@ func (d Deps) Issue(ctx context.Context, c Command, overrideReason string, amend
 		if gate.Credit, err = d.Credit.Decision(ctx, c.Scope.TenantID, m.State().LegalEntityID, debtors); err != nil {
 			return err
 		}
-		if gate.Credit.Status != "OK" && overrideReason != "" {
+		if gate.Credit.Status != "OK" && gate.Credit.Status != "HOLD" && overrideReason != "" { // a hold is never overridden
 			gate.OverrideReason = overrideReason
 			return d.authorize(ctx, c.Scope, ActionOverrideCredit, c.Subject)
 		}

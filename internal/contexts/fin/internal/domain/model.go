@@ -24,6 +24,7 @@ var (
 	ErrNotOpenable       = errors.New("fin: FIN_NOT_OPENABLE: the shipment cannot have a job of the legal entity")
 	ErrPartyRole         = errors.New("fin: FIN_PARTY_ROLE: ORG does not confirm the party in a role the side needs for the legal entity")
 	ErrSideVersion       = errors.New("fin: the side's version is not the one expected")
+	ErrRateInUse         = errors.New("fin: FIN_RATE_IN_USE: a charge was converted at the entry at or after the new end")
 )
 
 const maxText = 500
@@ -56,4 +57,10 @@ type Event struct {
 	Version       int
 	ShipmentID    string
 	DebtorPartyID string
+	LineNo        int    // a charge line's number, for line and side events
+	Side          string // SELL or COST, for side events
 }
+
+// MaxAmount bounds every amount and local amount in minor units (10^15, ten trillion units of a two-digit
+// currency), so that sums over a job's lines or a debtor's jobs never overflow.
+const MaxAmount = 1_000_000_000_000_000

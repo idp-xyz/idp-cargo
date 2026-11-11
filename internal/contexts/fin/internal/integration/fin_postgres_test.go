@@ -146,6 +146,10 @@ func newFixture(t *testing.T) *fixture {
 			PlanVersion: 2, TransportMode: "AIR", LegalEntityID: "LE", CustomerPartyID: "party-a", Packs: 6,
 			Orders: []fulapi.CostOrder{{OrderID: "O-A", QuoteID: "Q-1", QuoteRevision: 2, Packs: 6}}}
 	}
+	// SH-A also holds a part of O-B, which Q-1 backs too (a quote may back several orders)
+	a := w.drivers["SH-A"]
+	a.Orders = append(a.Orders, fulapi.CostOrder{OrderID: "O-B", QuoteID: "Q-1", QuoteRevision: 2, Packs: 2})
+	w.drivers["SH-A"] = a
 	w.bases["Q-1"] = rateapi.PricingBasis{TenantID: f.tenant, BasisID: "QUOTE:Q-1@2", Purpose: rateapi.BasisQuoteAccepted, QuoteID: "Q-1", QuoteRevision: 2,
 		LegalEntityID: "LE", Customer: rateapi.CustomerRef{PartyID: "party-a", PartyRevision: 3}, Currency: "USD",
 		Lines: []rateapi.PricingLine{{LineNo: 1, ChargeCode: "AIR_FREIGHT", Sell: usd(120_000), Cost: usd(95_000)}, {LineNo: 2, ChargeCode: "DOC_FEE", Sell: cny(30_000)}}}
@@ -220,9 +224,23 @@ func TestFreightJobsAndCreditOnPostgres(t *testing.T) {
 		t.Fatalf("rate: %+v %v", r, err)
 	}
 	overlap := rate
-	overlap.CommandID, overlap.ExpectedRevision, overlap.ValidFrom, overlap.ValidUntil = "rate-overlap", 2, f.at, time.Time{}
+	overlap.CommandID, overlap.ExpectedRevision, overlap.ValidFrom, overlap.ValidUntil = "rate-overlap", 2, f.at, f.at.AddDate(0, 2, 0)
 	if _, err = f.module.RecordExchangeRate(ctx, overlap); !errors.Is(err, api.ErrRejected) || !strings.Contains(err.Error(), "FIN_RATE_OVERLAP") {
 		t.Fatalf("an overlapping rate: %v", err)
+	}
+	openEnded := overlap
+	openEnded.CommandID, openEnded.RateType, openEnded.ValidUntil = "rate-open", api.RateAccounting, time.Time{}
+	if _, err = f.module.RecordExchangeRate(ctx, openEnded); !errors.Is(err, api.ErrRejected) {
+		t.Fatalf("a rate without an end: %v", err)
+	}
+	wrong := rate
+	wrong.CommandID, wrong.ExpectedRevision, wrong.RateType, wrong.Rate = "rate-wrong", 2, api.RateAccounting, 17_234
+	if _, err = f.module.RecordExchangeRate(ctx, wrong); err != nil {
+		t.Fatal(err)
+	}
+	if r, err = f.module.EndExchangeRate(ctx, api.EndExchangeRate{CommandID: "rate-end", TenantID: f.tenant, ActorID: "acct-1", LegalEntityID: "LE",
+		ExpectedRevision: 3, EntryNo: 2, ValidUntil: f.at, Reason: "typed 1.7234 for 7.1234", OccurredAt: f.hours(0)}); err != nil || r.Version != 2 || r.NewRevision != 4 {
+		t.Fatalf("a wrong entry ended: %+v %v", r, err)
 	}
 
 	open := api.OpenFreightJob{CommandID: "open-a", TenantID: f.tenant, ActorID: "fin-1", JobID: "JOB-A", ShipmentID: "SH-A", OccurredAt: f.hours(1)}
@@ -240,6 +258,15 @@ func TestFreightJobsAndCreditOnPostgres(t *testing.T) {
 	}
 	if r, err = apply("apply-a", "JOB-A", 1); err != nil || r.NewRevision != 2 || r.Version != 1 {
 		t.Fatalf("apply: %+v %v", r, err)
+	}
+	if _, err = f.module.ApplyPricingBasis(ctx, api.ApplyPricingBasis{CommandID: "apply-a-ob", TenantID: f.tenant, ActorID: "fin-1", JobID: "JOB-A",
+		ExpectedRevision: 2, QuoteID: "Q-1", OrderID: "O-B", OccurredAt: f.hours(2)}); !errors.Is(err, api.ErrRejected) || !strings.Contains(err.Error(), "FIN_BASIS_APPLIED") {
+		t.Fatalf("the quote once more on the job for another order: %v", err)
+	}
+	if _, err = f.module.EndExchangeRate(ctx, api.EndExchangeRate{CommandID: "rate-end-used", TenantID: f.tenant, ActorID: "acct-1", LegalEntityID: "LE",
+		ExpectedRevision: 4, EntryNo: 1, ValidUntil: f.hours(1), Reason: "x", OccurredAt: f.hours(2)}); !errors.Is(err, api.ErrRejected) ||
+		!strings.Contains(err.Error(), "FIN_RATE_IN_USE") {
+		t.Fatalf("an end before a charge converted at the entry: %v", err)
 	}
 	if _, err = f.module.OpenFreightJob(ctx, api.OpenFreightJob{CommandID: "open-b", TenantID: f.tenant, ActorID: "fin-1", JobID: "JOB-B", ShipmentID: "SH-B",
 		OccurredAt: f.hours(1)}); err != nil {
@@ -264,14 +291,20 @@ func TestFreightJobsAndCreditOnPostgres(t *testing.T) {
 		Reason: "MU's rate for the flight", OccurredAt: f.hours(4)}); err != nil || r.Version != 2 {
 		t.Fatalf("revise: %+v %v", r, err)
 	}
+	if _, err = f.module.ReviseChargeSide(ctx, api.ReviseChargeSide{CommandID: "revise-truck", TenantID: f.tenant, ActorID: "fin-1", JobID: "JOB-A",
+		ExpectedRevision: 4, LineNo: 3, Side: api.SideCost, ExpectedSideVersion: 1, Value: api.ChargeSide{Amount: cny(65_000)},
+		Reason: "waiting time at the factory", OccurredAt: f.hours(4)}); err != nil {
+		t.Fatal(err)
+	}
 	j, err := f.module.GetFreightJob(ctx, api.GetFreightJob{TenantID: f.tenant, JobID: "JOB-A"})
 	if err != nil || j.FunctionalCurrency != "CNY" || j.BookCode != "MAIN" || j.CustomerPartyID != "party-a" || len(j.Bases) != 1 || len(j.Lines) != 3 ||
 		j.Lines[0].Sell[0].Local != cny(854_808) || j.Lines[0].Sell[0].FX == nil || j.Lines[0].Sell[0].FX.Rate != 71_234 || j.Lines[0].Cost[1].PartyID != "airline-mu" ||
-		j.Lines[0].Cost[1].Reason != "MU's rate for the flight" || j.Lines[1].Sell[0].FX != nil || j.Lines[2].Source != api.SourceManual {
+		j.Lines[0].Cost[1].Reason != "MU's rate for the flight" || j.Lines[1].Sell[0].FX != nil || j.Lines[2].Source != api.SourceManual ||
+		j.Lines[2].Cost[1].PartyID != "trucker" || j.Lines[2].Cost[1].Amount != cny(65_000) {
 		t.Fatalf("job: %+v %v", j, err)
 	}
 	profit, err := f.module.GetJobProfit(ctx, api.GetJobProfit{TenantID: f.tenant, JobID: "JOB-A"})
-	if err != nil || profit.Revenue != cny(964_808) || profit.Cost != cny(743_846) || profit.Profit != cny(220_962) || len(profit.ByCode) != 3 {
+	if err != nil || profit.Revenue != cny(964_808) || profit.Cost != cny(748_846) || profit.Profit != cny(215_962) || len(profit.ByCode) != 3 {
 		t.Fatalf("profit: %+v %v", profit, err)
 	}
 	if jobs, err := f.module.ListJobsForShipment(ctx, api.ListJobsForShipment{TenantID: f.tenant, ShipmentID: "SH-A"}); err != nil || len(jobs) != 1 {
@@ -279,11 +312,16 @@ func TestFreightJobsAndCreditOnPostgres(t *testing.T) {
 	}
 	// cancelling JOB-A frees the quote for JOB-B
 	if _, err = f.module.CancelFreightJob(ctx, api.CancelFreightJob{CommandID: "cancel-a", TenantID: f.tenant, ActorID: "fin-1", JobID: "JOB-A",
-		ExpectedRevision: 4, Reason: "opened on the wrong shipment", OccurredAt: f.hours(5)}); err != nil {
+		ExpectedRevision: 5, Reason: "opened on the wrong shipment", OccurredAt: f.hours(5)}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = apply("apply-b2", "JOB-B", 1); err != nil {
 		t.Fatalf("the quote after the first job's cancellation: %v", err)
+	}
+	if _, err = f.module.RecordChargeLine(ctx, api.RecordChargeLine{CommandID: "line-agent", TenantID: f.tenant, ActorID: "fin-1", JobID: "JOB-B",
+		ExpectedRevision: 2, ChargeCode: "DEST_HANDLING", Sell: &api.ChargeSide{PartyID: "agent-ny", Amount: cny(20_000)}, Reason: "collected at destination",
+		OccurredAt: f.hours(5)}); err != nil {
+		t.Fatal(err)
 	}
 	if _, err = f.module.OpenFreightJob(ctx, api.OpenFreightJob{CommandID: "open-a3", TenantID: f.tenant, ActorID: "fin-1", JobID: "JOB-A3", ShipmentID: "SH-A",
 		OccurredAt: f.hours(6)}); err != nil {
@@ -321,8 +359,8 @@ func TestFreightJobsAndCreditOnPostgres(t *testing.T) {
 	if s := status(); s.Status != api.CreditOnHold || s.HoldCode != api.HoldOverLimit || s.DecisionID != "LE/party-a@2" {
 		t.Fatalf("held: %+v", s)
 	}
-	if list, err := f.module.ListCreditExposure(ctx, api.ListCreditExposure{TenantID: f.tenant, LegalEntityID: "LE"}); err != nil || len(list) != 1 ||
-		list[0].Status != api.CreditOnHold {
+	if list, err := f.module.ListCreditExposure(ctx, api.ListCreditExposure{TenantID: f.tenant, LegalEntityID: "LE"}); err != nil || len(list) != 2 ||
+		list[0].Status != api.CreditOnHold || list[1].DebtorPartyID != "agent-ny" || list[1].Status != api.CreditNoAccount || list[1].Exposure != cny(20_000) {
 		t.Fatalf("exposure list: %+v %v", list, err)
 	}
 	if _, err = f.module.ReleaseCreditHold(ctx, api.ReleaseCreditHold{CommandID: "release", TenantID: f.tenant, ActorID: "credit-2", LegalEntityID: "LE",
@@ -336,9 +374,10 @@ func TestFreightJobsAndCreditOnPostgres(t *testing.T) {
 		DebtorPartyID: "airline-mu", Limit: cny(1), PaymentDays: 1, PaymentBasis: api.TermsFromInvoiceDate, OccurredAt: f.hours(8)}); !errors.Is(err, api.ErrRejected) {
 		t.Fatalf("an account for a party without a debtor role: %v", err)
 	}
-	want := []string{"FinancePolicyOpened", "ExchangeRateRecorded", "FreightJobOpened", "ChargeLineRecorded", "ChargeLineRecorded", "PricingBasisApplied",
-		"FreightJobOpened", "ChargeLineRecorded", "ChargeSideRevised", "FreightJobCancelled", "ChargeLineRecorded", "ChargeLineRecorded", "PricingBasisApplied",
-		"FreightJobOpened", "CreditTermsSet", "CreditHoldPlaced", "CreditHoldReleased"}
+	want := []string{"FinancePolicyOpened", "ExchangeRateRecorded", "ExchangeRateRecorded", "ExchangeRateEnded", "FreightJobOpened", "ChargeLineRecorded",
+		"ChargeLineRecorded", "PricingBasisApplied", "FreightJobOpened", "ChargeLineRecorded", "ChargeSideRevised", "ChargeSideRevised", "FreightJobCancelled",
+		"ChargeLineRecorded", "ChargeLineRecorded", "PricingBasisApplied", "ChargeLineRecorded", "FreightJobOpened", "CreditTermsSet", "CreditHoldPlaced",
+		"CreditHoldReleased"}
 	if got := f.outboxTypes(t); !slices.Equal(got, want) {
 		t.Fatalf("outbox %v", got)
 	}
@@ -364,8 +403,19 @@ func TestFreightJobsAndCreditOnPostgres(t *testing.T) {
             AND side='SELL'`, "23514", "freight_job_consistent"},
 		"overlapping rates": {`UPDATE cargo_fin.finance_policy SET revision=revision+1 WHERE tenant_id=$1;
             INSERT INTO cargo_fin.exchange_rate_entry (tenant_id,legal_entity_id,entry_no,rate_type,from_currency,rate,scale,from_digits,to_digits,valid_from,
-            source,recorded_by,recorded_at,entered_at) VALUES ($1,'LE',2,'ESTIMATE','USD',70000,4,2,2,now(),'x','x',now(),now())`, "23514", "finance_policy_consistent"},
+            valid_until,source,recorded_by,recorded_at,entered_at) VALUES ($1,'LE',3,'ESTIMATE','USD',70000,4,2,2,now(),now()+interval '10 days','x','x',now(),now())`,
+			"23514", "finance_policy_consistent"},
 		"an account on hold without a hold": {`UPDATE cargo_fin.credit_account SET state='ON_HOLD' WHERE tenant_id=$1`, "23514", "credit_account_consistent"},
+		"a local amount not its conversion": {`UPDATE cargo_fin.freight_job SET revision=revision+1 WHERE tenant_id=$1 AND job_id='JOB-B';
+            INSERT INTO cargo_fin.charge_side_version (tenant_id,job_id,line_no,side,version_no,party_id,party_revision,currency,amount_minor,local_minor,
+            rate_entry_no,rate_type,rate,scale,from_digits,to_digits,rate_source,status,reason,recorded_by,recorded_at,entered_at)
+            SELECT tenant_id,job_id,line_no,side,2,party_id,party_revision,currency,amount_minor,local_minor*1000,rate_entry_no,rate_type,rate,scale,from_digits,
+            to_digits,rate_source,status,'x','x',recorded_at,now() FROM cargo_fin.charge_side_version WHERE tenant_id=$1 AND job_id='JOB-B' AND line_no=1
+            AND side='SELL'`, "23514", "freight_job_consistent"},
+		"a rate entry ended twice": {`UPDATE cargo_fin.exchange_rate_entry SET end_reason='again' WHERE tenant_id=$1 AND entry_no=2`, "23001", ""},
+		"a rate entry lengthened":  {`UPDATE cargo_fin.exchange_rate_entry SET valid_until=valid_until+interval '1 day' WHERE tenant_id=$1 AND entry_no=1`, "23001", ""},
+		"a rate rewritten on its end": {`UPDATE cargo_fin.exchange_rate_entry SET rate=1,valid_until=valid_until-interval '1 day',ended_by='x',ended_at=now(),
+            end_reason='x',end_entered_at=now() WHERE tenant_id=$1 AND entry_no=1`, "42501", ""},
 		"a second open job of the shipment": {`INSERT INTO cargo_fin.freight_job (tenant_id,job_id,legal_entity_id,shipment_id,kind,functional_currency,book_code,
             customer_party_id,plan_version,state,opened_by,opened_at,entered_at) VALUES ($1,'JOB-X','LE','SH-A','AIR_EXPORT_HOUSE','CNY','MAIN','party-a',2,'OPEN',
             'x',now(),now())`, "23505", "freight_job_one_per_shipment"},

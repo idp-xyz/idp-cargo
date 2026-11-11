@@ -8,6 +8,7 @@ const Source = "idp-cargo.fin"
 const (
 	FinancePolicyOpened  = "FinancePolicyOpened.v1"
 	ExchangeRateRecorded = "ExchangeRateRecorded.v1"
+	ExchangeRateEnded    = "ExchangeRateEnded.v1"
 	FreightJobOpened     = "FreightJobOpened.v1"
 	PricingBasisApplied  = "PricingBasisApplied.v1"
 	ChargeLineRecorded   = "ChargeLineRecorded.v1"
@@ -27,4 +28,6 @@ type EventPayload struct {
 	Version       int    `json:"version,omitempty"`
 	ShipmentID    string `json:"shipment_id,omitempty"`
 	DebtorPartyID string `json:"debtor_party_id,omitempty"`
+	LineNo        int    `json:"line_no,omitempty"` // ChargeLineRecorded and ChargeSideRevised: the line; Version is the side's version
+	Side          string `json:"side,omitempty"`    // ChargeSideRevised: SELL or COST
 }

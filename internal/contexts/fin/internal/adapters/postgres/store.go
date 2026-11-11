@@ -69,6 +69,10 @@ type rateRow struct {
 	By         string     `json:"recorded_by"`
 	At         time.Time  `json:"recorded_at"`
 	EnteredAt  time.Time  `json:"entered_at"`
+	EndedBy    *string    `json:"ended_by"`
+	EndedAt    *time.Time `json:"ended_at"`
+	EndReason  *string    `json:"end_reason"`
+	EndEntered *time.Time `json:"end_entered_at"`
 }
 
 func readPolicy(ctx context.Context, q bentopg.Querier, tenant fin.TenantID, le, lock string) (*fin.FinancePolicy, int64, error) {
@@ -104,7 +108,8 @@ func readPolicy(ctx context.Context, q bentopg.Querier, tenant fin.TenantID, le,
 	for _, r := range rr {
 		st.Rates = append(st.Rates, fin.RateEntry{No: r.No, Type: r.Type, From: kernel.CurrencyCode(r.From), Rate: r.Rate, Scale: r.Scale,
 			FromDigits: r.FromDigits, ToDigits: r.ToDigits, ValidFrom: utc(r.ValidFrom), ValidUntil: utc(deref(r.ValidUntil)), Source: r.Source, By: r.By,
-			At: utc(r.At), EnteredAt: utc(r.EnteredAt)})
+			At: utc(r.At), EnteredAt: utc(r.EnteredAt), EndedBy: deref(r.EndedBy), EndedAt: utc(deref(r.EndedAt)), EndReason: deref(r.EndReason),
+			EndEnteredAt: utc(deref(r.EndEntered))})
 	}
 	p, err := fin.RestorePolicy(st)
 	return p, revision, err
@@ -124,6 +129,14 @@ func (s PolicyStore) Read(ctx context.Context, tenant fin.TenantID, le string) (
 		return nil, 0, err
 	}
 	return readPolicy(ctx, q, tenant, le, "")
+}
+
+func (s PolicyStore) Find(ctx context.Context, tenant fin.TenantID, le string) (*fin.FinancePolicy, bool, error) {
+	p, _, err := s.Read(ctx, tenant, le)
+	if errors.Is(err, bentorepo.ErrNotFound) {
+		return nil, false, nil
+	}
+	return p, err == nil, err
 }
 
 func (s PolicyStore) Insert(ctx context.Context, p *fin.FinancePolicy) (int64, error) {
@@ -166,10 +179,17 @@ func (s PolicyStore) Save(ctx context.Context, p *fin.FinancePolicy, expected in
 
 func writeRates(ctx context.Context, q bentopg.Executor, p *fin.FinancePolicy) error {
 	st := p.State()
+	for _, e := range p.EndedRates() {
+		if _, err := q.Exec(ctx, `UPDATE cargo_fin.exchange_rate_entry SET valid_until=$4,ended_by=$5,ended_at=$6,end_reason=$7,end_entered_at=$8
+            WHERE tenant_id=$1 AND legal_entity_id=$2 AND entry_no=$3`, string(st.TenantID), st.LegalEntityID, e.No, e.ValidUntil, e.EndedBy, e.EndedAt,
+			e.EndReason, e.EndEnteredAt); err != nil {
+			return err
+		}
+	}
 	for _, e := range p.AddedRates() {
 		if _, err := q.Exec(ctx, `INSERT INTO cargo_fin.exchange_rate_entry (tenant_id,legal_entity_id,entry_no,rate_type,from_currency,rate,scale,
             from_digits,to_digits,valid_from,valid_until,source,recorded_by,recorded_at,entered_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
-			string(st.TenantID), st.LegalEntityID, e.No, e.Type, string(e.From), e.Rate, e.Scale, e.FromDigits, e.ToDigits, e.ValidFrom, orNull(e.ValidUntil),
+			string(st.TenantID), st.LegalEntityID, e.No, e.Type, string(e.From), e.Rate, e.Scale, e.FromDigits, e.ToDigits, e.ValidFrom, e.ValidUntil,
 			e.Source, e.By, e.At, e.EnteredAt); err != nil {
 			return err
 		}
@@ -678,9 +698,10 @@ func (o Outbox) EnqueueFINEvent(ctx context.Context, e fin.Event) error {
 
 // FINEnvelope maps a FIN domain event to its Bento envelope; a retried command yields the same event ID.
 func FINEnvelope(commandID string, e fin.Event, recordedAt time.Time) (eventing.Envelope, error) {
-	digest := sha256.Sum256([]byte(commandID + "\x00" + e.Type + "\x00" + string(e.TenantID) + "\x00" + e.SubjectID + "\x00" + strconv.Itoa(e.Version)))
+	digest := sha256.Sum256([]byte(commandID + "\x00" + e.Type + "\x00" + string(e.TenantID) + "\x00" + e.SubjectID + "\x00" + strconv.Itoa(e.LineNo) + "\x00" +
+		e.Side + "\x00" + strconv.Itoa(e.Version)))
 	payload, err := json.Marshal(api.EventPayload{TenantID: string(e.TenantID), SubjectID: e.SubjectID, LegalEntityID: e.LegalEntityID, Version: e.Version,
-		ShipmentID: e.ShipmentID, DebtorPartyID: e.DebtorPartyID})
+		ShipmentID: e.ShipmentID, DebtorPartyID: e.DebtorPartyID, LineNo: e.LineNo, Side: e.Side})
 	if err != nil {
 		return eventing.Envelope{}, err
 	}
@@ -701,4 +722,10 @@ func Conflict(err error) bool {
 		return true
 	}
 	return false
+}
+
+// RateInUse reports whether ending a rate entry failed because a charge was converted at it after the new end.
+func RateInUse(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23514" && pgErr.ConstraintName == "exchange_rate_entry_in_use"
 }

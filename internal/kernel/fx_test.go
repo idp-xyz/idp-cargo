@@ -24,3 +24,14 @@ func TestConvertMinor(t *testing.T) {
 		t.Fatalf("overflow: %v", err)
 	}
 }
+
+func TestMinorDigits(t *testing.T) {
+	for c, want := range map[CurrencyCode]int{"CNY": 2, "USD": 2, "JPY": 0, "KWD": 3} {
+		if d, ok := MinorDigits(c); !ok || d != want {
+			t.Errorf("%s: %d %v", c, d, ok)
+		}
+	}
+	if _, ok := MinorDigits("XXX"); ok {
+		t.Error("XXX listed")
+	}
+}
