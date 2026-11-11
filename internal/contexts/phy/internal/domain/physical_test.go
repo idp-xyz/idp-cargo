@@ -522,7 +522,13 @@ func TestEvidenceForFUL(t *testing.T) {
 	if err := y.Load(LoadLine{Packs: 2, GrossWeight: kg(110), Evidence: ev("TD-3", at)}, c, lot, entry, LotLoad{Packs: 4, GrossWeight: 200}, 4, "ops", at); err != nil {
 		t.Fatal(err)
 	}
-	if packs, w, _ := y.HouseMeasure("SH-1", lots); packs != 6 || w != kg(208+110) {
-		t.Fatalf("4 of 6 at 312 kg and a line weighed at 110 kg: %d %+v", packs, w)
+	if packs, w, _ := y.HouseMeasure("SH-1", lots); packs != 6 || w != kg(312) {
+		t.Fatalf("a line weighed at 110 kg and the other 4 packs taking the rest of the lot's 312 kg: %d %+v", packs, w)
+	}
+	masterOnly := tendered(t)
+	report(masterOnly, CarrierDeparted, "", 4, "MU587", "MO-1")
+	report(masterOnly, CarrierOffloaded, "", 2, "MU587", "MO-2")
+	if p := masterOnly.HousePieces("SH-1"); p.Departed != 0 {
+		t.Fatalf("an offload reported for the master names no house: %+v", p)
 	}
 }

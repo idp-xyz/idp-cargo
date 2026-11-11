@@ -318,6 +318,11 @@ func TestHouseTakesRelayedMeasures(t *testing.T) {
 	if _, err := RestoreMovement(m.State()); err != nil {
 		t.Fatal(err)
 	}
+	unmeasured := plan("SH-9", 1)
+	unmeasured.EvidenceVersion = 4
+	if f, err := facts(unmeasured); err != nil || f.Basis != BasisPlanned || f.Evidence != 0 {
+		t.Fatalf("planned facts carry no evidence version: %+v %v", f, err)
+	}
 	broken := m.State()
 	broken.Entries[0].Facts.Evidence = 0
 	if _, err := RestoreMovement(broken); err == nil {

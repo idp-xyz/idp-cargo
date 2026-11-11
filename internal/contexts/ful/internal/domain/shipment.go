@@ -274,14 +274,12 @@ func (s *Shipment) ChangePart(id ObligationID, version int64, part, elsewhere Ca
 	if s.state.Status == ShipmentCancelled {
 		return ErrInvalidTransition
 	}
-	if i := s.planning(id); i >= 0 {
-		if err := s.stillPlannable(s.Latest().Scope.Packs - s.state.Obligations[i].Part.Packs + part.Packs); err != nil {
-			return err
-		}
-	}
 	i := s.planning(id)
 	if i < 0 || s.state.Obligations[i].ObligationVersion != version {
 		return fmt.Errorf("%w: %s version %d", ErrNotPlanned, id, version)
+	}
+	if err := s.stillPlannable(s.Latest().Scope.Packs - s.state.Obligations[i].Part.Packs + part.Packs); err != nil {
+		return err
 	}
 	current := s.state.Obligations[i]
 	if !text(reason) {

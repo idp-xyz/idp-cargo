@@ -881,7 +881,8 @@ type HousePieces struct {
 // per flight or voyage, summed over flights (a house split over two flights; N1 has direct flights only). A
 // house's own reports count as they are. Otherwise a master report covers the house: all its live pieces when
 // the master's pieces cover the whole tender, its live pieces less its own offloaded ones when they cover the
-// tender less the houses' offloaded pieces, and none when PHY cannot tell which houses they were.
+// tender less the pieces offloaded from named houses, and none when PHY cannot tell which houses they were (an
+// offload reported for the master alone names no house).
 func (x *LoadExecution) HousePieces(shipment ShipmentID) HousePieces {
 	type key struct {
 		fact      CarrierFact
@@ -907,7 +908,7 @@ func (x *LoadExecution) HousePieces(shipment ShipmentID) HousePieces {
 	anyHouse := func(s ShipmentID) bool { return s != "" }
 	live, tendered := x.LiveFor(shipment), x.Tendered()
 	own := HousePieces{Departed: sum(CarrierDeparted, house), Arrived: sum(CarrierArrived, house), Offloaded: sum(CarrierOffloaded, house)}
-	offloaded := sum(CarrierOffloaded, anyHouse) + sum(CarrierOffloaded, master)
+	offloaded := sum(CarrierOffloaded, anyHouse)
 	cover := func(masterPieces int64) int64 {
 		switch {
 		case masterPieces <= 0 || live == 0:
@@ -930,23 +931,26 @@ func (x *LoadExecution) HousePieces(shipment ShipmentID) HousePieces {
 }
 
 // HouseMeasure returns a house's live packs in the tender with their gross weight and volume: lines measured for
-// themselves as measured, apportioned lines at their lot's latest measurement (all of a lot's received packs
-// take its whole measure), so a later terminal weight counts. Volumes in different units are not added; the
-// volume is then zero.
+// themselves as measured; apportioned lines at their lot's latest measurement, less what the lot's lines measured
+// for themselves took, spread over the lot's other packs (the packs that complete the lot take the rest), so a
+// later terminal weight counts and a lot never weighs more than its measure. A volume not known for every
+// line, or in different units, is not known: the volume is then zero.
 func (x *LoadExecution) HouseMeasure(shipment ShipmentID, lots map[CargoLotID]*CargoLot) (int64, kernel.Quantity, kernel.Quantity) {
 	var packs int64
 	var weight, volume kernel.Quantity
-	mixed := false
-	addVolume := func(q kernel.Quantity) {
+	unknown := false
+	addVolume := func(unit kernel.UnitCode, amount int64) {
 		switch {
-		case q == (kernel.Quantity{}):
-		case volume.Unit == "" || volume.Unit == q.Unit:
-			volume = kernel.Quantity{Unit: q.Unit, Amount: volume.Amount + q.Amount}
+		case unit == "":
+			unknown = true
+		case volume.Unit == "" || volume.Unit == unit:
+			volume = kernel.Quantity{Unit: unit, Amount: volume.Amount + amount}
 		default:
-			mixed = true
+			unknown = true
 		}
 	}
-	apportioned := map[CargoLotID]int64{}
+	type lotShare struct{ apportioned, measuredPacks, measuredWeight, measuredVolume int64 }
+	byLot := map[CargoLotID]*lotShare{}
 	for _, line := range x.state.Lines {
 		if line.ShipmentID != shipment {
 			continue
@@ -956,31 +960,37 @@ func (x *LoadExecution) HouseMeasure(shipment ShipmentID, lots map[CargoLotID]*C
 			continue
 		}
 		packs += live
-		if lot, ok := lots[line.LotID]; ok && line.Basis == BasisApportioned && lot.Received() > 0 {
-			if _, measured := lot.Measured(); measured {
-				apportioned[line.LotID] += live
+		lot, ok := lots[line.LotID]
+		_, measured := lot.Measured()
+		if ok && measured && lot.Received() > 0 {
+			if byLot[line.LotID] == nil {
+				byLot[line.LotID] = &lotShare{}
+			}
+			s := byLot[line.LotID]
+			if line.Basis == BasisApportioned {
+				s.apportioned += live
 				continue
 			}
+			s.measuredPacks, s.measuredWeight, s.measuredVolume = s.measuredPacks+live, s.measuredWeight+w, s.measuredVolume+v
 		}
 		weight = kernel.Quantity{Unit: line.GrossWeight.Unit, Amount: weight.Amount + w}
-		if line.Volume.Unit != "" {
-			addVolume(kernel.Quantity{Unit: line.Volume.Unit, Amount: v})
-		}
+		addVolume(line.Volume.Unit, v)
 	}
-	for id, p := range apportioned {
+	for id, s := range byLot {
+		if s.apportioned == 0 {
+			continue
+		}
 		lot := lots[id]
 		m, _ := lot.Measured()
-		received := lot.Received()
-		w, v := m.GrossWeight.Amount, m.Volume.Amount
-		if p < received {
-			w, v = share(w, p, received), share(v, p, received)
+		rest := lot.Received() - s.measuredPacks
+		w, v := max(m.GrossWeight.Amount-s.measuredWeight, 0), max(m.Volume.Amount-s.measuredVolume, 0)
+		if s.apportioned < rest {
+			w, v = share(w, s.apportioned, rest), share(v, s.apportioned, rest)
 		}
 		weight = kernel.Quantity{Unit: m.GrossWeight.Unit, Amount: weight.Amount + w}
-		if m.Volume != (kernel.Quantity{}) {
-			addVolume(kernel.Quantity{Unit: m.Volume.Unit, Amount: v})
-		}
+		addVolume(m.Volume.Unit, v)
 	}
-	if mixed {
+	if unknown {
 		volume = kernel.Quantity{}
 	}
 	return packs, weight, volume

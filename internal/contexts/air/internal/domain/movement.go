@@ -298,13 +298,13 @@ func (m *Movement) admits(p Plan) error {
 // facts are the quantities AIR freezes for a house: PHY's measures when FUL relays them, else FUL's plan; the
 // parts stay as planned (PHY counts a house's packs, not its parts').
 func facts(p Plan) (Facts, error) {
-	f := Facts{Pieces: p.Pieces, GrossWeight: p.GrossWeight, Volume: p.Volume, Basis: BasisPlanned, Evidence: p.EvidenceVersion,
-		Security: p.Security, Rule: ChargeableRule, Parts: append([]Part(nil), p.Parts...)}
+	f := Facts{Pieces: p.Pieces, GrossWeight: p.GrossWeight, Volume: p.Volume, Basis: BasisPlanned, Security: p.Security, Rule: ChargeableRule,
+		Parts: append([]Part(nil), p.Parts...)}
 	if p.MeasuredBasis != "" {
 		if !basisValid(p.MeasuredBasis) || p.MeasuredBasis == BasisPlanned || p.EvidenceVersion < 1 || p.MeasuredPieces < 1 {
 			return Facts{}, fmt.Errorf("%w: measures of %s", ErrInvalidChange, p.ShipmentID)
 		}
-		f.Pieces, f.GrossWeight, f.Volume, f.Basis = p.MeasuredPieces, p.MeasuredWeight, p.MeasuredVolume, p.MeasuredBasis
+		f.Pieces, f.GrossWeight, f.Volume, f.Basis, f.Evidence = p.MeasuredPieces, p.MeasuredWeight, p.MeasuredVolume, p.MeasuredBasis, p.EvidenceVersion
 	}
 	if !securityValid(f.Security) || f.Evidence < 0 {
 		return Facts{}, fmt.Errorf("%w: security %q", ErrInvalidChange, f.Security)

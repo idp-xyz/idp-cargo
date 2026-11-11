@@ -106,8 +106,9 @@ type EvidenceVersion struct {
 	EnteredAt time.Time
 }
 
-// RecordEvidence records PHY's verified evidence of the shipment as a new version when it differs from the
-// latest one, and re-derives the execution status. The tendered pieces must belong to the consolidation FUL
+// RecordEvidence records PHY's verified evidence of the shipment as a new version when it, or what it means for
+// the current plan (the execution status, the packs final for planning), differs from the latest one: after a
+// plan change the same facts are derived again. The tendered pieces must belong to the consolidation FUL
 // records the shipment attached to. It reports whether a version was added.
 func (s *Shipment) RecordEvidence(e LoadEvidence, by string, at time.Time) (bool, error) {
 	if s.state.Status == ShipmentCancelled {
@@ -121,18 +122,17 @@ func (s *Shipment) RecordEvidence(e LoadEvidence, by string, at time.Time) (bool
 			return false, fmt.Errorf("%w: %s", ErrNotAttached, e.ConsolidationID)
 		}
 	}
-	digest := e.Digest()
-	if v, ok := s.LatestEvidence(); ok && v.Digest == digest {
+	digest, planned := e.Digest(), s.Latest().Scope.Packs
+	execution, final := derive(planned, e), min(e.Departed, planned)
+	if v, ok := s.LatestEvidence(); ok && v.Digest == digest && v.Execution == execution && v.Final == final {
 		return false, nil
 	}
 	if err := s.changeable(by, at); err != nil {
 		return false, err
 	}
 	before := s.Execution()
-	planned := s.Latest().Scope.Packs
 	s.state.Evidence = append(s.state.Evidence, EvidenceVersion{No: len(s.state.Evidence) + 1, Digest: digest, Evidence: e,
-		Execution: derive(planned, e), Final: min(e.Departed, planned), By: by, At: at.UTC()})
-	execution := s.Execution()
+		Execution: execution, Final: final, By: by, At: at.UTC()})
 	s.recordEvidence(eventLoadEvidenceRecorded, at, e.ConsolidationID)
 	if execution != before {
 		s.recordEvidence(eventExecutionStatusChanged, at, e.ConsolidationID)

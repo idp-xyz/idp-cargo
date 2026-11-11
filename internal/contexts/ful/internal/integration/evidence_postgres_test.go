@@ -110,7 +110,8 @@ func TestLoadEvidenceOnPostgres(t *testing.T) {
 		t.Fatalf("received measures relayed: %+v", p)
 	}
 	tendered := phy.evidence
-	tendered.Tenders = []phyapi.TenderEvidence{{ExecutionID: "X-1", ConsolidationID: "C-1", LoadedPacks: 4, GrossWeight: kg(207), Departed: 4}}
+	tendered.Tenders = []phyapi.TenderEvidence{{ExecutionID: "X-1", ConsolidationID: "C-1", State: phyapi.ExecutionClosed, LoadedPacks: 4,
+		GrossWeight: kg(207), Departed: 4}}
 	phy.set(tendered)
 	if r, err := record("evidence-3", 5); err != nil || r.NewRevision != 6 {
 		t.Fatalf("tendered and departed: %+v %v", r, err)

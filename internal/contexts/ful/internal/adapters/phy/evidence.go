@@ -38,8 +38,10 @@ func (t *total) add(q kernel.Quantity) {
 func (e Evidence) Evidence(ctx context.Context, tenant ful.TenantID, shipment ful.ShipmentID, consolidation string, air bool) (ful.LoadEvidence, error) {
 	got, err := e.PHY.GetPhysicalLoadEvidence(ctx, phyapi.GetPhysicalLoadEvidence{TenantID: string(tenant), ShipmentID: string(shipment)})
 	if err != nil {
-		if errors.Is(err, phyapi.ErrNotFound) || errors.Is(err, phyapi.ErrRejected) {
-			return ful.LoadEvidence{}, fmt.Errorf("%w: %s: %v", app.ErrEvidenceUnavailable, shipment, err.Error())
+		for _, kind := range []error{phyapi.ErrNotFound, phyapi.ErrRejected, phyapi.ErrUnauthenticated, phyapi.ErrUnauthorized, phyapi.ErrConflict} {
+			if errors.Is(err, kind) {
+				return ful.LoadEvidence{}, fmt.Errorf("%w: %s: %v", app.ErrEvidenceUnavailable, shipment, err.Error())
+			}
 		}
 		return ful.LoadEvidence{}, err
 	}
@@ -57,8 +59,10 @@ func (e Evidence) Evidence(ctx context.Context, tenant ful.TenantID, shipment fu
 		if lot.Measurement.Version > 0 {
 			receivedWeight.add(lot.Measurement.GrossWeight)
 			receivedVolume.add(lot.Measurement.Volume)
+			receivedVolume.unknown = receivedVolume.unknown || lot.Measurement.Volume.Unit == ""
 		} else {
-			receivedWeight.unknown = true // a lot not yet measured: the received weight is not known
+			// a lot not yet measured: the received weight and volume are not known
+			receivedWeight.unknown, receivedVolume.unknown = true, true
 		}
 		switch lot.Screening.Outcome {
 		case phyapi.ScreeningFailed:
@@ -69,18 +73,25 @@ func (e Evidence) Evidence(ctx context.Context, tenant ful.TenantID, shipment fu
 	}
 	for _, t := range got.Tenders {
 		out.OpenDiscrepancies += len(t.OpenDiscrepancies)
-		if consolidation == "" || t.ConsolidationID != consolidation {
-			continue
+		if consolidation == "" || t.ConsolidationID != consolidation || t.State != phyapi.ExecutionClosed {
+			continue // tendered means handed over: the tender receipt is recorded
 		}
 		out.Tendered.Packs += t.LoadedPacks
 		tenderedWeight.add(t.GrossWeight)
 		tenderedVolume.add(t.Volume)
+		tenderedVolume.unknown = tenderedVolume.unknown || (t.LoadedPacks > 0 && t.Volume.Unit == "")
 		out.Departed, out.Arrived, out.Offloaded = out.Departed+t.Departed, out.Arrived+t.Arrived, out.Offloaded+t.Offloaded
 	}
 	if !receivedWeight.unknown {
 		out.Received.GrossWeight = receivedWeight.q
 	}
-	out.Received.Volume, out.Tendered.GrossWeight, out.Tendered.Volume = receivedVolume.q, tenderedWeight.q, tenderedVolume.q
+	if !receivedVolume.unknown {
+		out.Received.Volume = receivedVolume.q
+	}
+	out.Tendered.GrossWeight = tenderedWeight.q
+	if !tenderedVolume.unknown {
+		out.Tendered.Volume = tenderedVolume.q
+	}
 	if air && out.Lots > 0 {
 		switch {
 		case failed:

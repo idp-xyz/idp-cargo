@@ -63,8 +63,14 @@ func TestLoadEvidenceBesideThePlan(t *testing.T) {
 	if err := s.ChangePart("OB-1", 1, CargoScope{Packs: 2, GrossWeight: kg(200)}, CargoScope{}, "short", "ops", at); !errors.Is(err, ErrDeparted) {
 		t.Fatalf("plan below the 3 departed: %v", err)
 	}
+	if err := s.ChangePart("OB-1", 2, CargoScope{Packs: 3, GrossWeight: kg(300)}, CargoScope{}, "wrong version", "ops", at); !errors.Is(err, ErrNotPlanned) {
+		t.Fatalf("a wrong version before the departure guard: %v", err)
+	}
 	if err := s.ChangePart("OB-1", 1, CargoScope{Packs: 3, GrossWeight: kg(300)}, CargoScope{}, "one carton offloaded, rebooked", "ops", at); err != nil {
 		t.Fatalf("plan the 3 departed: %v", err)
+	}
+	if added, err := s.RecordEvidence(tendered, "ops", at); err != nil || !added || s.Execution() != ExecutionDeparted {
+		t.Fatalf("the same facts against the new plan of 3: %v %v %s", added, err, s.Execution())
 	}
 	all := tendered
 	all.Departed, all.Arrived = 3, 3
