@@ -119,6 +119,40 @@ type CancelShipment struct {
 	OccurredAt       time.Time
 }
 
+// RecordConsolAttachment records, in the shipment, that PHY attached it to a consolidation (FUL V0.4,
+// relationship 8). FUL asks PHY's ConsolMembership v1 for the shipment's live membership, which must be in
+// ConsolidationID and of the shipment's mode and route; FUL never decides the attachment (decision N1-PHY,
+// OD-1). A current attachment to another consolidation, or to an earlier membership entry of the same one,
+// ends with it. The shipment must not be cancelled.
+type RecordConsolAttachment struct {
+	CommandID        string
+	TenantID         string
+	ActorID          string
+	ShipmentID       string
+	ExpectedRevision int64
+	ConsolidationID  string
+	OccurredAt       time.Time
+}
+
+// RecordConsolDetachment records that the shipment left a consolidation in PHY: ConsolMembership v1 must
+// hold no live entry of the shipment in ConsolidationID. A cancelled shipment's attachment ends with
+// CancelShipment instead.
+type RecordConsolDetachment struct {
+	CommandID        string
+	TenantID         string
+	ActorID          string
+	ShipmentID       string
+	ExpectedRevision int64
+	ConsolidationID  string
+	OccurredAt       time.Time
+}
+
+// ConsolAttachmentCommands records PHY's consol membership in a shipment (FUL V0.4).
+type ConsolAttachmentCommands interface {
+	RecordConsolAttachment(ctx context.Context, cmd RecordConsolAttachment) (Receipt, error)
+	RecordConsolDetachment(ctx context.Context, cmd RecordConsolDetachment) (Receipt, error)
+}
+
 // Transport modes.
 const (
 	ModeAir  = "AIR"
@@ -154,6 +188,8 @@ const (
 	ActionReleaseObligationFromShipment = "ReleaseObligationFromShipment"
 	ActionChangeShipmentPart            = "ChangeShipmentPart"
 	ActionCancelShipment                = "CancelShipment"
+	ActionRecordConsolAttachment        = "RecordConsolAttachment"
+	ActionRecordConsolDetachment        = "RecordConsolDetachment"
 )
 
 // Authorizer decides whether a verified actor may perform a shipment action. The identity and policy

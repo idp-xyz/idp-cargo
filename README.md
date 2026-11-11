@@ -36,14 +36,24 @@ internal/contexts/com/          COM bounded context (Commercial Commitment)
   internal/adapters/org/        customer snapshot from ORG's api (anticorruption layer)
   internal/adapters/rate/       accepted quote and terms hash from RATE's api (anticorruption layer)
   internal/integration/         PG16 tests with stand-ins for ORG and RATE, including races of allocations and of reservation against revocation
-internal/contexts/ful/          FUL bounded context (Freight Fulfillment); in S1 the shipment plan only
-  module.go                     assembles FUL; COM is passed in as its query port
-  api/                          FUL's contract: shipment commands, ShipmentPlanSnapshot v1, events, error kinds, Authorizer port
-  internal/domain/              Shipment: planned obligation versions of one customer, immutable plan versions, confirmations
-  internal/application/         create, add, amend, confirm, release and cancel use cases, the plan query, and their ports
+internal/contexts/ful/          FUL bounded context (Freight Fulfillment): the shipment plan and, since V0.4, its consol attachment
+  module.go                     assembles FUL; COM, and PHY's ConsolMembership v1, are passed in as query ports
+  api/                          FUL's contract: shipment commands, ShipmentPlanSnapshot v1 and v2, LoadIntent v1, events, error kinds, Authorizer port
+  internal/domain/              Shipment: planned obligation versions of one customer, immutable plan versions, confirmations, consol attachments
+  internal/application/         create, add, amend, confirm, release, cancel and record-attachment use cases, the plan query, and their ports
   internal/adapters/postgres/   shipments, receipts and Outbox in cargo_ful
-  internal/adapters/com/        obligation versions from COM's ObligationSnapshot v2 (anticorruption layer)
+  internal/adapters/com/        obligation versions from COM's ObligationSnapshot v3 (anticorruption layer)
+  internal/adapters/phy/        a shipment's membership from PHY's ConsolMembership v1 (anticorruption layer)
   internal/integration/         PG16 tests with a stand-in for COM, including shipments racing for one obligation
+internal/contexts/phy/          PHY bounded context (Physical Logistics); in V0.1 consolidations and their houses
+  module.go                     assembles PHY; FUL's LoadIntent v1 and the location reference data are passed in
+  api/                          PHY's contract: consolidation and house commands, ConsolMembership v1, events, error kinds, Authorizer port
+  internal/domain/              Consolidation with immutable versions; Membership: a shipment's ledger of immutable entries, one live at most
+  internal/application/         consolidation and house use cases, their lock order, the queries, and their ports
+  internal/adapters/postgres/   consolidations, membership ledgers, receipts and Outbox in cargo_phy
+  internal/adapters/ful/        a shipment's LoadIntent v1 from FUL (anticorruption layer)
+  internal/adapters/reference/  routes resolved against the location reference data
+  internal/integration/         PG16 tests with a stand-in for FUL, including attaches racing a close
 internal/bootstrap/             composition root: one connection pool, a Bento transaction owner per context and for the relay
 internal/kernel/                value objects shared by every context (ValidityInterval, Money, Quantity, LocationCode); standard library only
 internal/reference/             read-only reference data: api (the Locations contract contexts use) and locations (cargo_ref)
@@ -52,7 +62,8 @@ internal/foundation/messaging/  reliable messaging: Outbox relay, HTTP webhook p
 migrations/org/                 immutable ORG migrations 000001–000009
 migrations/rate/                RATE migrations, starting with 000001_rate_quotes
 migrations/com/                 COM migrations 000001–000008
-migrations/ful/                 FUL migrations 000001–000003
+migrations/ful/                 FUL migrations 000001–000004
+migrations/phy/                 PHY migrations, starting with 000001_phy_consolidation_membership
 migrations/ref/                 reference data: location tables and the S1 location subset
 migrations/manifest/            order in which the contexts' migrations run
 tools/dependency-check/         package rules of the structure baseline; cross-context allowlist generated from the Context Map
@@ -60,7 +71,7 @@ tools/dependency-check/         package rules of the structure baseline; cross-c
 ```
 
 - Other contexts, transports, cross-context processes and the AI capability layer import `internal/contexts/org/api` only; the compiler rejects imports of `internal/contexts/org/internal/...` from outside ORG, and `tools/dependency-check` rejects the rest of what the layering and the Context Map do not allow.
-- Further contexts (BOOK, PHY, …), `internal/processes/` and `internal/ai/` get directories when their first real code lands; no empty scaffolding.
+- Further contexts (BOOK, AIR, SEA, DOC, …), `internal/processes/` and `internal/ai/` get directories when their first real code lands; no empty scaffolding.
 - Design documents, review reports and evidence logs are kept in the IDP-Cargo master archive and are not published in this repository.
 
 ## Status of evidence
@@ -153,6 +164,14 @@ GitHub Actions, `ubuntu-24.04` runner, workflow `org-pg16-contract.yml`, on ever
   - `RecordContactConsent` records, as a revision of the address book, the version of the tenant's personal information rules a contact was told of, the separate consents to the contact being provided to others (article 23) and abroad (article 39), how they were obtained (the customer's undertaking in its contract, or the person's confirmation) and the evidence. Recording a narrower consent withdraws; an erased contact keeps its last consent, which holds no personal data. `GetPartyContacts` returns the consent; COM freezes it with a contact carried onto an order, or takes one with a contact given on the order. DOC and BOOK will check it before they send a contact out.
   - Migrations `org/000009_org_contact_consent_access` (`party_contact_consent`, `party_contact_access`) and `com/000008_com_contact_consent_access` (consent columns on `order_party_contact`, `order_contact_access`). The database checks at commit that every consent has its change record and follows no erasure, logs a COM read as restricted exactly when the order's contacts are retained, stamps every read with its own clock, refuses purposes not listed, and refuses to rewrite the logs and consents; a logged read is deleted only once three years old. Erasing an order's contacts leaves the frozen consent as it was.
   - Tests: consent in the ORG domain; purposes, restriction and fail-closed logging in both applications; consent on order contacts; a PG16 slice with ORG, RATE and COM through a consent, a contact carried with it, a contact given on the order with its own, reads for each purpose, a closed order's restricted read, both logs for the data protection officer, ten writes past the contexts refused, a backdated read stamped by the database, and events without contact data or evidence.
+- V2.31 implements PHY V0.1 and the first part of FUL V0.4: consolidations and the attach and detach of houses, step 1 of the N1 forwarder daily loop (China export air consolidation and ocean LCL), with the decisions N1-PHY and N1-FUL of 2026-11-10. As in CargoWise, a consolidation (consol) is shared by houses of several customers under one master; its identity is its own, never a MAWB, MBL or booking number.
+  - PHY: `CreateConsolidation` for AIR_CONSOL, SEA_LCL_OWN or SEA_LCL_COLOAD (OD-6), run by an operating legal entity, on a route resolved against the location reference data (UN/LOCODEs, for AIR the IATA airport codes, and the edition), with a planned departure and a house cut-off; `AmendConsolidation` moves the schedule at any time before reconciliation and the route only while no house is attached; `CloseConsolidation` is the house cut-off and freezes the membership until `ReopenConsolidation` (OD-5); `CancelConsolidation` without houses. Every change writes an immutable version, so the original plan stays visible after a rollover.
+  - A house is a FUL shipment, attached whole. `AttachHouse` reads FUL's LoadIntent v1 first: the shipment must be PLANNED, of the consolidation's mode, origin and destination (OD-8) and legal entity (OD-10), and its departure window must contain the planned departure. `DetachHouse` and `TransferHouse` (a rollover or a flight change, in one step) need a reason; `RefreshHouseIntent` takes a replanned shipment (a shortload, F1) into a new entry; `EndMembershipForCancelledShipment` ends a cancelled shipment's membership, even after the cut-off. Each shipment has a ledger of immutable entries with the FUL revision and plan version PHY verified and the parts it froze; at most one entry is live, so a shipment is never in two consolidations at once.
+  - PHY holds the membership and commits first; FUL records it after asking PHY (OD-1). FUL's `RecordConsolAttachment` and `RecordConsolDetachment` read PHY's ConsolMembership v1 and record the consolidation and entry on the shipment's main carriage; a transfer or refresh ends the previous attachment, and `CancelShipment` ends the shipment's own. `CloseConsolidation` re-confirms every house with FUL: PLANNED at the plan version PHY verified and attached to this consolidation in FUL. The S1 API client runs the steps (T6); `bootstrap.FULAndPHY` assembles the two contexts, which read each other's query sides (relationships 7 and 8 of Context Map V1.4; the allowlist is regenerated from it).
+  - Locks: a consolidation command locks the consolidation FOR UPDATE, a house command the consolidations it touches FOR SHARE in id order and then the house's ledger FOR UPDATE, so houses of one consolidation attach concurrently and attach and close run one after another. A close that finds the houses changed while it asked FUL is a conflict and is retried.
+  - Migrations `ful/000004_ful_consol_attachment` and `phy/000001_phy_consolidation_membership`. The database keeps versions, entries and parts immutable, ends an entry only once, freezes a closed consolidation's houses except a cancelled shipment's, checks at commit that a house joins only an OPEN consolidation and a cancelled consolidation keeps none, and that a cancelled shipment keeps no current attachment.
+  - Tests: the consolidation and membership rules in the domain, a property test of random attaches, detaches, transfers, refreshes, closes and reopens; PG16 tests with a stand-in for FUL, writes past PHY refused, attaches racing a close (a closed consolidation holds only houses its close confirmed with FUL), and eight consolidations racing for one shipment (one wins); a PG16 slice with the real contexts in which two customers' AIR houses share a consolidation, one is shut out to the next flight, the other is shortloaded and refreshed, a cancelled shipment leaves, and the carriers' CNSHA resolves to the port of Shanghai.
+  - Not yet: load units, cargo receipt, stuffing and loading (PHY), MAWB/HAWB and MBL/HBL facts (AIR, SEA), carrier booking (BOOK) and the manifest-change cause once a house is declared (CUS).
 
 Bento testkit contracts:
 

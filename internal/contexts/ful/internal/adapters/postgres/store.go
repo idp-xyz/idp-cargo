@@ -97,6 +97,22 @@ type planRow struct {
 	EnteredAt         time.Time `json:"entered_at"`
 }
 
+type attachmentRow struct {
+	AttachmentNo       int       `json:"attachment_no"`
+	Stage              string    `json:"stage"`
+	ConsolidationID    string    `json:"consolidation_id"`
+	MembershipEntryNo  int       `json:"membership_entry_no"`
+	MembershipRevision int64     `json:"membership_revision"`
+	AttachedFrom       time.Time `json:"attached_from"`
+	RecordedBy         string    `json:"recorded_by"`
+	RecordedAt         time.Time `json:"recorded_at"`
+	EnteredAt          time.Time `json:"entered_at"`
+	EndedBy            string    `json:"ended_by"`
+	EndedAt            time.Time `json:"ended_at"`
+	EndReason          string    `json:"end_reason"`
+	EndEnteredAt       time.Time `json:"end_entered_at"`
+}
+
 type confirmationRow struct {
 	PlanNo      int       `json:"plan_no"`
 	ConfirmedBy string    `json:"confirmed_by"`
@@ -132,17 +148,19 @@ func readShipment(ctx context.Context, q queryRower, tenant ful.TenantID, id ful
 	var cancelledBy, cancelReason *string
 	var cancelledAt *time.Time
 	var revision int64
-	var obligationJSON, planJSON, confirmationJSON []byte
+	var obligationJSON, planJSON, confirmationJSON, attachmentJSON []byte
 	err := q.QueryRow(ctx, `SELECT s.customer_party_id, s.legal_entity_id, s.status, s.cancelled_by, s.cancelled_at, s.cancel_reason, s.revision,
         (SELECT coalesce(json_agg(o ORDER BY o.entry_no), '[]') FROM cargo_ful.shipment_obligation o
           WHERE o.tenant_id=s.tenant_id AND o.shipment_id=s.shipment_id),
         (SELECT coalesce(json_agg(p ORDER BY p.plan_no), '[]') FROM cargo_ful.shipment_plan_version p
           WHERE p.tenant_id=s.tenant_id AND p.shipment_id=s.shipment_id),
         (SELECT coalesce(json_agg(c ORDER BY c.plan_no), '[]') FROM cargo_ful.shipment_plan_confirmation c
-          WHERE c.tenant_id=s.tenant_id AND c.shipment_id=s.shipment_id)
+          WHERE c.tenant_id=s.tenant_id AND c.shipment_id=s.shipment_id),
+        (SELECT coalesce(json_agg(a ORDER BY a.attachment_no), '[]') FROM cargo_ful.shipment_consol_attachment a
+          WHERE a.tenant_id=s.tenant_id AND a.shipment_id=s.shipment_id)
       FROM cargo_ful.shipment s WHERE s.tenant_id=$1 AND s.shipment_id=$2`, string(tenant), string(id)).Scan(
 		&st.CustomerPartyID, &st.LegalEntityID, &status, &cancelledBy, &cancelledAt, &cancelReason, &revision,
-		&obligationJSON, &planJSON, &confirmationJSON)
+		&obligationJSON, &planJSON, &confirmationJSON, &attachmentJSON)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, 0, bentorepo.ErrNotFound
 	}
@@ -152,8 +170,9 @@ func readShipment(ctx context.Context, q queryRower, tenant ful.TenantID, id ful
 	var obligations []obligationRow
 	var plans []planRow
 	var confirmations []confirmationRow
+	var attachments []attachmentRow
 	if err = errors.Join(json.Unmarshal(obligationJSON, &obligations), json.Unmarshal(planJSON, &plans),
-		json.Unmarshal(confirmationJSON, &confirmations)); err != nil {
+		json.Unmarshal(confirmationJSON, &confirmations), json.Unmarshal(attachmentJSON, &attachments)); err != nil {
 		return nil, 0, err
 	}
 	st.Status = ful.ShipmentStatus(status)
@@ -180,6 +199,15 @@ func readShipment(ctx context.Context, q queryRower, tenant ful.TenantID, id ful
 	}
 	for _, c := range confirmations {
 		st.Confirmations = append(st.Confirmations, ful.Confirmation{PlanNo: c.PlanNo, By: c.ConfirmedBy, At: utc(c.ConfirmedAt), EnteredAt: utc(c.EnteredAt)})
+	}
+	for i, a := range attachments {
+		if a.AttachmentNo != i+1 {
+			return nil, 0, fmt.Errorf("%w: consol attachments of shipment %s are not numbered from 1", ful.ErrInvalidShipment, id)
+		}
+		st.Attachments = append(st.Attachments, ful.ConsolAttachment{Stage: a.Stage, ConsolidationID: a.ConsolidationID,
+			MembershipEntryNo: a.MembershipEntryNo, MembershipRevision: a.MembershipRevision, AttachedFrom: utc(a.AttachedFrom),
+			RecordedBy: a.RecordedBy, RecordedAt: utc(a.RecordedAt), EnteredAt: utc(a.EnteredAt), EndedBy: a.EndedBy,
+			EndedAt: utc(a.EndedAt), EndReason: ful.AttachmentEnd(a.EndReason), EndEnteredAt: utc(a.EndEnteredAt)})
 	}
 	shipment, err := ful.RestoreShipment(st)
 	return shipment, revision, err
@@ -236,6 +264,17 @@ func (s ShipmentStore) Save(ctx context.Context, shipment *ful.Shipment, expecte
 			return 0, fmt.Errorf("%w: obligation entry %d of shipment %s", bentorepo.ErrConflict, no, st.ShipmentID)
 		}
 	}
+	for no, a := range shipment.EndedAttachments() {
+		tag, err := q.Exec(ctx, `UPDATE cargo_ful.shipment_consol_attachment SET ended_by=$4,ended_at=$5,end_reason=$6,end_entered_at=$7
+          WHERE tenant_id=$1 AND shipment_id=$2 AND attachment_no=$3 AND ended_at IS NULL`,
+			string(st.TenantID), string(st.ShipmentID), no, a.EndedBy, a.EndedAt, string(a.EndReason), a.EndEnteredAt)
+		if err != nil {
+			return 0, err
+		}
+		if tag.RowsAffected() != 1 {
+			return 0, fmt.Errorf("%w: consol attachment %d of shipment %s", bentorepo.ErrConflict, no, st.ShipmentID)
+		}
+	}
 	return revision, s.writeAdded(ctx, q, shipment)
 }
 
@@ -287,6 +326,22 @@ func (s ShipmentStore) writeAdded(ctx context.Context, q bentopg.Executor, shipm
 	for _, c := range shipment.AddedConfirmations() {
 		if _, err := q.Exec(ctx, `INSERT INTO cargo_ful.shipment_plan_confirmation (tenant_id,shipment_id,plan_no,confirmed_by,confirmed_at,entered_at)
             VALUES ($1,$2,$3,$4,$5,$6)`, string(st.TenantID), string(st.ShipmentID), c.PlanNo, c.By, c.At, orNull(c.EnteredAt)); err != nil {
+			return err
+		}
+	}
+	firstAttachment := len(st.Attachments) - len(shipment.AddedAttachments())
+	for i, a := range shipment.AddedAttachments() {
+		_, err := q.Exec(ctx, `INSERT INTO cargo_ful.shipment_consol_attachment (tenant_id,shipment_id,attachment_no,stage,consolidation_id,
+            membership_entry_no,membership_revision,attached_from,recorded_by,recorded_at,entered_at,ended_by,ended_at,end_reason,end_entered_at)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+			string(st.TenantID), string(st.ShipmentID), firstAttachment+i+1, a.Stage, a.ConsolidationID, a.MembershipEntryNo,
+			a.MembershipRevision, a.AttachedFrom, a.RecordedBy, a.RecordedAt, a.EnteredAt, orNull(a.EndedBy), orNull(a.EndedAt),
+			orNull(string(a.EndReason)), orNull(a.EndEnteredAt))
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "shipment_consol_attachment_one_current" {
+			return fmt.Errorf("%w: shipment %s has a current consol attachment on stage %s", bentorepo.ErrConflict, st.ShipmentID, a.Stage)
+		}
+		if err != nil {
 			return err
 		}
 	}

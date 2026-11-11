@@ -14,10 +14,12 @@ import (
 	comapi "go.idp.xyz/idp-cargo/internal/contexts/com/api"
 	"go.idp.xyz/idp-cargo/internal/contexts/ful/api"
 	comacl "go.idp.xyz/idp-cargo/internal/contexts/ful/internal/adapters/com"
+	phyacl "go.idp.xyz/idp-cargo/internal/contexts/ful/internal/adapters/phy"
 	"go.idp.xyz/idp-cargo/internal/contexts/ful/internal/adapters/postgres"
 	refacl "go.idp.xyz/idp-cargo/internal/contexts/ful/internal/adapters/reference"
 	"go.idp.xyz/idp-cargo/internal/contexts/ful/internal/application"
 	"go.idp.xyz/idp-cargo/internal/contexts/ful/internal/domain"
+	phyapi "go.idp.xyz/idp-cargo/internal/contexts/phy/api"
 	"go.idp.xyz/idp-cargo/internal/foundation/bento"
 	"go.idp.xyz/idp-cargo/internal/kernel"
 	refapi "go.idp.xyz/idp-cargo/internal/reference/api"
@@ -31,7 +33,8 @@ type Module struct {
 	auth      api.Authorizer
 	clock     bento.SystemClock
 	window    kernel.RecordWindow
-	locations application.Locations // location reference data (F2); nil until wired
+	locations application.Locations         // location reference data (F2); nil until wired
+	consols   application.ConsolMemberships // PHY's ConsolMembership v1 (V0.4); nil until wired
 }
 
 // Option configures a Module.
@@ -51,9 +54,21 @@ func WithLocations(l refapi.Locations) Option {
 	}
 }
 
+// WithConsolMemberships gives FUL PHY's ConsolMembership v1 (relationship 8), which it reads before recording a
+// consol attachment or detachment. Without it those commands are refused.
+func WithConsolMemberships(q phyapi.ConsolMembershipQueries) Option {
+	return func(m *Module) {
+		if q != nil {
+			m.consols = phyacl.Memberships{PHY: q}
+		}
+	}
+}
+
 var (
-	_ api.Commands = (*Module)(nil)
-	_ api.Queries  = (*Module)(nil)
+	_ api.Commands                 = (*Module)(nil)
+	_ api.ConsolAttachmentCommands = (*Module)(nil)
+	_ api.Queries                  = (*Module)(nil)
+	_ api.LoadIntentQueries        = (*Module)(nil)
 )
 
 // New assembles FUL. com answers which obligation versions a shipment may plan; the composition root
@@ -141,6 +156,55 @@ func (m *Module) CancelShipment(ctx context.Context, cmd api.CancelShipment) (ap
 		ExpectedRevision: cmd.ExpectedRevision, Reason: cmd.Reason, OccurredAt: stored(cmd.OccurredAt),
 	})
 	return toReceipt(receipt, err)
+}
+
+func (m *Module) RecordConsolAttachment(ctx context.Context, cmd api.RecordConsolAttachment) (api.Receipt, error) {
+	receipt, err := application.RecordConsolAttachment{Deps: m.deps(cmd.TenantID, cmd.CommandID), Memberships: m.consols}.Handle(ctx,
+		application.RecordConsolAttachmentCommand{
+			CommandID: cmd.CommandID, Scope: scope(cmd.TenantID, cmd.ActorID), ShipmentID: domain.ShipmentID(cmd.ShipmentID),
+			ExpectedRevision: cmd.ExpectedRevision, ConsolidationID: cmd.ConsolidationID, OccurredAt: stored(cmd.OccurredAt),
+		})
+	return toReceipt(receipt, err)
+}
+
+func (m *Module) RecordConsolDetachment(ctx context.Context, cmd api.RecordConsolDetachment) (api.Receipt, error) {
+	receipt, err := application.RecordConsolDetachment{Deps: m.deps(cmd.TenantID, cmd.CommandID), Memberships: m.consols}.Handle(ctx,
+		application.RecordConsolDetachmentCommand{
+			CommandID: cmd.CommandID, Scope: scope(cmd.TenantID, cmd.ActorID), ShipmentID: domain.ShipmentID(cmd.ShipmentID),
+			ExpectedRevision: cmd.ExpectedRevision, ConsolidationID: cmd.ConsolidationID, OccurredAt: stored(cmd.OccurredAt),
+		})
+	return toReceipt(receipt, err)
+}
+
+// GetLoadIntent answers LoadIntent v1 for PHY: the shipment's current plan with the package type of every part
+// and its current consol attachment on the main carriage.
+func (m *Module) GetLoadIntent(ctx context.Context, q api.GetShipmentPlanSnapshot) (api.LoadIntent, error) {
+	shipment, revision, err := m.shipment(ctx, q)
+	if err != nil {
+		return api.LoadIntent{}, err
+	}
+	st, plan := shipment.State(), shipment.Latest()
+	intent := api.LoadIntent{
+		TenantID: string(st.TenantID), ShipmentID: string(st.ShipmentID), Revision: revision, Status: string(st.Status),
+		PlanVersion: plan.No, CustomerPartyID: st.CustomerPartyID, LegalEntityID: st.LegalEntityID,
+		TransportMode: string(plan.Route.Mode), Origin: plan.Route.Origin, Destination: plan.Route.Destination,
+		OriginIATA: plan.Route.OriginIATA, DestinationIATA: plan.Route.DestinationIATA, LocationEdition: plan.Route.LocationEdition,
+		DepartureWindow: plan.Route.Departure, Stage: api.StageMain,
+	}
+	if n := len(st.Confirmations); n > 0 {
+		intent.ConfirmedVersion = st.Confirmations[n-1].PlanNo
+	}
+	if st.Status != domain.ShipmentCancelled {
+		intent.Packs, intent.GrossWeight, intent.Volume = plan.Scope.Packs, plan.Scope.GrossWeight, plan.Scope.Volume
+		for _, p := range shipment.Parts() {
+			intent.Parts = append(intent.Parts, api.LoadIntentPart{ObligationID: string(p.ObligationID), ObligationVersion: p.ObligationVersion,
+				OrderID: p.OrderID, Packs: p.Part.Packs, PackageType: p.PackageType, GrossWeight: p.Part.GrossWeight, Volume: p.Part.Volume})
+		}
+	}
+	if a, ok := shipment.Attachment(domain.StageMain); ok {
+		intent.ConsolidationID, intent.MembershipEntryNo = a.ConsolidationID, a.MembershipEntryNo
+	}
+	return intent, nil
 }
 
 func (m *Module) GetShipmentPlanSnapshot(ctx context.Context, q api.GetShipmentPlanSnapshot) (api.ShipmentPlanSnapshot, error) {
@@ -277,7 +341,8 @@ func classify(err error) error {
 		errors.Is(err, domain.ErrInvalidChange), errors.Is(err, application.ErrNotPlannable), errors.Is(err, application.ErrInvalidQuery),
 		errors.Is(err, kernel.ErrUnitMismatch), errors.Is(err, kernel.ErrAmountOverflow),
 		errors.Is(err, domain.ErrUnresolvedRoute), errors.Is(err, domain.ErrModeMismatch), errors.Is(err, application.ErrLocationRefused),
-		errors.Is(err, kernel.ErrOutsideRecordWindow):
+		errors.Is(err, kernel.ErrOutsideRecordWindow),
+		errors.Is(err, domain.ErrConsolPlanMismatch), errors.Is(err, domain.ErrNotAttached), errors.Is(err, application.ErrMembershipMismatch):
 		kind = api.ErrRejected
 	default:
 		return err
