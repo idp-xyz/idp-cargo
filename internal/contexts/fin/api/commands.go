@@ -244,8 +244,8 @@ type SetBillingProfile struct {
 
 // IssueDebitNote bills sell sides of a job to one debtor (CargoWise INV): the job's lines in LineNos, whose latest sell
 // side is not billed, not zero and the debtor's. FIN asks DOC for the shipment's issued house document
-// (FIN_NO_ISSUED_DOCUMENT without one, or when it was issued after OccurredAt; DOC issues HAWBs only so far, so a SEA job
-// cannot be billed yet) and ORG for the debtor's role and identity; the debtor's billing profile must
+// (FIN_NO_ISSUED_DOCUMENT without one, or when its valid version was issued after OccurredAt: a note backdated before an
+// amendment's issue is refused; DOC issues HAWBs only so far, so a SEA job cannot be billed yet) and ORG for the debtor's role and identity; the debtor's billing profile must
 // name it as ORG does (FIN_NO_BILLING_PROFILE, FIN_BILLING_PROFILE_STALE). Currency is the functional currency, which
 // converts other lines at the INVOICE rate, or the currency of every line, converted into the functional currency at
 // the ACCOUNTING rate. Every charge code needs a tax treatment in force at InvoiceDate (YYYY-MM-DD, the date of the

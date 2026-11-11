@@ -260,7 +260,8 @@ func TestDebitAndCreditNotesOnPostgres(t *testing.T) {
 		t.Fatalf("partly reversed: %+v %v", note, err)
 	}
 	if note, err = b.module.GetDebtorInvoice(ctx, api.GetDebtorInvoice{TenantID: b.tenant, InvoiceID: "CN-1"}); err != nil || note.Kind != api.KindCreditNote ||
-		note.Total != cny(-30_000) || note.CreditsInvoiceID != "DN-1" || note.Lines[0].CreditsLineNo != 2 || note.Reason != "billed in error" {
+		note.Total != cny(-30_000) || note.CreditsInvoiceID != "DN-1" || note.Lines[0].CreditsLineNo != 2 || note.Reason != "billed in error" ||
+		note.WriteOff {
 		t.Fatalf("credit note read: %+v %v", note, err)
 	}
 
@@ -338,7 +339,7 @@ func TestDebitAndCreditNotesOnPostgres(t *testing.T) {
 	}
 	b.job = r.NewRevision
 	if note, err = b.module.GetDebtorInvoice(ctx, api.GetDebtorInvoice{TenantID: b.tenant, InvoiceID: "CN-3"}); err != nil || note.Total != usd(-20_000) ||
-		note.LocalTotal != cny(-142_000) || note.Lines[0].FX.RateType != api.RateAccounting {
+		note.LocalTotal != cny(-142_000) || note.Lines[0].FX.RateType != api.RateAccounting || !note.WriteOff {
 		t.Fatalf("credit note of the USD note: %+v %v", note, err)
 	}
 	if job, err = b.module.GetFreightJob(ctx, api.GetFreightJob{TenantID: b.tenant, JobID: "JOB-A"}); err != nil ||

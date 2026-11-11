@@ -476,7 +476,7 @@ func noteView(j *domain.FreightJob, n domain.Note, profile *domain.BillingProfil
 	out := api.DebtorInvoice{InvoiceID: n.ID, Kind: n.Kind, Number: n.Number, JobID: st.JobID, LegalEntityID: st.LegalEntityID, ShipmentID: st.ShipmentID,
 		DebtorPartyID: n.DebtorPartyID, DebtorRevision: n.DebtorRevision, Currency: n.Currency, InvoiceDate: dateView(n.InvoiceDate),
 		DueDate: dateView(n.DueDate), PaymentDays: n.PaymentDays, PaymentBasis: n.PaymentBasis, TermsVersion: n.TermsVersion,
-		Document: api.DocumentRef(n.Document), CreditsInvoiceID: n.CreditsID, Reason: n.Reason, State: n.State, Total: money(n.Total),
+		Document: api.DocumentRef(n.Document), CreditsInvoiceID: n.CreditsID, Reason: n.Reason, WriteOff: n.WriteOff, State: n.State, Total: money(n.Total),
 		LocalTotal: local(n.LocalTotal), IssuedBy: n.By, IssuedAt: n.At}
 	if profile != nil {
 		for _, v := range profile.State().Versions {

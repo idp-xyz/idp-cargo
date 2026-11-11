@@ -359,6 +359,7 @@ type (
 		DocumentAt     *time.Time `json:"document_issued_at"`
 		CreditsID      *string    `json:"credits_invoice_id"`
 		Reason         *string    `json:"reason"`
+		WriteOff       bool       `json:"write_off"`
 		Total          int64      `json:"total_minor"`
 		LocalTotal     int64      `json:"local_total_minor"`
 		State          string     `json:"state"`
@@ -430,7 +431,7 @@ func notesOf(nr []noteRow, lr []noteLineRow) ([]fin.Note, error) {
 			PaymentBasis: deref(n.PaymentBasis), TermsVersion: deref(n.TermsVersion), Document: fin.DocumentRef{DocumentID: deref(n.DocumentID),
 				Version: deref(n.DocumentVer), Number: deref(n.DocumentNumber), MasterNumber: deref(n.MasterNumber),
 				IssuedAt: utc(deref(n.DocumentAt))}, CreditsID: deref(n.CreditsID),
-			Reason: deref(n.Reason), State: n.State, Total: n.Total, LocalTotal: n.LocalTotal, By: n.By, At: utc(n.At), EnteredAt: utc(n.EnteredAt)})
+			Reason: deref(n.Reason), WriteOff: n.WriteOff, State: n.State, Total: n.Total, LocalTotal: n.LocalTotal, By: n.By, At: utc(n.At), EnteredAt: utc(n.EnteredAt)})
 	}
 	for _, l := range lr {
 		i, ok := index[l.InvoiceID]
@@ -708,12 +709,12 @@ func insertNote(ctx context.Context, q bentopg.Executor, st fin.JobState, n fin.
 	}
 	_, err := q.Exec(ctx, `INSERT INTO cargo_fin.debtor_invoice (tenant_id,invoice_id,kind,job_id,legal_entity_id,number,number_seq,debtor_party_id,
         debtor_revision,profile_version,currency,invoice_date,due_date,payment_days,payment_basis,terms_version,document_id,document_version,document_number,
-        master_number,document_issued_at,credits_invoice_id,reason,total_minor,local_total_minor,state,issued_by,issued_at,entered_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)`,
+        master_number,document_issued_at,credits_invoice_id,reason,write_off,total_minor,local_total_minor,state,issued_by,issued_at,entered_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30)`,
 		string(st.TenantID), n.ID, n.Kind, st.JobID, st.LegalEntityID, n.Number, n.Seq, n.DebtorPartyID, n.DebtorRevision, n.ProfileVersion,
 		string(n.Currency), n.InvoiceDate.Format(time.DateOnly), dateOrNull(n.DueDate), days, basis, orNull(n.TermsVersion), orNull(n.Document.DocumentID),
 		orNull(n.Document.Version), orNull(n.Document.Number), orNull(n.Document.MasterNumber), orNull(n.Document.IssuedAt), orNull(n.CreditsID),
-		orNull(n.Reason), n.Total,
+		orNull(n.Reason), n.WriteOff, n.Total,
 		n.LocalTotal, n.State, n.By, n.At, n.EnteredAt)
 	if err = noteConflict(err, n); err != nil {
 		return err

@@ -276,7 +276,7 @@ type DebtorInvoiceLine struct {
 
 // DebtorInvoice is a debit note or a credit note. Dates are YYYY-MM-DD. A debit note has its due date, payment terms
 // (TermsVersion 0 without a credit account), house document, the credit notes reversing its lines and Open, the total
-// not reversed; a credit note names the debit note it reverses and the reason.
+// not reversed; a credit note names the debit note it reverses, the reason and whether it wrote the charges off.
 type DebtorInvoice struct {
 	InvoiceID        string
 	Kind             string
@@ -296,6 +296,7 @@ type DebtorInvoice struct {
 	Document         DocumentRef
 	CreditsInvoiceID string
 	Reason           string
+	WriteOff         bool
 	State            string
 	Total            kernel.Money
 	LocalTotal       kernel.Money

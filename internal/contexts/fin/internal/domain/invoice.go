@@ -70,6 +70,7 @@ type Note struct {
 	Document       DocumentRef
 	CreditsID      string
 	Reason         string
+	WriteOff       bool
 	State          string
 	Total          int64
 	LocalTotal     int64
@@ -286,7 +287,8 @@ func (j *FreightJob) IssueCreditNote(in CreditNoteInput, p *FinancePolicy, draw 
 		}
 	}
 	n := Note{ID: in.ID, Kind: KindCreditNote, DebtorPartyID: d.DebtorPartyID, DebtorRevision: d.DebtorRevision, ProfileVersion: d.ProfileVersion,
-		Currency: d.Currency, InvoiceDate: in.InvoiceDate.UTC(), CreditsID: d.ID, Reason: in.Reason, State: NoteIssued, By: by, At: at.UTC()}
+		Currency: d.Currency, InvoiceDate: in.InvoiceDate.UTC(), CreditsID: d.ID, Reason: in.Reason, WriteOff: in.WriteOff, State: NoteIssued, By: by,
+		At: at.UTC()}
 	var returned []SideVersion
 	var err error
 	for _, no := range in.LineNos {

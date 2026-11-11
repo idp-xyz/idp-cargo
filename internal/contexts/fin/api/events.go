@@ -39,5 +39,5 @@ type EventPayload struct {
 	DebtorPartyID string `json:"debtor_party_id,omitempty"`
 	LineNo        int    `json:"line_no,omitempty"` // ChargeLineRecorded and ChargeSideRevised: the line; Version is the side's version
 	Side          string `json:"side,omitempty"`    // ChargeSideRevised: SELL or COST
-	JobID         string `json:"job_id,omitempty"`  // DebtorInvoiceIssued and CreditNoteIssued: the note's job
+	JobID         string `json:"job_id,omitempty"`  // DebtorInvoiceIssued, DebtorInvoiceCancelled and CreditNoteIssued: the note's job
 }
