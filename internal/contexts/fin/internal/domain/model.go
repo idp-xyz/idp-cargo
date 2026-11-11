@@ -62,5 +62,6 @@ type Event struct {
 }
 
 // MaxAmount bounds every amount and local amount in minor units (10^15, ten trillion units of a two-digit
-// currency), so that sums over a job's lines or a debtor's jobs never overflow.
+// currency), so that sums over a job's lines or a debtor's jobs stay far from overflowing (it would take some 9,000
+// sides at the bound).
 const MaxAmount = 1_000_000_000_000_000

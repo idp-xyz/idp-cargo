@@ -56,6 +56,9 @@ type PolicyStore interface {
 	Read(ctx context.Context, tenant fin.TenantID, legalEntity string) (*fin.FinancePolicy, int64, error)
 	// Find reads a policy and reports whether the legal entity has one.
 	Find(ctx context.Context, tenant fin.TenantID, legalEntity string) (*fin.FinancePolicy, bool, error)
+	// Shared is Find holding the policy row FOR SHARE until the transaction ends, so that a rate recorded or ended
+	// (which lock it FOR NO KEY UPDATE) and a charge converted at the policy's rates take turns.
+	Shared(ctx context.Context, tenant fin.TenantID, legalEntity string) (*fin.FinancePolicy, bool, error)
 	Insert(context.Context, *fin.FinancePolicy) (int64, error)
 	Save(context.Context, *fin.FinancePolicy, int64) (int64, error)
 }

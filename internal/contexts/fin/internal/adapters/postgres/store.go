@@ -139,6 +139,18 @@ func (s PolicyStore) Find(ctx context.Context, tenant fin.TenantID, le string) (
 	return p, err == nil, err
 }
 
+func (s PolicyStore) Shared(ctx context.Context, tenant fin.TenantID, le string) (*fin.FinancePolicy, bool, error) {
+	q, err := s.DB.RequireExecutor(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	p, _, err := readPolicy(ctx, q, tenant, le, " FOR SHARE")
+	if errors.Is(err, bentorepo.ErrNotFound) {
+		return nil, false, nil
+	}
+	return p, err == nil, err
+}
+
 func (s PolicyStore) Insert(ctx context.Context, p *fin.FinancePolicy) (int64, error) {
 	q, err := s.DB.RequireExecutor(ctx)
 	if err != nil {

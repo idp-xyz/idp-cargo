@@ -75,8 +75,9 @@ func (d Deps) RecordRate(ctx context.Context, c Command, e fin.RateEntry) (Recei
 	})
 }
 
+// policy reads the legal entity's policy in a write transaction, holding it FOR SHARE.
 func (d Deps) policy(ctx context.Context, tenant fin.TenantID, legalEntity string) (*fin.FinancePolicy, error) {
-	p, found, err := d.Policies.Find(ctx, tenant, legalEntity)
+	p, found, err := d.Policies.Shared(ctx, tenant, legalEntity)
 	if err == nil && !found {
 		return nil, fmt.Errorf("%w: %s", ErrNoPolicy, legalEntity)
 	}

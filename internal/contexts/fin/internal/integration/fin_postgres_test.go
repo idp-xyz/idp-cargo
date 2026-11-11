@@ -473,3 +473,69 @@ func TestJobsRaceForOneShipment(t *testing.T) {
 		t.Fatalf("%d committed, %d refused: %v", committed, refused, errs)
 	}
 }
+
+// TestRateEndRacesAConversion ends a rate entry while a charge is converted at it, eight times: at most one of the two
+// commits, and the job keeps taking changes.
+func TestRateEndRacesAConversion(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	if _, err := f.module.OpenFinancePolicy(ctx, api.OpenFinancePolicy{CommandID: "policy", TenantID: f.tenant, ActorID: "acct-1", LegalEntityID: "LE",
+		FunctionalCurrency: "CNY", BookCode: "MAIN", OccurredAt: f.hours(0)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.module.OpenFreightJob(ctx, api.OpenFreightJob{CommandID: "open", TenantID: f.tenant, ActorID: "fin-1", JobID: "JOB-R", ShipmentID: "SH-B",
+		OccurredAt: f.hours(1)}); err != nil {
+		t.Fatal(err)
+	}
+	policyRevision, jobRevision := int64(1), int64(1)
+	for i, currency := range []kernel.CurrencyCode{"EUR", "GBP", "HKD", "SGD", "AUD", "CAD", "CHF", "NZD"} {
+		r, err := f.module.RecordExchangeRate(ctx, api.RecordExchangeRate{CommandID: fmt.Sprintf("rate-%d", i), TenantID: f.tenant, ActorID: "acct-1",
+			LegalEntityID: "LE", ExpectedRevision: policyRevision, RateType: api.RateEstimate, From: currency, Rate: 50_000, Scale: 4, FromDigits: 2,
+			ToDigits: 2, ValidFrom: f.at.AddDate(0, 0, -1), ValidUntil: f.at.AddDate(0, 1, 0), Source: "bank", OccurredAt: f.hours(1)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		policyRevision = r.NewRevision
+		var endErr, lineErr error
+		var endR, lineR api.Receipt
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			endR, endErr = f.module.EndExchangeRate(ctx, api.EndExchangeRate{CommandID: fmt.Sprintf("end-%d", i), TenantID: f.tenant, ActorID: "acct-1",
+				LegalEntityID: "LE", ExpectedRevision: policyRevision, EntryNo: r.Version, ValidUntil: f.hours(2 + 2*i), Reason: "corrected",
+				OccurredAt: f.hours(3 + 2*i)})
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			lineR, lineErr = f.module.RecordChargeLine(ctx, api.RecordChargeLine{CommandID: fmt.Sprintf("line-%d", i), TenantID: f.tenant, ActorID: "fin-1",
+				JobID: "JOB-R", ExpectedRevision: jobRevision, ChargeCode: "HANDLING", Sell: &api.ChargeSide{PartyID: "party-a",
+					Amount: kernel.Money{Currency: currency, Minor: 10_000}}, Reason: "race", OccurredAt: f.hours(3 + 2*i)})
+		}()
+		close(start)
+		wg.Wait()
+		if endErr == nil && lineErr == nil {
+			t.Fatalf("round %d: the rate was ended before a charge it converted after the end", i)
+		}
+		if endErr != nil && !strings.Contains(endErr.Error(), "FIN_RATE_IN_USE") || lineErr != nil && !strings.Contains(lineErr.Error(), "FIN_RATE_MISSING") {
+			t.Fatalf("round %d: refused for another reason: %v / %v", i, endErr, lineErr)
+		}
+		if endErr == nil {
+			policyRevision = endR.NewRevision
+		}
+		if lineErr == nil {
+			jobRevision = lineR.NewRevision
+		}
+		t.Logf("round %d: end %v / conversion %v", i, endErr, lineErr)
+		r2, err := f.module.RecordChargeLine(ctx, api.RecordChargeLine{CommandID: fmt.Sprintf("after-%d", i), TenantID: f.tenant, ActorID: "fin-1", JobID: "JOB-R",
+			ExpectedRevision: jobRevision, ChargeCode: "DOC_FEE", Sell: &api.ChargeSide{PartyID: "party-a", Amount: cny(100)}, Reason: "after the race",
+			OccurredAt: f.hours(4 + 2*i)})
+		if err != nil {
+			t.Fatalf("round %d: the job takes no change after the race: %v", i, err)
+		}
+		jobRevision = r2.NewRevision
+	}
+}
