@@ -94,7 +94,7 @@ func (m *Module) DraftTransportDocument(ctx context.Context, cmd api.DraftTransp
 func (m *Module) RefreshDocumentDraft(ctx context.Context, cmd api.RefreshDocumentDraft) (api.Receipt, error) {
 	r, err := m.deps(cmd.TenantID, cmd.CommandID).Revise(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, api.ActionRefreshDocumentDraft,
 		cmd.DocumentID, cmd.ExpectedRevision, cmd.OccurredAt, cmd), application.Revise{Reason: cmd.Reason, Payment: cmd.PaymentIndicator,
-		Handling: cmd.HandlingInformation, AgentPartyID: cmd.AgentPartyID})
+		Handling: cmd.HandlingInformation, AgentPartyID: cmd.AgentPartyID, MovementID: cmd.MovementID})
 	return receipt(r, err)
 }
 
@@ -113,7 +113,7 @@ func (m *Module) IssueTransportDocument(ctx context.Context, cmd api.IssueTransp
 func (m *Module) OpenDocumentAmendment(ctx context.Context, cmd api.OpenDocumentAmendment) (api.Receipt, error) {
 	r, err := m.deps(cmd.TenantID, cmd.CommandID).Revise(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, api.ActionOpenDocumentAmendment,
 		cmd.DocumentID, cmd.ExpectedRevision, cmd.OccurredAt, cmd), application.Revise{Reason: cmd.Reason, Payment: cmd.PaymentIndicator,
-		Handling: cmd.HandlingInformation, AgentPartyID: cmd.AgentPartyID, Amendment: true})
+		Handling: cmd.HandlingInformation, AgentPartyID: cmd.AgentPartyID, MovementID: cmd.MovementID, Amendment: true})
 	return receipt(r, err)
 }
 
@@ -287,7 +287,7 @@ func classify(err error) error {
 		errors.Is(err, domain.ErrSourceNotFinal), errors.Is(err, domain.ErrSourceStale), errors.Is(err, domain.ErrMasterMismatch),
 		errors.Is(err, domain.ErrPartiesDiverge), errors.Is(err, domain.ErrIncomplete), errors.Is(err, domain.ErrNotLocked),
 		errors.Is(err, domain.ErrCreditHold), errors.Is(err, domain.ErrCreditUndecided), errors.Is(err, domain.ErrIssuanceBlocked),
-		errors.Is(err, domain.ErrIssuerNotVerified), errors.Is(err, domain.ErrInvalidAuthority), errors.Is(err, postgres.ErrNumberIssued),
+		errors.Is(err, domain.ErrIssuerNotVerified), errors.Is(err, domain.ErrInvalidAuthority), errors.Is(err, domain.ErrNumberIssued),
 		errors.Is(err, application.ErrInvalidQuery), errors.Is(err, application.ErrInvalidCommand), errors.Is(err, application.ErrUnknownSource),
 		errors.Is(err, kernel.ErrOutsideRecordWindow):
 		kind = api.ErrRejected

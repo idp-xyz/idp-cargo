@@ -83,6 +83,14 @@ func (d Deps) Draft(ctx context.Context, c Command, src Source) (Receipt, error)
 		if err != nil {
 			return Receipt{}, nil, err
 		}
+		st := m.State()
+		subject, found, err := d.Documents.IssuedFor(txCtx, st.TenantID, st.LegalEntityID, st.Kind, st.Number)
+		if err != nil {
+			return Receipt{}, nil, err
+		}
+		if found && subject != st.Subject() {
+			return Receipt{}, nil, fmt.Errorf("%w: %s %s was issued for %s", doc.ErrNumberIssued, st.Kind, st.Number, subject)
+		}
 		m.Stamp(entered)
 		revision, err := d.Documents.Insert(txCtx, m)
 		return Receipt{SubjectID: c.Subject, NewRevision: revision, Version: 1}, m, err
@@ -132,8 +140,9 @@ func (d Deps) change(ctx context.Context, c Command, read func(context.Context, 
 	})
 }
 
-// sourceOf is what the latest version was built from, with the entered fields and agent a command changes.
-func sourceOf(m *doc.Document, payment, handling, agent string) Source {
+// sourceOf is what the latest version was built from, with the entered fields, agent and, for a HAWB whose
+// shipment AIR now associates with another movement, the movement a command changes.
+func sourceOf(m *doc.Document, payment, handling, agent, movement string) Source {
 	st, latest := m.State(), m.Latest().Doc
 	src := Source{Kind: st.Kind, MovementID: st.MovementID, ShipmentID: st.ShipmentID, AgentPartyID: latest.Consignee.PartyID,
 		Entered: doc.Entered{PaymentIndicator: latest.PaymentIndicator, HandlingInformation: latest.HandlingInformation}}
@@ -146,6 +155,9 @@ func sourceOf(m *doc.Document, payment, handling, agent string) Source {
 	if agent != "" && st.Kind == doc.KindMAWB {
 		src.AgentPartyID = agent
 	}
+	if movement != "" {
+		src.MovementID = movement
+	}
 	return src
 }
 
@@ -155,13 +167,14 @@ type Revise struct {
 	Payment      string
 	Handling     string
 	AgentPartyID string
+	MovementID   string
 	Amendment    bool
 }
 
 func (d Deps) Revise(ctx context.Context, c Command, r Revise) (Receipt, error) {
 	var content doc.Content
 	return d.change(ctx, c, func(ctx context.Context, m *doc.Document) (err error) {
-		content, err = d.build(ctx, c.Scope, m.ID(), sourceOf(m, r.Payment, r.Handling, r.AgentPartyID), c.OccurredAt)
+		content, err = d.build(ctx, c.Scope, m.ID(), sourceOf(m, r.Payment, r.Handling, r.AgentPartyID, r.MovementID), c.OccurredAt)
 		return err
 	}, func(_ context.Context, m *doc.Document) error {
 		if r.Amendment {
@@ -196,11 +209,11 @@ func (d Deps) orders(ctx context.Context, s Scope, v doc.Version) ([]doc.OrderPa
 	return out, nil
 }
 
-// Issue issues the approved version, or the amendment's draft: it reads AIR's latest facts and, for a HAWB, COM's
-// parties and FIN's credit decision first (T3); an override of a missing decision needs OverrideCreditCheck. The
-// issuance authority in force is looked up in the transaction.
+// Issue issues the approved version, or the amendment's approved draft: it reads AIR's latest facts, ORG's issuing
+// legal entity and, for a HAWB, COM's parties and FIN's credit decision first (T3); an override of a missing
+// decision needs OverrideCreditCheck. The issuance authority in force is looked up in the transaction.
 func (d Deps) Issue(ctx context.Context, c Command, overrideReason string, amendment bool) (Receipt, error) {
-	if d.Facts == nil || d.Parties == nil || d.Credit == nil {
+	if d.Facts == nil || d.Parties == nil || d.Credit == nil || d.Directory == nil {
 		return Receipt{}, ErrMissingDependency
 	}
 	var gate doc.IssueGate
@@ -209,6 +222,11 @@ func (d Deps) Issue(ctx context.Context, c Command, overrideReason string, amend
 		if gate.Facts, err = d.Facts.Latest(ctx, c.Scope.TenantID, latest.Doc.Source.MovementID); err != nil {
 			return err
 		}
+		issuer, err := d.Directory.Issuer(ctx, c.Scope.TenantID, m.State().LegalEntityID)
+		if err != nil {
+			return err
+		}
+		gate.IssuerVerified = issuer.Verified
 		if m.State().Kind != doc.KindHAWB {
 			return nil
 		}

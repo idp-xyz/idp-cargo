@@ -3,8 +3,11 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 
 	bentopg "go.idp.xyz/idp-bento-go/postgres"
 	bentorepo "go.idp.xyz/idp-bento-go/repository"
@@ -29,6 +32,13 @@ type lockRow struct {
 	ReleasedBy       *string   `json:"released_by"`
 	ReleasedAt       time.Time `json:"released_at"`
 	ReleaseEnteredAt time.Time `json:"release_entered_at"`
+}
+
+// PartiesLocked reports whether a commit failed because a party or transport version was written while a
+// transport document held the order's parties locked (C12).
+func PartiesLocked(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23514" && pgErr.ConstraintName == "order_parties_locked"
 }
 
 func restoreLocks(s *com.OrderState, lockJSON []byte) error {

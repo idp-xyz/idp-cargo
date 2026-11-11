@@ -6,8 +6,9 @@
 // FUL shipment, with the shipper, consignee and notify party COM froze on the orders of its parts (OrderParties
 // v1); a MAWB from the master with every house, with the issuing legal entity as shipper and the destination agent
 // (an ORG party in the OVERSEAS_AGENT role) as consignee. Numbers are AIR's: the HAWB AIR drew for the shipment
-// (N1-HAWB) and the MAWB from the airline's booking confirmation. Every version is kept as written; it is drafted,
-// approved and issued, and a correction after issue is the next version under the same number (an amendment).
+// (N1-HAWB) and the MAWB from the airline's booking confirmation; an issued number belongs to its shipment (HAWB)
+// or movement (MAWB) for ever. Every version is kept as written; it is drafted, approved and issued, and a
+// correction after issue is the next version under the same number (an amendment), approved and issued in turn.
 // DOC issues only on AIR's latest FINAL facts, under an issuance authority in force (OD-10), with the order
 // parties locked in COM for the document (C12) and, for a house, FIN's credit decision or an override (C7, OD-3).
 package api
@@ -52,7 +53,8 @@ type DraftTransportDocument struct {
 
 // RefreshDocumentDraft writes the next draft version from AIR's latest facts and COM's or ORG's current parties,
 // with a reason; empty entered fields keep those of the latest version. An approved draft needs approval again;
-// during an amendment the amendment's draft is replaced.
+// during an amendment the amendment's draft is replaced and needs approval again. MovementID, for a HAWB, names
+// the movement AIR now associates the shipment with (a rollover); empty keeps the document's.
 type RefreshDocumentDraft struct {
 	CommandID           string
 	TenantID            string
@@ -63,11 +65,13 @@ type RefreshDocumentDraft struct {
 	PaymentIndicator    string
 	HandlingInformation string
 	AgentPartyID        string
+	MovementID          string
 	OccurredAt          time.Time
 }
 
-// ApproveTransportDocument approves the draft version once it is complete for its kind. An approver who drafted
-// it must also be allowed ActionApproveOwnTransportDocument, and the approval is flagged (OD-7 B).
+// ApproveTransportDocument approves the draft version, or an amendment's draft, once it is complete for its kind.
+// An approver who drafted it must also be allowed ActionApproveOwnTransportDocument, and the approval is flagged
+// (OD-7 B).
 type ApproveTransportDocument struct {
 	CommandID        string
 	TenantID         string
@@ -95,7 +99,9 @@ type IssueTransportDocument struct {
 
 // OpenDocumentAmendment drafts the next version of an issued document from AIR's latest facts and the current
 // parties, with a reason. The issued version stays valid until the amendment is issued. To change parties, the
-// API client releases the document's lock in COM after this command, sets the party, then refreshes the draft.
+// API client releases the document's lock in COM after this command commits, sets the party, then refreshes the
+// draft. A HAWB whose shipment was rolled to another movement names it in MovementID: the amendment names the new
+// master under the same number.
 type OpenDocumentAmendment struct {
 	CommandID           string
 	TenantID            string
@@ -106,10 +112,11 @@ type OpenDocumentAmendment struct {
 	PaymentIndicator    string
 	HandlingInformation string
 	AgentPartyID        string
+	MovementID          string
 	OccurredAt          time.Time
 }
 
-// IssueDocumentAmendment issues the amendment's draft under the same number, with the gates of
+// IssueDocumentAmendment issues the amendment's approved draft under the same number, with the gates of
 // IssueTransportDocument; the version it replaces is superseded.
 type IssueDocumentAmendment struct {
 	CommandID            string
@@ -133,8 +140,9 @@ type AbandonDocumentAmendment struct {
 	OccurredAt       time.Time
 }
 
-// CancelTransportDocument cancels a draft, approved or issued document with a reason. An issued number is never
-// issued again by another document. The API client then releases the document's lock in COM.
+// CancelTransportDocument cancels a draft, approved, issued or amending document with a reason (an amendment's
+// draft is discarded). An issued number stays with its shipment or movement: a later document of the same shipment
+// may issue it again, another never. The API client then releases the document's lock in COM.
 type CancelTransportDocument struct {
 	CommandID        string
 	TenantID         string

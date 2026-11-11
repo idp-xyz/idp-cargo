@@ -330,37 +330,53 @@ func TestTransportDocumentsOnPostgres(t *testing.T) {
 		t.Fatalf("version 1: %+v %v", v.Doc, err)
 	}
 
-	// AIR finalizes version 2 (a terminal reweigh): the HAWB is amended to version 2, version 1 superseded.
+	// AIR finalizes version 2 (a terminal reweigh): the HAWB is amended to version 2, version 1 superseded. The
+	// amendment's draft is approved before it is issued.
 	f.w.finalize(2, true, 320_000)
+	approve := func(command, id string, revision int64, h int) {
+		t.Helper()
+		if _, err := f.module.ApproveTransportDocument(ctx, api.ApproveTransportDocument{CommandID: command, TenantID: f.tenant, ActorID: "doc-2",
+			DocumentID: id, ExpectedRevision: revision, OccurredAt: f.hours(h)}); err != nil {
+			t.Fatalf("%s: %v", command, err)
+		}
+	}
+	amendIssue := func(command, id string, revision int64, h int) (api.Receipt, error) {
+		return f.module.IssueDocumentAmendment(ctx, api.IssueDocumentAmendment{CommandID: command, TenantID: f.tenant, ActorID: "doc-2", DocumentID: id,
+			ExpectedRevision: revision, CreditOverrideReason: "FIN not in service", OccurredAt: f.hours(h)})
+	}
 	if _, err = f.module.OpenDocumentAmendment(ctx, api.OpenDocumentAmendment{CommandID: "amend-h1", TenantID: f.tenant, ActorID: "doc-1", DocumentID: "DOC-H1",
 		ExpectedRevision: 3, Reason: "terminal reweigh", OccurredAt: f.hours(4)}); err != nil {
 		t.Fatal(err)
 	}
-	if r, err = f.module.IssueDocumentAmendment(ctx, api.IssueDocumentAmendment{CommandID: "amended-h1", TenantID: f.tenant, ActorID: "doc-2", DocumentID: "DOC-H1",
-		ExpectedRevision: 4, CreditOverrideReason: "FIN not in service", OccurredAt: f.hours(5)}); err != nil || r.Version != 2 {
+	if _, err = amendIssue("amended-h1-unapproved", "DOC-H1", 4, 5); !errors.Is(err, api.ErrRejected) {
+		t.Fatalf("an amendment issued unapproved: %v", err)
+	}
+	approve("approve-amend-h1", "DOC-H1", 4, 5)
+	if r, err = amendIssue("amended-h1", "DOC-H1", 5, 5); err != nil || r.Version != 2 {
 		t.Fatalf("amendment issued: %+v %v", r, err)
 	}
-	if d = f.get(t, "DOC-H1"); d.CurrentVersion != 2 || d.Versions[0].Status != api.VersionSuperseded || d.Versions[1].SourceFactsVersion != 2 {
+	if d = f.get(t, "DOC-H1"); d.CurrentVersion != 2 || d.Versions[0].Status != api.VersionSuperseded || d.Versions[1].SourceFactsVersion != 2 ||
+		d.Versions[1].ApprovedBy != "doc-2" {
 		t.Fatalf("amended: %+v", d.Versions)
 	}
 	// an amendment to change the consignee: the client releases the lock, COM changes the party, the amendment is
 	// abandoned and the parties do not match the issued version any more, so the lock must hold the old parties
 	if _, err = f.module.OpenDocumentAmendment(ctx, api.OpenDocumentAmendment{CommandID: "amend-h1-party", TenantID: f.tenant, ActorID: "doc-1",
-		DocumentID: "DOC-H1", ExpectedRevision: 5, Reason: "consignee to change", OccurredAt: f.hours(6)}); err != nil {
+		DocumentID: "DOC-H1", ExpectedRevision: 6, Reason: "consignee to change", OccurredAt: f.hours(6)}); err != nil {
 		t.Fatal(err)
 	}
 	f.w.order("O-A", 2)
 	if _, err = f.module.AbandonDocumentAmendment(ctx, api.AbandonDocumentAmendment{CommandID: "abandon-unlocked", TenantID: f.tenant, ActorID: "doc-1",
-		DocumentID: "DOC-H1", ExpectedRevision: 6, Reason: "kept as issued", OccurredAt: f.hours(7)}); !errors.Is(err, api.ErrRejected) {
+		DocumentID: "DOC-H1", ExpectedRevision: 7, Reason: "kept as issued", OccurredAt: f.hours(7)}); !errors.Is(err, api.ErrRejected) {
 		t.Fatalf("abandon with the lock released: %v", err)
 	}
 	f.w.order("O-A", 2, "DOC-H1")
 	if _, err = f.module.RefreshDocumentDraft(ctx, api.RefreshDocumentDraft{CommandID: "refresh-h1", TenantID: f.tenant, ActorID: "doc-1", DocumentID: "DOC-H1",
-		ExpectedRevision: 6, Reason: "COM's new consignee", OccurredAt: f.hours(7)}); err != nil {
+		ExpectedRevision: 7, Reason: "COM's new consignee", OccurredAt: f.hours(7)}); err != nil {
 		t.Fatal(err)
 	}
-	if r, err = f.module.IssueDocumentAmendment(ctx, api.IssueDocumentAmendment{CommandID: "amended-h1-party", TenantID: f.tenant, ActorID: "doc-2",
-		DocumentID: "DOC-H1", ExpectedRevision: 7, CreditOverrideReason: "FIN not in service", OccurredAt: f.hours(8)}); err != nil || r.Version != 4 {
+	approve("approve-amend-h1-party", "DOC-H1", 8, 8)
+	if r, err = amendIssue("amended-h1-party", "DOC-H1", 9, 8); err != nil || r.Version != 4 {
 		t.Fatalf("the amendment with the new consignee: %+v %v", r, err)
 	}
 	if d = f.get(t, "DOC-H1"); d.Versions[2].Status != api.VersionDiscarded || d.Versions[3].Status != api.VersionIssued {
@@ -419,10 +435,15 @@ func TestTransportDocumentsOnPostgres(t *testing.T) {
 		t.Fatalf("documents of C-1: %+v %v", list, err)
 	}
 
-	// Cancelled after issue, the HAWB's number is spent: another document of the shipment cannot issue it again.
+	// Cancelled after issue, the HAWB's number stays with its shipment: the shipment's next HAWB issues it again; the
+	// shipment then rolls to another movement and its HAWB is amended to the new master under the same number;
+	// another shipment never gets the number.
 	if _, err = f.module.CancelTransportDocument(ctx, api.CancelTransportDocument{CommandID: "cancel-h1", TenantID: f.tenant, ActorID: "doc-1", DocumentID: "DOC-H1",
-		ExpectedRevision: 8, Reason: "issued on the wrong consignee by mistake", OccurredAt: f.hours(13)}); err != nil {
+		ExpectedRevision: 10, Reason: "issued on the wrong consignee by mistake", OccurredAt: f.hours(13)}); err != nil {
 		t.Fatal(err)
+	}
+	if d = f.get(t, "DOC-H1"); d.Versions[3].Status != api.VersionCancelled || d.CurrentVersion != 0 {
+		t.Fatalf("cancelled: %+v", d)
 	}
 	again := draft
 	again.CommandID, again.DocumentID, again.OccurredAt = "draft-h2", "DOC-H2", f.hours(14)
@@ -430,19 +451,51 @@ func TestTransportDocumentsOnPostgres(t *testing.T) {
 	if _, err = f.module.DraftTransportDocument(ctx, again); err != nil {
 		t.Fatalf("a new HAWB once the first is cancelled: %v", err)
 	}
-	if _, err = f.module.ApproveTransportDocument(ctx, api.ApproveTransportDocument{CommandID: "approve-h2", TenantID: f.tenant, ActorID: "doc-2",
-		DocumentID: "DOC-H2", ExpectedRevision: 1, OccurredAt: f.hours(14)}); err != nil {
+	approve("approve-h2", "DOC-H2", 1, 14)
+	if _, err = f.module.IssueTransportDocument(ctx, api.IssueTransportDocument{CommandID: "issue-h2", TenantID: f.tenant, ActorID: "doc-2", DocumentID: "DOC-H2",
+		ExpectedRevision: 2, CreditOverrideReason: "FIN not in service", OccurredAt: f.hours(14)}); err != nil {
+		t.Fatalf("the shipment's own number again: %v", err)
+	}
+	f.w.mu.Lock()
+	rolled := f.w.facts["AM-1"]
+	rolled.MovementID, rolled.ConsolidationID, rolled.MAWB, rolled.Version, rolled.SHA256 = "AM-2", "C-2", "781-23456786", 1, fmt.Sprintf("%064d", 21)
+	rolled.Houses = rolled.Houses[:1]
+	f.w.facts["AM-2"] = rolled
+	f.w.mu.Unlock()
+	if _, err = f.module.OpenDocumentAmendment(ctx, api.OpenDocumentAmendment{CommandID: "roll-h2", TenantID: f.tenant, ActorID: "doc-1", DocumentID: "DOC-H2",
+		ExpectedRevision: 3, Reason: "rolled to the next flight under 781-23456786", MovementID: "AM-2", OccurredAt: f.hours(15)}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = f.module.IssueTransportDocument(ctx, api.IssueTransportDocument{CommandID: "issue-h2", TenantID: f.tenant, ActorID: "doc-2", DocumentID: "DOC-H2",
-		ExpectedRevision: 2, CreditOverrideReason: "FIN not in service", OccurredAt: f.hours(14)}); !errors.Is(err, api.ErrRejected) ||
-		!strings.Contains(err.Error(), "issued once") {
-		t.Fatalf("the spent number again: %v", err)
+	approve("approve-roll-h2", "DOC-H2", 4, 15)
+	if _, err = amendIssue("rolled-h2", "DOC-H2", 5, 15); err != nil {
+		t.Fatal(err)
+	}
+	if h2 := f.get(t, "DOC-H2"); h2.MovementID != "AM-2" || h2.ConsolidationID != "C-2" || h2.Number != "SHA0000001" || h2.CurrentVersion != 2 {
+		t.Fatalf("rolled HAWB: %+v", h2)
+	}
+	if vr, err := f.module.GetDocumentVersion(ctx, api.GetDocumentVersion{TenantID: f.tenant, DocumentID: "DOC-H2"}); err != nil || vr.Doc.MAWB != "781-23456786" {
+		t.Fatalf("the amendment names the new master: %+v %v", vr.Doc.MAWB, err)
+	}
+	f.w.mu.Lock()
+	clash := f.w.facts["AM-1"]
+	clash.MovementID, clash.Version, clash.SHA256 = "AM-3", 1, fmt.Sprintf("%064d", 31)
+	other := clash.Houses[1]
+	other.HAWB = "SHA0000001"
+	clash.Houses = []airapi.DocHouse{other}
+	f.w.facts["AM-3"] = clash
+	f.w.mu.Unlock()
+	f.w.order("O-B", 1)
+	if _, err = f.module.DraftTransportDocument(ctx, api.DraftTransportDocument{CommandID: "draft-b", TenantID: f.tenant, ActorID: "doc-1", DocumentID: "DOC-B",
+		Kind: api.KindHAWB, MovementID: "AM-3", ShipmentID: "SH-B", PaymentIndicator: api.PaymentPrepaid, OccurredAt: f.hours(16)}); !errors.Is(err, api.ErrRejected) ||
+		!strings.Contains(err.Error(), "NUMBER_ISSUED") {
+		t.Fatalf("another shipment with the number: %v", err)
 	}
 	want := []string{"IssuanceAuthorityRecorded", "TransportDocumentDrafted", "TransportDocumentApproved", "TransportDocumentIssued",
-		"TransportDocumentAmendmentOpened", "TransportDocumentAmended", "TransportDocumentAmendmentOpened", "TransportDocumentDrafted",
-		"TransportDocumentAmended", "TransportDocumentDrafted", "TransportDocumentApproved", "IssuanceAuthorityRecorded", "TransportDocumentDrafted",
-		"TransportDocumentApproved", "TransportDocumentIssued", "TransportDocumentCancelled", "TransportDocumentDrafted", "TransportDocumentApproved"}
+		"TransportDocumentAmendmentOpened", "TransportDocumentApproved", "TransportDocumentAmended", "TransportDocumentAmendmentOpened",
+		"TransportDocumentDrafted", "TransportDocumentApproved", "TransportDocumentAmended", "TransportDocumentDrafted", "TransportDocumentApproved",
+		"IssuanceAuthorityRecorded", "TransportDocumentDrafted", "TransportDocumentApproved", "TransportDocumentIssued", "TransportDocumentCancelled",
+		"TransportDocumentDrafted", "TransportDocumentApproved", "TransportDocumentIssued", "TransportDocumentAmendmentOpened", "TransportDocumentApproved",
+		"TransportDocumentAmended"}
 	if got := f.outboxTypes(t); !slices.Equal(got, want) {
 		t.Fatalf("outbox %v", got)
 	}
@@ -457,7 +510,10 @@ func TestTransportDocumentsOnPostgres(t *testing.T) {
 		"number immutable":   {`UPDATE cargo_doc.issued_number SET number='X' WHERE tenant_id=$1`, "42501|23001"},
 		"number changed":     {`UPDATE cargo_doc.transport_document SET number='X' WHERE tenant_id=$1 AND document_id='DOC-M1'`, "42501|23001"},
 		"cancelled for good": {`UPDATE cargo_doc.transport_document SET state='DRAFT',cancel_reason=NULL,cancelled_by=NULL,cancelled_at=NULL WHERE tenant_id=$1 AND document_id='DOC-H1'`, "23001"},
-		"state behind DOC":   {`UPDATE cargo_doc.transport_document SET state='ISSUED' WHERE tenant_id=$1 AND document_id='DOC-H2'`, "23514"},
+		"state behind DOC":   {`UPDATE cargo_doc.transport_document SET state='AMENDING' WHERE tenant_id=$1 AND document_id='DOC-M1'`, "23514"},
+		"MAWB moved":         {`UPDATE cargo_doc.transport_document SET movement_id='AM-9' WHERE tenant_id=$1 AND document_id='DOC-M1'`, "23001"},
+		"another shipment's number": {`INSERT INTO cargo_doc.issued_number (tenant_id,legal_entity_id,kind,number,subject_id,first_document_id,first_issued_at)
+            VALUES ($1,'LE','HAWB','SHA0000001','SH-Z','DOC-M1',now())`, "23505"},
 		"version behind DOC": {`INSERT INTO cargo_doc.document_version (tenant_id,document_id,version_no,content,content_sha256,source_movement_id,source_version,
             reason,drafted_by,drafted_at,entered_at) SELECT tenant_id,document_id,9,content,content_sha256,source_movement_id,source_version,'x','x',now(),now()
             FROM cargo_doc.document_version WHERE tenant_id=$1 AND document_id='DOC-M1' AND version_no=1`, "23514"},

@@ -119,7 +119,7 @@ func TestMasterContent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = errors.Join(d.Approve("doc-2", t0), d.Issue(IssueGate{Facts: facts(1), AuthorityID: "AUTH-M", AuthorityVersion: 1}, "doc-2", t0)); err != nil {
+	if err = errors.Join(d.Approve("doc-2", t0), d.Issue(IssueGate{Facts: facts(1), IssuerVerified: true, AuthorityID: "AUTH-M", AuthorityVersion: 1}, "doc-2", t0)); err != nil {
 		t.Fatal(err)
 	}
 	if v, _ := d.Current(); v.Issue.Credit.Basis != CreditNotRequired {
@@ -156,7 +156,7 @@ func TestHouseWaybillLifecycle(t *testing.T) {
 		t.Fatalf("approved v2: %+v %s %s", v.Approval, d.Status(1), d.Status(2))
 	}
 	gate := IssueGate{Facts: facts(2), Orders: orders("DOC-H1"), Credit: CreditDecision{Status: "NONE"}, OverrideReason: "FIN not in service",
-		AuthorityID: "AUTH-H", AuthorityVersion: 1}
+		IssuerVerified: true, AuthorityID: "AUTH-H", AuthorityVersion: 1}
 	for name, tc := range map[string]struct {
 		change func(*IssueGate)
 		want   error
@@ -170,6 +170,7 @@ func TestHouseWaybillLifecycle(t *testing.T) {
 		"credit hold":       {func(g *IssueGate) { g.Credit.Status = "HOLD" }, ErrCreditHold},
 		"no override":       {func(g *IssueGate) { g.OverrideReason = "" }, ErrCreditUndecided},
 		"no authority":      {func(g *IssueGate) { g.AuthorityID = "" }, ErrIssuanceBlocked},
+		"issuer suspended":  {func(g *IssueGate) { g.IssuerVerified = false }, ErrIssuerNotVerified},
 	} {
 		g := gate
 		g.Orders = orders("DOC-H1")
@@ -196,6 +197,15 @@ func TestHouseWaybillLifecycle(t *testing.T) {
 		t.Fatalf("amending: %s %s", d.Status(2), d.Status(3))
 	}
 	gate.Facts = facts(3)
+	if err = d.IssueAmendment(gate, "doc-2", at(6)); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("an amendment issued unapproved: %v", err)
+	}
+	if err = d.Approve("doc-2", at(6)); err != nil {
+		t.Fatal(err)
+	}
+	if d.Status(3) != VersionApproved || d.State().State != StateAmending {
+		t.Fatalf("approved amendment: %s %s", d.Status(3), d.State().State)
+	}
 	if err = d.IssueAmendment(gate, "doc-2", at(6)); err != nil {
 		t.Fatal(err)
 	}
@@ -209,9 +219,6 @@ func TestHouseWaybillLifecycle(t *testing.T) {
 	if err = d.AbandonAmendment(orders(), "the customer withdrew the change", "doc-1", at(8)); !errors.Is(err, ErrNotLocked) {
 		t.Fatalf("abandon without the lock: %v", err)
 	}
-	if err = d.Cancel("mistake", "doc-1", at(8)); !errors.Is(err, ErrInvalidTransition) {
-		t.Fatalf("cancel while amending: %v", err)
-	}
 	if err = d.AbandonAmendment(orders("DOC-H1"), "the customer withdrew the change", "doc-1", at(8)); err != nil {
 		t.Fatal(err)
 	}
@@ -222,7 +229,7 @@ func TestHouseWaybillLifecycle(t *testing.T) {
 	for _, e := range d.Pending() {
 		types = append(types, strings.TrimSuffix(strings.TrimPrefix(e.Type, "TransportDocument"), ".v1"))
 	}
-	if strings.Join(types, " ") != "Drafted Drafted Approved Issued AmendmentOpened Amended AmendmentOpened AmendmentAbandoned" {
+	if strings.Join(types, " ") != "Drafted Drafted Approved Issued AmendmentOpened Approved Amended AmendmentOpened AmendmentAbandoned" {
 		t.Fatalf("events %v", types)
 	}
 	// restore from the stored bytes, then cancel
@@ -241,8 +248,8 @@ func TestHouseWaybillLifecycle(t *testing.T) {
 	if err = back.Cancel("shipment withdrawn by the customer", "doc-1", at(10)); err != nil {
 		t.Fatal(err)
 	}
-	if back.Status(3) != VersionSuperseded || back.State().State != StateCancelled {
-		t.Fatalf("cancelled: %s", back.Status(3))
+	if back.Status(3) != VersionCancelled || back.Status(2) != VersionSuperseded || back.State().State != StateCancelled {
+		t.Fatalf("cancelled: %s %s", back.Status(2), back.Status(3))
 	}
 	versions, approvals, issues, discards := back.Added()
 	if len(versions)+len(approvals)+len(issues)+len(discards) != 0 {
@@ -315,5 +322,47 @@ func TestIssuanceAuthority(t *testing.T) {
 	}
 	if _, err = RestoreIssuanceAuthority(*a); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A HAWB follows its shipment to another movement (a rollover) by an amendment under the same number; a MAWB never
+// changes movement. An amendment in progress is cancelled with the document.
+func TestRolloverAndCancellingAnAmendment(t *testing.T) {
+	d, err := DraftDocument("T", "DOC-H1", hawb(t, 1, orders()), "doc-1", t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate := IssueGate{Facts: facts(1), Orders: orders("DOC-H1"), Credit: CreditDecision{Status: "OK", DecisionID: "CR-1"}, IssuerVerified: true,
+		AuthorityID: "AUTH-H", AuthorityVersion: 1}
+	if err = errors.Join(d.Approve("doc-2", t0), d.Issue(gate, "doc-2", t0)); err != nil {
+		t.Fatal(err)
+	}
+	rolled := facts(1)
+	rolled.MovementID, rolled.ConsolidationID, rolled.MAWB = "AM-2", "C-2", "781-23456786"
+	c, err := HouseContent("DOC-H1", "SH-A", rolled, issuer, orders(), entered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = d.OpenAmendment(c, "rolled to MU589 under 781-23456786", "doc-1", t0.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if st := d.State(); st.MovementID != "AM-2" || st.ConsolidationID != "C-2" || st.Number != "SHA0000001" {
+		t.Fatalf("rolled HAWB: %+v", st)
+	}
+	if _, err = RestoreDocument(d.State()); err != nil {
+		t.Fatalf("a rolled HAWB restores: %v", err)
+	}
+	if err = d.Cancel("the shipment is withdrawn", "doc-1", t0.Add(2*time.Hour)); err != nil {
+		t.Fatalf("cancel an amendment in progress: %v", err)
+	}
+	if d.Status(2) != VersionDiscarded || d.Status(1) != VersionCancelled {
+		t.Fatalf("cancelled amendment: %s %s", d.Status(1), d.Status(2))
+	}
+	m, _ := MasterContent("DOC-M1", facts(1), issuer, *party("agent-ny", "US", 0), entered)
+	master, _ := DraftDocument("T", "DOC-M1", m, "doc-1", t0)
+	other, _ := MasterContent("DOC-M1", rolled, issuer, *party("agent-ny", "US", 0), entered)
+	other.Number = m.Number
+	if err = master.Refresh(other, "another movement", "doc-1", t0); !errors.Is(err, ErrInvalidChange) {
+		t.Fatalf("a MAWB of another movement: %v", err)
 	}
 }

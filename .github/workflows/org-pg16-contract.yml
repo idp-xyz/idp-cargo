@@ -104,7 +104,7 @@ jobs:
           GRANT UPDATE (end_kind,ended_by,ended_at,end_entered_at,successor_no) ON cargo_air.house_waybill TO cargo_app;
           GRANT UPDATE (next_seq,revision) ON cargo_air.hawb_series TO cargo_app;
           GRANT SELECT,INSERT ON ALL TABLES IN SCHEMA cargo_doc TO cargo_app;
-          GRANT UPDATE (state,cancel_reason,cancelled_by,cancelled_at,revision,updated_at) ON cargo_doc.transport_document TO cargo_app;
+          GRANT UPDATE (state,cancel_reason,cancelled_by,cancelled_at,movement_id,consolidation_id,revision,updated_at) ON cargo_doc.transport_document TO cargo_app;
           GRANT UPDATE (withdrawn_by,withdrawn_at,withdraw_reason,withdraw_entered_at,revision) ON cargo_doc.issuance_authority TO cargo_app;
           GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA bento TO cargo_app;
           GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA bento TO cargo_app;

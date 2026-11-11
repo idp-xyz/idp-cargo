@@ -274,11 +274,14 @@ func TestTransportDocumentsWithEveryContext(t *testing.T) {
 		_, err = docModule.RefreshDocumentDraft(ctx, docapi.RefreshDocumentDraft{CommandID: "refresh-notify" + suffix, TenantID: tenant, ActorID: "doc-1",
 			DocumentID: "DOC-HAWB-A", ExpectedRevision: docRevision, Reason: "COM's notify party", OccurredAt: hours(25)})
 		must("refresh", err)
+		_, err = docModule.ApproveTransportDocument(ctx, docapi.ApproveTransportDocument{CommandID: "approve-amendment" + suffix, TenantID: tenant,
+			ActorID: "doc-2", DocumentID: "DOC-HAWB-A", ExpectedRevision: docRevision + 1, OccurredAt: hours(25)})
+		must("approve amendment", err)
 		_, err = comModule.LockOrderParties(ctx, comapi.LockOrderParties{CommandID: "relock-after" + suffix, TenantID: tenant, ActorID: "doc-2", OrderID: "O-A",
 			ExpectedRevision: orderRevision(), HolderID: "DOC-HAWB-A", OccurredAt: hours(25)})
 		must("lock again", err)
 		_, err = docModule.IssueDocumentAmendment(ctx, docapi.IssueDocumentAmendment{CommandID: "amended" + suffix, TenantID: tenant, ActorID: "doc-2",
-			DocumentID: "DOC-HAWB-A", ExpectedRevision: docRevision + 1, CreditOverrideReason: "FIN credit control not in service", OccurredAt: hours(25)})
+			DocumentID: "DOC-HAWB-A", ExpectedRevision: docRevision + 2, CreditOverrideReason: "FIN credit control not in service", OccurredAt: hours(25)})
 		must("issue amendment", err)
 	}
 	if locked {

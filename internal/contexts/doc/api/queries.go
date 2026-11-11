@@ -17,13 +17,14 @@ const (
 )
 
 // Version statuses: DRAFT or APPROVED while in progress; ISSUED for the valid version; SUPERSEDED once an
-// amendment was issued or the document cancelled; DISCARDED for a draft replaced by a refresh or an abandoned
-// amendment.
+// amendment was issued; CANCELLED for the version valid when the document was cancelled; DISCARDED for a draft
+// replaced by a refresh, an abandoned amendment or one cancelled with the document.
 const (
 	VersionDraft      = "DRAFT"
 	VersionApproved   = "APPROVED"
 	VersionIssued     = "ISSUED"
 	VersionSuperseded = "SUPERSEDED"
+	VersionCancelled  = "CANCELLED"
 	VersionDiscarded  = "DISCARDED"
 )
 

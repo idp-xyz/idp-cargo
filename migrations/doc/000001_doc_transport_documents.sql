@@ -2,8 +2,8 @@
 -- Transport documents of the N1 air line (DOC candidate 24, decisions N1-DOC OD-1, OD-2, OD-3, OD-7, OD-10): the
 -- HAWB of a FUL shipment and the MAWB of a consolidation, built from AIR's AirDocFacts v1. A document is a series
 -- of immutable versions, each kept as the JSON written with its SHA-256; approvals, issues and discards are rows
--- beside the versions. A number is issued by one document of the tenant and kind for ever. Issuance authorities
--- (OD-10 A) change only by being withdrawn, once. No foreign key leaves cargo_doc.
+-- beside the versions. An issued number belongs to its shipment (HAWB) or movement (MAWB) under its legal entity for
+-- ever. Issuance authorities (OD-10 A) change only by being withdrawn, once. No foreign key leaves cargo_doc.
 CREATE SCHEMA IF NOT EXISTS cargo_doc;
 
 CREATE TABLE cargo_doc.transport_document (
@@ -93,16 +93,19 @@ CREATE TABLE cargo_doc.document_version_discard (
  PRIMARY KEY (tenant_id, document_id, version_no),
  FOREIGN KEY (tenant_id, document_id, version_no) REFERENCES cargo_doc.document_version (tenant_id, document_id, version_no)
 );
--- A number is issued by one document of the tenant and kind for ever (G08-04); written at a document's first issue.
+-- An issued number belongs to the shipment (HAWB) or movement (MAWB) it was first issued for, under its legal entity,
+-- for ever (G08-04; AIR keeps HAWB numbers per legal entity, N1-HAWB): a later document of the same shipment issues
+-- it again, another shipment never.
 CREATE TABLE cargo_doc.issued_number (
  tenant_id text NOT NULL,
+ legal_entity_id text NOT NULL,
  kind text NOT NULL CHECK (kind IN ('HAWB','MAWB')),
  number text NOT NULL,
- document_id text NOT NULL,
+ subject_id text NOT NULL CHECK (length(btrim(subject_id)) BETWEEN 1 AND 128),
+ first_document_id text NOT NULL,
  first_issued_at timestamptz NOT NULL,
- PRIMARY KEY (tenant_id, kind, number),
- UNIQUE (tenant_id, document_id),
- FOREIGN KEY (tenant_id, document_id) REFERENCES cargo_doc.transport_document (tenant_id, document_id)
+ PRIMARY KEY (tenant_id, legal_entity_id, kind, number),
+ FOREIGN KEY (tenant_id, first_document_id) REFERENCES cargo_doc.transport_document (tenant_id, document_id)
 );
 
 CREATE TABLE cargo_doc.issuance_authority (
@@ -144,11 +147,15 @@ CREATE TABLE cargo_doc.command_receipt (
  PRIMARY KEY (tenant_id, command_id)
 );
 
--- A document changes only its state, cancellation, revision and updated_at, and never once cancelled.
+-- A document changes only its state, cancellation, revision and updated_at, and never once cancelled; a HAWB also
+-- its movement and consolidation, when its shipment is rolled to another master.
 CREATE FUNCTION cargo_doc.reject_document_change() RETURNS trigger LANGUAGE plpgsql AS $fn$
 DECLARE
   changeable text[] := ARRAY['state','cancel_reason','cancelled_by','cancelled_at','revision','updated_at'];
 BEGIN
+  IF OLD.kind = 'HAWB' THEN
+    changeable := changeable || ARRAY['movement_id','consolidation_id'];
+  END IF;
   IF TG_OP = 'DELETE' OR OLD.state = 'CANCELLED' OR to_jsonb(OLD) - changeable IS DISTINCT FROM to_jsonb(NEW) - changeable THEN
     RAISE EXCEPTION 'cargo_doc: document %/% changes only its state, and never once cancelled', OLD.tenant_id, OLD.document_id
       USING ERRCODE = 'restrict_violation';
@@ -186,11 +193,11 @@ BEGIN
   END LOOP;
 END $immutable$;
 
--- At commit, for every document a transaction writes: versions numbered from 1 without gaps; the state matches
--- the latest version and what was issued (DRAFT: nothing approved or issued yet on the latest and nothing issued
--- ever; APPROVED: the latest approved, nothing issued; ISSUED: something issued and the latest issued or
--- discarded; AMENDING: something issued and the latest neither issued nor discarded); an issued document holds its
--- number. The row is read as it stands at commit.
+-- At commit, for every document a transaction writes: versions numbered from 1 without gaps; every issued version
+-- approved; the state matches the latest version and what was issued (DRAFT: nothing approved or issued yet on
+-- the latest and nothing issued ever; APPROVED: the latest approved, nothing issued; ISSUED: something issued and
+-- the latest issued or discarded; AMENDING: something issued and the latest neither issued nor discarded); an
+-- issued document's number belongs to its shipment or movement. The row is read as it stands at commit.
 CREATE FUNCTION cargo_doc.check_document_at_commit() RETURNS trigger LANGUAGE plpgsql AS $fn$
 DECLARE
   d cargo_doc.transport_document;
@@ -200,6 +207,7 @@ DECLARE
   last_issued boolean;
   last_discarded boolean;
   any_issued boolean;
+  issued_unapproved boolean;
   holds_number boolean;
   ok boolean;
 BEGIN
@@ -210,10 +218,13 @@ BEGIN
          EXISTS (SELECT 1 FROM cargo_doc.document_version_issue i WHERE i.tenant_id = d.tenant_id AND i.document_id = d.document_id AND i.version_no = last_no),
          EXISTS (SELECT 1 FROM cargo_doc.document_version_discard x WHERE x.tenant_id = d.tenant_id AND x.document_id = d.document_id AND x.version_no = last_no),
          EXISTS (SELECT 1 FROM cargo_doc.document_version_issue i WHERE i.tenant_id = d.tenant_id AND i.document_id = d.document_id),
-         EXISTS (SELECT 1 FROM cargo_doc.issued_number n WHERE n.tenant_id = d.tenant_id AND n.kind = d.kind AND n.number = d.number
-           AND n.document_id = d.document_id)
-    INTO last_approved, last_issued, last_discarded, any_issued, holds_number;
-  ok := versions > 0 AND versions = last_no AND any_issued = holds_number AND CASE d.state
+         EXISTS (SELECT 1 FROM cargo_doc.document_version_issue i WHERE i.tenant_id = d.tenant_id AND i.document_id = d.document_id
+           AND NOT EXISTS (SELECT 1 FROM cargo_doc.document_version_approval a WHERE a.tenant_id = i.tenant_id AND a.document_id = i.document_id
+             AND a.version_no = i.version_no)),
+         EXISTS (SELECT 1 FROM cargo_doc.issued_number n WHERE n.tenant_id = d.tenant_id AND n.legal_entity_id = d.legal_entity_id AND n.kind = d.kind
+           AND n.number = d.number AND n.subject_id = CASE d.kind WHEN 'HAWB' THEN d.shipment_id ELSE d.movement_id END)
+    INTO last_approved, last_issued, last_discarded, any_issued, issued_unapproved, holds_number;
+  ok := versions > 0 AND versions = last_no AND NOT issued_unapproved AND (NOT any_issued OR holds_number) AND CASE d.state
     WHEN 'DRAFT' THEN NOT last_approved AND NOT any_issued AND NOT last_discarded
     WHEN 'APPROVED' THEN last_approved AND NOT any_issued AND NOT last_discarded
     WHEN 'ISSUED' THEN any_issued AND (last_issued OR last_discarded)
@@ -242,11 +253,23 @@ END $fn$;
 DO $with$
 DECLARE tbl text;
 BEGIN
-  FOREACH tbl IN ARRAY ARRAY['document_version','document_version_approval','document_version_issue','document_version_discard','issued_number'] LOOP
+  FOREACH tbl IN ARRAY ARRAY['document_version','document_version_approval','document_version_issue','document_version_discard'] LOOP
     EXECUTE format('CREATE CONSTRAINT TRIGGER %I AFTER INSERT ON cargo_doc.%I DEFERRABLE INITIALLY DEFERRED FOR EACH ROW '
       'EXECUTE FUNCTION cargo_doc.check_written_with_document()', tbl || '_with_document', tbl);
   END LOOP;
 END $with$;
+
+CREATE FUNCTION cargo_doc.check_number_with_document() RETURNS trigger LANGUAGE plpgsql AS $fn$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM cargo_doc.transport_document d WHERE d.tenant_id = NEW.tenant_id AND d.document_id = NEW.first_document_id
+       AND d.xmin = pg_current_xact_id()::xid AND d.legal_entity_id = NEW.legal_entity_id AND d.kind = NEW.kind AND d.number = NEW.number) THEN
+    RAISE EXCEPTION 'cargo_doc: issued number %/% is written with the document that issues it', NEW.tenant_id, NEW.number
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'document_records_with_document';
+  END IF;
+  RETURN NULL;
+END $fn$;
+CREATE CONSTRAINT TRIGGER issued_number_with_document AFTER INSERT ON cargo_doc.issued_number
+  DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION cargo_doc.check_number_with_document();
 
 DO $rls$
 DECLARE tbl text;

@@ -29,11 +29,12 @@ type PartyLock struct {
 // Held reports whether the lock is in force.
 func (l PartyLock) Held() bool { return l.ReleasedAt.IsZero() }
 
-// LockParties locks the order's parties and transport for a holder, while the order is open and the holder
-// holds no lock on it yet.
+// LockParties locks the order's parties and transport for a holder that holds no lock on it yet, unless the order
+// is cancelled. A closed order is locked too: its parties no longer change, but its documents are still issued and
+// amended under the lock.
 func (o *CustomerOrder) LockParties(holder, by string, at, entered time.Time) error {
-	if err := o.open(); err != nil {
-		return err
+	if o.state.Status == OrderCancelled {
+		return fmt.Errorf("%w: the order is cancelled", ErrInvalidTransition)
 	}
 	if !identifier(holder) || blank(by) || at.IsZero() || entered.IsZero() {
 		return ErrInvalidChange

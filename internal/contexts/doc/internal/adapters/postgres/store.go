@@ -210,9 +210,10 @@ func (s DocumentStore) Save(ctx context.Context, m *doc.Document, expected int64
 	}
 	st := m.State()
 	var revision int64
-	err = q.QueryRow(ctx, `UPDATE cargo_doc.transport_document SET state=$3,cancel_reason=$4,cancelled_by=$5,cancelled_at=$6,revision=revision+1,
-        updated_at=now() WHERE tenant_id=$1 AND document_id=$2 AND revision=$7 RETURNING revision`, string(st.TenantID), string(st.DocumentID),
-		string(st.State), orNull(st.CancelReason), orNull(st.CancelledBy), orNull(st.CancelledAt), expected).Scan(&revision)
+	err = q.QueryRow(ctx, `UPDATE cargo_doc.transport_document SET state=$3,cancel_reason=$4,cancelled_by=$5,cancelled_at=$6,movement_id=$8,
+        consolidation_id=$9,revision=revision+1,updated_at=now() WHERE tenant_id=$1 AND document_id=$2 AND revision=$7 RETURNING revision`,
+		string(st.TenantID), string(st.DocumentID), string(st.State), orNull(st.CancelReason), orNull(st.CancelledBy), orNull(st.CancelledAt), expected,
+		st.MovementID, st.ConsolidationID).Scan(&revision)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, fmt.Errorf("%w: document %s", bentorepo.ErrConflict, st.DocumentID)
 	}
@@ -221,9 +222,6 @@ func (s DocumentStore) Save(ctx context.Context, m *doc.Document, expected int64
 	}
 	return revision, writeAdded(ctx, q, m)
 }
-
-// ErrNumberIssued is a number another document of the tenant and kind issued.
-var ErrNumberIssued = errors.New("doc: the number was issued by another document of the tenant and kind; a number is issued once (G08-04)")
 
 func writeAdded(ctx context.Context, q bentopg.Executor, m *doc.Document) error {
 	st := m.State()
@@ -254,13 +252,19 @@ func writeAdded(ctx context.Context, q bentopg.Executor, m *doc.Document) error 
 			i.EnteredAt); err != nil {
 			return err
 		}
-		if err := exec(`INSERT INTO cargo_doc.issued_number (tenant_id,document_id,kind,number,first_issued_at) VALUES ($1,$2,$3,$4,$5)
-            ON CONFLICT (tenant_id, document_id) DO NOTHING`, string(st.Kind), st.Number, i.At); err != nil {
-			var pgErr *pgconn.PgError
-			if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "issued_number_pkey" {
-				return fmt.Errorf("%w: %s %s", ErrNumberIssued, st.Kind, st.Number)
-			}
+		// the number is issued for the shipment (HAWB) or movement (MAWB) once, by the first document; a successor
+		// document of the same shipment issues it again, another shipment never
+		if err := exec(`INSERT INTO cargo_doc.issued_number (tenant_id,first_document_id,legal_entity_id,kind,number,subject_id,first_issued_at)
+            VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (tenant_id, legal_entity_id, kind, number) DO NOTHING`, st.LegalEntityID, string(st.Kind), st.Number,
+			st.Subject(), i.At); err != nil {
 			return err
+		}
+		subject, _, err := DocumentStore{}.issuedFor(ctx, q, st.TenantID, st.LegalEntityID, st.Kind, st.Number)
+		if err != nil {
+			return err
+		}
+		if subject != st.Subject() {
+			return fmt.Errorf("%w: %s %s was issued for %s", doc.ErrNumberIssued, st.Kind, st.Number, subject)
 		}
 	}
 	for _, v := range discards {
@@ -271,6 +275,25 @@ func writeAdded(ctx context.Context, q bentopg.Executor, m *doc.Document) error 
 		}
 	}
 	return nil
+}
+
+func (DocumentStore) issuedFor(ctx context.Context, q queryRower, tenant doc.TenantID, legalEntity string, kind doc.Kind, number string) (string, bool, error) {
+	var subject string
+	err := q.QueryRow(ctx, `SELECT subject_id FROM cargo_doc.issued_number WHERE tenant_id=$1 AND legal_entity_id=$2 AND kind=$3 AND number=$4`,
+		string(tenant), legalEntity, string(kind), number).Scan(&subject)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	return subject, err == nil, err
+}
+
+// IssuedFor returns the shipment or movement a number was issued for.
+func (s DocumentStore) IssuedFor(ctx context.Context, tenant doc.TenantID, legalEntity string, kind doc.Kind, number string) (string, bool, error) {
+	q, err := s.DB.RequireExecutor(ctx)
+	if err != nil {
+		return "", false, err
+	}
+	return s.issuedFor(ctx, q, tenant, legalEntity, kind, number)
 }
 
 // List lists the documents of a shipment or a consolidation.
@@ -396,16 +419,17 @@ func (s AuthorityStore) Save(ctx context.Context, a *doc.IssuanceAuthority, expe
 	return revision, err
 }
 
+// InForce finds the authority in force and holds it FOR SHARE, so a withdrawal waits for the issue to commit.
 func (s AuthorityStore) InForce(ctx context.Context, tenant doc.TenantID, legalEntity string, kind doc.Kind, place, airline string,
 	at time.Time) (*doc.IssuanceAuthority, bool, error) {
-	q, err := s.DB.ReadExecutor(ctx)
+	q, err := s.DB.RequireExecutor(ctx)
 	if err != nil {
 		return nil, false, err
 	}
 	a, _, err := scanAuthority(q.QueryRow(ctx, `SELECT `+authorityColumns+` FROM cargo_doc.issuance_authority
       WHERE tenant_id=$1 AND legal_entity_id=$2 AND kind=$3 AND issue_place=$4 AND coalesce(airline_party_id,'')=$5
         AND valid_from <= $6 AND (valid_until IS NULL OR $6 < valid_until) AND (withdrawn_at IS NULL OR $6 < withdrawn_at)
-      ORDER BY recorded_at, authority_id LIMIT 1`, string(tenant), legalEntity, string(kind), place, airline, at), tenant)
+      ORDER BY recorded_at, authority_id LIMIT 1 FOR SHARE`, string(tenant), legalEntity, string(kind), place, airline, at), tenant)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, false, nil
 	}

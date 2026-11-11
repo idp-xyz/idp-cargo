@@ -71,10 +71,10 @@ func TestTheModelEmitsThePublishedEventTypes(t *testing.T) {
 	}
 	gate := func(v int) domain.IssueGate {
 		return domain.IssueGate{Facts: facts(v), Orders: orders, Credit: domain.CreditDecision{Status: "NONE"}, OverrideReason: "FIN not in service",
-			AuthorityID: "A", AuthorityVersion: 1}
+			IssuerVerified: true, AuthorityID: "A", AuthorityVersion: 1}
 	}
 	if err = errors.Join(d.Refresh(content(2), "newer facts", "doc-1", at), d.Approve("doc-2", at), d.Issue(gate(2), "doc-2", at),
-		d.OpenAmendment(content(3), "weight", "doc-1", at), d.IssueAmendment(gate(3), "doc-2", at), d.OpenAmendment(content(3), "again", "doc-1", at),
+		d.OpenAmendment(content(3), "weight", "doc-1", at), d.Approve("doc-2", at), d.IssueAmendment(gate(3), "doc-2", at), d.OpenAmendment(content(3), "again", "doc-1", at),
 		d.AbandonAmendment(orders, "withdrawn", "doc-1", at), d.Cancel("mistake", "doc-1", at)); err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestClassifyMapsCausesToAPIKinds(t *testing.T) {
 		{domain.ErrCreditUndecided, api.ErrRejected},
 		{domain.ErrIssuanceBlocked, api.ErrRejected},
 		{domain.ErrPartiesDiverge, api.ErrRejected},
-		{postgres.ErrNumberIssued, api.ErrRejected},
+		{domain.ErrNumberIssued, api.ErrRejected},
 		{application.ErrUnknownSource, api.ErrRejected},
 		{kernel.ErrOutsideRecordWindow, api.ErrRejected},
 	} {

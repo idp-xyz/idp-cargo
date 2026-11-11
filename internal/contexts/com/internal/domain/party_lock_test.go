@@ -80,9 +80,25 @@ func TestPartyLocksHoldTheParties(t *testing.T) {
 	if _, err = RestoreOrder(broken); err == nil {
 		t.Fatal("a lock released before it was taken")
 	}
-	if err = o.Cancel("ops-1", later, MinContactRetentionMonths); err == nil {
-		if err = o.LockParties("DOC-HAWB-3", "doc-clerk", later, later); !errors.Is(err, ErrInvalidTransition) {
-			t.Fatalf("lock a cancelled order: %v", err)
-		}
+	if err = o.Cancel("ops-1", later, MinContactRetentionMonths); err != nil {
+		t.Fatal(err)
+	}
+	if err = o.LockParties("DOC-HAWB-3", "doc-clerk", later, later); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("lock a cancelled order: %v", err)
+	}
+	// a closed order is locked and released: its documents are issued and amended after closure
+	d2 := draft(palletLine)
+	d2.OrderID, d2.Transport = "O-CLOSED", Transport{Mode: ModeAir, Movement: PortToPort}
+	d2.InitialParties = []OrderParty{named(PartyShipper, "S"), named(PartyConsignee, "C")}
+	c, err := RecordOrder(d2, 0, recordAt, recordAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = errors.Join(c.Allocate(1, "OB-C", palletLine.Measure, "planner-1", later), c.Close("cs-1", later, MinContactRetentionMonths)); err != nil {
+		t.Fatal(err)
+	}
+	if err = errors.Join(c.LockParties("DOC-HAWB-C", "doc-clerk", later, later), c.ReleasePartyLock("DOC-HAWB-C", "doc-clerk", later, later),
+		c.LockParties("DOC-HAWB-C", "doc-clerk", later, later)); err != nil {
+		t.Fatalf("locks on a closed order: %v", err)
 	}
 }

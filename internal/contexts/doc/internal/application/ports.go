@@ -61,6 +61,8 @@ type DocumentStore interface {
 	Insert(context.Context, *doc.Document) (int64, error)
 	Save(context.Context, *doc.Document, int64) (int64, error)
 	List(ctx context.Context, tenant doc.TenantID, shipment, consolidation string) ([]Summary, error)
+	// IssuedFor returns the shipment or movement a number of a legal entity and kind was issued for, if it was.
+	IssuedFor(ctx context.Context, tenant doc.TenantID, legalEntity string, kind doc.Kind, number string) (subject string, found bool, err error)
 }
 
 // Summary is a document in a list.

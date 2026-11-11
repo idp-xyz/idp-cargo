@@ -24,6 +24,7 @@ const (
 	VersionIssued     = "ISSUED"
 	VersionSuperseded = "SUPERSEDED"
 	VersionDiscarded  = "DISCARDED"
+	VersionCancelled  = "CANCELLED" // the version valid when the document was cancelled
 )
 
 // Approval of a version (OD-7 B: self-approval is allowed to designated roles and flagged).
@@ -107,6 +108,14 @@ type DocumentState struct {
 	CancelledAt     time.Time
 }
 
+// Subject is what a document's number is issued for: a HAWB's shipment, a MAWB's movement.
+func (st DocumentState) Subject() string {
+	if st.Kind == KindHAWB {
+		return st.ShipmentID
+	}
+	return st.MovementID
+}
+
 // Document is the aggregate root (TransportDocument).
 type Document struct {
 	state    DocumentState
@@ -158,9 +167,10 @@ func DraftDocument(tenant TenantID, id DocumentID, c Content, by string, at time
 // addVersion writes the next version.
 func (d *Document) addVersion(c Content, reason, by string, at time.Time) error {
 	st := &d.state
-	if c.DocumentID != string(st.DocumentID) || Kind(c.Kind) != st.Kind || c.Source.MovementID != st.MovementID || c.ShipmentID != st.ShipmentID ||
-		c.Number != st.Number || c.Issuer.LegalEntityID != st.LegalEntityID || c.ConsolidationID != st.ConsolidationID {
-		return fmt.Errorf("%w: another movement, shipment, number or issuer is another document", ErrInvalidChange)
+	moved := c.Source.MovementID != st.MovementID || c.ConsolidationID != st.ConsolidationID
+	if c.DocumentID != string(st.DocumentID) || Kind(c.Kind) != st.Kind || c.ShipmentID != st.ShipmentID || c.Number != st.Number ||
+		c.Issuer.LegalEntityID != st.LegalEntityID || (moved && (st.Kind != KindHAWB || len(st.Versions) == 0)) {
+		return fmt.Errorf("%w: another shipment, number or issuer is another document, and so is another movement for a MAWB", ErrInvalidChange)
 	}
 	if len(st.Versions) > 0 && !text(reason) {
 		return fmt.Errorf("%w: a version after the first needs a reason", ErrInvalidChange)
@@ -174,6 +184,9 @@ func (d *Document) addVersion(c Content, reason, by string, at time.Time) error 
 	}
 	st.Versions = append(st.Versions, Version{No: len(st.Versions) + 1, Content: content, Doc: c, SHA256: Digest(content), Reason: reason,
 		DraftedBy: by, DraftedAt: at.UTC()})
+	// a HAWB follows its shipment to the movement AIR now associates it with (a rollover): the amendment names the
+	// new master, under the same number
+	st.MovementID, st.ConsolidationID = c.Source.MovementID, c.ConsolidationID
 	return nil
 }
 
@@ -195,13 +208,14 @@ func (d *Document) Refresh(c Content, reason, by string, at time.Time) error {
 	return nil
 }
 
-// Approve approves the draft version once it is complete for its kind. An approver who drafted it approves
-// their own draft (OD-7 B), which the approval records.
+// Approve approves the draft version, or an amendment's draft, once it is complete for its kind. An approver who
+// drafted it approves their own draft (OD-7 B), which the approval records. A draft becomes APPROVED; an
+// amendment stays AMENDING with its draft approved.
 func (d *Document) Approve(by string, at time.Time) error {
-	if d.state.State != StateDraft {
+	v := d.latest()
+	if !d.approvable() {
 		return ErrInvalidTransition
 	}
-	v := d.latest()
 	if err := v.Doc.complete(); err != nil {
 		return err
 	}
@@ -209,14 +223,21 @@ func (d *Document) Approve(by string, at time.Time) error {
 		return err
 	}
 	v.Approval = &Approval{By: by, At: at.UTC(), SelfApproved: by == v.DraftedBy}
-	d.state.State = StateApproved
+	if d.state.State == StateDraft {
+		d.state.State = StateApproved
+	}
 	d.record(eventApproved, at)
 	return nil
 }
 
+func (d *Document) approvable() bool {
+	v := d.latest()
+	return (d.state.State == StateDraft || d.state.State == StateAmending) && v.Approval == nil && v.Issue == nil && v.Discard == nil
+}
+
 // SelfApproval reports whether an actor would approve their own draft.
 func (d *Document) SelfApproval(actor string) bool {
-	return d.state.State == StateDraft && d.latest().DraftedBy == actor
+	return d.approvable() && d.latest().DraftedBy == actor
 }
 
 // IssueGate is what DOC checked before its transaction (T3) and found in its own: the facts and, for a house
@@ -227,6 +248,7 @@ type IssueGate struct {
 	Orders           []OrderParties
 	Credit           CreditDecision
 	OverrideReason   string
+	IssuerVerified   bool // ORG reports the issuing legal entity VERIFIED at issue
 	AuthorityID      string
 	AuthorityVersion int64
 }
@@ -258,7 +280,7 @@ func (d *Document) OpenAmendment(c Content, reason, by string, at time.Time) err
 	return nil
 }
 
-// IssueAmendment issues the amendment's draft under the same number; the version it replaces is superseded.
+// IssueAmendment issues the amendment's approved draft under the same number; the version it replaces is superseded.
 func (d *Document) IssueAmendment(g IssueGate, by string, at time.Time) error {
 	if d.state.State != StateAmending {
 		return ErrInvalidTransition
@@ -294,11 +316,12 @@ func (d *Document) AbandonAmendment(orders []OrderParties, reason, by string, at
 	return nil
 }
 
-// Cancel cancels a draft, approved or issued document with a reason. Its number is not issued again by
-// another document; the holder releases the order parties' lock in COM afterwards (C12).
+// Cancel cancels a draft, approved, issued or amending document with a reason; an amendment's draft is
+// discarded with it. An issued number stays with its shipment or movement; the holder releases the order
+// parties' lock in COM afterwards (C12).
 func (d *Document) Cancel(reason, by string, at time.Time) error {
 	switch d.state.State {
-	case StateDraft, StateApproved, StateIssued:
+	case StateDraft, StateApproved, StateIssued, StateAmending:
 	default:
 		return ErrInvalidTransition
 	}
@@ -308,18 +331,30 @@ func (d *Document) Cancel(reason, by string, at time.Time) error {
 	if err := d.changeable(by, at); err != nil {
 		return err
 	}
+	if d.state.State == StateAmending {
+		d.latest().Discard = &Discard{By: by, At: at.UTC(), Reason: reason}
+	}
 	d.state.State, d.state.CancelReason, d.state.CancelledBy, d.state.CancelledAt = StateCancelled, reason, by, at.UTC()
 	d.record(eventCancelled, at)
 	return nil
 }
 
-// issue records the issue of the latest version after the gates: the facts it was built on are still AIR's
-// latest and FINAL; a house document's orders report their parties locked for the document and unchanged; FIN's
-// credit decision is OK, or absent and overridden with a reason (a master needs none); an authority is in force.
+// issue records the issue of the latest version after the gates: the version is approved and complete; the facts it
+// was built on are still AIR's latest and FINAL; the issuer is still VERIFIED; a house document's orders report
+// their parties locked for the document and unchanged; FIN's credit decision is OK, or absent and overridden with a
+// reason (a master needs none); an authority is in force.
 func (d *Document) issue(g IssueGate, by string, at time.Time) error {
 	v := d.latest()
 	src := v.Doc.Source
+	if v.Approval == nil {
+		return fmt.Errorf("%w: the version is not approved", ErrInvalidTransition)
+	}
+	if err := v.Doc.complete(); err != nil {
+		return err
+	}
 	switch {
+	case !g.IssuerVerified:
+		return ErrIssuerNotVerified
 	case !g.Facts.Final || g.Facts.MovementID != src.MovementID || g.Facts.Version != src.Version || g.Facts.SHA256 != src.SHA256:
 		return fmt.Errorf("%w: built on AirDocFacts version %d, AIR's latest is %d (final %v)", ErrSourceStale, src.Version, g.Facts.Version, g.Facts.Final)
 	case !identifier(g.AuthorityID) || g.AuthorityVersion < 1:
@@ -399,17 +434,21 @@ func (d *Document) Latest() Version { return *d.latest() }
 func (d *Document) Status(no int) string {
 	v := d.state.Versions[no-1]
 	if v.Issue != nil {
-		if current, _ := d.Current(); current.No == no && d.state.State != StateCancelled {
-			return VersionIssued
+		current, _ := d.Current()
+		switch {
+		case current.No != no:
+			return VersionSuperseded
+		case d.state.State == StateCancelled:
+			return VersionCancelled
 		}
-		return VersionSuperseded
+		return VersionIssued
 	}
 	if no == len(d.state.Versions) && v.Discard == nil {
-		switch d.state.State {
-		case StateDraft, StateAmending:
-			return VersionDraft
-		case StateApproved:
+		switch {
+		case d.state.State == StateApproved, d.state.State == StateAmending && v.Approval != nil:
 			return VersionApproved
+		case d.state.State == StateDraft, d.state.State == StateAmending:
+			return VersionDraft
 		}
 	}
 	return VersionDiscarded
@@ -510,14 +549,17 @@ func (d *Document) validate() error {
 	for i, v := range st.Versions {
 		c := v.Doc
 		if c.DocumentID != string(st.DocumentID) || c.Kind != string(st.Kind) || c.Number != st.Number || c.ShipmentID != st.ShipmentID ||
-			c.Source.MovementID != st.MovementID || blank(v.DraftedBy) || v.DraftedAt.IsZero() || (i > 0 && blank(v.Reason)) ||
+			c.Issuer.LegalEntityID != st.LegalEntityID || (i == n-1 && (c.Source.MovementID != st.MovementID || c.ConsolidationID != st.ConsolidationID)) ||
+			(st.Kind == KindMAWB && c.Source.MovementID != st.MovementID) || blank(v.DraftedBy) || v.DraftedAt.IsZero() || (i > 0 && blank(v.Reason)) ||
 			(v.Issue != nil && v.Discard != nil) || (v.Approval != nil && v.Approval.At.Before(v.DraftedAt)) ||
 			(v.Issue != nil && v.Issue.At.Before(v.DraftedAt)) {
 			return fmt.Errorf("version %d", i+1)
 		}
 	}
-	if first := st.Versions[0]; first.Issue != nil && first.Approval == nil {
-		return fmt.Errorf("version 1 issued unapproved")
+	for _, v := range st.Versions {
+		if v.Issue != nil && v.Approval == nil {
+			return fmt.Errorf("version %d issued unapproved", v.No)
+		}
 	}
 	last := st.Versions[n-1]
 	_, issued := d.Current()

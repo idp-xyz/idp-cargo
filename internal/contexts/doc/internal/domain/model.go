@@ -33,6 +33,7 @@ var (
 	ErrIssuanceBlocked   = errors.New("doc: DOC_ISSUANCE_BLOCKED: the legal entity holds no issuance authority in force for the kind, place and airline (OD-10)")
 	ErrIssuerNotVerified = errors.New("doc: the issuing legal entity is not VERIFIED in ORG")
 	ErrInvalidAuthority  = errors.New("doc: invalid issuance authority")
+	ErrNumberIssued      = errors.New("doc: DOC_NUMBER_ISSUED: another shipment or movement of the legal entity was issued the number; a number is issued for one of them only (G08-04)")
 )
 
 // Kind is a document kind; DOC V0.1 issues air waybills only.
