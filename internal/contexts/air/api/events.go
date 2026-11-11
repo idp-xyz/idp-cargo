@@ -14,6 +14,9 @@ const (
 	HouseWaybillAssociationEnded = "HouseWaybillAssociationEnded.v1"
 	AirMovementCancelled         = "AirMovementCancelled.v1"
 	HawbSeriesRegistered         = "HawbSeriesRegistered.v1"
+	// AirDocFactsFinalized: the movement's facts were finalized for DOC as version FactsVersion of AirDocFacts v1;
+	// DOC reads it with GetAirDocFacts. A later version supersedes it.
+	AirDocFactsFinalized = "AirDocFactsFinalized.v1"
 )
 
 // EventPayload is the JSON payload of every AIR event: identifiers only, never MAWB or HAWB numbers, names or
@@ -27,4 +30,5 @@ type EventPayload struct {
 	BookingID       string `json:"booking_id,omitempty"`
 	CapacityVersion int    `json:"capacity_version,omitempty"`
 	Reason          string `json:"reason,omitempty"`
+	FactsVersion    int    `json:"facts_version,omitempty"`
 }

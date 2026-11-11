@@ -1,5 +1,6 @@
-// Package air assembles the AIR (Air Freight) bounded context, V0.1 with V0.2's measured house facts. Code
-// outside AIR uses it through package api; everything under internal/ is private to AIR.
+// Package air assembles the AIR (Air Freight) bounded context, V0.1 with V0.2's measured house facts and V0.3's
+// facts finalized for DOC. Code outside AIR uses it through package api; everything under internal/ is private to
+// AIR.
 package air
 
 import (
@@ -149,6 +150,27 @@ func (m *Module) EndHouseWaybillAssociation(ctx context.Context, cmd api.EndHous
 	return receipt(r, err)
 }
 
+func (m *Module) FinalizeAirDocFacts(ctx context.Context, cmd api.FinalizeAirDocFacts) (api.Receipt, error) {
+	d := m.deps(cmd.TenantID, cmd.CommandID)
+	var plans []domain.Plan
+	r, err := d.Change(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, api.ActionFinalizeAirDocFacts, cmd.MovementID, cmd.ExpectedRevision,
+		cmd.OccurredAt, cmd),
+		func(ctx context.Context, mv *domain.Movement) error {
+			for _, h := range mv.Houses() { // every live house's plan, before AIR's transaction (T3)
+				p, err := d.Plans.Plan(ctx, domain.TenantID(cmd.TenantID), h.ShipmentID)
+				if err != nil {
+					return err
+				}
+				plans = append(plans, p)
+			}
+			return nil
+		},
+		func(_ context.Context, mv *domain.Movement) (int, string, error) {
+			return 0, "", mv.Finalize(plans, cmd.ActorID, stored(cmd.OccurredAt))
+		})
+	return receipt(r, err)
+}
+
 func (m *Module) CancelAirMovement(ctx context.Context, cmd api.CancelAirMovement) (api.Receipt, error) {
 	r, err := m.deps(cmd.TenantID, cmd.CommandID).Change(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, api.ActionCancelAirMovement, cmd.MovementID,
 		cmd.ExpectedRevision, cmd.OccurredAt, cmd), nil,
@@ -192,6 +214,74 @@ func (m *Module) FindHouseWaybill(ctx context.Context, q api.FindHouseWaybill) (
 	return api.HouseWaybillRef{LegalEntityID: q.LegalEntityID, HAWB: reg.HAWB, ShipmentID: reg.ShipmentID, MovementID: string(reg.MovementID), EntryNo: reg.EntryNo}, nil
 }
 
+func (m *Module) GetAirDocFacts(ctx context.Context, q api.GetAirDocFacts) (api.AirDocFacts, error) {
+	if q.Version < 0 {
+		return api.AirDocFacts{}, classify(application.ErrInvalidQuery)
+	}
+	mv, _, err := m.reads(q.TenantID).Movement(ctx, domain.TenantID(q.TenantID), domain.MovementID(q.MovementID))
+	if err != nil {
+		return api.AirDocFacts{}, classify(err)
+	}
+	v, current, ok := mv.LatestDocFacts()
+	if q.Version > 0 {
+		v, current, ok = mv.DocFactsVersion(q.Version)
+	}
+	if !ok {
+		return api.AirDocFacts{}, fmt.Errorf("%w: movement %s has no AirDocFacts version %d", api.ErrNotFound, q.MovementID, q.Version)
+	}
+	return docFactsView(q.TenantID, v, current), nil
+}
+
+func docAirport(a domain.DocAirport) api.Airport {
+	return api.Airport{Code: kernel.LocationCode{Scheme: kernel.UNLOCODE, Code: a.Code}, IATA: a.IATA}
+}
+
+func grams(g int64) kernel.Quantity { return kernel.Quantity{Unit: "GRM", Amount: g} }
+
+func cubicCentimetres(v int64) kernel.Quantity {
+	if v == 0 {
+		return kernel.Quantity{}
+	}
+	return kernel.Quantity{Unit: "CMQ", Amount: v}
+}
+
+func screenings(in []domain.Screening) []api.Screening {
+	var out []api.Screening
+	for _, s := range in {
+		out = append(out, api.Screening{LotID: s.LotID, Outcome: s.Outcome, Screener: s.Screener, Method: s.Method, Reference: s.Reference,
+			ScreenedAt: s.ScreenedAt})
+	}
+	return out
+}
+
+func docFactsView(tenant string, v domain.DocFactsVersion, current bool) api.AirDocFacts {
+	f := v.Facts
+	out := api.AirDocFacts{TenantID: tenant, MovementID: f.MovementID, Version: v.No, Status: api.DocFactsSuperseded, SHA256: v.SHA256,
+		FinalizedBy: v.By, FinalizedAt: v.At, ConsolidationID: f.ConsolidationID, OperatingLegalEntityID: f.OperatingLegalEntityID,
+		AirlinePartyID: f.Airline.PartyID, AirlinePartyRevision: f.Airline.PartyRevision, AirlineDesignator: f.Airline.Designator,
+		AWBPrefix: f.Airline.AWBPrefix, MAWB: f.MAWB, MAWBSource: f.MAWBSource, BookingID: f.BookingID, CapacityVersion: f.CapacityVersion,
+		Origin: docAirport(f.Origin), Destination: docAirport(f.Destination), LocationEdition: f.LocationEdition, Pieces: f.Pieces,
+		GrossWeight: grams(f.GrossWeightGrams), Volume: cubicCentimetres(f.VolumeCubicCentimetres), ChargeableWeight: grams(f.ChargeableGrams),
+		ChargeableRule: f.ChargeableRule, SecurityStatus: f.SecurityStatus}
+	if current {
+		out.Status = api.DocFactsFinal
+	}
+	for _, s := range f.Flights {
+		out.Flights = append(out.Flights, api.DocFlight{Flight: s.Flight, From: docAirport(s.From), To: docAirport(s.To), ETD: s.ETD, ETA: s.ETA})
+	}
+	for _, h := range f.Houses {
+		d := api.DocHouse{ShipmentID: h.ShipmentID, HAWB: h.HAWB, PlanVersion: h.PlanVersion, EvidenceVersion: h.EvidenceVersion, Basis: h.Basis,
+			Pieces: h.Pieces, GrossWeight: grams(h.GrossWeightGrams), Volume: cubicCentimetres(h.VolumeCubicCentimetres),
+			ChargeableWeight: grams(h.ChargeableGrams), SecurityStatus: h.SecurityStatus, Screenings: screenings(h.Screenings)}
+		for _, p := range h.Parts {
+			d.Parts = append(d.Parts, api.DocPart{ObligationID: p.ObligationID, ObligationVersion: p.ObligationVersion, OrderID: p.OrderID, Packs: p.Packs,
+				PackageType: p.PackageType, GoodsDescription: p.GoodsDescription})
+		}
+		out.Houses = append(out.Houses, d)
+	}
+	return out
+}
+
 func (m *Module) GetHawbSeries(ctx context.Context, q api.GetHawbSeries) (api.HawbSeries, error) {
 	s, revision, err := m.reads(q.TenantID).SeriesOf(ctx, domain.TenantID(q.TenantID), q.LegalEntityID)
 	if err != nil {
@@ -211,7 +301,8 @@ func view(mv *domain.Movement, revision int64) api.AirMovement {
 		ConsolidationID: st.ConsolidationID, OperatingLegalEntityID: st.LegalEntityID, AirlinePartyID: st.Airline.PartyID,
 		AirlinePartyRevision: st.Airline.PartyRevision, AirlineDesignator: st.Airline.Designator, AWBPrefix: st.Airline.AWBPrefix,
 		Origin: api.Airport{Code: st.Origin.Code, IATA: st.Origin.IATA}, Destination: api.Airport{Code: st.Destination.Code, IATA: st.Destination.IATA},
-		LocationEdition: st.Edition, MAWB: st.MAWB.Number, MAWBStatus: "ASSIGNED", BookingID: current.BookingID, CapacityVersion: current.CapacityVersion}
+		LocationEdition: st.Edition, MAWB: st.MAWB.Number, MAWBStatus: "ASSIGNED", BookingID: current.BookingID, CapacityVersion: current.CapacityVersion,
+		DocFactsVersion: len(st.DocFacts)}
 	if st.MAWB.Voided {
 		out.MAWBStatus = "VOIDED"
 	}
@@ -226,11 +317,11 @@ func view(mv *domain.Movement, revision int64) api.AirMovement {
 	for _, e := range mv.Houses() {
 		h := api.House{EntryNo: e.No, ShipmentID: e.ShipmentID, HAWB: e.HAWB, FULRevision: e.FULRevision, PlanVersion: e.PlanVersion, Pieces: e.Facts.Pieces,
 			GrossWeight: e.Facts.GrossWeight, Volume: e.Facts.Volume, ChargeableWeight: kernel.Quantity{Unit: "GRM", Amount: e.Facts.ChargeableGrams},
-			ChargeableRule: e.Facts.Rule, Basis: e.Facts.Basis, EvidenceVersion: e.Facts.Evidence, SecurityStatus: e.Facts.Security, Start: e.Start,
-			AssociatedAt: e.At, WindowDrift: mv.WindowDrift(e)}
+			ChargeableRule: e.Facts.Rule, Basis: e.Facts.Basis, EvidenceVersion: e.Facts.Evidence, SecurityStatus: e.Facts.Security,
+			Screenings: screenings(e.Facts.Screenings), Start: e.Start, AssociatedAt: e.At, WindowDrift: mv.WindowDrift(e)}
 		for _, p := range e.Facts.Parts {
 			h.Parts = append(h.Parts, api.HousePart{ObligationID: p.ObligationID, ObligationVersion: p.ObligationVersion, OrderID: p.OrderID, Packs: p.Packs,
-				PackageType: p.PackageType, GrossWeight: p.GrossWeight, Volume: p.Volume})
+				PackageType: p.PackageType, GrossWeight: p.GrossWeight, Volume: p.Volume, GoodsDescription: p.GoodsDescription})
 		}
 		out.Houses = append(out.Houses, h)
 	}
@@ -277,7 +368,8 @@ func receipt(r application.Receipt, err error) (api.Receipt, error) {
 	if err != nil {
 		return api.Receipt{}, classify(err)
 	}
-	return api.Receipt{CommandID: r.CommandID, MovementID: r.SubjectID, NewRevision: r.NewRevision, EntryNo: r.EntryNo, HAWB: r.HAWB}, nil
+	return api.Receipt{CommandID: r.CommandID, MovementID: r.SubjectID, NewRevision: r.NewRevision, EntryNo: r.EntryNo, HAWB: r.HAWB,
+		FactsVersion: r.FactsVersion}, nil
 }
 
 type authorizer struct{ api.Authorizer }
@@ -303,7 +395,7 @@ func classify(err error) error {
 	case errors.Is(err, domain.ErrInvalidMovement), errors.Is(err, domain.ErrInvalidBooking), errors.Is(err, domain.ErrInvalidTransition),
 		errors.Is(err, domain.ErrInvalidChange), errors.Is(err, domain.ErrNotAttached), errors.Is(err, domain.ErrAlreadyAssociated),
 		errors.Is(err, domain.ErrNotAssociated), errors.Is(err, domain.ErrStillAttached), errors.Is(err, domain.ErrNothingToRefresh),
-		errors.Is(err, domain.ErrHousesLive), errors.Is(err, domain.ErrInvalidHAWB), errors.Is(err, domain.ErrUnits), errors.Is(err, domain.ErrInvalidSeries),
+		errors.Is(err, domain.ErrHousesLive), errors.Is(err, domain.ErrNotFinalizable), errors.Is(err, domain.ErrInvalidHAWB), errors.Is(err, domain.ErrUnits), errors.Is(err, domain.ErrInvalidSeries),
 		errors.Is(err, domain.ErrSeriesExhausted), errors.Is(err, application.ErrInvalidQuery), errors.Is(err, application.ErrUnknownBooking),
 		errors.Is(err, application.ErrUnknownShipment), errors.Is(err, application.ErrNoSeries), errors.Is(err, application.ErrHAWBInUse),
 		errors.Is(err, application.ErrHAWBDiffers), errors.Is(err, application.ErrMAWBInUse), errors.Is(err, kernel.ErrOutsideRecordWindow):

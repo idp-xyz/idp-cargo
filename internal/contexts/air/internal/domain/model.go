@@ -1,9 +1,10 @@
-// Package domain is the model of AIR (Air Freight) V0.1 and V0.2: the air movement of an air consolidation, which holds
+// Package domain is the model of AIR (Air Freight) V0.1 to V0.3: the air movement of an air consolidation, which holds
 // the MAWB number and flights the airline confirmed in the consolidation's booking (decision N1-PHY OD-7), and
 // the house air waybill entries of its houses, each with the HAWB number the operating legal entity's series
 // gave it (decision N1-HAWB). Houses are FUL shipments that FUL reports attached to the consolidation (OD-2).
-// Quantities are FUL's planned ones until FUL relays PHY's measures (V0.2: received, then tendered); documents
-// are DOC's. It depends on the standard library and the kernel only.
+// Quantities are FUL's planned ones until FUL relays PHY's measures (V0.2: received, then tendered). V0.3
+// finalizes the movement's facts for DOC as numbered versions (AirDocFacts v1); documents are DOC's. It depends
+// on the standard library and the kernel only.
 package domain
 
 import (
@@ -96,7 +97,8 @@ type Segment struct {
 	ETA    time.Time
 }
 
-// Part is a part of a COM obligation version a house carries, as FUL plans it.
+// Part is a part of a COM obligation version a house carries, as FUL plans it, with the goods description of the
+// order line (empty for parts FUL planned before it kept one).
 type Part struct {
 	ObligationID      string
 	ObligationVersion int64
@@ -105,6 +107,27 @@ type Part struct {
 	PackageType       string
 	GrossWeight       kernel.Quantity
 	Volume            kernel.Quantity
+	GoodsDescription  string
+}
+
+// Screening is a lot's latest screening result as PHY recorded it and FUL relays it: the screening party's
+// evidence with its method code, reference and time.
+type Screening struct {
+	LotID      string    `json:"lot_id"`
+	Outcome    string    `json:"outcome"` // PASSED, FAILED, PENDING or NOT_REQUIRED
+	Screener   string    `json:"screener"`
+	Method     string    `json:"method"`
+	Reference  string    `json:"reference"`
+	ScreenedAt time.Time `json:"screened_at"`
+}
+
+func (s Screening) valid() bool {
+	switch s.Outcome {
+	case "PASSED", "FAILED", "PENDING", "NOT_REQUIRED":
+	default:
+		return false
+	}
+	return identifier(s.LotID) && text(s.Screener) && identifier(s.Method) && text(s.Reference) && !s.ScreenedAt.IsZero()
 }
 
 // ChargeableRule names the rule documented chargeable weights are computed by: the greater of gross weight and

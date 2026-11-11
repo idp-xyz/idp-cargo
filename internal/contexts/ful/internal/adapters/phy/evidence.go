@@ -64,6 +64,10 @@ func (e Evidence) Evidence(ctx context.Context, tenant ful.TenantID, shipment fu
 			// a lot not yet measured: the received weight and volume are not known
 			receivedWeight.unknown, receivedVolume.unknown = true, true
 		}
+		if s := lot.Screening; s.ResultNo > 0 {
+			out.Screenings = append(out.Screenings, ful.Screening{LotID: lot.LotID, Outcome: s.Outcome, Screener: s.Screener, Method: s.Method,
+				Reference: s.Reference, ScreenedAt: s.RecordedAt.UTC()})
+		}
 		switch lot.Screening.Outcome {
 		case phyapi.ScreeningFailed:
 			failed = true
@@ -91,6 +95,9 @@ func (e Evidence) Evidence(ctx context.Context, tenant ful.TenantID, shipment fu
 	out.Tendered.GrossWeight = tenderedWeight.q
 	if !tenderedVolume.unknown {
 		out.Tendered.Volume = tenderedVolume.q
+	}
+	if !air {
+		out.Screenings = nil
 	}
 	if air && out.Lots > 0 {
 		switch {

@@ -470,3 +470,164 @@ func TestMovementsRaceForOneConsolidation(t *testing.T) {
 		t.Fatalf("%d committed, %d refused: %v", committed, refused, errs)
 	}
 }
+
+// measured makes a shipment's plan carry PHY's tendered measures as FUL relays them: 318 kg and 1 m3, screened
+// and cleared, with the order line's goods description.
+func (w *world) measured(shipment string, evidence int, reference string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	p := w.plans[shipment]
+	p.EvidenceVersion, p.MeasuredBasis, p.MeasuredPacks, p.SecurityStatus = evidence, fulapi.MeasuredTendered, 6, fulapi.SecurityCleared
+	p.MeasuredGrossWeight, p.MeasuredVolume = kernel.Quantity{Unit: "KGM", Amount: 318}, kernel.Quantity{Unit: "MTQ", Amount: 1}
+	p.Parts = append([]fulapi.LoadIntentPart(nil), p.Parts...)
+	p.Parts[0].GoodsDescription = "Auto parts in cartons"
+	p.Screenings = []fulapi.SecurityScreening{{LotID: "LOT-" + shipment, Outcome: "PASSED", Screener: "PVG cargo security station", Method: "XRY",
+		Reference: reference, ScreenedAt: w.at.Add(30 * time.Minute)}}
+	w.plans[shipment] = p
+}
+
+// AIR V0.3: finalize the movement's facts for DOC, supersede them with a change, refuse stale houses, finalize the
+// next version; versions are immutable and a FINAL movement still holds its consolidation.
+func TestDocFactsOnPostgres(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	f.w.booking("BK-1", "C-1", "781-12345675", 1, f.at.Add(72*time.Hour))
+	if _, err := f.open("AM-1", "C-1", "BK-1"); err != nil {
+		t.Fatal(err)
+	}
+	f.series(t)
+	f.w.plan("SH-1", "C-1", 2)
+	f.w.plan("SH-2", "C-1", 2)
+	if _, err := f.associate("assoc-1", "AM-1", "SH-1", "", 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.associate("assoc-2", "AM-1", "SH-2", "", 2); err != nil {
+		t.Fatal(err)
+	}
+	finalize := func(command string, revision int64, hours int) (api.Receipt, error) {
+		return f.module.FinalizeAirDocFacts(ctx, api.FinalizeAirDocFacts{CommandID: command, TenantID: f.tenant, ActorID: "ops-2", MovementID: "AM-1",
+			ExpectedRevision: revision, OccurredAt: f.at.Add(time.Duration(hours) * time.Hour)})
+	}
+	refresh := func(command, shipment string, revision int64, hours int) error {
+		_, err := f.module.RefreshHouseWaybillFacts(ctx, api.RefreshHouseWaybillFacts{CommandID: command, TenantID: f.tenant, ActorID: "ops-1",
+			MovementID: "AM-1", ExpectedRevision: revision, ShipmentID: shipment, OccurredAt: f.at.Add(time.Duration(hours) * time.Hour)})
+		return err
+	}
+	if _, err := finalize("fin-planned", 3, 2); !errors.Is(err, api.ErrRejected) {
+		t.Fatalf("planned houses: %v", err)
+	}
+	if _, err := f.module.GetAirDocFacts(ctx, api.GetAirDocFacts{TenantID: f.tenant, MovementID: "AM-1"}); !errors.Is(err, api.ErrNotFound) {
+		t.Fatalf("never finalized: %v", err)
+	}
+	f.w.measured("SH-1", 2, "XR-0001")
+	f.w.measured("SH-2", 2, "XR-0002")
+	if err := errors.Join(refresh("refresh-1", "SH-1", 3, 2), refresh("refresh-2", "SH-2", 4, 2)); err != nil {
+		t.Fatal(err)
+	}
+	r, err := finalize("fin-1", 5, 3)
+	if err != nil || r.FactsVersion != 1 || r.NewRevision != 6 {
+		t.Fatalf("finalize: %+v %v", r, err)
+	}
+	if again, err := finalize("fin-1", 5, 3); err != nil || again != r {
+		t.Fatalf("replay: %+v %v", again, err)
+	}
+	m := f.get(t, "AM-1")
+	if m.State != api.StateFinal || m.DocFactsVersion != 1 || m.Houses[0].Parts[0].GoodsDescription != "Auto parts in cartons" ||
+		len(m.Houses[1].Screenings) != 1 || m.Houses[1].Screenings[0].Reference != "XR-0002" {
+		t.Fatalf("movement: %+v", m)
+	}
+	v1, err := f.module.GetAirDocFacts(ctx, api.GetAirDocFacts{TenantID: f.tenant, MovementID: "AM-1"})
+	if err != nil || v1.Version != 1 || v1.Status != api.DocFactsFinal || v1.MAWB != "781-12345675" || v1.MAWBSource != api.MAWBSourceBookingConfirmation ||
+		v1.SecurityStatus != api.SecuritySPX || v1.Pieces != 12 || v1.GrossWeight.Amount != 636_000 || v1.Volume != (kernel.Quantity{Unit: "CMQ", Amount: 2_000_000}) ||
+		v1.ChargeableWeight.Amount != 636_000 || len(v1.Flights) != 1 || v1.Origin.IATA != "PVG" || len(v1.Houses) != 2 || len(v1.SHA256) != 64 {
+		t.Fatalf("version 1: %+v %v", v1, err)
+	}
+	if h := v1.Houses[0]; h.HAWB != "SHA0000001" || h.Basis != api.BasisTendered || h.EvidenceVersion != 2 || h.ChargeableWeight.Amount != 318_000 ||
+		h.SecurityStatus != api.SecuritySPX || h.Screenings[0].Screener != "PVG cargo security station" || !h.Screenings[0].ScreenedAt.Equal(f.at.Add(30*time.Minute)) ||
+		h.Parts[0].GoodsDescription != "Auto parts in cartons" || h.Parts[0].PackageType != "CT" {
+		t.Fatalf("house of version 1: %+v", h)
+	}
+	if _, err = finalize("fin-again", 6, 3); !errors.Is(err, api.ErrRejected) {
+		t.Fatalf("finalized already: %v", err)
+	}
+	f.w.booking("BK-1B", "C-1", "781-23456786", 1, f.at.Add(72*time.Hour))
+	if _, err = f.open("AM-1B", "C-1", "BK-1B"); !errors.Is(err, api.ErrConflict) {
+		t.Fatalf("a FINAL movement holds its consolidation: %v", err)
+	}
+
+	// The security station reissues SH-2's screening reference: refreshed, the movement is OPEN and version 1 superseded.
+	f.w.measured("SH-2", 3, "XR-0002-R")
+	if err = refresh("refresh-2b", "SH-2", 6, 4); err != nil {
+		t.Fatal(err)
+	}
+	if v, err := f.module.GetAirDocFacts(ctx, api.GetAirDocFacts{TenantID: f.tenant, MovementID: "AM-1", Version: 1}); err != nil ||
+		v.Status != api.DocFactsSuperseded || v.SHA256 != v1.SHA256 || v.Houses[1].Screenings[0].Reference != "XR-0002" {
+		t.Fatalf("superseded: %+v %v", v, err)
+	}
+	if m = f.get(t, "AM-1"); m.State != api.StateOpen {
+		t.Fatalf("reopened: %s", m.State)
+	}
+	// FUL re-plans SH-1 meanwhile: AIR's house is stale until refreshed.
+	f.w.plan("SH-1", "C-1", 3)
+	f.w.measured("SH-1", 4, "XR-0001")
+	if _, err = finalize("fin-stale", 7, 5); !errors.Is(err, api.ErrRejected) || !strings.Contains(err.Error(), "STALE_HOUSE") {
+		t.Fatalf("stale house: %v", err)
+	}
+	if err = refresh("refresh-1b", "SH-1", 7, 5); err != nil {
+		t.Fatal(err)
+	}
+	if r, err = finalize("fin-2", 8, 6); err != nil || r.FactsVersion != 2 {
+		t.Fatalf("version 2: %+v %v", r, err)
+	}
+	v2, err := f.module.GetAirDocFacts(ctx, api.GetAirDocFacts{TenantID: f.tenant, MovementID: "AM-1"})
+	if err != nil || v2.Version != 2 || v2.Status != api.DocFactsFinal || v2.Houses[0].PlanVersion != 3 || v2.Houses[1].Screenings[0].Reference != "XR-0002-R" {
+		t.Fatalf("version 2: %+v %v", v2, err)
+	}
+	if _, err = f.module.GetAirDocFacts(ctx, api.GetAirDocFacts{TenantID: f.tenant, MovementID: "AM-1", Version: 3}); !errors.Is(err, api.ErrNotFound) {
+		t.Fatalf("no version 3: %v", err)
+	}
+	var stored string
+	if err = f.within(t, func(ctx context.Context, e bentopg.Executor) error {
+		return e.QueryRow(ctx, `SELECT string_agg(content->>'mawb' || ':' || content_sha256, ',' ORDER BY version_no) FROM cargo_air.air_doc_facts_version
+          WHERE tenant_id=$1`, f.tenant).Scan(&stored)
+	}); err != nil || stored != "781-12345675:"+v1.SHA256+",781-12345675:"+v2.SHA256 {
+		t.Fatalf("stored versions: %s %v", stored, err)
+	}
+	want := []string{api.AirMovementOpened, api.MawbAssigned, api.FlightSegmentsLinked, api.HawbSeriesRegistered, api.HouseWaybillAssociated,
+		api.HouseWaybillAssociated, api.HouseWaybillFactsRefreshed, api.HouseWaybillFactsRefreshed, api.AirDocFactsFinalized,
+		api.HouseWaybillFactsRefreshed, api.HouseWaybillFactsRefreshed, api.AirDocFactsFinalized}
+	if got := f.outboxTypes(t); !slices.Equal(got, want) {
+		t.Fatalf("outbox %v", got)
+	}
+
+	// Past AIR on the application role: versions and screenings are immutable; a version needs a FINAL movement
+	// and a FINAL movement its version.
+	f.w.booking("BK-3", "C-3", "781-34567890", 1, f.at.Add(72*time.Hour))
+	if _, err = f.open("AM-3", "C-3", "BK-3"); err != nil {
+		t.Fatal(err)
+	}
+	for name, tc := range map[string]struct {
+		sql   string
+		state string
+	}{
+		"version immutable":   {`UPDATE cargo_air.air_doc_facts_version SET finalized_by='x' WHERE tenant_id=$1`, "42501|23001"},
+		"version deleted":     {`DELETE FROM cargo_air.air_doc_facts_version WHERE tenant_id=$1`, "42501|23001"},
+		"screening immutable": {`UPDATE cargo_air.house_waybill_screening SET reference='x' WHERE tenant_id=$1`, "42501|23001"},
+		"FINAL without facts": {`UPDATE cargo_air.air_movement SET state='FINAL' WHERE tenant_id=$1 AND movement_id='AM-3'`, "23514"},
+		"facts of an OPEN movement": {`INSERT INTO cargo_air.air_doc_facts_version (tenant_id,movement_id,version_no,content,content_sha256,finalized_by,
+            finalized_at,entered_at) VALUES ($1,'AM-3',1,'{"version":1,"movement_id":"AM-3","houses":[{}]}',repeat('a',64),'x',now(),now())`, "23514"},
+		"version gap": {`INSERT INTO cargo_air.air_doc_facts_version (tenant_id,movement_id,version_no,content,content_sha256,finalized_by,
+            finalized_at,entered_at) VALUES ($1,'AM-1',4,'{"version":4,"movement_id":"AM-1","houses":[{}]}',repeat('a',64),'x',now(),now())`, "23514"},
+		"FINAL cancelled": {`UPDATE cargo_air.air_movement SET state='CANCELLED',mawb_status='VOIDED',cancel_reason='x',cancelled_by='x',cancelled_at=now()
+            WHERE tenant_id=$1 AND movement_id='AM-1'`, "23001"},
+	} {
+		err := f.within(t, func(ctx context.Context, e bentopg.Executor) error {
+			_, err := e.Exec(ctx, tc.sql, f.tenant)
+			return err
+		})
+		if state := sqlState(err); state == "" || !strings.Contains(tc.state, state) {
+			t.Errorf("%s: %v (state %s), want %s", name, err, state, tc.state)
+		}
+		t.Logf("%s refused: %v", name, err)
+	}
+}

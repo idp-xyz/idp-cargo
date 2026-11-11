@@ -5,10 +5,12 @@ package bootstrap
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	airapi "go.idp.xyz/idp-cargo/internal/contexts/air/api"
+	bookapi "go.idp.xyz/idp-cargo/internal/contexts/book/api"
 	fulapi "go.idp.xyz/idp-cargo/internal/contexts/ful/api"
 	phyapi "go.idp.xyz/idp-cargo/internal/contexts/phy/api"
 	"go.idp.xyz/idp-cargo/internal/kernel"
@@ -18,8 +20,12 @@ import (
 // A is associated under MU's MAWB with planned quantities. PHY receives it at the warehouse, weighs it at 303 kg
 // and the airport security station clears it; FUL records PHY's evidence and AIR refreshes the house to the
 // received measures. The consolidation is closed, the house tendered and weighed again at the terminal (318 kg);
-// FUL records it, and AIR documents the tendered measures with the chargeable weight on them. The airline's
-// departure makes the shipment DEPARTED in FUL, which then refuses to cancel it; AIR has nothing to refresh.
+// FUL records it, and AIR documents the tendered measures with the chargeable weight on them. AIR V0.3
+// finalizes the facts for DOC (AirDocFacts v1): the HAWB with the terminal's measures, SPX with the security
+// station's screening evidence and the goods description COM recorded. The airline retimes the flight: AIR
+// relinks, the movement is OPEN again and version 1 superseded; version 2 is finalized on the new flight. The
+// airline's departure makes the shipment DEPARTED in FUL, which then refuses to cancel it; AIR has nothing to
+// refresh and version 2 stays current.
 func TestMeasuresReachTheHouseWaybillWithEveryContext(t *testing.T) {
 	ctx := context.Background()
 	platform := openPlatform(t)
@@ -165,8 +171,70 @@ func TestMeasuresReachTheHouseWaybillWithEveryContext(t *testing.T) {
 		t.Fatalf("the terminal's weight documented: %+v", h)
 	}
 	if plan, err := fulModule.GetAirOperationPlan(ctx, fulapi.GetShipmentPlanSnapshot{TenantID: tenant, ShipmentID: "SH-A"}); err != nil ||
-		plan.Packs != 6 || plan.GrossWeight != kg(300) || plan.MeasuredGrossWeight != kg(318) || plan.ExecutionStatus != fulapi.ExecutionNotStarted {
+		plan.Packs != 6 || plan.GrossWeight != kg(300) || plan.MeasuredGrossWeight != kg(318) || plan.ExecutionStatus != fulapi.ExecutionNotStarted ||
+		len(plan.Screenings) != 1 || plan.Screenings[0].Reference != "AQ-1" || plan.Parts[0].GoodsDescription != "Cartons of electronics" {
 		t.Fatalf("the plan stays beside the measures: %+v %v", plan, err)
+	}
+
+	// AIR V0.3: the facts finalized for DOC.
+	finalize := func(command string, h int) airapi.Receipt {
+		t.Helper()
+		r, err := airModule.FinalizeAirDocFacts(ctx, airapi.FinalizeAirDocFacts{CommandID: command, TenantID: tenant, ActorID: "ops-2", MovementID: "AM-1",
+			ExpectedRevision: airRevision, OccurredAt: hours(h)})
+		if err != nil {
+			t.Fatalf("%s: %v", command, err)
+		}
+		airRevision = r.NewRevision
+		return r
+	}
+	docFacts := func(version int) airapi.AirDocFacts {
+		t.Helper()
+		f, err := airModule.GetAirDocFacts(ctx, airapi.GetAirDocFacts{TenantID: tenant, MovementID: "AM-1", Version: version})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return f
+	}
+	if r := finalize("finalize-1", 17); r.FactsVersion != 1 {
+		t.Fatalf("version 1: %+v", r)
+	}
+	v1 := docFacts(0)
+	if v1.Version != 1 || v1.Status != airapi.DocFactsFinal || v1.MAWB != "781-12345675" || v1.AirlineDesignator != "MU" || v1.SecurityStatus != airapi.SecuritySPX ||
+		v1.Pieces != 6 || v1.GrossWeight.Amount != 318_000 || v1.ChargeableWeight.Amount != 318_000 || v1.Origin.IATA != "PVG" || v1.Destination.IATA != "JFK" ||
+		len(v1.Flights) != 1 || !v1.Flights[0].ETD.Equal(departs.Add(6*time.Hour)) || len(v1.Houses) != 1 {
+		t.Fatalf("master of version 1: %+v", v1)
+	}
+	if h := v1.Houses[0]; h.HAWB != "SHA0000001" || h.ShipmentID != "SH-A" || h.Basis != airapi.BasisTendered || h.Volume.Amount != 1_000_000 ||
+		len(h.Screenings) != 1 || h.Screenings[0].Outcome != "PASSED" || h.Screenings[0].Screener != "PVG cargo security station" ||
+		h.Screenings[0].Method != "XRAY" || h.Screenings[0].Reference != "AQ-1" || len(h.Parts) != 1 || h.Parts[0].GoodsDescription != "Cartons of electronics" ||
+		h.Parts[0].OrderID != "O-A" || h.Parts[0].Packs != 6 {
+		t.Fatalf("house of version 1: %+v", h)
+	}
+
+	// The airline retimes the flight within the house's window: AIR relinks, version 1 is superseded, version 2 finalized.
+	retimed := departs.Add(8 * time.Hour)
+	if _, err = bookModule.RecordCarrierChange(ctx, bookapi.RecordCarrierChange{CommandID: "retime", TenantID: tenant, ActorID: "ops-1", BookingID: "BK-1",
+		ExpectedRevision: 3, Reason: bookapi.CapacityScheduleChange, Answer: bookapi.Answer{Channel: bookapi.ChannelEmail,
+			Evidence: bookapi.Evidence{SHA256: strings.Repeat("5b", 32), StorageID: "mail/mu-2.eml", MediaType: "message/rfc822", CapturedAt: hours(18)}},
+		Lines: []bookapi.CapacityLine{{Capacity: bookapi.Capacity{Pieces: 20, GrossWeight: kg(1000)},
+			Legs: []bookapi.ConfirmedLeg{{Loading: iataCode("PVG"), Discharge: iataCode("JFK"), Flight: "MU587", ETD: retimed, ETA: retimed.Add(14 * time.Hour)}}}},
+		OccurredAt: hours(18)}); err != nil {
+		t.Fatal(err)
+	}
+	link, err := airModule.LinkCarrierBooking(ctx, airapi.LinkCarrierBooking{CommandID: "relink", TenantID: tenant, ActorID: "ops-1", MovementID: "AM-1",
+		ExpectedRevision: airRevision, OccurredAt: hours(18)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	airRevision = link.NewRevision
+	if old := docFacts(0); old.Version != 1 || old.Status != airapi.DocFactsSuperseded || old.SHA256 != v1.SHA256 {
+		t.Fatalf("superseded: %+v", old)
+	}
+	if r := finalize("finalize-2", 19); r.FactsVersion != 2 {
+		t.Fatalf("version 2: %+v", r)
+	}
+	if v2 := docFacts(2); v2.Status != airapi.DocFactsFinal || v2.CapacityVersion != 2 || !v2.Flights[0].ETD.Equal(retimed) || v2.SHA256 == v1.SHA256 {
+		t.Fatalf("version 2: %+v", v2)
 	}
 
 	// The airline's departure: DEPARTED in FUL, which no longer cancels the shipment; nothing for AIR to refresh.
@@ -184,5 +252,8 @@ func TestMeasuresReachTheHouseWaybillWithEveryContext(t *testing.T) {
 	}
 	if _, err = refresh("air-after-departure", 21); !errors.Is(err, airapi.ErrRejected) {
 		t.Fatalf("the departure changes no house fact: %v", err)
+	}
+	if latest := docFacts(0); latest.Version != 2 || latest.Status != airapi.DocFactsFinal {
+		t.Fatalf("version 2 stays current: %+v", latest)
 	}
 }

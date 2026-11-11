@@ -7,9 +7,11 @@ import (
 	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
-// Movement states. FINAL, with AirDocFacts v1 for DOC, comes once PHY's measures and screening reach AIR.
+// Movement states: OPEN; FINAL once its facts are finalized for DOC (AirDocFacts v1), until a change returns it
+// to OPEN; CANCELLED.
 const (
 	StateOpen      = "OPEN"
+	StateFinal     = "FINAL"
 	StateCancelled = "CANCELLED"
 )
 
@@ -67,6 +69,18 @@ type HousePart struct {
 	PackageType       string
 	GrossWeight       kernel.Quantity
 	Volume            kernel.Quantity
+	GoodsDescription  string // the order line's, as FUL relays it from COM; empty for parts FUL planned before it kept one
+}
+
+// Screening is a lot's latest screening result as PHY recorded it and FUL relays it: the screening party's
+// evidence (an airport security station), its method code, reference and time.
+type Screening struct {
+	LotID      string
+	Outcome    string // PASSED, FAILED, PENDING or NOT_REQUIRED
+	Screener   string
+	Method     string
+	Reference  string
+	ScreenedAt time.Time
 }
 
 // House is a house air waybill association: the FUL shipment, its HAWB number and the facts frozen from FUL's
@@ -86,6 +100,7 @@ type House struct {
 	Basis            string
 	EvidenceVersion  int    // FUL's evidence version the measures came from; 0 for PLANNED
 	SecurityStatus   string // "", SecurityPending, SecurityCleared or SecurityFailed
+	Screenings       []Screening
 	Parts            []HousePart
 	Start            string
 	AssociatedAt     time.Time
@@ -120,6 +135,96 @@ type AirMovement struct {
 	GrossWeight            kernel.Quantity
 	Volume                 kernel.Quantity
 	ChargeableWeight       kernel.Quantity
+	DocFactsVersion        int // the latest AirDocFacts version; 0 before the first finalization. Current while State is FINAL.
+}
+
+// AirDocFacts statuses: FINAL while the version is the movement's latest and the movement has not changed since;
+// SUPERSEDED once a change returned the movement to OPEN or a later version was finalized. DOC marks documents
+// built on a superseded version stale.
+const (
+	DocFactsFinal      = "FINAL"
+	DocFactsSuperseded = "SUPERSEDED"
+)
+
+// SecuritySPX is the consignment security status of a master and its houses in AirDocFacts v1: cargo screened by
+// the screening party (or not requiring it), secure for passenger, all-cargo and all-mail aircraft.
+const SecuritySPX = "SPX"
+
+// MAWBSourceBookingConfirmation says the MAWB number came from the airline's booking confirmation (OD-7).
+const MAWBSourceBookingConfirmation = "BOOKING_CONFIRMATION"
+
+// AirDocFacts is AirDocFacts v1 (relationship 11, AIR -> DOC): one immutable finalized version of an air
+// movement's facts that DOC builds the MAWB and HAWBs on. It carries the master (airline, MAWB and its source,
+// route, flights, totals with the chargeable weight computed on them, security status) and every live house
+// (HAWB, the FUL plan and evidence versions its facts came from, PHY's measures with the documented chargeable
+// weight, security status with the screening evidence, and its parts with their goods descriptions). Weights are
+// in GRM and volumes in CMQ; a zero volume is unknown. It carries no parties, contacts, charges, declared values
+// or handling codes: DOC takes parties from COM and ORG. SHA256 is the digest of the version's content as AIR
+// stored it, unchanged for ever.
+type AirDocFacts struct {
+	TenantID               string
+	MovementID             string
+	Version                int
+	Status                 string // DocFactsFinal or DocFactsSuperseded
+	SHA256                 string
+	FinalizedBy            string
+	FinalizedAt            time.Time
+	ConsolidationID        string
+	OperatingLegalEntityID string
+	AirlinePartyID         string
+	AirlinePartyRevision   int64
+	AirlineDesignator      string
+	AWBPrefix              string
+	MAWB                   string
+	MAWBSource             string // MAWBSourceBookingConfirmation
+	BookingID              string
+	CapacityVersion        int
+	Origin                 Airport
+	Destination            Airport
+	LocationEdition        string
+	Flights                []DocFlight
+	Pieces                 int64
+	GrossWeight            kernel.Quantity // GRM
+	Volume                 kernel.Quantity // CMQ; zero when unknown
+	ChargeableWeight       kernel.Quantity // GRM
+	ChargeableRule         string
+	SecurityStatus         string // SecuritySPX
+	Houses                 []DocHouse
+}
+
+// DocFlight is a flight of the finalized movement, with the airline's estimates.
+type DocFlight struct {
+	Flight string
+	From   Airport
+	To     Airport
+	ETD    time.Time
+	ETA    time.Time
+}
+
+// DocHouse is a house of a finalized version.
+type DocHouse struct {
+	ShipmentID       string
+	HAWB             string
+	PlanVersion      int
+	EvidenceVersion  int
+	Basis            string // BasisReceived or BasisTendered
+	Pieces           int64
+	GrossWeight      kernel.Quantity // GRM
+	Volume           kernel.Quantity // CMQ; zero when unknown
+	ChargeableWeight kernel.Quantity // GRM
+	SecurityStatus   string          // SecuritySPX
+	Screenings       []Screening
+	Parts            []DocPart
+}
+
+// DocPart is a part of a house in a finalized version, with the goods description of its order line.
+type DocPart struct {
+	ObligationID      string
+	ObligationVersion int64
+	OrderID           string
+	Packs             int64
+	PackageType       string
+	GoodsDescription  string
 }
 
 // HawbSeries is a legal entity's HAWB series.
@@ -137,6 +242,12 @@ type (
 	FindAirMovementByMAWB struct{ TenantID, MAWB string }
 	FindHouseWaybill      struct{ TenantID, LegalEntityID, HAWB string }
 	GetHawbSeries         struct{ TenantID, LegalEntityID string }
+	// GetAirDocFacts reads a finalized version of a movement's facts; Version 0 reads the latest.
+	GetAirDocFacts struct {
+		TenantID   string
+		MovementID string
+		Version    int
+	}
 )
 
 // HouseWaybillRef is where a HAWB number belongs: its shipment for ever and, while live, the movement.
@@ -154,4 +265,11 @@ type Queries interface {
 	FindAirMovementByMAWB(ctx context.Context, q FindAirMovementByMAWB) (AirMovement, error)
 	FindHouseWaybill(ctx context.Context, q FindHouseWaybill) (HouseWaybillRef, error)
 	GetHawbSeries(ctx context.Context, q GetHawbSeries) (HawbSeries, error)
+	AirDocFactsQueries
+}
+
+// AirDocFactsQueries is AIR's AirDocFacts v1 for DOC. A movement never finalized, or a version it does not have,
+// yields ErrNotFound.
+type AirDocFactsQueries interface {
+	GetAirDocFacts(ctx context.Context, q GetAirDocFacts) (AirDocFacts, error)
 }

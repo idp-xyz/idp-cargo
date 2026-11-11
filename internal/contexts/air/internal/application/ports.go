@@ -43,12 +43,13 @@ type Action string
 
 // Receipt is a committed command's result.
 type Receipt struct {
-	CommandID   string
-	SubjectID   string // movement, or legal entity for a series
-	NewRevision int64
-	EntryNo     int
-	HAWB        string
-	RequestHash string
+	CommandID    string
+	SubjectID    string // movement, or legal entity for a series
+	NewRevision  int64
+	EntryNo      int
+	HAWB         string
+	FactsVersion int // the AirDocFacts version a finalization published
+	RequestHash  string
 }
 
 type TxRunner interface {
@@ -291,10 +292,14 @@ func (d Deps) Change(ctx context.Context, c Command, read func(context.Context, 
 			return Receipt{}, nil, err
 		}
 		m.Stamp(entered)
+		facts := 0
+		if added := m.AddedDocFacts(); len(added) > 0 {
+			facts = added[len(added)-1].No
+		}
 		if revision, err = d.Movements.Save(txCtx, m, revision); err != nil {
 			return Receipt{}, nil, err
 		}
-		return Receipt{SubjectID: c.Subject, NewRevision: revision, EntryNo: entry, HAWB: hawb}, []aggregate{m}, nil
+		return Receipt{SubjectID: c.Subject, NewRevision: revision, EntryNo: entry, HAWB: hawb, FactsVersion: facts}, []aggregate{m}, nil
 	})
 }
 

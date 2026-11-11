@@ -29,6 +29,11 @@ func TestEventsMatchPublishedContract(t *testing.T) {
 	if envelope.Source != api.Source || string(envelope.Payload) != want || envelope.PartitionKey != "T:AM-1" {
 		t.Fatalf("envelope: %s %s", envelope.Payload, envelope.PartitionKey)
 	}
+	finalized, err := postgres.AIREnvelope("cmd-3", domain.Event{Type: api.AirDocFactsFinalized, At: at, TenantID: "T", SubjectID: "AM-1",
+		ConsolidationID: "C-1", BookingID: "BK-1", CapacityVersion: 1, FactsVersion: 2}, at)
+	if err != nil || string(finalized.Payload) != `{"tenant_id":"T","subject_id":"AM-1","consolidation_id":"C-1","booking_id":"BK-1","capacity_version":1,"facts_version":2}` {
+		t.Fatalf("finalized: %s %v", finalized.Payload, err)
+	}
 	var payload api.EventPayload
 	if err = json.Unmarshal(envelope.Payload, &payload); err != nil || payload.ShipmentID != "SH-1" {
 		t.Fatalf("payload %+v %v", payload, err)
@@ -58,12 +63,16 @@ func TestTheModelEmitsThePublishedEventTypes(t *testing.T) {
 			Destination: jfk.Code, Window: kernel.ValidityInterval{From: at, Until: at.Add(96 * time.Hour)}, Pieces: 2, GrossWeight: kg, ConsolidationID: consol,
 			Parts: []domain.Part{{ObligationID: "OB-1", ObligationVersion: 1, OrderID: "O-1", Packs: 2, PackageType: "CT", GrossWeight: kg}}}
 	}
+	measured := plan(2, "C-1", "PLANNED")
+	measured.EvidenceVersion, measured.MeasuredBasis, measured.MeasuredPieces, measured.Security = 1, "TENDERED", 2, "CLEARED"
+	measured.MeasuredWeight, measured.Parts[0].GoodsDescription = measured.GrossWeight, "Spare parts"
+	measured.Screenings = []domain.Screening{{LotID: "L-1", Outcome: "PASSED", Screener: "PVG security", Method: "XRY", Reference: "X-1", ScreenedAt: at}}
 	m, err := domain.OpenMovement("T", "AM-1", "C-1", booking(1), "ops", at)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = errors.Join(m.LinkBooking(booking(2), "ops", at), m.Associate(plan(1, "C-1", "PLANNED"), "H1", "ops", at),
-		m.Refresh(plan(2, "C-1", "PLANNED"), "ops", at), m.EndAssociation(plan(2, "C-2", "PLANNED"), "ops", at), m.Cancel("no cargo", "ops", at)); err != nil {
+	if err = errors.Join(m.LinkBooking(booking(2), "ops", at), m.Associate(plan(1, "C-1", "PLANNED"), "H1", "ops", at), m.Refresh(measured, "ops", at),
+		m.Finalize([]domain.Plan{measured}, "ops", at), m.EndAssociation(plan(2, "C-2", "PLANNED"), "ops", at), m.Cancel("no cargo", "ops", at)); err != nil {
 		t.Fatal(err)
 	}
 	s, err := domain.RegisterSeries("T", "LE", "SHA", 7, 1, "ops", at)
@@ -72,7 +81,7 @@ func TestTheModelEmitsThePublishedEventTypes(t *testing.T) {
 	}
 	published := map[string]bool{api.AirMovementOpened: true, api.FlightSegmentsLinked: true, api.MawbAssigned: true, api.MawbVoided: true,
 		api.HouseWaybillAssociated: true, api.HouseWaybillFactsRefreshed: true, api.HouseWaybillAssociationEnded: true, api.AirMovementCancelled: true,
-		api.HawbSeriesRegistered: true}
+		api.HawbSeriesRegistered: true, api.AirDocFactsFinalized: true}
 	emitted := map[string]bool{}
 	for _, e := range append(m.Pending(), s.Pending()...) {
 		if !published[e.Type] {
@@ -101,6 +110,7 @@ func TestClassifyMapsCausesToAPIKinds(t *testing.T) {
 		{application.ErrHAWBDiffers, api.ErrRejected},
 		{application.ErrMAWBInUse, api.ErrRejected},
 		{application.ErrNoSeries, api.ErrRejected},
+		{domain.ErrNotFinalizable, api.ErrRejected},
 		{kernel.ErrOutsideRecordWindow, api.ErrRejected},
 	} {
 		got := classify(tc.cause)

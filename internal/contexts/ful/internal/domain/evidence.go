@@ -75,6 +75,24 @@ type LoadEvidence struct {
 	Offloaded         int64
 	Security          Security
 	OpenDiscrepancies int
+	// Screenings are the latest screening result of each lot of AIR cargo, as external evidence of the screening
+	// party; DOC needs who screened, how and when. Left out of the digest while empty, so that versions recorded
+	// before FUL kept them keep their digests.
+	Screenings []Screening `json:",omitempty"`
+}
+
+// Screening is a lot's latest screening result as PHY records it.
+type Screening struct {
+	LotID      string
+	Outcome    string
+	Screener   string
+	Method     string
+	Reference  string
+	ScreenedAt time.Time
+}
+
+func (s Screening) valid() bool {
+	return identifier(s.LotID) && identifier(s.Outcome) && text(s.Screener) && identifier(s.Method) && text(s.Reference) && !s.ScreenedAt.IsZero()
 }
 
 // Digest is the SHA-256 of the facts, so that the same facts are recorded once.
@@ -85,6 +103,11 @@ func (e LoadEvidence) Digest() string {
 }
 
 func (e LoadEvidence) valid() bool {
+	for _, s := range e.Screenings {
+		if !s.valid() {
+			return false
+		}
+	}
 	nonNegative := e.Lots >= 0 && e.Received.Packs >= 0 && e.Received.GrossWeight.Amount >= 0 && e.Received.Volume.Amount >= 0 &&
 		e.Tendered.Packs >= 0 && e.Tendered.GrossWeight.Amount >= 0 && e.Tendered.Volume.Amount >= 0 && e.Departed >= 0 &&
 		e.Arrived >= 0 && e.Offloaded >= 0 && e.OpenDiscrepancies >= 0
