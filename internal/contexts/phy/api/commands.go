@@ -1,6 +1,7 @@
 // Package api is the published language of PHY (Physical Logistics) for consolidations and their houses:
-// consolidation and membership commands, ConsolMembership v1, events and error kinds. It imports only the
-// standard library and the kernel.
+// consolidation and membership commands, ConsolMembership v1, the physical facts of PHY V0.2 (cargo lots and
+// tender load executions) with PhysicalLoadEvidence v1, events and error kinds. It imports only the standard
+// library and the kernel.
 //
 // A consolidation (CargoWise: consol) is a transport organisation that several customers' houses share under
 // one master: an export air consolidation under one MAWB, or an export ocean LCL consolidation in the
@@ -188,13 +189,19 @@ type EndMembershipForCancelledShipment struct {
 
 // Receipt confirms a committed command. Replaying the same command returns the same receipt. Consolidation
 // commands return the consolidation's new revision; membership commands return the shipment's new membership
-// revision, the consolidation the house is in (or left) and the membership entry they wrote or ended.
+// revision, the consolidation the house is in (or left) and the membership entry they wrote or ended; cargo lot
+// commands the lot's new revision; load execution commands the execution's new revision and its
+// consolidation. ItemNo is the receipt line, measurement version, screening result, discrepancy, load line,
+// reversal, hold or carrier evidence the command wrote.
 type Receipt struct {
 	CommandID       string
 	ConsolidationID string
 	ShipmentID      string // membership commands
+	LotID           string // cargo lot commands
+	ExecutionID     string // load execution commands
 	NewRevision     int64
 	EntryNo         int // membership commands
+	ItemNo          int
 }
 
 // Commands is PHY's command entry point for consolidations and their houses.
@@ -209,6 +216,8 @@ type Commands interface {
 	TransferHouse(ctx context.Context, cmd TransferHouse) (Receipt, error)
 	RefreshHouseIntent(ctx context.Context, cmd RefreshHouseIntent) (Receipt, error)
 	EndMembershipForCancelledShipment(ctx context.Context, cmd EndMembershipForCancelledShipment) (Receipt, error)
+	ReconcileConsolidation(ctx context.Context, cmd ReconcileConsolidation) (Receipt, error)
+	PhysicalCommands
 }
 
 // Actions an Authorizer decides on.
@@ -223,10 +232,27 @@ const (
 	ActionTransferHouse                     = "TransferHouse" // asked for both consolidations
 	ActionRefreshHouseIntent                = "RefreshHouseIntent"
 	ActionEndMembershipForCancelledShipment = "EndMembershipForCancelledShipment"
+	ActionReconcileConsolidation            = "ReconcileConsolidation"
+	ActionReceiveCargo                      = "ReceiveCargo" // subject: the cargo lot
+	ActionRecordCargoMeasurement            = "RecordCargoMeasurement"
+	ActionRecordScreeningResult             = "RecordScreeningResult"
+	ActionCompleteReceipt                   = "CompleteReceipt"
+	ActionResolveCargoDiscrepancy           = "ResolveCargoDiscrepancy"
+	ActionCloseCargoLot                     = "CloseCargoLot"
+	ActionOpenLoadExecution                 = "OpenLoadExecution" // subject: the execution's consolidation
+	ActionStartLoading                      = "StartLoading"
+	ActionRecordCargoLoaded                 = "RecordCargoLoaded"
+	ActionRecordCargoUnloaded               = "RecordCargoUnloaded"
+	ActionPlaceLoadExecutionOnHold          = "PlaceLoadExecutionOnHold"
+	ActionReleaseLoadExecutionHold          = "ReleaseLoadExecutionHold"
+	ActionCloseLoadExecution                = "CloseLoadExecution"
+	ActionRecordCarrierLoadEvidence         = "RecordCarrierLoadEvidence"
+	ActionResolveLoadingDiscrepancy         = "ResolveLoadingDiscrepancy"
 )
 
-// Authorizer decides whether a verified actor may perform an action on a consolidation. The identity and
-// policy layer supplies it.
+// Authorizer decides whether a verified actor may perform an action on a consolidation; for cargo lot
+// commands the subject is the lot, for load execution commands the execution's consolidation. The identity
+// and policy layer supplies it.
 type Authorizer interface {
 	AuthorizeConsolidationAction(ctx context.Context, tenantID, actorID, action, consolidationID string) error
 }

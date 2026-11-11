@@ -11,7 +11,7 @@ import (
 const (
 	StateOpen       = "OPEN"
 	StateClosed     = "CLOSED"
-	StateReconciled = "RECONCILED" // after cargo lots and load executions, later
+	StateReconciled = "RECONCILED" // its physical facts are complete (ReconcileConsolidation)
 	StateCancelled  = "CANCELLED"
 )
 
@@ -31,7 +31,7 @@ const (
 // change, and why. The original plan stays visible after a rollover.
 type ConsolidationVersion struct {
 	Version          int
-	Change           string // CREATED, AMENDED, CLOSED, REOPENED, CANCELLED
+	Change           string // CREATED, AMENDED, CLOSED, REOPENED, CANCELLED, RECONCILED
 	State            string
 	Origin           kernel.LocationCode
 	Destination      kernel.LocationCode
@@ -183,9 +183,11 @@ type ConsolMembershipQueries interface {
 	GetConsolMembership(ctx context.Context, q GetConsolMembership) (ConsolMembership, error)
 }
 
-// Queries is PHY's read side for consolidations. An unknown consolidation yields ErrNotFound.
+// Queries is PHY's read side for consolidations and their physical facts. An unknown consolidation yields
+// ErrNotFound.
 type Queries interface {
 	ConsolMembershipQueries
 	GetConsolidation(ctx context.Context, q GetConsolidation) (Consolidation, error)
 	ListOpenConsolidations(ctx context.Context, q ListOpenConsolidations) ([]ConsolidationSummary, error)
+	PhysicalQueries
 }

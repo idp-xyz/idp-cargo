@@ -40,8 +40,17 @@ func (s CommandReceipts) Find(ctx context.Context, tenant phy.TenantID, id strin
 		return app.Receipt{}, false, err
 	}
 	r.ConsolidationID = phy.ConsolidationID(consolidation)
-	if kind == "ConsolMembership" && entry != nil {
-		r.ShipmentID, r.EntryNo = phy.ShipmentID(result), *entry
+	item := 0
+	if entry != nil {
+		item = *entry
+	}
+	switch kind {
+	case "ConsolMembership":
+		r.ShipmentID, r.EntryNo = phy.ShipmentID(result), item
+	case "CargoLot":
+		r.LotID, r.ItemNo = phy.CargoLotID(result), item
+	case "LoadExecution":
+		r.ExecutionID, r.ItemNo = phy.LoadExecutionID(result), item
 	}
 	return r, true, nil
 }
@@ -52,7 +61,12 @@ func (s CommandReceipts) Save(ctx context.Context, tenant phy.TenantID, r app.Re
 		return err
 	}
 	kind, result, entry := "Consolidation", string(r.ConsolidationID), any(nil)
-	if r.ShipmentID != "" {
+	switch {
+	case r.LotID != "":
+		kind, result, entry = "CargoLot", string(r.LotID), orNull(r.ItemNo)
+	case r.ExecutionID != "":
+		kind, result, entry = "LoadExecution", string(r.ExecutionID), orNull(r.ItemNo)
+	case r.ShipmentID != "":
 		kind, result, entry = "ConsolMembership", string(r.ShipmentID), r.EntryNo
 	}
 	_, err = q.Exec(ctx, `INSERT INTO cargo_phy.command_receipt (tenant_id,command_id,request_sha256,result_type,result_id,result_revision,
@@ -77,13 +91,19 @@ func (o Outbox) EnqueuePHYEvent(ctx context.Context, e phy.Event) error {
 }
 
 // PHYEnvelope maps a PHY domain event to its Bento envelope. The event ID is derived from the command, the
-// subject, the consolidation and the entry or version, so a retried command yields the same event ID. All
-// events of a subject share its partition.
+// subject, the consolidation, the entry or version and, for cargo lot and load execution events, the lot, the
+// execution and the item, so a retried command yields the same event IDs. All events of a subject share its
+// partition.
 func PHYEnvelope(commandID string, e phy.Event, recordedAt time.Time) (eventing.Envelope, error) {
-	digest := sha256.Sum256([]byte(commandID + "\x00" + e.Type + "\x00" + string(e.TenantID) + "\x00" + e.SubjectID + "\x00" +
-		string(e.ConsolidationID) + "\x00" + strconv.Itoa(e.Version) + "\x00" + strconv.Itoa(e.EntryNo)))
+	key := commandID + "\x00" + e.Type + "\x00" + string(e.TenantID) + "\x00" + e.SubjectID + "\x00" + string(e.ConsolidationID) + "\x00" +
+		strconv.Itoa(e.Version) + "\x00" + strconv.Itoa(e.EntryNo)
+	if e.LotID != "" || e.ExecutionID != "" || e.ItemNo != 0 {
+		key += "\x00" + string(e.LotID) + "\x00" + string(e.ExecutionID) + "\x00" + strconv.Itoa(e.ItemNo)
+	}
+	digest := sha256.Sum256([]byte(key))
 	payload, err := json.Marshal(api.EventPayload{TenantID: string(e.TenantID), SubjectID: e.SubjectID, ConsolidationID: string(e.ConsolidationID),
-		Version: e.Version, ShipmentID: string(e.ShipmentID), EntryNo: e.EntryNo, FromConsolidationID: string(e.FromConsolidationID), Reason: e.Reason})
+		Version: e.Version, ShipmentID: string(e.ShipmentID), EntryNo: e.EntryNo, FromConsolidationID: string(e.FromConsolidationID), Reason: e.Reason,
+		LotID: string(e.LotID), ExecutionID: string(e.ExecutionID), ItemNo: e.ItemNo})
 	if err != nil {
 		return eventing.Envelope{}, err
 	}
