@@ -423,3 +423,20 @@ func (m *Membership) Acknowledge() {
 	m.pending, m.ended = nil, nil
 	m.entries = len(m.state.Entries)
 }
+
+// Leavable checks that a house leaving its consolidation (detached, transferred, its shipment cancelled) has
+// nothing loaded there: loaded is its live loaded packs in the consolidation.
+func Leavable(loaded int64) error {
+	if loaded > 0 {
+		return fmt.Errorf("%w: %d packs", ErrLiveLoadLines, loaded)
+	}
+	return nil
+}
+
+// Replannable checks that FUL's new plan of a house keeps at least the packs loaded of it in its consolidation.
+func Replannable(i LoadIntent, loaded int64) error {
+	if loaded > i.Scope.Packs {
+		return fmt.Errorf("%w: FUL plans %d packs of %s, %d are loaded; unload first", ErrConservation, i.Scope.Packs, i.ShipmentID, loaded)
+	}
+	return nil
+}

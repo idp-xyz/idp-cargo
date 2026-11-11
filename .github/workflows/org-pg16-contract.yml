@@ -88,6 +88,11 @@ jobs:
           GRANT SELECT,INSERT,UPDATE ON cargo_phy.consolidation,cargo_phy.consol_membership TO cargo_app;
           GRANT SELECT,INSERT ON cargo_phy.consolidation_version,cargo_phy.membership_entry,cargo_phy.membership_entry_part,cargo_phy.command_receipt TO cargo_app;
           GRANT UPDATE (end_kind,end_reason,end_text,ended_by,ended_at,end_entered_at,successor_no) ON cargo_phy.membership_entry TO cargo_app;
+          GRANT SELECT,INSERT ON cargo_phy.cargo_lot,cargo_phy.receipt_line,cargo_phy.measurement_version,cargo_phy.measurement_package_group,cargo_phy.screening_result,cargo_phy.cargo_discrepancy,cargo_phy.load_execution,cargo_phy.load_line,cargo_phy.reversal_line,cargo_phy.hold_entry,cargo_phy.carrier_load_evidence,cargo_phy.loading_discrepancy TO cargo_app;
+          GRANT UPDATE (state,expected_ful_revision,expected_plan_version,expected_packs,expected_weight_unit,expected_gross_weight,expected_volume_unit,expected_volume,completed_by,completed_at,completed_entered_at,closed_by,closed_at,closed_entered_at,revision,updated_at) ON cargo_phy.cargo_lot TO cargo_app;
+          GRANT UPDATE (resolution,resolution_reference,resolution_text,resolved_by,resolved_at,resolution_entered_at) ON cargo_phy.cargo_discrepancy,cargo_phy.loading_discrepancy TO cargo_app;
+          GRANT UPDATE (state,started_by,started_at,started_entered_at,closed_by,closed_at,closed_entered_at,close_evidence_source,close_evidence_reference,close_evidence_sha256,close_evidence_occurred_at,revision,updated_at) ON cargo_phy.load_execution TO cargo_app;
+          GRANT UPDATE (release_evidence_source,release_evidence_reference,release_evidence_sha256,release_evidence_occurred_at,released_by,released_at,release_entered_at) ON cargo_phy.hold_entry TO cargo_app;
           GRANT SELECT,INSERT ON ALL TABLES IN SCHEMA cargo_book TO cargo_app;
           GRANT UPDATE (status,current_request_version,current_capacity_version,consumer_id,withdraw_reason,withdrawn_by,withdrawn_at,revision,updated_at) ON cargo_book.carrier_booking TO cargo_app;
           GRANT UPDATE (live) ON cargo_book.carrier_reference TO cargo_app;

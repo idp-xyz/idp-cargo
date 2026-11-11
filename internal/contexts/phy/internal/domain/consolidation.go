@@ -9,11 +9,12 @@ import (
 type Change string
 
 const (
-	ChangeCreated   Change = "CREATED"
-	ChangeAmended   Change = "AMENDED"
-	ChangeClosed    Change = "CLOSED"
-	ChangeReopened  Change = "REOPENED"
-	ChangeCancelled Change = "CANCELLED"
+	ChangeCreated    Change = "CREATED"
+	ChangeAmended    Change = "AMENDED"
+	ChangeClosed     Change = "CLOSED"
+	ChangeReopened   Change = "REOPENED"
+	ChangeCancelled  Change = "CANCELLED"
+	ChangeReconciled Change = "RECONCILED"
 )
 
 // state returns the state a change leaves, given the state before.
@@ -25,6 +26,8 @@ func (c Change) state(before State) (State, bool) {
 		return StateClosed, true
 	case ChangeCancelled:
 		return StateCancelled, true
+	case ChangeReconciled:
+		return StateReconciled, true
 	case ChangeAmended:
 		return before, before == StateOpen || before == StateClosed
 	}
@@ -150,24 +153,68 @@ func (c *Consolidation) Close(liveHouses int, lastAttached time.Time, by string,
 	return c.change(ChangeClosed, "", by, at)
 }
 
-// Reopen reopens a CLOSED consolidation with a reason (OD-5). Once load units are closed or carrier departure
-// evidence exists, reopening will be refused; neither exists in PHY V0.1.
-func (c *Consolidation) Reopen(reason, by string, at time.Time) error {
+// Reopen reopens a CLOSED consolidation with a reason (OD-5), until cargo is tendered: tendered counts the live
+// packs of its closed load executions, which carrier evidence follows.
+func (c *Consolidation) Reopen(reason, by string, at time.Time, tendered int64) error {
 	if c.state.State != StateClosed {
 		return ErrInvalidTransition
+	}
+	if tendered > 0 {
+		return fmt.Errorf("%w: %d packs tendered", ErrExecutionsClosed, tendered)
 	}
 	return c.change(ChangeReopened, reason, by, at)
 }
 
-// Cancel cancels an OPEN consolidation without houses, with a reason.
-func (c *Consolidation) Cancel(reason, by string, at time.Time, liveHouses int) error {
+// Cancel cancels an OPEN consolidation without houses and without a load execution in progress, with a reason.
+func (c *Consolidation) Cancel(reason, by string, at time.Time, liveHouses, openExecutions int) error {
 	if c.state.State != StateOpen {
 		return ErrInvalidTransition
 	}
 	if liveHouses > 0 {
 		return ErrHousesAttached
 	}
+	if openExecutions > 0 {
+		return fmt.Errorf("%w: %d load executions are not closed", ErrInvalidChange, openExecutions)
+	}
 	return c.change(ChangeCancelled, reason, by, at)
+}
+
+// MemberCheck is what reconciling a live house compares: its live entry, FUL's current LoadIntent v1 and the
+// house's live loaded packs in the consolidation.
+type MemberCheck struct {
+	Entry  Entry
+	Intent LoadIntent
+	Loaded int64
+}
+
+// Reconcile ends a CLOSED consolidation once its physical facts are complete: every live house is PLANNED by FUL
+// at the plan version PHY froze, allocated to the consolidation, and loaded exactly as planned (a difference has
+// gone to another shipment through FUL and the house was refreshed, F1); no load execution is open; no
+// discrepancy of a house's lots or of the executions is open.
+func (c *Consolidation) Reconcile(members []MemberCheck, openExecutions, openDiscrepancies int, by string, at time.Time) error {
+	if c.state.State != StateClosed {
+		return ErrInvalidTransition
+	}
+	if len(members) == 0 {
+		return ErrNoHouses
+	}
+	for _, m := range members {
+		i := m.Intent
+		switch {
+		case !m.Entry.Live() || m.Entry.ConsolidationID != c.ID() || i.ShipmentID == "":
+			return ErrInvalidMembership
+		case i.Status != IntentPlanned || i.PlanVersion != m.Entry.PlanVersion:
+			return fmt.Errorf("%w: %s; refresh it", ErrMemberStale, i.ShipmentID)
+		case i.ConsolidationID != c.ID():
+			return fmt.Errorf("%w: %s", ErrMemberNotAllocated, i.ShipmentID)
+		case m.Loaded != i.Scope.Packs:
+			return fmt.Errorf("%w: %s plans %d packs, %d loaded", ErrNotReconciled, i.ShipmentID, i.Scope.Packs, m.Loaded)
+		}
+	}
+	if openExecutions > 0 || openDiscrepancies > 0 {
+		return fmt.Errorf("%w: %d load executions not closed, %d discrepancies open", ErrNotReconciled, openExecutions, openDiscrepancies)
+	}
+	return c.change(ChangeReconciled, "", by, at)
 }
 
 // Admit checks that a house may join the consolidation now: the consolidation is OPEN, and FUL reports the
@@ -221,7 +268,8 @@ func (c *Consolidation) add(v Version) {
 	c.state.Versions = append(c.state.Versions, v)
 	c.state.State = v.State
 	types := map[Change]string{ChangeCreated: eventConsolidationCreated, ChangeAmended: eventConsolidationAmended,
-		ChangeClosed: eventConsolidationClosed, ChangeReopened: eventConsolidationReopened, ChangeCancelled: eventConsolidationCancelled}
+		ChangeClosed: eventConsolidationClosed, ChangeReopened: eventConsolidationReopened, ChangeCancelled: eventConsolidationCancelled,
+		ChangeReconciled: eventConsolidationReconciled}
 	c.pending = append(c.pending, Event{Type: types[v.Change], At: v.At, TenantID: c.state.TenantID, SubjectID: string(c.state.ConsolidationID),
 		ConsolidationID: c.state.ConsolidationID, Version: v.No})
 }
@@ -264,7 +312,7 @@ func transition(from State, change Change) bool {
 		return from == StateOpen || from == StateClosed
 	case ChangeClosed, ChangeCancelled:
 		return from == StateOpen
-	case ChangeReopened:
+	case ChangeReopened, ChangeReconciled:
 		return from == StateClosed
 	}
 	return false

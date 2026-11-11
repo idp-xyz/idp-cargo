@@ -1,5 +1,6 @@
 // Package phy assembles the PHY (Physical Logistics) bounded context for consolidations and their houses
-// (PHY V0.1). Code outside PHY uses it through package api; everything under internal/ is private to PHY.
+// (PHY V0.1) and their physical facts, cargo lots and tender load executions (PHY V0.2). Code outside PHY uses
+// it through package api; everything under internal/ is private to PHY.
 package phy
 
 import (
@@ -161,6 +162,13 @@ func (m *Module) EndMembershipForCancelledShipment(ctx context.Context, cmd api.
 	return toReceipt(r, err)
 }
 
+func (m *Module) ReconcileConsolidation(ctx context.Context, cmd api.ReconcileConsolidation) (api.Receipt, error) {
+	r, err := application.ReconcileConsolidation{Deps: m.deps(cmd.TenantID, cmd.CommandID), Intents: m.intents}.Handle(ctx,
+		application.ReconcileConsolidationCommand{CommandID: cmd.CommandID, Scope: scope(cmd.TenantID, cmd.ActorID),
+			ConsolidationID: domain.ConsolidationID(cmd.ConsolidationID), ExpectedRevision: cmd.ExpectedRevision, OccurredAt: stored(cmd.OccurredAt)})
+	return toReceipt(r, err)
+}
+
 func (m *Module) GetConsolidation(ctx context.Context, q api.GetConsolidation) (api.Consolidation, error) {
 	c, revision, houses, err := m.reads(q.TenantID).Consolidation(ctx, domain.TenantID(q.TenantID), domain.ConsolidationID(q.ConsolidationID))
 	if err != nil {
@@ -240,7 +248,8 @@ func entry(e domain.Entry) api.MembershipEntry {
 
 func (m *Module) reads(tenant string) application.Reads {
 	return application.Reads{Tx: bento.TenantTransactor{DB: m.db, Tenant: tenant},
-		Consolidations: postgres.ConsolidationStore{DB: m.db}, Memberships: postgres.MembershipStore{DB: m.db}}
+		Consolidations: postgres.ConsolidationStore{DB: m.db}, Memberships: postgres.MembershipStore{DB: m.db},
+		Lots: postgres.LotStore{DB: m.db}, Executions: postgres.ExecutionStore{DB: m.db}, Discrepancies: postgres.Discrepancies{DB: m.db}}
 }
 
 func (m *Module) deps(tenant, commandID string) application.Deps {
@@ -248,6 +257,8 @@ func (m *Module) deps(tenant, commandID string) application.Deps {
 		Tx:             bento.TenantTransactor{DB: m.db, Tenant: tenant},
 		Consolidations: postgres.ConsolidationStore{DB: m.db},
 		Memberships:    postgres.MembershipStore{DB: m.db},
+		Lots:           postgres.LotStore{DB: m.db},
+		Executions:     postgres.ExecutionStore{DB: m.db},
 		Receipts:       postgres.CommandReceipts{DB: m.db},
 		Outbox:         postgres.Outbox{Writer: m.outbox, CommandID: commandID, RecordedAt: m.clock.Now()},
 		Auth:           authorizer{m.auth},
@@ -274,12 +285,16 @@ func toReceipt(r application.Receipt, err error) (api.Receipt, error) {
 		return api.Receipt{}, classify(err)
 	}
 	return api.Receipt{CommandID: r.CommandID, ConsolidationID: string(r.ConsolidationID), ShipmentID: string(r.ShipmentID),
-		NewRevision: r.NewRevision, EntryNo: r.EntryNo}, nil
+		LotID: string(r.LotID), ExecutionID: string(r.ExecutionID), NewRevision: r.NewRevision, EntryNo: r.EntryNo, ItemNo: r.ItemNo}, nil
 }
 
 type authorizer struct{ api.Authorizer }
 
 func (a authorizer) RequireConsolidationAction(ctx context.Context, s application.Scope, action application.Action, id domain.ConsolidationID) error {
+	return a.AuthorizeConsolidationAction(ctx, string(s.TenantID), s.ActorID, string(action), string(id))
+}
+
+func (a authorizer) RequireLotAction(ctx context.Context, s application.Scope, action application.Action, id domain.CargoLotID) error {
 	return a.AuthorizeConsolidationAction(ctx, string(s.TenantID), s.ActorID, string(action), string(id))
 }
 
@@ -305,6 +320,7 @@ func classify(err error) error {
 		errors.Is(err, domain.ErrAlreadyAttached), errors.Is(err, domain.ErrNotAttached), errors.Is(err, domain.ErrSameConsolidation),
 		errors.Is(err, domain.ErrInvalidReason), errors.Is(err, domain.ErrNothingToRefresh), errors.Is(err, domain.ErrShipmentNotCancelled),
 		errors.Is(err, domain.ErrMemberStale), errors.Is(err, domain.ErrMemberNotAllocated), errors.Is(err, application.ErrInvalidQuery),
+		physicalRejection(err),
 		errors.Is(err, application.ErrUnknownShipment), errors.Is(err, application.ErrLocationRefused), errors.Is(err, kernel.ErrOutsideRecordWindow):
 		kind = api.ErrRejected
 	default:

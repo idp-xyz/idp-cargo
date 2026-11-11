@@ -64,11 +64,13 @@ type closerKey struct{}
 
 // fulStub answers LoadIntent v1: every shipment is PLANNED by AIR from Shanghai Pudong to New York JFK for
 // legal entity LE, 6 cartons of 300 kg, departing within days 2 to 5 of the fixture; tests change the plan
-// version, the status and the consolidation FUL recorded. It notes which shipments a close asked about.
+// version, the packs (50 kg each), the status and the consolidation FUL recorded. It notes which shipments a
+// close asked about.
 type fulStub struct {
 	mu        sync.Mutex
 	at        time.Time
 	plan      map[string]int
+	packs     map[string]int64
 	status    map[string]string
 	allocated map[string]string
 	asked     map[int][]string // per close attempt
@@ -95,13 +97,28 @@ func (f *fulStub) GetLoadIntent(ctx context.Context, q fulapi.GetShipmentPlanSna
 	if status == "" {
 		status = fulapi.StatusPlanned
 	}
-	kg := kernel.Quantity{Unit: "KGM", Amount: 300}
+	packs := int64(6)
+	if p := f.packs[q.ShipmentID]; p > 0 {
+		packs = p
+	}
+	kg := kernel.Quantity{Unit: "KGM", Amount: 50 * packs}
 	return fulapi.LoadIntent{TenantID: q.TenantID, ShipmentID: q.ShipmentID, Revision: int64(plan + 1), Status: status, PlanVersion: plan,
 		ConfirmedVersion: plan, CustomerPartyID: "P-1", LegalEntityID: "LE", TransportMode: fulapi.ModeAir, Origin: unlocode("CNPVG"),
 		Destination: unlocode("USJFK"), OriginIATA: "PVG", DestinationIATA: "JFK", LocationEdition: "TEST-EDITION",
-		DepartureWindow: kernel.ValidityInterval{From: f.at.Add(48 * time.Hour), Until: f.at.Add(120 * time.Hour)}, Packs: 6, GrossWeight: kg,
-		Parts: []fulapi.LoadIntentPart{{ObligationID: "OB-" + q.ShipmentID, ObligationVersion: 1, OrderID: "O-1", Packs: 6, PackageType: "CT", GrossWeight: kg}},
+		DepartureWindow: kernel.ValidityInterval{From: f.at.Add(48 * time.Hour), Until: f.at.Add(120 * time.Hour)}, Packs: packs, GrossWeight: kg,
+		Parts: []fulapi.LoadIntentPart{{ObligationID: "OB-" + q.ShipmentID, ObligationVersion: 1, OrderID: "O-1", Packs: packs, PackageType: "CT", GrossWeight: kg}},
 		Stage: fulapi.StageMain, ConsolidationID: f.allocated[q.ShipmentID]}, nil
+}
+
+// replan changes a shipment's plan as FUL would: a new plan version with the packs given.
+func (f *fulStub) replan(shipment string, packs int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.plan[shipment] == 0 {
+		f.plan[shipment] = 2
+	}
+	f.plan[shipment]++
+	f.packs[shipment] = packs
 }
 
 func (f *fulStub) allocate(shipment, consolidation string) {
@@ -147,7 +164,8 @@ func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	at := time.Now().UTC().Add(-24 * time.Hour).Truncate(time.Microsecond) // business times lie in the past (T1)
 	f := &fixture{db: testDB(t), at: at, tenant: "cargo-phy-" + time.Now().UTC().Format("20060102T150405.000000000"),
-		ful: &fulStub{at: at, plan: map[string]int{}, status: map[string]string{}, allocated: map[string]string{}, asked: map[int][]string{}}}
+		ful: &fulStub{at: at, plan: map[string]int{}, packs: map[string]int64{}, status: map[string]string{}, allocated: map[string]string{},
+			asked: map[int][]string{}}}
 	module, err := phymodule.New(f.db, f.ful, policy{}, phymodule.WithLocations(locationStub{}))
 	if err != nil {
 		t.Fatal(err)

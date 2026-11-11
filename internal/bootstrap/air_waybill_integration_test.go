@@ -12,7 +12,6 @@ import (
 	airapi "go.idp.xyz/idp-cargo/internal/contexts/air/api"
 	bookapi "go.idp.xyz/idp-cargo/internal/contexts/book/api"
 	fulapi "go.idp.xyz/idp-cargo/internal/contexts/ful/api"
-	orgapi "go.idp.xyz/idp-cargo/internal/contexts/org/api"
 	phyapi "go.idp.xyz/idp-cargo/internal/contexts/phy/api"
 	"go.idp.xyz/idp-cargo/internal/kernel"
 )
@@ -88,36 +87,9 @@ func TestHouseWaybillsUnderTheMasterWithEveryContext(t *testing.T) {
 	}
 
 	// The airline: codes and CARRIER role in ORG, then the consolidation's booking, confirmed with its MAWB.
-	for i, code := range [][2]string{{orgapi.IdentifierIATAAirline, "MU"}, {orgapi.IdentifierIATAAWBPrefix, "781"}} {
-		if _, err = orgModule.RecordPartyIdentifier(ctx, orgapi.RecordPartyIdentifier{CommandID: "mu-" + code[0], TenantID: tenant, ActorID: "md-1",
-			PartyID: "airline-mu", ExpectedRevision: int64(1 + i), Type: code[0], Country: orgapi.InternationalIssuer, Value: code[1], EvidenceRef: "IATA"}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err = orgModule.ApproveRole(ctx, orgapi.ApproveRole{CommandID: "mu-carrier", TenantID: tenant, ActorID: "org-officer", LegalEntityID: "LE",
-		PartyID: "airline-mu", ExpectedRevision: 3, RoleCode: orgapi.RoleCarrier, ValidFrom: at.Add(-time.Hour), EvidenceRef: "contract", OccurredAt: at}); err != nil {
-		t.Fatal(err)
-	}
+	contexts.airline(t)
 	book := func(id, consolidation, mawb string, etd time.Time) {
-		t.Helper()
-		kg := kernel.Quantity{Unit: "KGM", Amount: 1000}
-		if _, err := bookModule.DraftCarrierBooking(ctx, bookapi.DraftCarrierBooking{CommandID: "draft-" + id, TenantID: tenant, ActorID: "ops-1", BookingID: id,
-			Kind: bookapi.KindAirConsol, LegalEntityID: "LE", CarrierPartyID: "airline-mu", ConsolidationID: consolidation,
-			Request: bookapi.Request{Legs: []bookapi.RequestedLeg{{Loading: iata("PVG"), Discharge: iata("JFK"), Flight: "MU587", DepartureDate: etd.Format(time.DateOnly)}},
-				Capacity: bookapi.Capacity{Pieces: 20, GrossWeight: kg}}, OccurredAt: hours(10)}); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := bookModule.RecordBookingRequestSent(ctx, bookapi.RecordBookingRequestSent{CommandID: "sent-" + id, TenantID: tenant, ActorID: "ops-1",
-			BookingID: id, ExpectedRevision: 1, Channel: bookapi.ChannelCarrierPortal, Evidence: evidence(10), OccurredAt: hours(10)}); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := bookModule.RecordCarrierConfirmation(ctx, bookapi.RecordCarrierConfirmation{CommandID: "confirm-" + id, TenantID: tenant, ActorID: "ops-1",
-			BookingID: id, ExpectedRevision: 2, Answer: bookapi.Answer{Channel: bookapi.ChannelEmail, Evidence: evidence(11),
-				References: []bookapi.CarrierReference{{Type: bookapi.ReferenceMAWBNumber, Value: mawb}}},
-			Lines: []bookapi.CapacityLine{{Capacity: bookapi.Capacity{Pieces: 20, GrossWeight: kg}, Legs: []bookapi.ConfirmedLeg{{Loading: iata("PVG"),
-				Discharge: iata("JFK"), Flight: "MU587", ETD: etd, ETA: etd.Add(14 * time.Hour)}}}}, OccurredAt: hours(11)}); err != nil {
-			t.Fatal(err)
-		}
+		contexts.bookAir(t, bookModule, id, consolidation, mawb, etd)
 	}
 	book("BK-1", "C-1", "781-12345675", departs.Add(6*time.Hour))
 

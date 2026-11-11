@@ -103,6 +103,25 @@ func (s MembershipStore) Load(ctx context.Context, tenant phy.TenantID, shipment
 	return readMembership(ctx, q, tenant, shipment)
 }
 
+// LoadForCargo locks the ledger FOR NO KEY UPDATE, for loading, unloading or closing the house's cargo: loads of
+// one house run one after another, and a detach or transfer waits for them.
+func (s MembershipStore) LoadForCargo(ctx context.Context, tenant phy.TenantID, shipment phy.ShipmentID) (*phy.Membership, int64, error) {
+	q, err := s.DB.RequireExecutor(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+	var one int
+	err = q.QueryRow(ctx, `SELECT 1 FROM cargo_phy.consol_membership WHERE tenant_id=$1 AND shipment_id=$2 AND stage=$3 FOR NO KEY UPDATE`,
+		string(tenant), string(shipment), phy.StageMain).Scan(&one)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, 0, fmt.Errorf("%w: %s was never attached", phy.ErrNotAttached, shipment)
+	}
+	if err != nil {
+		return nil, 0, err
+	}
+	return readMembership(ctx, q, tenant, shipment)
+}
+
 func (s MembershipStore) Read(ctx context.Context, tenant phy.TenantID, shipment phy.ShipmentID) (*phy.Membership, int64, error) {
 	q, err := s.DB.ReadExecutor(ctx)
 	if err != nil {
@@ -219,10 +238,19 @@ func entryError(err error) error {
 	return err
 }
 
-// Conflict reports whether a commit failed on one of PHY's deferred checks, which only a concurrent command
-// can trip: a house joining a consolidation that closed or was cancelled meanwhile.
+// Conflict reports whether a commit failed on one of PHY's deferred checks, which the locks of PHY's commands
+// leave to concurrent writes only: a house joining a consolidation that closed or was cancelled meanwhile, a load
+// beyond what a lot received or a house plans, a house leaving or replanned while it was being loaded, a
+// consolidation reopened, cancelled or reconciled while one of its tenders changed.
 func Conflict(err error) bool {
 	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == "23514" && (pgErr.ConstraintName == "membership_entry_consolidation_open" ||
-		pgErr.ConstraintName == "consolidation_cancelled_without_houses")
+	if !errors.As(err, &pgErr) || pgErr.Code != "23514" {
+		return false
+	}
+	switch pgErr.ConstraintName {
+	case "membership_entry_consolidation_open", "consolidation_cancelled_without_houses", "load_line_conservation", "membership_entry_loaded",
+		"consolidation_executions_closed", "consolidation_reopen_before_tender", "load_execution_consolidation", "cargo_lot_complete":
+		return true
+	}
+	return false
 }

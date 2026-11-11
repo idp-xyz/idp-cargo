@@ -39,7 +39,7 @@ func (h AttachHouse) Handle(ctx context.Context, c AttachHouseCommand) (Receipt,
 		return Receipt{}, err
 	}
 	return h.changeHouse(ctx, c.Scope, c.CommandID, hash, entered, c.ShipmentID, c.ExpectedMembership, []phy.ConsolidationID{c.ConsolidationID},
-		func(m *phy.Membership, consols []*phy.Consolidation) error {
+		func(_ context.Context, m *phy.Membership, consols []*phy.Consolidation) error {
 			return m.Attach(consols[0], intent, c.Scope.ActorID, c.OccurredAt)
 		})
 }
@@ -67,7 +67,10 @@ func (h DetachHouse) Handle(ctx context.Context, c DetachHouseCommand) (Receipt,
 		return Receipt{}, err
 	}
 	return h.changeHouse(ctx, c.Scope, c.CommandID, hash, entered, c.ShipmentID, c.ExpectedMembership, []phy.ConsolidationID{c.ConsolidationID},
-		func(m *phy.Membership, consols []*phy.Consolidation) error {
+		func(txCtx context.Context, m *phy.Membership, consols []*phy.Consolidation) error {
+			if err := h.unloaded(txCtx, c.Scope.TenantID, consols[0].ID(), c.ShipmentID); err != nil {
+				return err
+			}
 			return m.Detach(consols[0], c.Reason, c.ReasonText, c.Scope.ActorID, c.OccurredAt)
 		})
 }
@@ -111,7 +114,10 @@ func (h TransferHouse) Handle(ctx context.Context, c TransferHouseCommand) (Rece
 		ids = ids[:1]
 	}
 	return h.changeHouse(ctx, c.Scope, c.CommandID, hash, entered, c.ShipmentID, c.ExpectedMembership, ids,
-		func(m *phy.Membership, consols []*phy.Consolidation) error {
+		func(txCtx context.Context, m *phy.Membership, consols []*phy.Consolidation) error {
+			if err := h.unloaded(txCtx, c.Scope.TenantID, consols[0].ID(), c.ShipmentID); err != nil {
+				return err
+			}
 			return m.Transfer(consols[0], consols[len(consols)-1], intent, c.Reason, c.ReasonText, c.Scope.ActorID, c.OccurredAt)
 		})
 }
@@ -147,7 +153,14 @@ func (h RefreshHouseIntent) Handle(ctx context.Context, c RefreshHouseIntentComm
 		return Receipt{}, err
 	}
 	return h.changeHouse(ctx, c.Scope, c.CommandID, hash, entered, c.ShipmentID, c.ExpectedMembership, []phy.ConsolidationID{c.ConsolidationID},
-		func(m *phy.Membership, consols []*phy.Consolidation) error {
+		func(txCtx context.Context, m *phy.Membership, consols []*phy.Consolidation) error {
+			loaded, err := h.Executions.HouseLoaded(txCtx, c.Scope.TenantID, consols[0].ID(), c.ShipmentID)
+			if err != nil {
+				return err
+			}
+			if err = phy.Replannable(intent, loaded); err != nil {
+				return err
+			}
 			return m.Refresh(consols[0], intent, c.Scope.ActorID, c.OccurredAt)
 		})
 }
@@ -183,7 +196,20 @@ func (h EndMembershipForCancelledShipment) Handle(ctx context.Context, c EndMemb
 		return Receipt{}, err
 	}
 	return h.changeHouse(ctx, c.Scope, c.CommandID, hash, entered, c.ShipmentID, c.ExpectedMembership, []phy.ConsolidationID{c.ConsolidationID},
-		func(m *phy.Membership, consols []*phy.Consolidation) error {
+		func(txCtx context.Context, m *phy.Membership, consols []*phy.Consolidation) error {
+			if err := h.unloaded(txCtx, c.Scope.TenantID, consols[0].ID(), c.ShipmentID); err != nil {
+				return err
+			}
 			return m.EndForCancelledShipment(consols[0], intent, c.Scope.ActorID, c.OccurredAt)
 		})
+}
+
+// unloaded checks, under the house's ledger lock, that nothing of the house is loaded in the consolidation it
+// leaves: it is unloaded first (reversal lines), so that conservation holds (PHY V0.2).
+func (d Deps) unloaded(ctx context.Context, tenant phy.TenantID, consolidation phy.ConsolidationID, shipment phy.ShipmentID) error {
+	loaded, err := d.Executions.HouseLoaded(ctx, tenant, consolidation, shipment)
+	if err != nil {
+		return err
+	}
+	return phy.Leavable(loaded)
 }

@@ -2,8 +2,10 @@
 // first step of the N1 forwarder daily loop): a consolidation shared by houses of several customers, and each
 // house's membership ledger on its main carriage. A consolidation never merges its houses' commercial or legal
 // responsibilities (UL-05): each house stays a FUL shipment of one customer and one legal entity, attached
-// whole. Membership is a plan-layer fact; it never asserts receipt or loading (DDD-010). Cargo lots, load
-// units and load executions come later. It depends on the standard library and the kernel only.
+// whole. Membership is a plan-layer fact; it never asserts receipt or loading (DDD-010). PHY V0.2 adds the
+// physical facts: cargo lots (receipt, measurement, screening, discrepancies) and tender load executions
+// (lines, reversals, holds, carrier evidence), and reconciles a consolidation on them. Load units, stuffing and
+// build-up come with SEA. It depends on the standard library and the kernel only.
 package domain
 
 import (
@@ -219,19 +221,22 @@ func (i LoadIntent) complete() bool {
 
 // Event types, as package api publishes them.
 const (
-	eventConsolidationCreated   = "ConsolidationCreated.v1"
-	eventConsolidationAmended   = "ConsolidationAmended.v1"
-	eventConsolidationClosed    = "ConsolidationClosed.v1"
-	eventConsolidationReopened  = "ConsolidationReopened.v1"
-	eventConsolidationCancelled = "ConsolidationCancelled.v1"
-	eventHouseAttached          = "HouseAttached.v1"
-	eventHouseDetached          = "HouseDetached.v1"
-	eventHouseTransferred       = "HouseTransferred.v1"
-	eventHouseIntentRefreshed   = "HouseIntentRefreshed.v1"
+	eventConsolidationCreated    = "ConsolidationCreated.v1"
+	eventConsolidationAmended    = "ConsolidationAmended.v1"
+	eventConsolidationClosed     = "ConsolidationClosed.v1"
+	eventConsolidationReopened   = "ConsolidationReopened.v1"
+	eventConsolidationCancelled  = "ConsolidationCancelled.v1"
+	eventConsolidationReconciled = "ConsolidationReconciled.v1"
+	eventHouseAttached           = "HouseAttached.v1"
+	eventHouseDetached           = "HouseDetached.v1"
+	eventHouseTransferred        = "HouseTransferred.v1"
+	eventHouseIntentRefreshed    = "HouseIntentRefreshed.v1"
 )
 
 // Event carries identifiers only; the Outbox adapter maps it to a Bento envelope. SubjectID is the
-// consolidation for consolidation events and the shipment for house events.
+// consolidation for consolidation events, the shipment for house events, the lot for cargo lot events and the
+// execution for load execution events; ItemNo numbers the line, measurement, screening result, hold, evidence
+// or discrepancy an event is about.
 type Event struct {
 	Type                string
 	At                  time.Time
@@ -243,6 +248,9 @@ type Event struct {
 	EntryNo             int
 	FromConsolidationID ConsolidationID
 	Reason              string
+	LotID               CargoLotID
+	ExecutionID         LoadExecutionID
+	ItemNo              int
 }
 
 const (

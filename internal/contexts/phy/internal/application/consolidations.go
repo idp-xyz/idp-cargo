@@ -213,8 +213,12 @@ func (h ReopenConsolidation) Handle(ctx context.Context, c ReopenConsolidationCo
 		return Receipt{}, err
 	}
 	return h.changeConsolidation(ctx, c.Scope, c.CommandID, hash, entered, c.ConsolidationID, c.ExpectedRevision,
-		func(_ context.Context, consol *phy.Consolidation) error {
-			return consol.Reopen(c.Reason, c.Scope.ActorID, c.OccurredAt)
+		func(txCtx context.Context, consol *phy.Consolidation) error {
+			_, tendered, err := h.executions(txCtx, c.Scope.TenantID, c.ConsolidationID)
+			if err != nil {
+				return err
+			}
+			return consol.Reopen(c.Reason, c.Scope.ActorID, c.OccurredAt, tendered)
 		})
 }
 
@@ -244,6 +248,110 @@ func (h CancelConsolidation) Handle(ctx context.Context, c CancelConsolidationCo
 			if err != nil {
 				return err
 			}
-			return consol.Cancel(c.Reason, c.Scope.ActorID, c.OccurredAt, len(houses))
+			open, _, err := h.executions(txCtx, c.Scope.TenantID, c.ConsolidationID)
+			if err != nil {
+				return err
+			}
+			return consol.Cancel(c.Reason, c.Scope.ActorID, c.OccurredAt, len(houses), open)
+		})
+}
+
+// executions counts a consolidation's load executions that are not closed and the live packs its closed ones
+// tendered. Under the consolidation's FOR UPDATE lock they do not change, since every execution command locks
+// it FOR SHARE first.
+func (d Deps) executions(ctx context.Context, tenant phy.TenantID, id phy.ConsolidationID) (open int, tendered int64, err error) {
+	list, err := d.Executions.ByConsolidation(ctx, tenant, id)
+	if err != nil {
+		return 0, 0, err
+	}
+	for _, x := range list {
+		if x.Execution.Current() == phy.ExecutionClosed {
+			tendered += x.Execution.Tendered()
+		} else {
+			open++
+		}
+	}
+	return open, tendered, nil
+}
+
+type ReconcileConsolidationCommand struct {
+	CommandID        string
+	Scope            Scope
+	ConsolidationID  phy.ConsolidationID
+	ExpectedRevision int64
+	OccurredAt       time.Time
+}
+
+// ReconcileConsolidation reconciles a closed consolidation on its physical facts. FUL's LoadIntent v1 of every
+// live house is read first (T3); under the consolidation's FOR UPDATE lock the houses are read again (a change
+// meanwhile is a conflict), with their live loaded packs, the load executions and, under their FOR SHARE locks,
+// the open discrepancies of the houses' lots.
+type ReconcileConsolidation struct {
+	Deps
+	Intents LoadIntents
+}
+
+func (h ReconcileConsolidation) Handle(ctx context.Context, c ReconcileConsolidationCommand) (Receipt, error) {
+	if h.Intents == nil {
+		return Receipt{}, ErrMissingDependency
+	}
+	hash, entered, stored, replayed, err := h.begin(ctx, c.Scope, c.CommandID, c.OccurredAt, c)
+	if err != nil || replayed {
+		return stored, err
+	}
+	if err = h.authorize(ctx, c.Scope, ActionReconcileConsolidation, c.ConsolidationID); err != nil {
+		return Receipt{}, err
+	}
+	var checked []House
+	if err = h.Tx.WithinTransaction(ctx, func(txCtx context.Context) error {
+		checked, err = h.Consolidations.LiveHouses(txCtx, c.Scope.TenantID, c.ConsolidationID)
+		return err
+	}); err != nil {
+		return Receipt{}, err
+	}
+	intents := map[phy.ShipmentID]phy.LoadIntent{}
+	for _, house := range checked {
+		if intents[house.ShipmentID], err = h.Intents.LoadIntent(ctx, c.Scope.TenantID, house.ShipmentID); err != nil {
+			return Receipt{}, err
+		}
+	}
+	return h.changeConsolidation(ctx, c.Scope, c.CommandID, hash, entered, c.ConsolidationID, c.ExpectedRevision,
+		func(txCtx context.Context, consol *phy.Consolidation) error {
+			houses, err := h.Consolidations.LiveHouses(txCtx, c.Scope.TenantID, c.ConsolidationID)
+			if err != nil {
+				return err
+			}
+			if !sameHouses(checked, houses) {
+				return fmt.Errorf("%w: the houses changed while FUL was asked; try again", phy.ErrConflict)
+			}
+			var members []phy.MemberCheck
+			var shipments []phy.ShipmentID
+			for _, house := range houses {
+				loaded, err := h.Executions.HouseLoaded(txCtx, c.Scope.TenantID, c.ConsolidationID, house.ShipmentID)
+				if err != nil {
+					return err
+				}
+				members = append(members, phy.MemberCheck{Entry: house.Entry, Intent: intents[house.ShipmentID], Loaded: loaded})
+				shipments = append(shipments, house.ShipmentID)
+			}
+			list, err := h.Executions.ByConsolidation(txCtx, c.Scope.TenantID, c.ConsolidationID)
+			if err != nil {
+				return err
+			}
+			open, discrepancies := 0, 0
+			for _, x := range list {
+				if x.Execution.Current() != phy.ExecutionClosed {
+					open++
+				}
+				discrepancies += x.Execution.OpenDiscrepancies()
+			}
+			if err = h.Lots.LockShipments(txCtx, c.Scope.TenantID, shipments); err != nil {
+				return err
+			}
+			n, err := h.Lots.OpenDiscrepancies(txCtx, c.Scope.TenantID, shipments)
+			if err != nil {
+				return err
+			}
+			return consol.Reconcile(members, open, discrepancies+n, c.Scope.ActorID, c.OccurredAt)
 		})
 }

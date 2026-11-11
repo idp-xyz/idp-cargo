@@ -96,19 +96,19 @@ func TestConsolidationLifecycle(t *testing.T) {
 	if err := c.Close(2, t0.Add(time.Hour), "ops-1", t0.Add(2*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.Cancel("x", "ops-1", t0.Add(3*time.Hour), 0); !errors.Is(err, ErrInvalidTransition) {
+	if err := c.Cancel("x", "ops-1", t0.Add(3*time.Hour), 0, 0); !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("cancel a closed consolidation: %v", err)
 	}
-	if err := c.Reopen("", "ops-1", t0.Add(3*time.Hour)); !errors.Is(err, ErrInvalidChange) {
+	if err := c.Reopen("", "ops-1", t0.Add(3*time.Hour), 0); !errors.Is(err, ErrInvalidChange) {
 		t.Fatalf("reopen without a reason: %v", err)
 	}
-	if err := c.Reopen("late booking", "ops-1", t0.Add(3*time.Hour)); err != nil {
+	if err := c.Reopen("late booking", "ops-1", t0.Add(3*time.Hour), 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.Cancel("no cargo", "ops-1", t0.Add(4*time.Hour), 1); !errors.Is(err, ErrHousesAttached) {
+	if err := c.Cancel("no cargo", "ops-1", t0.Add(4*time.Hour), 1, 0); !errors.Is(err, ErrHousesAttached) {
 		t.Fatalf("cancel with houses: %v", err)
 	}
-	if err := c.Cancel("no cargo", "ops-1", t0.Add(4*time.Hour), 0); err != nil {
+	if err := c.Cancel("no cargo", "ops-1", t0.Add(4*time.Hour), 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	if err := c.Amend(Route{}, later.Add(time.Hour), later, "too late", "ops-1", t0.Add(5*time.Hour), 0); !errors.Is(err, ErrInvalidTransition) {

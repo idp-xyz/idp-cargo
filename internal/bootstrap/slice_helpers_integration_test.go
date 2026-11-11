@@ -5,9 +5,11 @@ package bootstrap
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
+	bookapi "go.idp.xyz/idp-cargo/internal/contexts/book/api"
 	"go.idp.xyz/idp-cargo/internal/contexts/com"
 	comapi "go.idp.xyz/idp-cargo/internal/contexts/com/api"
 	"go.idp.xyz/idp-cargo/internal/contexts/ful"
@@ -18,6 +20,57 @@ import (
 	rateapi "go.idp.xyz/idp-cargo/internal/contexts/rate/api"
 	"go.idp.xyz/idp-cargo/internal/kernel"
 )
+
+func iataCode(code string) kernel.LocationCode {
+	return kernel.LocationCode{Scheme: kernel.IATAAirport, Code: code}
+}
+
+// airline gives party airline-mu the IATA designator MU and AWB prefix 781 in ORG, and approves it as the legal
+// entity's CARRIER.
+func (s slice) airline(t *testing.T) {
+	t.Helper()
+	ctx := context.Background()
+	for i, code := range [][2]string{{orgapi.IdentifierIATAAirline, "MU"}, {orgapi.IdentifierIATAAWBPrefix, "781"}} {
+		if _, err := s.org.RecordPartyIdentifier(ctx, orgapi.RecordPartyIdentifier{CommandID: "mu-" + code[0], TenantID: s.tenant, ActorID: "md-1",
+			PartyID: "airline-mu", ExpectedRevision: int64(1 + i), Type: code[0], Country: orgapi.InternationalIssuer, Value: code[1], EvidenceRef: "IATA"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.org.ApproveRole(ctx, orgapi.ApproveRole{CommandID: "mu-carrier", TenantID: s.tenant, ActorID: "org-officer", LegalEntityID: "LE",
+		PartyID: "airline-mu", ExpectedRevision: 3, RoleCode: orgapi.RoleCarrier, ValidFrom: s.at.Add(-time.Hour), EvidenceRef: "contract", OccurredAt: s.at}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// bookAir books an AIR consolidation with MU for 20 pieces and 1,000 kg on MU587 PVG-JFK departing etd, and
+// records the airline's confirmation with the MAWB: requested and sent at 10 hours, confirmed at 11 hours after
+// s.at.
+func (s slice) bookAir(t *testing.T, book bookapi.Commands, id, consolidation, mawb string, etd time.Time) {
+	t.Helper()
+	ctx, tenant := context.Background(), s.tenant
+	hours := func(h int) time.Time { return s.at.Add(time.Duration(h) * time.Hour) }
+	evidence := func(h int) bookapi.Evidence {
+		return bookapi.Evidence{SHA256: strings.Repeat("5a", 32), StorageID: "mail/mu.eml", MediaType: "message/rfc822", CapturedAt: hours(h)}
+	}
+	kg := kernel.Quantity{Unit: "KGM", Amount: 1000}
+	if _, err := book.DraftCarrierBooking(ctx, bookapi.DraftCarrierBooking{CommandID: "draft-" + id, TenantID: tenant, ActorID: "ops-1", BookingID: id,
+		Kind: bookapi.KindAirConsol, LegalEntityID: "LE", CarrierPartyID: "airline-mu", ConsolidationID: consolidation,
+		Request: bookapi.Request{Legs: []bookapi.RequestedLeg{{Loading: iataCode("PVG"), Discharge: iataCode("JFK"), Flight: "MU587", DepartureDate: etd.Format(time.DateOnly)}},
+			Capacity: bookapi.Capacity{Pieces: 20, GrossWeight: kg}}, OccurredAt: hours(10)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := book.RecordBookingRequestSent(ctx, bookapi.RecordBookingRequestSent{CommandID: "sent-" + id, TenantID: tenant, ActorID: "ops-1",
+		BookingID: id, ExpectedRevision: 1, Channel: bookapi.ChannelCarrierPortal, Evidence: evidence(10), OccurredAt: hours(10)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := book.RecordCarrierConfirmation(ctx, bookapi.RecordCarrierConfirmation{CommandID: "confirm-" + id, TenantID: tenant, ActorID: "ops-1",
+		BookingID: id, ExpectedRevision: 2, Answer: bookapi.Answer{Channel: bookapi.ChannelEmail, Evidence: evidence(11),
+			References: []bookapi.CarrierReference{{Type: bookapi.ReferenceMAWBNumber, Value: mawb}}},
+		Lines: []bookapi.CapacityLine{{Capacity: bookapi.Capacity{Pieces: 20, GrossWeight: kg}, Legs: []bookapi.ConfirmedLeg{{Loading: iataCode("PVG"),
+			Discharge: iataCode("JFK"), Flight: "MU587", ETD: etd, ETA: etd.Add(14 * time.Hour)}}}}, OccurredAt: hours(11)}); err != nil {
+		t.Fatal(err)
+	}
+}
 
 // slice holds the real contexts a test plans shipments with.
 type slice struct {

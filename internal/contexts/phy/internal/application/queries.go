@@ -11,6 +11,9 @@ type Reads struct {
 	Tx             TxRunner
 	Consolidations ConsolidationStore
 	Memberships    MembershipStore
+	Lots           LotStore
+	Executions     ExecutionStore
+	Discrepancies  DiscrepancyList
 }
 
 // Consolidation reads a consolidation with its live houses.
@@ -66,6 +69,73 @@ func (r Reads) Open(ctx context.Context, tenant phy.TenantID, f ListFilter) ([]S
 	err := r.Tx.WithinTransaction(ctx, func(txCtx context.Context) error {
 		var err error
 		out, err = r.Consolidations.ListOpen(txCtx, tenant, f)
+		return err
+	})
+	return out, err
+}
+
+// Lot reads a cargo lot with its live loaded packs.
+func (r Reads) Lot(ctx context.Context, tenant phy.TenantID, id phy.CargoLotID) (LotRead, error) {
+	if tenant == "" || id == "" {
+		return LotRead{}, ErrInvalidQuery
+	}
+	var out LotRead
+	err := r.Tx.WithinTransaction(ctx, func(txCtx context.Context) error {
+		var err error
+		if out.Lot, out.Revision, err = r.Lots.Read(txCtx, tenant, id); err != nil {
+			return err
+		}
+		load, err := r.Lots.Loaded(txCtx, tenant, id, "")
+		out.Loaded = load.Packs
+		return err
+	})
+	return out, err
+}
+
+// Execution reads a load execution.
+func (r Reads) Execution(ctx context.Context, tenant phy.TenantID, id phy.LoadExecutionID) (ExecutionRead, error) {
+	if tenant == "" || id == "" {
+		return ExecutionRead{}, ErrInvalidQuery
+	}
+	var out ExecutionRead
+	err := r.Tx.WithinTransaction(ctx, func(txCtx context.Context) error {
+		var err error
+		out.Execution, out.Revision, err = r.Executions.Read(txCtx, tenant, id)
+		return err
+	})
+	return out, err
+}
+
+// Evidence reads a shipment's lots and the load executions with lines of it, in one snapshot.
+func (r Reads) Evidence(ctx context.Context, tenant phy.TenantID, shipment phy.ShipmentID) ([]LotRead, []ExecutionRead, error) {
+	if tenant == "" || shipment == "" {
+		return nil, nil, ErrInvalidQuery
+	}
+	var lots []LotRead
+	var executions []ExecutionRead
+	err := r.Tx.WithinTransaction(ctx, func(txCtx context.Context) error {
+		var err error
+		if lots, err = r.Lots.ByShipment(txCtx, tenant, shipment); err != nil {
+			return err
+		}
+		executions, err = r.Executions.ByShipment(txCtx, tenant, shipment)
+		return err
+	})
+	return lots, executions, err
+}
+
+// OpenDiscrepancies lists open discrepancies by the time they were raised.
+func (r Reads) OpenDiscrepancies(ctx context.Context, tenant phy.TenantID, f DiscrepancyFilter) ([]OpenDiscrepancy, error) {
+	if f.Limit == 0 {
+		f.Limit = 50
+	}
+	if tenant == "" || f.Limit < 1 || f.Limit > 200 {
+		return nil, ErrInvalidQuery
+	}
+	var out []OpenDiscrepancy
+	err := r.Tx.WithinTransaction(ctx, func(txCtx context.Context) error {
+		var err error
+		out, err = r.Discrepancies.ListOpen(txCtx, tenant, f)
 		return err
 	})
 	return out, err
