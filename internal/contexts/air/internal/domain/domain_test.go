@@ -329,3 +329,165 @@ func TestHouseTakesRelayedMeasures(t *testing.T) {
 		t.Fatal("measures need FUL's evidence version")
 	}
 }
+
+// AIR V0.3: a movement's facts are finalized for DOC once every house is on PHY's measures, cleared by screening
+// with the evidence and described; FUL's current plan of every house must match what AIR froze. A later change
+// returns the movement to OPEN, and the next finalization publishes the next version.
+func TestFinalizeDocFacts(t *testing.T) {
+	m := opened(t)
+	at := t0.Add(time.Hour)
+	screened := func(lot, outcome, ref string) Screening {
+		return Screening{LotID: lot, Outcome: outcome, Screener: "PVG cargo security", Method: "XRY", Reference: ref, ScreenedAt: t0.Add(30 * time.Minute)}
+	}
+	ready := func(shipment string) Plan {
+		p := plan(shipment, 2)
+		p.EvidenceVersion, p.MeasuredBasis, p.MeasuredPieces, p.Security = 3, BasisTendered, 6, SecurityCleared
+		p.MeasuredWeight, p.MeasuredVolume = kernel.Quantity{Unit: "GRM", Amount: 318_000}, kernel.Quantity{Unit: "MTQ", Amount: 1}
+		p.Parts[0].GoodsDescription = "Auto parts, cartons"
+		p.Screenings = []Screening{screened("L-"+shipment, "PASSED", "X-"+shipment)}
+		return p
+	}
+	if err := m.Finalize(nil, "ops-1", at); !errors.Is(err, ErrNotFinalizable) {
+		t.Fatalf("no house: %v", err)
+	}
+	if err := m.Associate(plan("SH-1", 2), "SHA1", "ops-1", at); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Finalize([]Plan{plan("SH-1", 2)}, "ops-1", at); !errors.Is(err, ErrNotFinalizable) {
+		t.Fatalf("planned quantities: %v", err)
+	}
+	// in this order, each case's measures or screenings differ from the one before, so each refresh takes
+	for _, tc := range []struct {
+		name   string
+		change func(*Plan)
+	}{
+		{"no description", func(p *Plan) { p.Parts[0].GoodsDescription = "" }},
+		{"pending", func(p *Plan) { p.Security = SecurityPending }},
+		{"no evidence", func(p *Plan) { p.Screenings = nil }},
+		{"failed lot", func(p *Plan) { p.Screenings = append(p.Screenings, screened("L-2", "FAILED", "X-2")) }},
+		{"no volume", func(p *Plan) { p.MeasuredVolume = kernel.Quantity{} }},
+	} {
+		p := ready("SH-1")
+		tc.change(&p)
+		if err := m.Refresh(p, "ops-1", at); err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if err := m.Finalize([]Plan{p}, "ops-1", at); !errors.Is(err, ErrNotFinalizable) {
+			t.Errorf("%s: %v", tc.name, err)
+		}
+	}
+	if err := m.Refresh(ready("SH-1"), "ops-1", at); err != nil {
+		t.Fatal(err)
+	}
+	newer := ready("SH-1")
+	newer.PlanVersion, newer.Revision = 3, 4
+	moved := ready("SH-1")
+	moved.ConsolidationID = "C-2"
+	remeasured := ready("SH-1")
+	remeasured.MeasuredWeight.Amount = 320_000
+	for name, current := range map[string][]Plan{"not read": nil, "newer plan": {newer}, "transferred": {moved}, "remeasured": {remeasured}} {
+		if err := m.Finalize(current, "ops-1", at); !errors.Is(err, ErrNotFinalizable) {
+			t.Errorf("stale, %s: %v", name, err)
+		}
+	}
+	if err := m.Associate(ready("SH-2"), "SHA2", "ops-1", at); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Finalize([]Plan{ready("SH-1"), ready("SH-2")}, "", at); !errors.Is(err, ErrInvalidChange) {
+		t.Fatalf("no author: %v", err)
+	}
+	if err := m.Finalize([]Plan{ready("SH-1"), ready("SH-2")}, "ops-2", at.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	v, current, ok := m.LatestDocFacts()
+	f := v.Facts
+	if !ok || !current || m.State().State != StateFinal || v.No != 1 || v.SHA256 != Digest(v.Content) || v.By != "ops-2" {
+		t.Fatalf("version 1: %+v %v %v", v, current, ok)
+	}
+	if f.MAWB != "781-12345675" || f.MAWBSource != MAWBSourceBooking || f.SecurityStatus != SecuritySPX || f.Pieces != 12 || f.GrossWeightGrams != 636_000 ||
+		f.VolumeCubicCentimetres != 2_000_000 || f.ChargeableGrams != 636_000 || len(f.Flights) != 1 || f.Flights[0].Flight != "MU587" ||
+		f.Origin.IATA != "PVG" || f.Airline.AWBPrefix != "781" || len(f.Houses) != 2 {
+		t.Fatalf("master: %+v", f)
+	}
+	h := f.Houses[0]
+	if h.HAWB != "SHA1" || h.Basis != BasisTendered || h.EvidenceVersion != 3 || h.GrossWeightGrams != 318_000 || h.VolumeCubicCentimetres != 1_000_000 ||
+		h.ChargeableGrams != 318_000 || h.SecurityStatus != SecuritySPX || len(h.Screenings) != 1 || h.Screenings[0].Reference != "X-SH-1" ||
+		h.Parts[0].GoodsDescription != "Auto parts, cartons" {
+		t.Fatalf("house: %+v", h)
+	}
+	if e := m.Pending()[len(m.Pending())-1]; e.Type != eventFinalized || e.FactsVersion != 1 || e.BookingID != "BK-1" {
+		t.Fatalf("event: %+v", e)
+	}
+	if err := m.Finalize([]Plan{ready("SH-1"), ready("SH-2")}, "ops-2", at.Add(time.Minute)); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("finalized already: %v", err)
+	}
+	if err := m.Cancel("no cargo", "ops-2", at.Add(time.Minute)); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("cancel a FINAL movement: %v", err)
+	}
+	// a stored version is read back from its published bytes alone, whatever the facts type renders today; bytes
+	// that do not match their digest do not restore; a FINAL movement whose houses are not those of its latest
+	// version restores, and the version reads as not current
+	stored := m.State()
+	stored.DocFacts = []DocFactsVersion{{No: 1, Content: v.Content, SHA256: v.SHA256, By: v.By, At: v.At}}
+	back, err := RestoreMovement(stored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rv, current, _ := back.LatestDocFacts(); !current || rv.Facts.Houses[1].Parts[0].GoodsDescription != "Auto parts, cartons" || rv.Facts.MAWB != f.MAWB {
+		t.Fatalf("read back: %+v", rv.Facts)
+	}
+	extended := stored
+	extended.DocFacts = []DocFactsVersion{{No: 1, Content: append([]byte(`{"future_field":1,`), v.Content[1:]...), By: v.By, At: v.At}}
+	extended.DocFacts[0].SHA256 = Digest(extended.DocFacts[0].Content)
+	if _, err = RestoreMovement(extended); err != nil {
+		t.Fatalf("content with a field this code does not know: %v", err)
+	}
+	tampered := stored
+	tampered.DocFacts = []DocFactsVersion{{No: 1, Content: append(append([]byte(nil), v.Content[:len(v.Content)-1]...), ' ', '}'), SHA256: v.SHA256,
+		By: v.By, At: v.At}}
+	if _, err = RestoreMovement(tampered); err == nil {
+		t.Fatal("bytes that do not match their digest")
+	}
+	drifted := m.State()
+	drifted.Entries = append([]Entry(nil), drifted.Entries...)
+	drifted.Entries[len(drifted.Entries)-1].PlanVersion = 9
+	if d, err := RestoreMovement(drifted); err != nil {
+		t.Fatal(err)
+	} else if _, current, _ := d.LatestDocFacts(); current {
+		t.Fatal("a version that no longer describes the houses is not current")
+	}
+	// a new screening reference is a change: the movement is OPEN again and version 1 superseded
+	rescreened := ready("SH-2")
+	rescreened.Screenings[0].Reference = "X-SH-2-B"
+	if err := m.Refresh(rescreened, "ops-1", at.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, current, _ := m.LatestDocFacts(); current || m.State().State != StateOpen {
+		t.Fatal("a change returns the movement to OPEN")
+	}
+	if p := m.Pending(); p[len(p)-2].Type != eventSuperseded || p[len(p)-2].FactsVersion != 1 || p[len(p)-1].Type != eventRefreshed {
+		t.Fatalf("superseded, then refreshed: %+v", p[len(p)-2:])
+	}
+	if err := m.Finalize([]Plan{ready("SH-1"), rescreened}, "ops-2", at.Add(3*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if v1, current, ok := m.DocFactsVersion(1); !ok || current || v1.Facts.Houses[1].Screenings[0].Reference != "X-SH-2" {
+		t.Fatal("version 1 stays as published, superseded")
+	}
+	if v2, current, ok := m.DocFactsVersion(2); !ok || !current || v2.Facts.Houses[1].Screenings[0].Reference != "X-SH-2-B" {
+		t.Fatal("version 2 current")
+	}
+	// a schedule change from FINAL returns it to OPEN too
+	if err := m.LinkBooking(booking(2, t0.Add(80*time.Hour)), "ops-1", at.Add(4*time.Minute)); err != nil || m.State().State != StateOpen {
+		t.Fatalf("relink from FINAL: %v", err)
+	}
+	if _, err := RestoreMovement(m.State()); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.LinkBooking(booking(3, t0.Add(100*time.Hour)), "ops-1", at.Add(5*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Finalize([]Plan{ready("SH-1"), rescreened}, "ops-2", at.Add(6*time.Minute)); !errors.Is(err, ErrNotFinalizable) {
+		t.Fatalf("a flight outside the houses' window: %v", err)
+	}
+}

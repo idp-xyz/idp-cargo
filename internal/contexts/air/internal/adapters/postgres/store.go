@@ -94,6 +94,25 @@ type (
 		GrossWeight       int64  `json:"gross_weight"`
 		VolumeUnit        string `json:"volume_unit"`
 		Volume            int64  `json:"volume"`
+		GoodsDescription  string `json:"goods_description"`
+	}
+	screeningRow struct {
+		EntryNo     int       `json:"entry_no"`
+		ScreeningNo int       `json:"screening_no"`
+		LotID       string    `json:"lot_id"`
+		Outcome     string    `json:"outcome"`
+		Screener    string    `json:"screener"`
+		Method      string    `json:"method"`
+		Reference   string    `json:"reference"`
+		ScreenedAt  time.Time `json:"screened_at"`
+	}
+	docFactsRow struct {
+		VersionNo   int       `json:"version_no"`
+		Content     string    `json:"content"` // the JSON as published, kept as text so that its bytes keep their digest
+		SHA256      string    `json:"content_sha256"`
+		FinalizedBy string    `json:"finalized_by"`
+		FinalizedAt time.Time `json:"finalized_at"`
+		EnteredAt   time.Time `json:"entered_at"`
 	}
 )
 
@@ -161,16 +180,17 @@ func readMovement(ctx context.Context, q queryRower, tenant air.TenantID, id air
 	var cancelReason, cancelledBy *string
 	var cancelledAt *time.Time
 	var revision int64
-	var links, segments, entries, parts []byte
+	var links, segments, entries, parts, screenings, docs []byte
 	err := q.QueryRow(ctx, `SELECT m.consolidation_id, m.operating_legal_entity_id, m.airline_party_id, m.airline_party_revision, m.airline_designator,
         m.awb_prefix, m.origin_code, m.origin_iata, m.destination_code, m.destination_iata, m.location_edition, m.state, m.mawb_number, m.mawb_status,
         m.mawb_booking_id, m.mawb_capacity_version, m.cancel_reason, m.cancelled_by, m.cancelled_at, m.revision, `+
 		child("booking_link", "x.link_no")+`, `+child("flight_segment", "x.link_no, x.segment_no")+`, `+child("house_waybill", "x.entry_no")+`, `+
-		child("house_waybill_part", "x.entry_no, x.part_no")+`
+		child("house_waybill_part", "x.entry_no, x.part_no")+`, `+child("house_waybill_screening", "x.entry_no, x.screening_no")+`, `+
+		child("air_doc_facts_version", "x.version_no")+`
       FROM cargo_air.air_movement m WHERE m.tenant_id=$1 AND m.movement_id=$2`, string(tenant), string(id)).Scan(
 		&st.ConsolidationID, &st.LegalEntityID, &st.Airline.PartyID, &st.Airline.PartyRevision, &st.Airline.Designator, &st.Airline.AWBPrefix,
 		&originCode, &originIATA, &destCode, &destIATA, &st.Edition, &state, &st.MAWB.Number, &mawbStatus, &st.MAWB.BookingID, &st.MAWB.CapacityVersion,
-		&cancelReason, &cancelledBy, &cancelledAt, &revision, &links, &segments, &entries, &parts)
+		&cancelReason, &cancelledBy, &cancelledAt, &revision, &links, &segments, &entries, &parts, &screenings, &docs)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, 0, fmt.Errorf("%w: movement %s", bentorepo.ErrNotFound, id)
 	}
@@ -181,7 +201,10 @@ func readMovement(ctx context.Context, q queryRower, tenant air.TenantID, id air
 	var sr []segmentRow
 	var er []entryRow
 	var pr []partRow
-	if err = errors.Join(json.Unmarshal(links, &lr), json.Unmarshal(segments, &sr), json.Unmarshal(entries, &er), json.Unmarshal(parts, &pr)); err != nil {
+	var xr []screeningRow
+	var dr []docFactsRow
+	if err = errors.Join(json.Unmarshal(links, &lr), json.Unmarshal(segments, &sr), json.Unmarshal(entries, &er), json.Unmarshal(parts, &pr),
+		json.Unmarshal(screenings, &xr), json.Unmarshal(docs, &dr)); err != nil {
 		return nil, 0, err
 	}
 	st.Origin, st.Destination = airport(originCode, originIATA), airport(destCode, destIATA)
@@ -210,10 +233,21 @@ func readMovement(ctx context.Context, q queryRower, tenant air.TenantID, id air
 		for _, p := range pr {
 			if p.EntryNo == e.EntryNo {
 				entry.Facts.Parts = append(entry.Facts.Parts, air.Part{ObligationID: p.ObligationID, ObligationVersion: p.ObligationVersion, OrderID: p.OrderID,
-					Packs: p.Packs, PackageType: p.PackageType, GrossWeight: quantity(p.GrossWeightUnit, p.GrossWeight), Volume: quantity(p.VolumeUnit, p.Volume)})
+					Packs: p.Packs, PackageType: p.PackageType, GrossWeight: quantity(p.GrossWeightUnit, p.GrossWeight), Volume: quantity(p.VolumeUnit, p.Volume),
+					GoodsDescription: p.GoodsDescription})
+			}
+		}
+		for _, x := range xr {
+			if x.EntryNo == e.EntryNo {
+				entry.Facts.Screenings = append(entry.Facts.Screenings, air.Screening{LotID: x.LotID, Outcome: x.Outcome, Screener: x.Screener,
+					Method: x.Method, Reference: x.Reference, ScreenedAt: utc(x.ScreenedAt)})
 			}
 		}
 		st.Entries = append(st.Entries, entry)
+	}
+	for _, d := range dr {
+		st.DocFacts = append(st.DocFacts, air.DocFactsVersion{No: d.VersionNo, Content: []byte(d.Content), SHA256: d.SHA256, By: d.FinalizedBy,
+			At: utc(d.FinalizedAt), EnteredAt: utc(d.EnteredAt)})
 	}
 	m, err := air.RestoreMovement(st)
 	return m, revision, err
@@ -247,7 +281,7 @@ func (s MovementStore) Insert(ctx context.Context, m *air.Movement) (int64, erro
 	if err != nil {
 		return 0, err
 	}
-	return revision, s.writeAdded(ctx, q, m)
+	return revision, s.writeAdded(ctx, q, m, revision)
 }
 
 // Save writes the state and what the movement added or ended since it was loaded, if the stored revision is
@@ -272,10 +306,12 @@ func (s MovementStore) Save(ctx context.Context, m *air.Movement, expected int64
 	if err != nil {
 		return 0, err
 	}
-	return revision, s.writeAdded(ctx, q, m)
+	return revision, s.writeAdded(ctx, q, m, revision)
 }
 
-func (s MovementStore) writeAdded(ctx context.Context, q bentopg.Executor, m *air.Movement) error {
+// writeAdded writes what the movement added or ended; a doc facts version names the movement revision the
+// transaction writes, which the commit checks hold a FINAL movement to.
+func (s MovementStore) writeAdded(ctx context.Context, q bentopg.Executor, m *air.Movement, revision int64) error {
 	st := m.State()
 	exec := func(sql string, args ...any) error {
 		_, err := q.Exec(ctx, sql, append([]any{string(st.TenantID), string(st.MovementID)}, args...)...)
@@ -325,11 +361,24 @@ func (s MovementStore) writeAdded(ctx context.Context, q bentopg.Executor, m *ai
 		}
 		for i, p := range f.Parts {
 			if err := exec(`INSERT INTO cargo_air.house_waybill_part (tenant_id,movement_id,entry_no,part_no,obligation_id,obligation_version,order_id,packs,
-                package_type,gross_weight_unit,gross_weight,volume_unit,volume) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`, e.No, i+1,
-				p.ObligationID, p.ObligationVersion, p.OrderID, p.Packs, p.PackageType, string(p.GrossWeight.Unit), p.GrossWeight.Amount,
-				orNull(string(p.Volume.Unit)), orNull(p.Volume.Amount)); err != nil {
+                package_type,gross_weight_unit,gross_weight,volume_unit,volume,goods_description) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+				e.No, i+1, p.ObligationID, p.ObligationVersion, p.OrderID, p.Packs, p.PackageType, string(p.GrossWeight.Unit), p.GrossWeight.Amount,
+				orNull(string(p.Volume.Unit)), orNull(p.Volume.Amount), orNull(p.GoodsDescription)); err != nil {
 				return err
 			}
+		}
+		for i, x := range f.Screenings {
+			if err := exec(`INSERT INTO cargo_air.house_waybill_screening (tenant_id,movement_id,entry_no,screening_no,lot_id,outcome,screener,method,
+                reference,screened_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, e.No, i+1, x.LotID, x.Outcome, x.Screener, x.Method, x.Reference,
+				x.ScreenedAt); err != nil {
+				return err
+			}
+		}
+	}
+	for _, v := range m.AddedDocFacts() {
+		if err := exec(`INSERT INTO cargo_air.air_doc_facts_version (tenant_id,movement_id,version_no,content,content_sha256,movement_revision,finalized_by,
+            finalized_at,entered_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, v.No, string(v.Content), v.SHA256, revision, v.By, v.At, v.EnteredAt); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -489,10 +538,10 @@ func (s CommandReceipts) Find(ctx context.Context, tenant air.TenantID, id strin
 		return app.Receipt{}, false, err
 	}
 	r := app.Receipt{CommandID: id}
-	var entry *int
+	var entry, facts *int
 	var hawb *string
-	err = q.QueryRow(ctx, `SELECT request_sha256,result_id,result_revision,result_entry_no,result_hawb FROM cargo_air.command_receipt
-      WHERE tenant_id=$1 AND command_id=$2`, string(tenant), id).Scan(&r.RequestHash, &r.SubjectID, &r.NewRevision, &entry, &hawb)
+	err = q.QueryRow(ctx, `SELECT request_sha256,result_id,result_revision,result_entry_no,result_hawb,result_facts_version FROM cargo_air.command_receipt
+      WHERE tenant_id=$1 AND command_id=$2`, string(tenant), id).Scan(&r.RequestHash, &r.SubjectID, &r.NewRevision, &entry, &hawb, &facts)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return app.Receipt{}, false, nil
 	}
@@ -501,6 +550,9 @@ func (s CommandReceipts) Find(ctx context.Context, tenant air.TenantID, id strin
 	}
 	if entry != nil {
 		r.EntryNo = *entry
+	}
+	if facts != nil {
+		r.FactsVersion = *facts
 	}
 	r.HAWB = deref(hawb)
 	return r, true, nil
@@ -512,7 +564,8 @@ func (s CommandReceipts) Save(ctx context.Context, tenant air.TenantID, r app.Re
 		return err
 	}
 	_, err = q.Exec(ctx, `INSERT INTO cargo_air.command_receipt (tenant_id,command_id,request_sha256,result_type,result_id,result_revision,result_entry_no,
-      result_hawb) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, string(tenant), r.CommandID, r.RequestHash, kind, r.SubjectID, r.NewRevision, orNull(r.EntryNo), orNull(r.HAWB))
+      result_hawb,result_facts_version) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, string(tenant), r.CommandID, r.RequestHash, kind, r.SubjectID, r.NewRevision,
+		orNull(r.EntryNo), orNull(r.HAWB), orNull(r.FactsVersion))
 	return err
 }
 
@@ -536,7 +589,8 @@ func AIREnvelope(commandID string, e air.Event, recordedAt time.Time) (eventing.
 	digest := sha256.Sum256([]byte(commandID + "\x00" + e.Type + "\x00" + string(e.TenantID) + "\x00" + e.SubjectID + "\x00" + e.ShipmentID + "\x00" +
 		strconv.Itoa(e.EntryNo)))
 	payload, err := json.Marshal(api.EventPayload{TenantID: string(e.TenantID), SubjectID: e.SubjectID, ConsolidationID: e.ConsolidationID,
-		ShipmentID: e.ShipmentID, EntryNo: e.EntryNo, BookingID: e.BookingID, CapacityVersion: e.CapacityVersion, Reason: e.Reason})
+		ShipmentID: e.ShipmentID, EntryNo: e.EntryNo, BookingID: e.BookingID, CapacityVersion: e.CapacityVersion, Reason: e.Reason,
+		FactsVersion: e.FactsVersion})
 	if err != nil {
 		return eventing.Envelope{}, err
 	}
@@ -549,5 +603,6 @@ func AIREnvelope(commandID string, e air.Event, recordedAt time.Time) (eventing.
 // Conflict reports whether a commit failed on one of AIR's deferred checks.
 func Conflict(err error) bool {
 	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == "23514" && (pgErr.ConstraintName == "house_waybill_consistent" || pgErr.ConstraintName == "air_movement_consistent")
+	return errors.As(err, &pgErr) && pgErr.Code == "23514" && (pgErr.ConstraintName == "house_waybill_consistent" ||
+		pgErr.ConstraintName == "air_movement_consistent" || pgErr.ConstraintName == "air_doc_facts_consistent")
 }

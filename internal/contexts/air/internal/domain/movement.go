@@ -7,11 +7,13 @@ import (
 	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
-// State is an air movement's state; FINAL comes with AirDocFacts v1 once PHY's measures and screening reach AIR.
+// State is an air movement's state: OPEN; FINAL once its facts are finalized for DOC (AirDocFacts v1), until a
+// change returns it to OPEN; CANCELLED.
 type State string
 
 const (
 	StateOpen      State = "OPEN"
+	StateFinal     State = "FINAL"
 	StateCancelled State = "CANCELLED"
 )
 
@@ -77,6 +79,7 @@ type Plan struct {
 	MeasuredWeight  kernel.Quantity
 	MeasuredVolume  kernel.Quantity
 	Security        string
+	Screenings      []Screening // the lots' latest screening results
 }
 
 // Facts are a house's frozen quantities with its documented chargeable weight in grams.
@@ -87,8 +90,9 @@ type Facts struct {
 	ChargeableGrams int64
 	Rule            string
 	Basis           string
-	Evidence        int    // FUL's evidence version the measures came from; 0 for PLANNED
-	Security        string // the security state FUL relayed with them
+	Evidence        int         // FUL's evidence version the measures came from; 0 for PLANNED
+	Security        string      // the security state FUL relayed with them
+	Screenings      []Screening // the screening evidence FUL relayed with them
 	Parts           []Part
 }
 
@@ -141,6 +145,7 @@ type MovementState struct {
 	MAWB            MAWB
 	Links           []Link
 	Entries         []Entry
+	DocFacts        []DocFactsVersion
 	CancelReason    string
 	CancelledBy     string
 	CancelledAt     time.Time
@@ -151,6 +156,7 @@ type Movement struct {
 	state   MovementState
 	links   int
 	entries int
+	docs    int
 	ended   []int
 	pending []Event
 }
@@ -167,6 +173,7 @@ type Event struct {
 	BookingID       string
 	CapacityVersion int
 	Reason          string
+	FactsVersion    int
 }
 
 const (
@@ -178,6 +185,8 @@ const (
 	eventRefreshed  = "HouseWaybillFactsRefreshed.v1"
 	eventEnded      = "HouseWaybillAssociationEnded.v1"
 	eventCancelled  = "AirMovementCancelled.v1"
+	eventFinalized  = "AirDocFactsFinalized.v1"
+	eventSuperseded = "AirDocFactsSuperseded.v1"
 )
 
 // OpenMovement opens the air movement of a consolidation from its booking: an air consolidation booking in force,
@@ -247,7 +256,7 @@ func checkSegments(segments []Segment, origin, destination Airport, designator s
 // LinkBooking takes a newer capacity version of the movement's booking: same booking, airline, consolidation,
 // route and MAWB; the flights are replaced and the old ones kept. Houses stay as they are.
 func (m *Movement) LinkBooking(b Booking, by string, at time.Time) error {
-	if m.state.State != StateOpen {
+	if !m.open() {
 		return ErrInvalidTransition
 	}
 	if err := b.check(m.state.ConsolidationID); err != nil {
@@ -266,6 +275,7 @@ func (m *Movement) LinkBooking(b Booking, by string, at time.Time) error {
 	if err := m.changeable(by, at); err != nil {
 		return err
 	}
+	m.reopen(at)
 	m.addLink(b, by, at)
 	m.record(eventLinked, at, "", 0, "")
 	return nil
@@ -283,7 +293,7 @@ func (m *Movement) addLink(b Booking, by string, at time.Time) {
 // admits checks a house's plan against the movement.
 func (m *Movement) admits(p Plan) error {
 	switch {
-	case m.state.State != StateOpen:
+	case !m.open():
 		return ErrInvalidTransition
 	case p.Status != "PLANNED" || p.Mode != "AIR" || p.ConsolidationID != m.state.ConsolidationID || p.LegalEntityID != m.state.LegalEntityID ||
 		p.Origin != m.state.Origin.Code || p.Destination != m.state.Destination.Code:
@@ -300,6 +310,18 @@ func (m *Movement) admits(p Plan) error {
 func facts(p Plan) (Facts, error) {
 	f := Facts{Pieces: p.Pieces, GrossWeight: p.GrossWeight, Volume: p.Volume, Basis: BasisPlanned, Security: p.Security, Rule: ChargeableRule,
 		Parts: append([]Part(nil), p.Parts...)}
+	for _, s := range p.Screenings {
+		if !s.valid() {
+			return Facts{}, fmt.Errorf("%w: screening of %s", ErrInvalidChange, p.ShipmentID)
+		}
+		s.ScreenedAt = s.ScreenedAt.UTC()
+		f.Screenings = append(f.Screenings, s)
+	}
+	for _, part := range f.Parts {
+		if part.GoodsDescription != "" && !text(part.GoodsDescription) {
+			return Facts{}, fmt.Errorf("%w: goods description of %s", ErrInvalidChange, p.ShipmentID)
+		}
+	}
 	if p.MeasuredBasis != "" {
 		if !basisValid(p.MeasuredBasis) || p.MeasuredBasis == BasisPlanned || p.EvidenceVersion < 1 || p.MeasuredPieces < 1 {
 			return Facts{}, fmt.Errorf("%w: measures of %s", ErrInvalidChange, p.ShipmentID)
@@ -327,9 +349,10 @@ func facts(p Plan) (Facts, error) {
 	return f, nil
 }
 
-// sameMeasures reports whether two facts document the same quantities and security state.
+// sameMeasures reports whether two facts document the same quantities, security state and screening evidence.
 func sameMeasures(a, b Facts) bool {
-	return a.Pieces == b.Pieces && a.GrossWeight == b.GrossWeight && a.Volume == b.Volume && a.Basis == b.Basis && a.Security == b.Security
+	return a.Pieces == b.Pieces && a.GrossWeight == b.GrossWeight && a.Volume == b.Volume && a.Basis == b.Basis && a.Security == b.Security &&
+		sameScreenings(a.Screenings, b.Screenings)
 }
 
 // Associate associates a house that FUL reports attached to the consolidation, with its HAWB number.
@@ -352,6 +375,7 @@ func (m *Movement) Associate(p Plan, hawb, by string, at time.Time) error {
 	if err = m.changeable(by, at); err != nil {
 		return err
 	}
+	m.reopen(at)
 	no := m.addEntry(p, hawb, f, StartAssociated, 0, by, at)
 	m.record(eventAssociated, at, p.ShipmentID, no, "")
 	return nil
@@ -377,6 +401,7 @@ func (m *Movement) Refresh(p Plan, by string, at time.Time) error {
 	if err = m.changeable(by, at); err != nil {
 		return err
 	}
+	m.reopen(at)
 	old := m.state.Entries[i]
 	m.end(i, EndRefreshed, len(m.state.Entries)+1, by, at) // entries are numbered across the movement
 	no := m.addEntry(p, old.HAWB, f, StartRefreshed, old.No, by, at)
@@ -387,7 +412,7 @@ func (m *Movement) Refresh(p Plan, by string, at time.Time) error {
 // EndAssociation ends a house's entry once FUL no longer reports the shipment attached to the consolidation:
 // TRANSFERRED when attached to another, DETACHED when to none, SHIPMENT_CANCELLED when cancelled.
 func (m *Movement) EndAssociation(p Plan, by string, at time.Time) error {
-	if m.state.State != StateOpen {
+	if !m.open() {
 		return ErrInvalidTransition
 	}
 	i, err := m.live(p.ShipmentID)
@@ -406,6 +431,7 @@ func (m *Movement) EndAssociation(p Plan, by string, at time.Time) error {
 	if err = m.changeable(by, at); err != nil {
 		return err
 	}
+	m.reopen(at)
 	m.end(i, kind, 0, by, at)
 	m.record(eventEnded, at, p.ShipmentID, m.state.Entries[i].No, kind)
 	return nil
@@ -472,6 +498,9 @@ func (m *Movement) lastChange() time.Time {
 	for _, e := range m.state.Entries {
 		last = later(later(last, e.At), e.EndedAt)
 	}
+	for _, v := range m.state.DocFacts {
+		last = later(last, v.At)
+	}
 	return last
 }
 
@@ -535,13 +564,17 @@ func (m *Movement) Stamp(entered time.Time) {
 			e.EndEnteredAt = entered.UTC()
 		}
 	}
+	for i := m.docs; i < len(m.state.DocFacts); i++ {
+		m.state.DocFacts[i].EnteredAt = entered.UTC()
+	}
 }
 
 // RestoreMovement rebuilds a stored movement without emitting events.
 func RestoreMovement(st MovementState) (*Movement, error) {
 	st.Links = append([]Link(nil), st.Links...)
 	st.Entries = append([]Entry(nil), st.Entries...)
-	m := &Movement{state: st, links: len(st.Links), entries: len(st.Entries)}
+	st.DocFacts = append([]DocFactsVersion(nil), st.DocFacts...)
+	m := &Movement{state: st, links: len(st.Links), entries: len(st.Entries), docs: len(st.DocFacts)}
 	if err := m.validate(); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidMovement, err)
 	}
@@ -555,7 +588,7 @@ func (m *Movement) validate() error {
 	case !identifier(string(st.TenantID)) || !identifier(string(st.MovementID)) || !identifier(st.ConsolidationID) || !identifier(st.LegalEntityID) ||
 		!st.Airline.valid() || !st.Origin.valid() || !st.Destination.valid():
 		return fmt.Errorf("identity")
-	case st.State != StateOpen && !cancelled:
+	case st.State != StateOpen && st.State != StateFinal && !cancelled:
 		return fmt.Errorf("state %s", st.State)
 	case !ValidMAWB(st.MAWB.Number) || st.MAWB.Number[:3] != st.Airline.AWBPrefix || st.MAWB.Voided != cancelled:
 		return fmt.Errorf("MAWB")
@@ -576,6 +609,11 @@ func (m *Movement) validate() error {
 			e.Facts.ChargeableGrams < 1 || blank(e.By) || e.At.IsZero() || !basisValid(e.Facts.Basis) || e.Facts.Evidence < 0 ||
 			(e.Facts.Basis != BasisPlanned && e.Facts.Evidence < 1) || !securityValid(e.Facts.Security) {
 			return fmt.Errorf("entry %d", i+1)
+		}
+		for _, s := range e.Facts.Screenings {
+			if !s.valid() {
+				return fmt.Errorf("entry %d screening", i+1)
+			}
 		}
 		switch e.Start {
 		case StartAssociated:
@@ -613,7 +651,7 @@ func (m *Movement) validate() error {
 			return fmt.Errorf("entry %d end", i+1)
 		}
 	}
-	return nil
+	return m.readDocFacts()
 }
 
 // State returns a copy of the movement for persistence and read models.
@@ -621,6 +659,7 @@ func (m *Movement) State() MovementState {
 	st := m.state
 	st.Links = append([]Link(nil), st.Links...)
 	st.Entries = append([]Entry(nil), st.Entries...)
+	st.DocFacts = append([]DocFactsVersion(nil), st.DocFacts...)
 	return st
 }
 
@@ -637,10 +676,13 @@ func (m *Movement) Added() ([]Link, []Entry, map[int]Entry) {
 	return m.state.Links[m.links:], m.state.Entries[m.entries:], ended
 }
 
+// AddedDocFacts returns the AirDocFacts versions published since the movement was loaded.
+func (m *Movement) AddedDocFacts() []DocFactsVersion { return m.state.DocFacts[m.docs:] }
+
 // Acknowledge is permitted only after the transaction holding the movement and its Outbox events commits.
 func (m *Movement) Acknowledge() {
 	m.pending, m.ended = nil, nil
-	m.links, m.entries = len(m.state.Links), len(m.state.Entries)
+	m.links, m.entries, m.docs = len(m.state.Links), len(m.state.Entries), len(m.state.DocFacts)
 }
 
 func utc(t time.Time) time.Time {

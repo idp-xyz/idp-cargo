@@ -40,7 +40,7 @@ func (o Obligations) Plannable(ctx context.Context, tenant ful.TenantID, id ful.
 	return ful.ObligationRef{
 		ObligationID: id, ObligationVersion: version, OrderID: s.OrderID, CustomerPartyID: s.Customer.PartyID,
 		LegalEntityID: s.LegalEntityID, Packs: s.Packs, PackageType: s.PackageType, GrossWeight: s.GrossWeight, Volume: s.Volume,
-		RequestedMode: ful.TransportMode(s.RequestedTransportMode),
+		Description: s.Description, RequestedMode: ful.TransportMode(s.RequestedTransportMode),
 	}, nil
 }
 

@@ -1,4 +1,4 @@
-// Package api is the published language of AIR (Air Freight) V0.1: the air movement of an air
+// Package api is the published language of AIR (Air Freight) V0.1 to V0.3: the air movement of an air
 // consolidation, its master air waybill (MAWB) number and flights taken from the airline's booking confirmation,
 // and the house air waybill (HAWB) of every house. It imports only the standard library and the kernel.
 //
@@ -7,7 +7,9 @@
 // are, while another airline or another MAWB is a new movement. The MAWB number and flights come only from
 // BOOK's CarrierBooking v1 (decision N1-PHY OD-7). A house is a FUL shipment attached to the consolidation, as FUL
 // reports it in AirOperationPlan v1 (OD-2); AIR draws its HAWB number from the operating legal entity's series
-// when it associates the house, and DOC prints it (decision N1-HAWB). Issuing the waybills stays with DOC.
+// when it associates the house, and DOC prints it (decision N1-HAWB). Once PHY's measures and screening reach the
+// houses, AIR finalizes the movement's facts for DOC as numbered versions of AirDocFacts v1 (relationship 11);
+// issuing the waybills stays with DOC.
 package api
 
 import (
@@ -98,6 +100,23 @@ type EndHouseWaybillAssociation struct {
 	OccurredAt       time.Time
 }
 
+// FinalizeAirDocFacts finalizes the movement's facts for DOC as the next version of AirDocFacts v1 and makes the
+// movement FINAL. AIR first reads FUL's AirOperationPlan v1 of every live house (T3): each must still report the
+// house attached with the plan version and measures AIR froze (else refresh or end it first). The movement needs
+// at least one live house, and every house PHY's measures (basis RECEIVED or TENDERED) with a measured volume,
+// screening cleared with the lots' screening evidence (security status SPX), the goods description of every part,
+// and a departure window that contains the first flight's ETD. Any later change to the movement (flights, houses)
+// returns it to OPEN and supersedes the version, which stays as published; the next finalization publishes the
+// next version. The receipt names the version.
+type FinalizeAirDocFacts struct {
+	CommandID        string
+	TenantID         string
+	ActorID          string
+	MovementID       string
+	ExpectedRevision int64
+	OccurredAt       time.Time
+}
+
 // CancelAirMovement cancels an open movement without houses, with a reason; its MAWB number is voided.
 type CancelAirMovement struct {
 	CommandID        string
@@ -110,13 +129,15 @@ type CancelAirMovement struct {
 }
 
 // Receipt confirms a committed command. Replaying the same command returns the same receipt. House commands also
-// name the house entry and its HAWB; RegisterHawbSeries names the legal entity in MovementID's place.
+// name the house entry and its HAWB, FinalizeAirDocFacts the AirDocFacts version; RegisterHawbSeries names the
+// legal entity in MovementID's place.
 type Receipt struct {
-	CommandID   string
-	MovementID  string
-	NewRevision int64
-	EntryNo     int
-	HAWB        string
+	CommandID    string
+	MovementID   string
+	NewRevision  int64
+	EntryNo      int
+	HAWB         string
+	FactsVersion int
 }
 
 // Commands is AIR's command entry point.
@@ -127,6 +148,7 @@ type Commands interface {
 	AssociateHouseWaybill(ctx context.Context, cmd AssociateHouseWaybill) (Receipt, error)
 	RefreshHouseWaybillFacts(ctx context.Context, cmd RefreshHouseWaybillFacts) (Receipt, error)
 	EndHouseWaybillAssociation(ctx context.Context, cmd EndHouseWaybillAssociation) (Receipt, error)
+	FinalizeAirDocFacts(ctx context.Context, cmd FinalizeAirDocFacts) (Receipt, error)
 	CancelAirMovement(ctx context.Context, cmd CancelAirMovement) (Receipt, error)
 }
 
@@ -138,6 +160,7 @@ const (
 	ActionAssociateHouseWaybill      = "AssociateHouseWaybill"
 	ActionRefreshHouseWaybillFacts   = "RefreshHouseWaybillFacts"
 	ActionEndHouseWaybillAssociation = "EndHouseWaybillAssociation"
+	ActionFinalizeAirDocFacts        = "FinalizeAirDocFacts"
 	ActionCancelAirMovement          = "CancelAirMovement"
 )
 

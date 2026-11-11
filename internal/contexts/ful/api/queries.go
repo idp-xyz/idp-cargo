@@ -108,6 +108,7 @@ type LoadIntentPart struct {
 	PackageType       string // UN/ECE Recommendation 21, such as CT for cartons
 	GrossWeight       kernel.Quantity
 	Volume            kernel.Quantity // zero when the obligation declares none
+	GoodsDescription  string          // the order line's goods description; empty for parts planned before FUL kept it
 }
 
 // LoadIntent is LoadIntent v1 (relationship 7, FUL -> PHY): what a shipment intends to load on its main
@@ -179,6 +180,18 @@ type AirOperationPlan struct {
 	MeasuredGrossWeight kernel.Quantity
 	MeasuredVolume      kernel.Quantity
 	SecurityStatus      string // "", SecurityPending, SecurityCleared or SecurityFailed
+	Screenings          []SecurityScreening
+}
+
+// SecurityScreening is a lot's latest screening result as PHY recorded it: external evidence of the screening
+// party (the airport security station), its method code, reference and time.
+type SecurityScreening struct {
+	LotID      string
+	Outcome    string
+	Screener   string
+	Method     string
+	Reference  string
+	ScreenedAt time.Time
 }
 
 // Measure bases, security states and execution statuses of AirOperationPlan v1.

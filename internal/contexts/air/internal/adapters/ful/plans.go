@@ -37,7 +37,11 @@ func (p Plans) Plan(ctx context.Context, tenant air.TenantID, shipment string) (
 		Security: got.SecurityStatus}
 	for _, part := range got.Parts {
 		out.Parts = append(out.Parts, air.Part{ObligationID: part.ObligationID, ObligationVersion: part.ObligationVersion, OrderID: part.OrderID,
-			Packs: part.Packs, PackageType: part.PackageType, GrossWeight: part.GrossWeight, Volume: part.Volume})
+			Packs: part.Packs, PackageType: part.PackageType, GrossWeight: part.GrossWeight, Volume: part.Volume, GoodsDescription: part.GoodsDescription})
+	}
+	for _, s := range got.Screenings {
+		out.Screenings = append(out.Screenings, air.Screening{LotID: s.LotID, Outcome: s.Outcome, Screener: s.Screener, Method: s.Method,
+			Reference: s.Reference, ScreenedAt: s.ScreenedAt.UTC()})
 	}
 	return out, nil
 }

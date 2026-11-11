@@ -223,7 +223,8 @@ func loadIntent(shipment *domain.Shipment, revision int64) api.LoadIntent {
 		intent.Packs, intent.GrossWeight, intent.Volume = plan.Scope.Packs, plan.Scope.GrossWeight, plan.Scope.Volume
 		for _, p := range shipment.Parts() {
 			intent.Parts = append(intent.Parts, api.LoadIntentPart{ObligationID: string(p.ObligationID), ObligationVersion: p.ObligationVersion,
-				OrderID: p.OrderID, Packs: p.Part.Packs, PackageType: p.PackageType, GrossWeight: p.Part.GrossWeight, Volume: p.Part.Volume})
+				OrderID: p.OrderID, Packs: p.Part.Packs, PackageType: p.PackageType, GrossWeight: p.Part.GrossWeight, Volume: p.Part.Volume,
+				GoodsDescription: p.Description})
 		}
 	}
 	if a, ok := shipment.Attachment(domain.StageMain); ok {
@@ -251,6 +252,10 @@ func (m *Module) GetAirOperationPlan(ctx context.Context, q api.GetShipmentPlanS
 	plan.ExecutionStatus = string(shipment.Execution())
 	if v, ok := shipment.LatestEvidence(); ok {
 		plan.EvidenceVersion, plan.SecurityStatus = v.No, string(v.Evidence.Security)
+		for _, s := range v.Evidence.Screenings {
+			plan.Screenings = append(plan.Screenings, api.SecurityScreening{LotID: s.LotID, Outcome: s.Outcome, Screener: s.Screener, Method: s.Method,
+				Reference: s.Reference, ScreenedAt: s.ScreenedAt})
+		}
 		if basis, measured, ok := shipment.Measured(); ok {
 			plan.MeasuredBasis, plan.MeasuredPacks, plan.MeasuredGrossWeight, plan.MeasuredVolume = basis, measured.Packs, measured.GrossWeight, measured.Volume
 		}

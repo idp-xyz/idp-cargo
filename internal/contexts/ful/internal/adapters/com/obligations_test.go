@@ -41,7 +41,8 @@ func reserved() comapi.ObligationSnapshotV3 {
 func TestPlannableTakesTheReservedVersionFromCOM(t *testing.T) {
 	got, err := Obligations{COM: comStub{snapshot: reserved()}}.Plannable(context.Background(), "T", "OB-1", 1, "SH-1")
 	want := ful.ObligationRef{ObligationID: "OB-1", ObligationVersion: 1, OrderID: "O-1", CustomerPartyID: "P", LegalEntityID: "LE",
-		Packs: 10, PackageType: "PX", GrossWeight: kernel.Quantity{Unit: "KGM", Amount: 500}, Volume: kernel.Quantity{Unit: "DMQ", Amount: 12_000}}
+		Packs: 10, PackageType: "PX", GrossWeight: kernel.Quantity{Unit: "KGM", Amount: 500}, Volume: kernel.Quantity{Unit: "DMQ", Amount: 12_000},
+		Description: "Pallets"}
 	if err != nil || got != want {
 		t.Fatalf("Plannable = %+v, %v", got, err)
 	}
