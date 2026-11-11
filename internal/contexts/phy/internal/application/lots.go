@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"time"
@@ -286,7 +287,8 @@ type CloseCargoLotCommand struct {
 }
 
 // CloseCargoLot closes a received lot once its packs are loaded or accounted for by FUL's LoadIntent v1, read
-// first; the lot's and the house's live loaded packs are read under the lot's lock.
+// first; the lot's and the house's live loaded packs are read under the house's ledger lock (FOR NO KEY UPDATE)
+// and the lot's, which loads and reversals of the house take too.
 type CloseCargoLot struct {
 	Deps
 	Intents LoadIntents
@@ -307,22 +309,27 @@ func (h CloseCargoLot) Handle(ctx context.Context, c CloseCargoLotCommand) (Rece
 	if err != nil {
 		return Receipt{}, err
 	}
-	return h.changeLot(ctx, c.Scope, c.CommandID, hash, entered, c.LotID, c.ExpectedRevision, func(txCtx context.Context, l *phy.CargoLot) (int, error) {
-		loaded, err := h.Lots.Loaded(txCtx, c.Scope.TenantID, c.LotID)
+	var m *phy.Membership
+	lockHouse := func(txCtx context.Context) error {
+		var err error
+		if m, _, err = h.Memberships.LoadForCargo(txCtx, c.Scope.TenantID, intent.ShipmentID); errors.Is(err, phy.ErrNotAttached) {
+			m, err = nil, nil
+		}
+		return err
+	}
+	return h.changeLotAfter(ctx, c.Scope, c.CommandID, hash, entered, c.LotID, c.ExpectedRevision, lockHouse, func(txCtx context.Context, l *phy.CargoLot) (int, error) {
+		loaded, err := h.Lots.Loaded(txCtx, c.Scope.TenantID, c.LotID, "")
 		if err != nil {
 			return 0, err
 		}
 		var house int64
-		m, _, err := h.Memberships.Read(txCtx, c.Scope.TenantID, l.Shipment())
-		if err == nil {
+		if m != nil {
 			if live, ok := m.Live(); ok {
 				if house, err = h.Executions.HouseLoaded(txCtx, c.Scope.TenantID, live.ConsolidationID, l.Shipment()); err != nil {
 					return 0, err
 				}
 			}
-		} else if !notFound(err) {
-			return 0, err
 		}
-		return 0, l.Close(loaded, house, intent, c.Scope.ActorID, c.OccurredAt)
+		return 0, l.Close(loaded.Packs, house, intent, c.Scope.ActorID, c.OccurredAt)
 	})
 }

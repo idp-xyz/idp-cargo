@@ -160,17 +160,18 @@ func TestLoadExecutionTender(t *testing.T) {
 	if _, err := OpenLoadExecution("T", "X-2", c, ExecutionTender, Facility{Location: loc("USJFK"), Code: "T"}, "ops", at); !errors.Is(err, ErrInvalidExecution) {
 		t.Fatalf("a tender is at the origin: %v", err)
 	}
-	if err := x.Load(LoadLine{Packs: 7, Evidence: ev("TD-1", at)}, c, lot, entry, 0, 0, "ops", at); !errors.Is(err, ErrConservation) {
+	if err := x.Load(LoadLine{Packs: 7, Evidence: ev("TD-1", at)}, c, lot, entry, LotLoad{}, 0, "ops", at); !errors.Is(err, ErrConservation) {
 		t.Fatalf("7 of 6 received: %v", err)
 	}
-	if err := x.Load(LoadLine{Packs: 2, Evidence: ev("TD-1", at)}, c, lot, entry, 5, 0, "ops", at); !errors.Is(err, ErrConservation) {
+	if err := x.Load(LoadLine{Packs: 2, Evidence: ev("TD-1", at)}, c, lot, entry, LotLoad{Packs: 5}, 0, "ops", at); !errors.Is(err, ErrConservation) {
 		t.Fatalf("5 loaded elsewhere and 2 more: %v", err)
 	}
-	if err := x.Load(LoadLine{Packs: 2, Evidence: ev("TD-1", at)}, c, lot, entry, 0, 5, "ops", at); !errors.Is(err, ErrConservation) {
+	if err := x.Load(LoadLine{Packs: 2, Evidence: ev("TD-1", at)}, c, lot, entry, LotLoad{}, 5, "ops", at); !errors.Is(err, ErrConservation) {
 		t.Fatalf("the house plans 6, 5 are loaded: %v", err)
 	}
 	for i, packs := range []int64{2, 2, 2} {
-		if err := x.Load(LoadLine{Packs: packs, Evidence: ev(fmt.Sprint("TD-", i), at)}, c, lot, entry, int64(2*i), int64(2*i), "ops", at); err != nil {
+		done := LotLoad{Packs: int64(2 * i), GrossWeight: int64(100 * i)}
+		if err := x.Load(LoadLine{Packs: packs, Evidence: ev(fmt.Sprint("TD-", i), at)}, c, lot, entry, done, int64(2*i), "ops", at); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -184,13 +185,16 @@ func TestLoadExecutionTender(t *testing.T) {
 	if sum != 300 || x.Tendered() != 6 {
 		t.Fatalf("lines loading every pack add up to the lot's 300 kg: %d, %d packs", sum, x.Tendered())
 	}
-	if err := x.Unload(3, 1, ReversalMisloaded, ev("UN-1", at), "ops", at); err != nil {
+	if err := x.Load(LoadLine{Packs: 1, Volume: kernel.Quantity{Unit: "MTQ", Amount: 1}, Evidence: ev("TD-V", at)}, c, lot, entry, LotLoad{}, 0, "ops", at); !errors.Is(err, ErrInvalidLoad) {
+		t.Fatalf("a volume measured for the line comes with its weight: %v", err)
+	}
+	if err := x.Unload(3, 1, ReversalMisloaded, ev("UN-1", at), lot, "ops", at); err != nil {
 		t.Fatal(err)
 	}
 	if packs, weight, _ := x.LineLive(3); packs != 1 || weight != 50 {
 		t.Fatalf("1 of line 3's 2 packs and 100 kg is live: %d, %d", packs, weight)
 	}
-	if err := x.Unload(3, 2, ReversalMisloaded, ev("UN-2", at), "ops", at); !errors.Is(err, ErrInvalidLoad) {
+	if err := x.Unload(3, 2, ReversalMisloaded, ev("UN-2", at), lot, "ops", at); !errors.Is(err, ErrInvalidLoad) {
 		t.Fatalf("only 1 pack of line 3 is live: %v", err)
 	}
 	if err := x.PlaceHold(HoldScreeningFailed, "", ev("H", at), "ops", at); !errors.Is(err, ErrInvalidLoad) {
@@ -255,7 +259,7 @@ func TestScreeningFailureHoldsTheTender(t *testing.T) {
 	if err := lot.Screen(failed, "ops", at); err != nil {
 		t.Fatal(err)
 	}
-	if err := x.Load(LoadLine{Packs: 6, GrossWeight: kg(310), Evidence: ev("TD-1", at)}, c, lot, entry, 0, 0, "ops", at); err != nil {
+	if err := x.Load(LoadLine{Packs: 6, GrossWeight: kg(310), Evidence: ev("TD-1", at)}, c, lot, entry, LotLoad{}, 0, "ops", at); err != nil {
 		t.Fatalf("a failed lot's packs are recorded: %v", err)
 	}
 	if x.Current() != ExecutionOnHold || x.Lines()[0].Basis != BasisMeasured || x.Placed() != 1 {
@@ -267,7 +271,7 @@ func TestScreeningFailureHoldsTheTender(t *testing.T) {
 	if err := x.ReleaseHold(1, ev("REL", at), lot.Screened(), "ops", at); !errors.Is(err, ErrHoldNotReleasable) {
 		t.Fatalf("not while the lot failed and is loaded: %v", err)
 	}
-	if err := x.Unload(1, 6, ReversalOffloadedByForwarder, ev("UN-1", at), "ops", at); err != nil {
+	if err := x.Unload(1, 6, ReversalOffloadedByForwarder, ev("UN-1", at), lot, "ops", at); err != nil {
 		t.Fatal(err)
 	}
 	if err := x.ReleaseHold(1, ev("REL", at), lot.Screened(), "ops", at); err != nil || x.Current() != ExecutionLoading {
@@ -315,7 +319,7 @@ func TestReconcileConsolidation(t *testing.T) {
 
 // TestRandomLoadsConserveTheLot loads and, for even seeds, unloads random packs of one lot over three tenders.
 // Whatever is accepted, live loaded packs never exceed the 9 received, no line is reversed beyond its packs,
-// every tender restores, and once all 9 packs are loaded without reversals the apportioned weights add up to
+// every tender restores, and whenever all 9 packs are live, reversals or not, the apportioned weights add up to
 // the lot's.
 func TestRandomLoadsConserveTheLot(t *testing.T) {
 	complete := 0
@@ -335,24 +339,25 @@ func TestRandomLoadsConserveTheLot(t *testing.T) {
 			_ = x.Start("ops", t0.Add(2*time.Hour))
 			xs = append(xs, x)
 		}
-		live := func() int64 {
-			var n int64
+		load := func() LotLoad {
+			var l LotLoad
 			for _, x := range xs {
-				n += x.LiveFromLot("L-1")
+				for _, line := range x.Lines() {
+					packs, weight, _ := x.LineLive(line.No)
+					l.Packs, l.GrossWeight = l.Packs+packs, l.GrossWeight+weight
+				}
 			}
-			return n
+			return l
 		}
-		reversed := false
+		live := func() int64 { return load().Packs }
 		at := t0.Add(3 * time.Hour)
 		for step := 0; step < 30; step++ {
 			x := xs[r.IntN(3)]
 			if seed%2 == 0 && r.IntN(4) == 0 && len(x.Lines()) > 0 { // odd seeds never reverse
 				line := 1 + r.IntN(len(x.Lines()))
-				if x.Unload(line, 1+int64(r.IntN(3)), ReversalMisloaded, ev("UN", at), "ops", at) == nil {
-					reversed = true
-				}
+				_ = x.Unload(line, 1+int64(r.IntN(3)), ReversalMisloaded, ev("UN", at), lot, "ops", at)
 			} else {
-				_ = x.Load(LoadLine{Packs: 1 + int64(r.IntN(4)), Evidence: ev("TD", at)}, c, lot, entry, live(), live(), "ops", at)
+				_ = x.Load(LoadLine{Packs: 1 + int64(r.IntN(4)), Evidence: ev("TD", at)}, c, lot, entry, load(), live(), "ops", at)
 			}
 			if n := live(); n < 0 || n > 9 {
 				t.Fatalf("seed %d: %d packs live of 9", seed, n)
@@ -368,7 +373,7 @@ func TestRandomLoadsConserveTheLot(t *testing.T) {
 				weight += w
 			}
 		}
-		if live() == 9 && !reversed {
+		if live() == 9 {
 			complete++
 			if weight != 1001 {
 				t.Fatalf("seed %d: all 9 packs loaded weigh %d of 1001 kg", seed, weight)
@@ -376,6 +381,72 @@ func TestRandomLoadsConserveTheLot(t *testing.T) {
 		}
 	}
 	if complete < 50 {
-		t.Fatalf("only %d of 200 runs loaded the whole lot without reversals", complete)
+		t.Fatalf("only %d of 200 runs end with the whole lot loaded", complete)
+	}
+}
+
+// TestPhysicalDeadEndsAreOpen covers what the review of V0.2 found: packs taken back from the carrier after the
+// tender, a closed lot's packs staying loaded, a cancelled shipment's lot closing while receiving, resolution
+// texts checked, and one departure reported by two sources being one departure.
+func TestPhysicalDeadEndsAreOpen(t *testing.T) {
+	c, entry, x := tender(t)
+	lot := received(t)
+	at := t0.Add(5 * time.Hour)
+	if err := errors.Join(x.Load(LoadLine{Packs: 6, Evidence: ev("TD-1", at)}, c, lot, entry, LotLoad{}, 0, "ops", at), x.Close(ev("TR-1", at), "ops", at)); err != nil {
+		t.Fatal(err)
+	}
+	if got := x.Lines()[0].GrossWeight; got != kg(300) {
+		t.Fatalf("the packs completing the lot take its measure: %+v", got)
+	}
+	for _, src := range []string{"MU-CARGO", "PVG-HANDLER"} {
+		e := CarrierEvidence{Fact: CarrierDeparted, Pieces: 6, Transport: "MU587", Evidence: Evidence{Source: src, Reference: "DEP-1", OccurredAt: at}}
+		if _, _, err := x.RecordCarrierEvidence(e, "ops", at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := x.OpenDiscrepancies(); n != 0 {
+		t.Fatalf("one departure reported twice is no conflict: %d open", n)
+	}
+	if err := x.Unload(1, 2, ReversalMisloaded, ev("UN-1", at), lot, "ops", at); !errors.Is(err, ErrNotLoading) {
+		t.Fatalf("after the tender only packs taken back from the carrier: %v", err)
+	}
+	if err := x.Unload(1, 2, ReversalOffloadedByForwarder, ev("UN-1", at), lot, "ops", at); err != nil || x.Tendered() != 4 {
+		t.Fatalf("2 packs retrieved from the terminal: %v, %d tendered", err, x.Tendered())
+	}
+	if err := lot.Close(4, 4, intent("SH-1", 1), "ops", at); !errors.Is(err, ErrUnaccounted) {
+		t.Fatalf("2 retrieved packs are not accounted for: %v", err)
+	}
+	other, _ := ReceiveCargo("T", "L-9", warehouse, intent("SH-1", 1), cartons(6, ConditionGood, at), "ops", at)
+	if err := x.Unload(1, 4, ReversalOffloadedByForwarder, ev("UN-2", at), other, "ops", at); !errors.Is(err, ErrInvalidLoad) {
+		t.Fatalf("a line's own lot: %v", err)
+	}
+	closedLot := received(t)
+	_ = closedLot.Close(6, 6, intent("SH-1", 1), "ops", at)
+	if err := x.Unload(1, 4, ReversalOffloadedByForwarder, ev("UN-2", at), closedLot, "ops", at); !errors.Is(err, ErrLotClosed) {
+		t.Fatalf("a closed lot's packs stay loaded: %v", err)
+	}
+
+	open, _ := ReceiveCargo("T", "L-2", warehouse, intent("SH-2", 1), cartons(3, ConditionGood, at), "ops", at)
+	cancelled := intent("SH-2", 1)
+	cancelled.Status = IntentCancelled
+	if err := open.Close(0, 0, intent("SH-2", 1), "ops", at); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("a planned shipment's lot completes receipt first: %v", err)
+	}
+	if err := open.Close(0, 0, cancelled, "ops", at); err != nil {
+		t.Fatalf("a cancelled shipment's lot closes while receiving: %v", err)
+	}
+	if _, err := RestoreCargoLot(open.State()); err != nil {
+		t.Fatalf("restore a lot closed without completion: %v", err)
+	}
+
+	short, _ := ReceiveCargo("T", "L-3", warehouse, intent("SH-3", 1), cartons(5, ConditionGood, at), "ops", at)
+	_ = errors.Join(short.Measure(scale(250, at), "ops", at), short.Complete(intent("SH-3", 1), "ops", at))
+	for _, tc := range []struct {
+		r                 Resolution
+		reference, reason string
+	}{{ResolvedByAccepted, "   ", "customer agrees"}, {ResolvedByClaim, "CLM-1", "   "}, {ResolvedByAccepted, "", string(make([]rune, 501))}} {
+		if err := short.Resolve(1, tc.r, tc.reference, tc.reason, LoadIntent{}, "ops", at); !errors.Is(err, ErrNotResolvable) {
+			t.Fatalf("%s with %q and %q: %v", tc.r, tc.reference, tc.reason, err)
+		}
 	}
 }

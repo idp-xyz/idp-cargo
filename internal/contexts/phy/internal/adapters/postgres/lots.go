@@ -13,6 +13,7 @@ import (
 	bentorepo "go.idp.xyz/idp-bento-go/repository"
 	app "go.idp.xyz/idp-cargo/internal/contexts/phy/internal/application"
 	phy "go.idp.xyz/idp-cargo/internal/contexts/phy/internal/domain"
+	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
 // LotStore loads and writes cargo lots. Load locks the lot row FOR UPDATE, so lot commands and loads from one
@@ -233,14 +234,20 @@ func (s LotStore) ByShipment(ctx context.Context, tenant phy.TenantID, shipment 
 	return out, nil
 }
 
-func (s LotStore) Loaded(ctx context.Context, tenant phy.TenantID, id phy.CargoLotID) (int64, error) {
+// Loaded returns a lot's live load: packs, gross weight and the volume of the lines in the unit given.
+func (s LotStore) Loaded(ctx context.Context, tenant phy.TenantID, id phy.CargoLotID, volumeUnit kernel.UnitCode) (phy.LotLoad, error) {
 	q, err := s.DB.ReadExecutor(ctx)
 	if err != nil {
-		return 0, err
+		return phy.LotLoad{}, err
 	}
-	var n int64
-	err = q.QueryRow(ctx, `SELECT cargo_phy.live_packs_of_lot($1,$2)`, string(tenant), string(id)).Scan(&n)
-	return n, err
+	var load phy.LotLoad
+	err = q.QueryRow(ctx, `WITH reversed AS (SELECT execution_id, line_no, sum(packs) AS packs, sum(gross_weight) AS weight, sum(volume) AS volume
+          FROM cargo_phy.reversal_line WHERE tenant_id=$1 GROUP BY execution_id, line_no)
+      SELECT coalesce(sum(l.packs - coalesce(r.packs, 0)), 0)::bigint, coalesce(sum(l.gross_weight - coalesce(r.weight, 0)), 0)::bigint,
+        coalesce(sum(CASE WHEN l.volume_unit = $3 THEN l.volume - coalesce(r.volume, 0) END), 0)::bigint
+      FROM cargo_phy.load_line l LEFT JOIN reversed r ON r.execution_id=l.execution_id AND r.line_no=l.line_no
+      WHERE l.tenant_id=$1 AND l.lot_id=$2`, string(tenant), string(id), string(volumeUnit)).Scan(&load.Packs, &load.GrossWeight, &load.Volume)
+	return load, err
 }
 
 // LockShipments locks the shipments' lots FOR SHARE, in lot order, so that no discrepancy opens meanwhile.

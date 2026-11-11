@@ -7,10 +7,10 @@
 // changes a consolidation locks its row FOR UPDATE; a house command locks the consolidations it touches FOR
 // SHARE, in id order, and then the house's membership ledger FOR UPDATE. Attach and close therefore run one
 // after another, while houses of one consolidation attach concurrently. A load execution command locks the
-// execution's consolidation FOR SHARE and the execution FOR UPDATE; loading then locks the house's ledger FOR
-// SHARE and the cargo lot FOR UPDATE, so loads of one lot run one after another and a house never leaves while
-// it is being loaded. A cargo lot command locks the lot FOR UPDATE; a FAILED screening result first locks the
-// consolidation and the executions it holds.
+// execution's consolidation FOR SHARE and the execution FOR UPDATE; loading and unloading then lock the house's
+// ledger FOR NO KEY UPDATE and the cargo lot FOR UPDATE, so loads of one house or one lot run one after another
+// and a house never leaves while it is being loaded. A cargo lot command locks the lot FOR UPDATE, closing it the
+// house's ledger first; a FAILED screening result first locks the consolidation and the executions it holds.
 package application
 
 import (
@@ -23,7 +23,6 @@ import (
 	"strings"
 	"time"
 
-	bentorepo "go.idp.xyz/idp-bento-go/repository"
 	phy "go.idp.xyz/idp-cargo/internal/contexts/phy/internal/domain"
 	"go.idp.xyz/idp-cargo/internal/kernel"
 )
@@ -133,24 +132,25 @@ type ConsolidationStore interface {
 }
 
 // MembershipStore loads and writes membership ledgers. Load locks the ledger FOR UPDATE and returns a new,
-// empty ledger at revision 0 for a shipment never attached; LoadShared locks it FOR SHARE, for loading; Read
+// empty ledger at revision 0 for a shipment never attached; LoadForCargo locks it FOR NO KEY UPDATE, for loading,
+// unloading and closing the house's cargo, and returns phy.ErrNotAttached for a shipment never attached; Read
 // returns ErrNotFound for it. Save with revision 0 inserts the ledger.
 type MembershipStore interface {
 	Load(context.Context, phy.TenantID, phy.ShipmentID) (*phy.Membership, int64, error)
-	LoadShared(context.Context, phy.TenantID, phy.ShipmentID) (*phy.Membership, int64, error)
+	LoadForCargo(context.Context, phy.TenantID, phy.ShipmentID) (*phy.Membership, int64, error)
 	Read(context.Context, phy.TenantID, phy.ShipmentID) (*phy.Membership, int64, error)
 	Save(context.Context, *phy.Membership, int64) (int64, error)
 }
 
 // LotStore loads and writes cargo lots. Load locks the lot FOR UPDATE; Read takes no lock. Loaded returns a
-// lot's live loaded packs across every load execution. LockShipments locks the shipments' lots FOR SHARE and
-// OpenDiscrepancies counts their unresolved discrepancies.
+// lot's live load across every load execution, its volume in the unit given. LockShipments locks the shipments'
+// lots FOR SHARE and OpenDiscrepancies counts their unresolved discrepancies.
 type LotStore interface {
 	Insert(context.Context, *phy.CargoLot) (int64, error)
 	Load(context.Context, phy.TenantID, phy.CargoLotID) (*phy.CargoLot, int64, error)
 	Read(context.Context, phy.TenantID, phy.CargoLotID) (*phy.CargoLot, int64, error)
 	Save(context.Context, *phy.CargoLot, int64) (int64, error)
-	Loaded(context.Context, phy.TenantID, phy.CargoLotID) (int64, error)
+	Loaded(context.Context, phy.TenantID, phy.CargoLotID, kernel.UnitCode) (phy.LotLoad, error)
 	ByShipment(context.Context, phy.TenantID, phy.ShipmentID) ([]LotRead, error)
 	LockShipments(context.Context, phy.TenantID, []phy.ShipmentID) error
 	OpenDiscrepancies(context.Context, phy.TenantID, []phy.ShipmentID) (int, error)
@@ -319,8 +319,6 @@ func (d Deps) authorizeLot(ctx context.Context, s Scope, action Action, id phy.C
 	return nil
 }
 
-func notFound(err error) bool { return errors.Is(err, bentorepo.ErrNotFound) }
-
 // replay returns the stored receipt of a command whose payload is unchanged.
 func (d Deps) replay(ctx context.Context, tenant phy.TenantID, commandID, hash string) (Receipt, bool, error) {
 	var stored Receipt
@@ -409,7 +407,19 @@ func (d Deps) write(ctx context.Context, s Scope, commandID, hash string, mutate
 // apply returns the item it wrote.
 func (d Deps) changeLot(ctx context.Context, s Scope, commandID, hash string, entered time.Time, id phy.CargoLotID, expected int64,
 	apply func(context.Context, *phy.CargoLot) (int, error)) (Receipt, error) {
+	return d.changeLotAfter(ctx, s, commandID, hash, entered, id, expected, nil, apply)
+}
+
+// changeLotAfter is changeLot with first, if given, run in the transaction before the lot is locked: a lock
+// that comes earlier in the lock order.
+func (d Deps) changeLotAfter(ctx context.Context, s Scope, commandID, hash string, entered time.Time, id phy.CargoLotID, expected int64,
+	first func(context.Context) error, apply func(context.Context, *phy.CargoLot) (int, error)) (Receipt, error) {
 	return d.write(ctx, s, commandID, hash, func(txCtx context.Context) (Receipt, aggregate, error) {
+		if first != nil {
+			if err := first(txCtx); err != nil {
+				return Receipt{}, nil, err
+			}
+		}
 		l, revision, err := d.Lots.Load(txCtx, s.TenantID, id)
 		if err != nil {
 			return Receipt{}, nil, err

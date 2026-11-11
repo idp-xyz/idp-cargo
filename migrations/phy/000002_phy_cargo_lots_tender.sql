@@ -53,8 +53,8 @@ CREATE TABLE cargo_phy.cargo_lot (
  updated_at timestamptz NOT NULL DEFAULT now(),
  PRIMARY KEY (tenant_id, lot_id),
  CONSTRAINT cargo_lot_volume CHECK ((expected_volume_unit IS NULL) = (expected_volume IS NULL)),
- CONSTRAINT cargo_lot_completed CHECK ((state = 'RECEIVING') = (completed_at IS NULL) AND (completed_by IS NULL) = (completed_at IS NULL)
-   AND (completed_entered_at IS NULL) = (completed_at IS NULL)),
+ CONSTRAINT cargo_lot_completed CHECK ((state <> 'RECEIVING' OR completed_at IS NULL) AND (state <> 'RECEIVED' OR completed_at IS NOT NULL)
+   AND (completed_by IS NULL) = (completed_at IS NULL) AND (completed_entered_at IS NULL) = (completed_at IS NULL)),
  CONSTRAINT cargo_lot_closed CHECK ((state = 'CLOSED') = (closed_at IS NOT NULL) AND (closed_by IS NULL) = (closed_at IS NULL)
    AND (closed_entered_at IS NULL) = (closed_at IS NULL) AND (closed_at IS NULL OR closed_at >= completed_at))
 );
@@ -438,13 +438,14 @@ CREATE TRIGGER receipt_line_rules BEFORE INSERT ON cargo_phy.receipt_line FOR EA
 CREATE TRIGGER measurement_version_rules BEFORE INSERT ON cargo_phy.measurement_version FOR EACH ROW EXECUTE FUNCTION cargo_phy.check_lot_addition();
 CREATE TRIGGER screening_result_rules BEFORE INSERT ON cargo_phy.screening_result FOR EACH ROW EXECUTE FUNCTION cargo_phy.check_lot_addition();
 
--- At commit, a closed lot has no open discrepancy, and a completed one has a measurement.
+-- At commit, a closed lot has no open discrepancy, and a completed one has a measurement. (A cancelled
+-- shipment's lot may close while receiving, without completion.)
 CREATE FUNCTION cargo_phy.check_cargo_lot_complete() RETURNS trigger LANGUAGE plpgsql AS $fn$
 DECLARE
   l cargo_phy.cargo_lot;
 BEGIN
   SELECT * INTO l FROM cargo_phy.cargo_lot WHERE tenant_id = NEW.tenant_id AND lot_id = NEW.lot_id;
-  IF (l.state <> 'RECEIVING' AND NOT EXISTS (SELECT 1 FROM cargo_phy.measurement_version m WHERE m.tenant_id = l.tenant_id AND m.lot_id = l.lot_id))
+  IF (l.completed_at IS NOT NULL AND NOT EXISTS (SELECT 1 FROM cargo_phy.measurement_version m WHERE m.tenant_id = l.tenant_id AND m.lot_id = l.lot_id))
      OR (l.state = 'CLOSED' AND EXISTS (SELECT 1 FROM cargo_phy.cargo_discrepancy d
           WHERE d.tenant_id = l.tenant_id AND d.lot_id = l.lot_id AND d.resolved_at IS NULL)) THEN
     RAISE EXCEPTION 'cargo_phy: cargo lot %/% is % without a measurement or with an open discrepancy', l.tenant_id, l.lot_id, l.state
@@ -493,20 +494,29 @@ END $fn$;
 CREATE TRIGGER load_execution_rules BEFORE INSERT OR UPDATE OR DELETE ON cargo_phy.load_execution
   FOR EACH ROW EXECUTE FUNCTION cargo_phy.check_load_execution_change();
 
--- What an execution gains it gains in its state: lines while loading (or held by the line itself), reversals and
--- holds while loading or on hold, carrier evidence and its discrepancies once closed. The execution row is locked
--- first. A line names its execution's consolidation and a lot of its shipment and mode.
+-- What an execution gains it gains in its state: lines while loading (or held by the line itself), holds while
+-- loading or on hold, reversals then too and, once closed, only of packs taken back from the carrier, carrier
+-- evidence and its discrepancies once closed. The execution row is locked first. A line names its execution's
+-- consolidation and a lot of its shipment and mode; a reversal never takes packs out of a closed lot.
 CREATE FUNCTION cargo_phy.check_execution_addition() RETURNS trigger LANGUAGE plpgsql AS $fn$
 DECLARE
   x cargo_phy.load_execution;
   l cargo_phy.cargo_lot;
   allowed text[] := CASE TG_TABLE_NAME WHEN 'carrier_load_evidence' THEN ARRAY['CLOSED'] WHEN 'loading_discrepancy' THEN ARRAY['CLOSED']
-    ELSE ARRAY['LOADING','ON_HOLD'] END;
+    WHEN 'reversal_line' THEN ARRAY['LOADING','ON_HOLD','CLOSED'] ELSE ARRAY['LOADING','ON_HOLD'] END;
 BEGIN
   SELECT * INTO x FROM cargo_phy.load_execution WHERE tenant_id = NEW.tenant_id AND execution_id = NEW.execution_id FOR NO KEY UPDATE;
   IF x.execution_id IS NULL OR NOT x.state = ANY (allowed) THEN
     RAISE EXCEPTION 'cargo_phy: load execution %/% takes no % while %', NEW.tenant_id, NEW.execution_id, TG_TABLE_NAME, x.state
       USING ERRCODE = 'check_violation';
+  END IF;
+  IF TG_TABLE_NAME = 'reversal_line' THEN
+    SELECT c.* INTO l FROM cargo_phy.load_line ll JOIN cargo_phy.cargo_lot c ON c.tenant_id = ll.tenant_id AND c.lot_id = ll.lot_id
+      WHERE ll.tenant_id = NEW.tenant_id AND ll.execution_id = NEW.execution_id AND ll.line_no = (to_jsonb(NEW)->>'line_no')::int;
+    IF l.state = 'CLOSED' OR (x.state = 'CLOSED' AND (to_jsonb(NEW)->>'reason') <> 'OFFLOADED_BY_FORWARDER') THEN
+      RAISE EXCEPTION 'cargo_phy: reversal %/% takes no packs out of a closed lot, nor after the tender but packs taken back from the carrier',
+        NEW.tenant_id, NEW.execution_id USING ERRCODE = 'check_violation';
+    END IF;
   END IF;
   IF TG_TABLE_NAME = 'load_line' THEN
     SELECT * INTO l FROM cargo_phy.cargo_lot WHERE tenant_id = NEW.tenant_id AND lot_id = (to_jsonb(NEW)->>'lot_id');
@@ -524,9 +534,10 @@ CREATE TRIGGER hold_entry_insert BEFORE INSERT ON cargo_phy.hold_entry FOR EACH 
 CREATE TRIGGER carrier_load_evidence_rules BEFORE INSERT ON cargo_phy.carrier_load_evidence FOR EACH ROW EXECUTE FUNCTION cargo_phy.check_execution_addition();
 CREATE TRIGGER loading_discrepancy_insert BEFORE INSERT ON cargo_phy.loading_discrepancy FOR EACH ROW EXECUTE FUNCTION cargo_phy.check_execution_addition();
 
--- At commit, under the lot's lock and the house's membership ledger's FOR SHARE lock: the lot's live loaded packs
--- stay within its received packs; the house has a live entry in the line's consolidation, which is OPEN or
--- CLOSED, and its live loaded packs there stay within the entry's planned packs (CONSERVATION_VIOLATION).
+-- At commit, under the lot's lock and the house's membership ledger's FOR NO KEY UPDATE lock, which serialises
+-- loads of one house from several lots: the lot's live loaded packs stay within its received packs; the house
+-- has a live entry in the line's consolidation, which is OPEN or CLOSED, and its live loaded packs there stay
+-- within the entry's planned packs (CONSERVATION_VIOLATION).
 CREATE FUNCTION cargo_phy.check_load_line_conservation() RETURNS trigger LANGUAGE plpgsql AS $fn$
 DECLARE
   received bigint;
@@ -534,7 +545,7 @@ DECLARE
   s text;
 BEGIN
   PERFORM 1 FROM cargo_phy.cargo_lot WHERE tenant_id = NEW.tenant_id AND lot_id = NEW.lot_id FOR NO KEY UPDATE;
-  PERFORM 1 FROM cargo_phy.consol_membership WHERE tenant_id = NEW.tenant_id AND shipment_id = NEW.shipment_id AND stage = 'MAIN' FOR SHARE;
+  PERFORM 1 FROM cargo_phy.consol_membership WHERE tenant_id = NEW.tenant_id AND shipment_id = NEW.shipment_id AND stage = 'MAIN' FOR NO KEY UPDATE;
   SELECT state INTO s FROM cargo_phy.consolidation WHERE tenant_id = NEW.tenant_id AND consolidation_id = NEW.consolidation_id FOR SHARE;
   SELECT coalesce(sum(packs), 0) INTO received FROM cargo_phy.receipt_line WHERE tenant_id = NEW.tenant_id AND lot_id = NEW.lot_id;
   SELECT e.packs INTO planned FROM cargo_phy.membership_entry e WHERE e.tenant_id = NEW.tenant_id AND e.shipment_id = NEW.shipment_id

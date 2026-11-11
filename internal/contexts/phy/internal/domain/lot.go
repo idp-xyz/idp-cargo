@@ -26,6 +26,7 @@ const (
 
 var (
 	ErrInvalidLot       = errors.New("phy: invalid cargo lot")
+	ErrLotClosed        = errors.New("phy: the cargo lot is closed; its packs stay as loaded")
 	ErrLotInForce       = errors.New("phy: the shipment has a cargo lot in force at the facility")
 	ErrInvalidEvidence  = errors.New("phy: a physical fact needs its evidence: source, reference and time, with a SHA-256 of the raw payload where there is one")
 	ErrInvalidReceipt   = errors.New("phy: invalid receipt, measurement or screening")
@@ -424,6 +425,9 @@ func (l *CargoLot) Resolve(no int, r Resolution, reference, reason string, i Loa
 	default:
 		return fmt.Errorf("%w: %q", ErrNotResolvable, r)
 	}
+	if !optionalText(reference) || !optionalText(reason) {
+		return fmt.Errorf("%w: a reference and a reason of at most %d characters", ErrNotResolvable, maxText)
+	}
 	if err := l.changeable(by, at); err != nil {
 		return err
 	}
@@ -437,19 +441,21 @@ func (l *CargoLot) Resolve(no int, r Resolution, reference, reason string, i Loa
 
 // Close closes a received lot without open discrepancies once every received pack is loaded, or the packs not
 // loaded are accounted for by FUL: the shipment's plan equals what was loaded of it (the rest went to another
-// shipment, F1), or the shipment is cancelled and nothing of it is loaded. loaded counts this lot's live load
-// lines; shipmentLoaded the shipment's in its consolidation.
+// shipment, F1), or the shipment is cancelled and nothing of it is loaded. A cancelled shipment's lot closes so
+// while still receiving, too (the cargo goes back to the shipper). loaded counts this lot's live load lines;
+// shipmentLoaded the shipment's in its consolidation.
 func (l *CargoLot) Close(loaded, shipmentLoaded int64, i LoadIntent, by string, at time.Time) error {
-	if l.state.State != LotReceived {
+	if i.ShipmentID != l.state.ShipmentID {
+		return ErrInvalidIntent
+	}
+	cancelled := i.Status == IntentCancelled && shipmentLoaded == 0
+	if l.state.State != LotReceived && !(l.state.State == LotReceiving && cancelled && loaded == 0) {
 		return ErrInvalidTransition
 	}
 	if l.OpenDiscrepancies() > 0 {
 		return ErrOpenDiscrepancy
 	}
-	if i.ShipmentID != l.state.ShipmentID {
-		return ErrInvalidIntent
-	}
-	accounted := (i.Status == IntentPlanned && shipmentLoaded == i.Scope.Packs) || (i.Status == IntentCancelled && shipmentLoaded == 0)
+	accounted := (i.Status == IntentPlanned && shipmentLoaded == i.Scope.Packs) || cancelled
 	if received := l.Received(); loaded != received && !(loaded < received && accounted) {
 		return fmt.Errorf("%w: %d received, %d loaded; FUL plans %d of the shipment (%s), %d loaded", ErrUnaccounted, received, loaded,
 			i.Scope.Packs, i.Status, shipmentLoaded)
@@ -571,7 +577,9 @@ func RestoreCargoLot(st CargoLotState) (*CargoLot, error) {
 			return bad("receiving")
 		}
 	case LotReceived, LotClosed:
-		if st.CompletedAt.IsZero() || blank(st.CompletedBy) || len(st.Measurements) == 0 || (st.State == LotClosed) == st.ClosedAt.IsZero() {
+		completed := !st.CompletedAt.IsZero()
+		if (st.State == LotReceived && !completed) || (completed && (blank(st.CompletedBy) || len(st.Measurements) == 0)) ||
+			(!completed && len(st.Discrepancies) > 0) || (st.State == LotClosed) == st.ClosedAt.IsZero() {
 			return bad(string(st.State))
 		}
 	default:

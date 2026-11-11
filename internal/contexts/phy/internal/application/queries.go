@@ -85,7 +85,8 @@ func (r Reads) Lot(ctx context.Context, tenant phy.TenantID, id phy.CargoLotID) 
 		if out.Lot, out.Revision, err = r.Lots.Read(txCtx, tenant, id); err != nil {
 			return err
 		}
-		out.Loaded, err = r.Lots.Loaded(txCtx, tenant, id)
+		load, err := r.Lots.Loaded(txCtx, tenant, id, "")
+		out.Loaded = load.Packs
 		return err
 	})
 	return out, err

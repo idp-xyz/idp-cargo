@@ -347,3 +347,104 @@ func TestConcurrentLoadsOfOneLot(t *testing.T) {
 		t.Fatalf("%d loads of 2 committed, %d packs live of 6: %v", loaded, lot.LoadedPacks, err)
 	}
 }
+
+// TestConcurrentLoadsOfOneHouseFromTwoLots races eight tenders loading four packs each of one house planned at
+// six, from two lots of six at two facilities, so that any two loads together would pass the plan: the house's
+// ledger lock lets one through and refuses the rest.
+func TestConcurrentLoadsOfOneHouseFromTwoLots(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	f.create(t, "C-1")
+	if _, err := f.module.AttachHouse(ctx, f.attach("attach", "C-1", "SH-1", 0)); err != nil {
+		t.Fatal(err)
+	}
+	at := f.at.Add(3 * time.Hour)
+	for _, lot := range []string{"L-1", "L-2"} {
+		receive := f.receive("rcv-"+lot, lot, "SH-1", 0, 6, api.ConditionGood, at)
+		receive.Facility.Code = "WH-" + lot
+		ok(t, 1)(f.module.ReceiveCargo(ctx, receive))
+		ok(t, 2)(f.module.RecordCargoMeasurement(ctx, api.RecordCargoMeasurement{CommandID: "measure-" + lot, TenantID: f.tenant, ActorID: "ops-1",
+			LotID: lot, ExpectedRevision: 1, GrossWeight: kgm(300), Method: api.MethodScale, Evidence: evidence("measure", at), OccurredAt: at}))
+	}
+	for i := range 8 {
+		f.tender(t, fmt.Sprint("X-", i), "C-1", at)
+	}
+	var wg sync.WaitGroup
+	results := make([]error, 8)
+	for i := range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, results[i] = f.module.RecordCargoLoaded(ctx, f.load(fmt.Sprint("load-", i), fmt.Sprint("X-", i), 2, fmt.Sprint("L-", 1+i%2), 4, at))
+		}()
+	}
+	wg.Wait()
+	loaded := 0
+	for i, err := range results {
+		switch {
+		case err == nil:
+			loaded++
+		case errors.Is(err, api.ErrRejected): // refused under the locks, never left to the check at commit
+		default:
+			t.Fatalf("load %d: %v", i, err)
+		}
+	}
+	e, err := f.module.GetPhysicalLoadEvidence(ctx, api.GetPhysicalLoadEvidence{TenantID: f.tenant, ShipmentID: "SH-1"})
+	if err != nil || loaded != 1 || e.LoadedPacks != 4 || e.ReceivedPacks != 12 {
+		t.Fatalf("%d loads of 4 committed, %d packs live of a plan of 6: %v", loaded, e.LoadedPacks, err)
+	}
+}
+
+// TestRetrievedFromTheTerminalAfterCancellation tenders a house, then its shipment is cancelled: the house does
+// not leave while its packs are tendered, only packs taken back from the carrier come out of the closed tender,
+// the membership then ends, the lot (still receiving) closes, and the empty consolidation is cancelled.
+func TestRetrievedFromTheTerminalAfterCancellation(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	f.create(t, "C-1")
+	if _, err := f.module.AttachHouse(ctx, f.attach("attach", "C-1", "SH-1", 0)); err != nil {
+		t.Fatal(err)
+	}
+	f.ful.allocate("SH-1", "C-1")
+	at := f.at.Add(3 * time.Hour)
+	ok(t, 1)(f.module.ReceiveCargo(ctx, f.receive("rcv", "L-1", "SH-1", 0, 6, api.ConditionGood, at)))
+	ok(t, 2)(f.module.RecordCargoMeasurement(ctx, api.RecordCargoMeasurement{CommandID: "measure", TenantID: f.tenant, ActorID: "ops-1", LotID: "L-1",
+		ExpectedRevision: 1, GrossWeight: kgm(300), Method: api.MethodScale, Evidence: evidence("measure", at), OccurredAt: at}))
+	f.tender(t, "X-1", "C-1", at)
+	ok(t, 3)(f.module.RecordCargoLoaded(ctx, f.load("load", "X-1", 2, "L-1", 6, at)))
+	ok(t, 4)(f.module.CloseLoadExecution(ctx, api.CloseLoadExecution{CommandID: "tender-receipt", TenantID: f.tenant, ActorID: "ops-1", ExecutionID: "X-1",
+		ExpectedRevision: 3, Evidence: evidence("receipt", at), OccurredAt: at}))
+
+	f.ful.mu.Lock()
+	f.ful.status["SH-1"], f.ful.allocated["SH-1"] = "CANCELLED", ""
+	f.ful.mu.Unlock()
+	end := api.EndMembershipForCancelledShipment{CommandID: "end-early", TenantID: f.tenant, ActorID: "ops-1", ConsolidationID: "C-1",
+		ShipmentID: "SH-1", ExpectedMembershipRevision: 1, OccurredAt: at}
+	if _, err := f.module.EndMembershipForCancelledShipment(ctx, end); !errors.Is(err, api.ErrRejected) {
+		t.Fatalf("a tendered house does not leave: %v", err)
+	}
+	if err := f.within(t, func(ctx context.Context, e bentopg.Executor) error {
+		_, err := e.Exec(ctx, `INSERT INTO cargo_phy.reversal_line (tenant_id,execution_id,reversal_no,line_no,packs,gross_weight,reason,evidence_source,
+            evidence_reference,evidence_occurred_at,reversed_by,reversed_at,entered_at) VALUES ($1,'X-1',1,1,6,300,'MISLOADED','x','x',now(),'x',now(),now())`, f.tenant)
+		return err
+	}); sqlState(err) != "23514" {
+		t.Fatalf("the database keeps a closed tender's packs but those taken back from the carrier: %v", err)
+	}
+	unload := api.RecordCargoUnloaded{CommandID: "misloaded", TenantID: f.tenant, ActorID: "ops-1", ExecutionID: "X-1", ExpectedRevision: 4, LineNo: 1,
+		Packs: 6, Reason: api.ReversalMisloaded, Evidence: evidence("unload", at), OccurredAt: at}
+	if _, err := f.module.RecordCargoUnloaded(ctx, unload); !errors.Is(err, api.ErrRejected) {
+		t.Fatalf("after the tender only packs taken back from the carrier: %v", err)
+	}
+	unload.CommandID, unload.Reason = "retrieved", api.ReversalOffloadedByForwarder
+	ok(t, 5)(f.module.RecordCargoUnloaded(ctx, unload))
+	end.CommandID = "end"
+	ok(t, 2)(f.module.EndMembershipForCancelledShipment(ctx, end))
+	ok(t, 3)(f.module.CloseCargoLot(ctx, api.CloseCargoLot{CommandID: "close-lot", TenantID: f.tenant, ActorID: "ops-1", LotID: "L-1",
+		ExpectedRevision: 2, OccurredAt: at}))
+	lot, err := f.module.GetCargoLot(ctx, api.GetCargoLot{TenantID: f.tenant, LotID: "L-1"})
+	if err != nil || lot.State != "CLOSED" || lot.LoadedPacks != 0 || !lot.CompletedAt.IsZero() {
+		t.Fatalf("the cancelled shipment's lot closes while receiving: %+v %v", lot, err)
+	}
+	ok(t, 2)(f.module.CancelConsolidation(ctx, api.CancelConsolidation{CommandID: "cancel", TenantID: f.tenant, ActorID: "ops-1", ConsolidationID: "C-1",
+		ExpectedRevision: 1, Reason: "the only house was cancelled", OccurredAt: at}))
+}

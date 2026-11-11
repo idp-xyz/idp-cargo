@@ -291,13 +291,22 @@ func (x *LoadExecution) Start(by string, at time.Time) error {
 	return nil
 }
 
+// LotLoad is what is live loaded of a lot across every load execution: packs, gross weight and, in the unit of
+// the lot's latest measurement, volume.
+type LotLoad struct {
+	Packs       int64
+	GrossWeight int64
+	Volume      int64
+}
+
 // Load records packs of a lot loaded or tendered under the house's live membership entry in the execution's
-// consolidation. lotLoaded is the lot's live loaded packs across every execution and shipmentLoaded the house's
-// in the consolidation, both read under the lot's and the ledger's locks: neither may exceed what was received
-// or what the house plans (CONSERVATION_VIOLATION). The line's weight and volume are measured for it or
-// apportioned from the lot's latest measurement. Cargo whose lot failed screening is recorded and holds the
-// execution (G06-05).
-func (x *LoadExecution) Load(in LoadLine, c *Consolidation, lot *CargoLot, entry Entry, lotLoaded, shipmentLoaded int64, by string, at time.Time) error {
+// consolidation. lotLoaded is the lot's live load across every execution and shipmentLoaded the house's live
+// loaded packs in the consolidation, both read under the lot's and the ledger's locks: neither may exceed what
+// was received or what the house plans (CONSERVATION_VIOLATION). The line's weight and volume are measured for
+// it, or apportioned from the lot's latest measurement: its share of the packs received, rounded down, and the
+// packs that complete the lot take what the live lines leave of the measure. Cargo whose lot failed screening is
+// recorded and holds the execution (G06-05).
+func (x *LoadExecution) Load(in LoadLine, c *Consolidation, lot *CargoLot, entry Entry, lotLoaded LotLoad, shipmentLoaded int64, by string, at time.Time) error {
 	if x.state.State != ExecutionLoading {
 		return ErrNotLoading
 	}
@@ -320,9 +329,9 @@ func (x *LoadExecution) Load(in LoadLine, c *Consolidation, lot *CargoLot, entry
 		return ErrInvalidEvidence
 	}
 	received := lot.Received()
-	if lotLoaded < 0 || shipmentLoaded < 0 || lotLoaded+in.Packs > received || shipmentLoaded+in.Packs > entry.Scope.Packs {
+	if lotLoaded.Packs < 0 || shipmentLoaded < 0 || lotLoaded.Packs+in.Packs > received || shipmentLoaded+in.Packs > entry.Scope.Packs {
 		return fmt.Errorf("%w: %d more packs of lot %s, %d of %d received loaded; house %s plans %d, %d loaded", ErrConservation, in.Packs,
-			lot.ID(), lotLoaded, received, lot.Shipment(), entry.Scope.Packs, shipmentLoaded)
+			lot.ID(), lotLoaded.Packs, received, lot.Shipment(), entry.Scope.Packs, shipmentLoaded)
 	}
 	line := LoadLine{ShipmentID: lot.Shipment(), LotID: lot.ID(), EntryNo: entry.No, Packs: in.Packs, Evidence: in.Evidence}
 	line.Evidence.OccurredAt = line.Evidence.OccurredAt.UTC()
@@ -334,13 +343,17 @@ func (x *LoadExecution) Load(in LoadLine, c *Consolidation, lot *CargoLot, entry
 		}
 		line.GrossWeight, line.Volume, line.Basis = in.GrossWeight, in.Volume, BasisMeasured
 	} else {
+		if in.Volume != (kernel.Quantity{}) {
+			return fmt.Errorf("%w: a line measured for itself gives its gross weight", ErrInvalidLoad)
+		}
 		m, ok := lot.Measured()
 		if !ok {
 			return fmt.Errorf("%w: lot %s; measure it or give the line's weight", ErrNoMeasurement, lot.ID())
 		}
-		line.GrossWeight = kernel.Quantity{Unit: m.GrossWeight.Unit, Amount: share(m.GrossWeight.Amount, lotLoaded, in.Packs, received)}
+		last := lotLoaded.Packs+in.Packs == received
+		line.GrossWeight = kernel.Quantity{Unit: m.GrossWeight.Unit, Amount: apportion(m.GrossWeight.Amount, lotLoaded.GrossWeight, in.Packs, received, last)}
 		if m.Volume != (kernel.Quantity{}) {
-			line.Volume = kernel.Quantity{Unit: m.Volume.Unit, Amount: share(m.Volume.Amount, lotLoaded, in.Packs, received)}
+			line.Volume = kernel.Quantity{Unit: m.Volume.Unit, Amount: apportion(m.Volume.Amount, lotLoaded.Volume, in.Packs, received, last)}
 		}
 		line.Basis, line.MeasurementNo = BasisApportioned, m.No
 	}
@@ -357,24 +370,43 @@ func (x *LoadExecution) Load(in LoadLine, c *Consolidation, lot *CargoLot, entry
 	return nil
 }
 
-// share is the part of total that packs take after loaded of received packs: the difference of the rounded-down
-// cumulative shares, so that lines loading every pack add up to the total and the last packs take the rest.
-func share(total, loaded, packs, received int64) int64 {
-	cumulative := func(n int64) int64 {
-		v := new(big.Int).Mul(big.NewInt(total), big.NewInt(n))
-		return v.Quo(v, big.NewInt(received)).Int64()
+// apportion is the part of a lot's measure that packs of received take: their share rounded down, or, for the
+// packs that complete the lot, what the live lines leave of it (never less than zero).
+func apportion(total, live, packs, received int64, last bool) int64 {
+	if last {
+		return max(total-live, 0)
 	}
-	return cumulative(loaded+packs) - cumulative(loaded)
+	return share(total, packs, received)
 }
 
-// Unload reverses packs of a live load line with a reason and evidence, while loading or on hold. Reversing every
-// live pack of the line takes its live weight and volume; fewer take their share, rounded down.
-func (x *LoadExecution) Unload(lineNo int, packs int64, reason ReversalReason, evidence Evidence, by string, at time.Time) error {
-	if x.state.State != ExecutionLoading && x.state.State != ExecutionOnHold {
+// share is total's part for packs of all, rounded down.
+func share(total, packs, all int64) int64 {
+	v := new(big.Int).Mul(big.NewInt(total), big.NewInt(packs))
+	return v.Quo(v, big.NewInt(all)).Int64()
+}
+
+// Unload reverses packs of a live load line of lot, with a reason and evidence, while loading or on hold; after
+// the tender only packs taken back from the carrier (OFFLOADED_BY_FORWARDER: retrieved from the terminal or the
+// co-loader's CFS after an offload or a cancellation). A closed lot's packs stay as loaded. Reversing every live
+// pack of the line takes its live weight and volume; fewer take their share, rounded down.
+func (x *LoadExecution) Unload(lineNo int, packs int64, reason ReversalReason, evidence Evidence, lot *CargoLot, by string, at time.Time) error {
+	switch x.state.State {
+	case ExecutionLoading, ExecutionOnHold:
+	case ExecutionClosed:
+		if reason != ReversalOffloadedByForwarder {
+			return fmt.Errorf("%w: after the tender only packs taken back from the carrier (%s)", ErrNotLoading, ReversalOffloadedByForwarder)
+		}
+	default:
 		return ErrNotLoading
 	}
 	if lineNo < 1 || lineNo > len(x.state.Lines) || !reason.valid() {
 		return fmt.Errorf("%w: line %d, reason %q", ErrInvalidLoad, lineNo, reason)
+	}
+	if lot == nil || lot.ID() != x.state.Lines[lineNo-1].LotID {
+		return fmt.Errorf("%w: line %d is of lot %s", ErrInvalidLoad, lineNo, x.state.Lines[lineNo-1].LotID)
+	}
+	if lot.state.State == LotClosed {
+		return fmt.Errorf("%w: %s", ErrLotClosed, lot.ID())
 	}
 	live, weight, volume := x.lineLive(lineNo)
 	if packs < 1 || packs > live {
@@ -394,9 +426,9 @@ func (x *LoadExecution) Unload(lineNo int, packs int64, reason ReversalReason, e
 		r.Volume = kernel.Quantity{Unit: line.Volume.Unit, Amount: volume}
 	}
 	if packs < live {
-		r.GrossWeight.Amount = share(weight, 0, packs, live)
+		r.GrossWeight.Amount = share(weight, packs, live)
 		if line.Volume != (kernel.Quantity{}) {
-			r.Volume.Amount = share(volume, 0, packs, live)
+			r.Volume.Amount = share(volume, packs, live)
 		}
 	}
 	x.state.Reversals = append(x.state.Reversals, r)
@@ -513,9 +545,10 @@ func (x *LoadExecution) Close(evidence Evidence, by string, at time.Time) error 
 
 // RecordCarrierEvidence records the carrier's status of the tendered pieces, of the master or of a house with
 // live packs in the execution. A source reference recorded already with the same content changes nothing and
-// returns its number; with other content it is refused. More pieces of a fact than tendered on a transport, or
-// more departed and offloaded together, is a LOAD_CONFLICT; offloaded pieces are an OFFLOADED discrepancy. The
-// evidence is recorded either way (G06-05). It reports the evidence's number and whether it was added.
+// returns its number; with other content it is refused. A fact reported with more pieces than tendered on a
+// transport, or departed and offloaded reports together exceeding them, is a LOAD_CONFLICT; offloaded pieces
+// are an OFFLOADED discrepancy. The evidence is recorded either way (G06-05). It reports the evidence's number
+// and whether it was added.
 func (x *LoadExecution) RecordCarrierEvidence(e CarrierEvidence, by string, at time.Time) (int, bool, error) {
 	if x.state.State != ExecutionClosed {
 		return 0, false, fmt.Errorf("%w: carrier evidence follows the tender", ErrInvalidTransition)
@@ -549,18 +582,15 @@ func (x *LoadExecution) RecordCarrierEvidence(e CarrierEvidence, by string, at t
 	if e.ShipmentID != "" {
 		tendered = x.LiveFor(e.ShipmentID)
 	}
-	var same, flown int64
+	// A fact's pieces on a transport are its largest report: the same departure reported by the airline and the
+	// ground handler, or sent again under another reference, is one departure.
+	reported := map[CarrierFact]int64{}
 	for _, o := range x.state.CarrierEvidence {
-		if o.ShipmentID != e.ShipmentID || o.Transport != e.Transport {
-			continue
-		}
-		if o.Fact == e.Fact {
-			same += o.Pieces
-		}
-		if o.Fact == CarrierDeparted || o.Fact == CarrierOffloaded {
-			flown += o.Pieces
+		if o.ShipmentID == e.ShipmentID && o.Transport == e.Transport {
+			reported[o.Fact] = max(reported[o.Fact], o.Pieces)
 		}
 	}
+	same, flown := reported[e.Fact], reported[CarrierDeparted]+reported[CarrierOffloaded]
 	raise := func(kind LoadingDiscrepancyKind, observed int64) {
 		d := LoadingDiscrepancy{No: len(x.state.Discrepancies) + 1, Kind: kind, EvidenceNo: e.No, ShipmentID: e.ShipmentID, Expected: tendered,
 			Observed: observed, RaisedAt: at.UTC()}

@@ -135,9 +135,10 @@ func TestThePhysicalModelEmitsThePublishedEventTypes(t *testing.T) {
 		t.Fatal(err)
 	}
 	entry, _ := m.Live()
-	if err = errors.Join(x.Start("ops", at), x.Load(domain.LoadLine{Packs: 6, Evidence: ev("TD-1")}, c, lot, entry, 0, 0, "ops", at),
+	if err = errors.Join(x.Start("ops", at), x.Load(domain.LoadLine{Packs: 6, Evidence: ev("TD-1")}, c, lot, entry, domain.LotLoad{}, 0, "ops", at),
 		lot.Screen(screening(domain.ScreeningPassed), "ops", at), x.ReleaseHold(1, ev("REL-1"), lot.Screened(), "ops", at),
-		x.Unload(1, 1, domain.ReversalMisloaded, ev("UN-1"), "ops", at), x.Load(domain.LoadLine{Packs: 1, Evidence: ev("TD-2")}, c, lot, entry, 5, 5, "ops", at),
+		x.Unload(1, 1, domain.ReversalMisloaded, ev("UN-1"), lot, "ops", at),
+		x.Load(domain.LoadLine{Packs: 1, Evidence: ev("TD-2")}, c, lot, entry, domain.LotLoad{Packs: 5, GrossWeight: 250}, 5, "ops", at),
 		x.Close(ev("TR-1"), "ops", at)); err != nil {
 		t.Fatal(err)
 	}

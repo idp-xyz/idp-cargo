@@ -85,8 +85,8 @@ type RecordCargoLoadedCommand struct {
 }
 
 // RecordCargoLoaded records packs of a lot loaded or tendered. After the execution, the house's membership
-// ledger is locked FOR SHARE and the lot FOR UPDATE; the lot's and the house's live loaded packs are read under
-// those locks.
+// ledger is locked FOR NO KEY UPDATE and the lot FOR UPDATE; the lot's and the house's live loads are read under
+// those locks, so loads of one house from two lots never pass its plan together.
 type RecordCargoLoaded struct{ Deps }
 
 func (h RecordCargoLoaded) Handle(ctx context.Context, c RecordCargoLoadedCommand) (Receipt, error) {
@@ -96,7 +96,7 @@ func (h RecordCargoLoaded) Handle(ctx context.Context, c RecordCargoLoadedComman
 		if err != nil {
 			return 0, err
 		}
-		m, _, err := h.Memberships.LoadShared(txCtx, tenant, seen.Shipment())
+		m, _, err := h.Memberships.LoadForCargo(txCtx, tenant, seen.Shipment())
 		if err != nil {
 			return 0, err
 		}
@@ -108,7 +108,11 @@ func (h RecordCargoLoaded) Handle(ctx context.Context, c RecordCargoLoadedComman
 		if err != nil {
 			return 0, err
 		}
-		lotLoaded, err := h.Lots.Loaded(txCtx, tenant, c.LotID)
+		var unit kernel.UnitCode
+		if m, ok := lot.Measured(); ok {
+			unit = m.Volume.Unit
+		}
+		lotLoaded, err := h.Lots.Loaded(txCtx, tenant, c.LotID, unit)
 		if err != nil {
 			return 0, err
 		}
@@ -132,12 +136,25 @@ type RecordCargoUnloadedCommand struct {
 	Evidence phy.Evidence
 }
 
-// RecordCargoUnloaded reverses packs of a load line.
+// RecordCargoUnloaded reverses packs of a load line. After the execution, the house's membership ledger is
+// locked FOR NO KEY UPDATE and the line's lot FOR UPDATE, so that a lot does not close while its packs come out.
 type RecordCargoUnloaded struct{ Deps }
 
 func (h RecordCargoUnloaded) Handle(ctx context.Context, c RecordCargoUnloadedCommand) (Receipt, error) {
-	return h.execute(ctx, c.ExecutionCommand, c, ActionRecordCargoUnloaded, func(_ context.Context, _ *phy.Consolidation, x *phy.LoadExecution) (int, error) {
-		if err := x.Unload(c.LineNo, c.Packs, c.Reason, c.Evidence, c.Scope.ActorID, c.OccurredAt); err != nil {
+	return h.execute(ctx, c.ExecutionCommand, c, ActionRecordCargoUnloaded, func(txCtx context.Context, _ *phy.Consolidation, x *phy.LoadExecution) (int, error) {
+		lines := x.Lines()
+		if c.LineNo < 1 || c.LineNo > len(lines) {
+			return 0, phy.ErrInvalidLoad
+		}
+		line := lines[c.LineNo-1]
+		if _, _, err := h.Memberships.LoadForCargo(txCtx, c.Scope.TenantID, line.ShipmentID); err != nil {
+			return 0, err
+		}
+		lot, _, err := h.Lots.Load(txCtx, c.Scope.TenantID, line.LotID)
+		if err != nil {
+			return 0, err
+		}
+		if err = x.Unload(c.LineNo, c.Packs, c.Reason, c.Evidence, lot, c.Scope.ActorID, c.OccurredAt); err != nil {
 			return 0, err
 		}
 		return len(x.State().Reversals), nil
