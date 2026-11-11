@@ -41,6 +41,7 @@ type TransferStore interface {
 	Held(ctx context.Context, tenant org.TenantID, year int, keys []string) (map[string]bool, error)
 	// DispatchKeys returns the keys a dispatch holds in force, and the year they count in.
 	DispatchKeys(ctx context.Context, tenant org.TenantID, dispatch string) (int, []string, error)
+	// Reserve records the dispatch, once ever (ErrInvalidTransfer when it reserved before, in any year), and its keys.
 	Reserve(ctx context.Context, tenant org.TenantID, year int, dispatch string, keys []string, by string, at, entered time.Time) error
 	Release(ctx context.Context, tenant org.TenantID, year int, dispatch, by string, at, entered time.Time) (int64, error)
 	Safeguard(ctx context.Context, tenant org.TenantID, at time.Time) (org.TransferSafeguard, bool, error)
@@ -123,7 +124,6 @@ func (h MaintainTransferRegister) Handle(ctx context.Context, c TransferCommand)
 		return TransferResult{}, err
 	}
 	var result TransferResult
-	var inForce bool
 	err = h.Tx.WithinTransaction(ctx, func(txCtx context.Context) error {
 		previous, found, err := h.Receipts.Find(txCtx, c.Scope.TenantID, c.CommandID)
 		if err != nil {
@@ -133,19 +133,8 @@ func (h MaintainTransferRegister) Handle(ctx context.Context, c TransferCommand)
 			if previous.RequestHash != hash {
 				return ErrIdempotencyConflict
 			}
-			result = TransferResult{Receipt: previous}
-			if result.Year, _ = strconv.Atoi(strings.TrimPrefix(string(previous.PartyID), registerSubject)); result.Year == 0 {
-				return nil // a safeguard
-			}
-			// A reservation was admitted below the block, or past it with a safeguard: either way its state follows from
-			// the persons. A release reports the state with the safeguard in force now.
-			result.Persons, inForce = previous.EntryVersion, true
-			if c.Action == ActionReleaseContactTransfers {
-				if _, inForce, err = h.Store.Safeguard(txCtx, c.Scope.TenantID, h.Clock.Now()); err != nil {
-					return err
-				}
-			}
-			result.State = h.Thresholds.State(result.Persons, inForce)
+			result = TransferResult{Receipt: previous, Persons: previous.Persons, State: org.TransferState(previous.State)}
+			result.Year, _ = strconv.Atoi(strings.TrimPrefix(string(previous.PartyID), registerSubject)) // 0 for a safeguard
 			return nil
 		}
 		entered := h.Clock.Now().UTC().Truncate(time.Microsecond)
@@ -190,11 +179,6 @@ func (h MaintainTransferRegister) Handle(ctx context.Context, c TransferCommand)
 			}
 			state := h.Thresholds.State(persons, inForce)
 			if c.Action == ActionReserveContactTransfers {
-				if held, _, err := h.Store.DispatchKeys(txCtx, c.Scope.TenantID, c.DispatchID); err != nil {
-					return err
-				} else if held != 0 {
-					return fmt.Errorf("%w: dispatch %s holds its reservation already", org.ErrInvalidTransfer, c.DispatchID)
-				}
 				keys := slices.Clone(c.Keys)
 				slices.Sort(keys)
 				keys = slices.Compact(keys)
@@ -235,7 +219,7 @@ func (h MaintainTransferRegister) Handle(ctx context.Context, c TransferCommand)
 			}
 			event.SubjectID, event.EntryVersion, event.Revision = registerSubject+strconv.Itoa(year), persons, revision
 			result = TransferResult{Receipt: Receipt{CommandID: c.CommandID, ResultType: ResultTransferRegister, PartyID: org.PartyID(event.SubjectID),
-				NewRevision: revision, EntryID: subject, EntryVersion: persons, RequestHash: hash}, Year: year, Persons: persons, State: state}
+				NewRevision: revision, RequestHash: hash, Persons: persons, State: string(state)}, Year: year, Persons: persons, State: state}
 		}
 		if err = h.Outbox.EnqueueORGEvent(txCtx, event); err != nil {
 			return err

@@ -36,7 +36,7 @@ func TestTransferThresholds(t *testing.T) {
 	if TransferYear(newYearEve) != 2027 {
 		t.Fatalf("year %d", TransferYear(newYearEve))
 	}
-	for k, want := range map[string]bool{"ORG:C-1": true, "COM:O-1:CONSIGNEE:2": true, "Test Person": false, "plain": false, "ORG:a b": false} {
+	for k, want := range map[string]bool{"ORG:party-a:C-1": true, "COM:O-1:CONSIGNEE:2": true, "ORG:C-1": false, "ORG:p:zhang@example.cn": false, "Test Person": false, "plain": false, "ORG:a b": false} {
 		if ValidContactKey(k) != want {
 			t.Errorf("key %q: %v", k, !want)
 		}

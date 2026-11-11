@@ -127,3 +127,69 @@ func TestWrapKeepsLinesWithinWidth(t *testing.T) {
 		t.Fatalf("runs %q", got)
 	}
 }
+
+// Accented Latin letters and typographic punctuation are Helvetica's (WinAnsi), measured with its widths; only the
+// rest goes to the CJK font, a full em each; control characters go.
+func TestLatinBeyondASCIIIsHelvetica(t *testing.T) {
+	p := &Page{}
+	p.Text(10, 10, 10, "Société Ölmühle São Paulo – Müller’s €5\ttab\x07 上海")
+	ops := p.ops.String()
+	for _, want := range []string{`(Soci\351t\351 \326lm\374hle S\343o Paulo \226 M\374ller\222s \2005 tab )`, "<4E0A6D77>"} {
+		if !strings.Contains(ops, want) {
+			t.Errorf("missing %s in %s", want, ops)
+		}
+	}
+	if strings.Count(ops, "BT ") != 2 || strings.Contains(ops, "<00E9>") || strings.Contains(ops, "\x07") {
+		t.Fatalf("one Helvetica run and one CJK run: %s", ops)
+	}
+	// é is as wide as e in Helvetica; a CJK character a full em
+	if Width("é", 10) != Width("e", 10) || Width("上", 10) != 10 || Width("’", 10) != 2.22 {
+		t.Fatalf("widths %v %v %v", Width("é", 10), Width("上", 10), Width("’", 10))
+	}
+	if got := Width("a\U0001F600", 10); got != Width("a?", 10) {
+		t.Fatalf("a character beyond the BMP is a '?': %v", got)
+	}
+	lines := wrap("contact: someone.with.a.very.long.address@example-shipper-domain.cn", 60, 8.5)
+	for _, l := range lines {
+		if Width(l, 8.5) > 60 {
+			t.Errorf("%q is %.1f wide", l, Width(l, 8.5))
+		}
+	}
+	if strings.Join(lines, "") != "contact:someone.with.a.very.long.address@example-shipper-domain.cn" {
+		t.Fatalf("a long word is broken, not lost: %q", lines)
+	}
+}
+
+func TestWeightsRoundHalfUp(t *testing.T) {
+	for grams, want := range map[int64]string{1950: "2", 1250: "1.3", 1350: "1.4", 1949: "1.9", 318_000: "318", 318_500: "318.5", 49: "0", 50: "0.1"} {
+		if got := kg(grams); got != want {
+			t.Errorf("%d g: %s, want %s", grams, got, want)
+		}
+	}
+	for cm3, want := range map[int64]string{1_000_000: "1.000 M3", 1_234_500: "1.235 M3", 999: "0.001 M3", 12_345_678: "12.346 M3"} {
+		if got := m3(cm3); got != want {
+			t.Errorf("%d cm3: %s, want %s", cm3, got, want)
+		}
+	}
+}
+
+// A party with names in two languages, four address lines and identifiers grows its box instead of running into the
+// next one.
+func TestBoxesGrowWithTheirText(t *testing.T) {
+	r := house(1)
+	r.Doc.Shipper.Address.Lines = []string{"Room 1201, Building 3", "No. 88 Airport Logistics Park Road", "Pudong New Area", "Shanghai Free Trade Zone"}
+	r.Doc.Shipper.Identifiers = append(r.Doc.Shipper.Identifiers, doc.Identifier{Type: "CN_CUSTOMS", Country: "CN", Value: "3122260000"})
+	pdf, err := Renderer{}.Render(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	structure(t, pdf)
+	// the consignee's box starts below the shipper's nine lines: 9 x 10.625 + 23 > 96
+	if !strings.Contains(string(pdf), "(Consignee's name and address)") || strings.Contains(string(pdf), "1 0 0 1 40.00 670.00 Tm (Consignee's") {
+		t.Fatal("the consignee's box did not move down")
+	}
+	short, _ := Renderer{}.Render(house(1))
+	if !strings.Contains(string(short), "1 0 0 1 40.00 670.00 Tm (Consignee's") {
+		t.Fatalf("a short shipper keeps the 96-point box")
+	}
+}

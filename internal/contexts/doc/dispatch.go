@@ -84,7 +84,8 @@ func dispatchView(x *domain.Dispatch, revision int64) api.DocumentDispatch {
 		Channel: st.Channel, State: x.Current(), CopySHA256: st.CopySHA256, Template: st.Template, RegisterYear: st.RegisterYear,
 		RegisterState: st.RegisterState, PreparedBy: st.PreparedBy, PreparedAt: st.PreparedAt, CrossBorderKeys: x.CrossBorderKeys()}
 	for _, c := range st.Contacts {
-		v := api.DispatchContact{No: c.No, Key: c.Key, PartyRole: c.PartyRole, OrderID: c.OrderID, Classification: c.Classification, LegalPath: c.LegalPath,
+		v := api.DispatchContact{No: c.No, Key: c.Key, PartyRole: c.PartyRole, PartyID: c.PartyID, OrderID: c.OrderID, Source: c.Source,
+			Classification: c.Classification, LegalPath: c.LegalPath,
 			Status: c.Status, OmitReason: c.OmitReason}
 		if k := c.Consent; k != nil {
 			consent := api.ContactConsent(*k)

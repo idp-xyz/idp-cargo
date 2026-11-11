@@ -126,6 +126,15 @@ type Directory interface {
 	Country(ctx context.Context, tenant doc.TenantID, party string) (string, error)
 	// Register reads the current year of ContactTransferRegister v1, with the keys a dispatch holds.
 	Register(ctx context.Context, tenant doc.TenantID, dispatch string) (doc.RegisterView, error)
+	// Consents reads the current consent of a party's contacts in ORG's address book, by contact id, for the purpose
+	// DOCUMENTS with the actor's own authorization (ORG logs the read).
+	Consents(ctx context.Context, tenant doc.TenantID, actor, party string) (map[string]ORGConsent, error)
+}
+
+// ORGConsent is the current consent of a contact of ORG's address book; Erased when ORG erased the contact.
+type ORGConsent struct {
+	Consent *doc.Consent
+	Erased  bool
 }
 
 // Renderer renders a version to PDF under its template.

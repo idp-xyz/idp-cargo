@@ -10,7 +10,7 @@ import (
 // ContactTransferRegister v1 (ORG V0.7; decision N1-DOC OD-4 A, privacy decision P5): the tenant's count of the
 // distinct persons whose contact details DOC and BOOK transfer abroad in a calendar year (China time), with the
 // warning from 80,000 persons and the block from 100,000 without a standard contract or certification in force.
-// Keys identify persons without personal data: ORG:<contact id> for an ORG contact, or COM:<order>:<role>:<version>
+// Keys identify persons without personal data: ORG:<party>:<contact id> for an ORG contact, or COM:<order>:<role>:<version>
 // for a contact frozen on an order. The API client reserves a dispatch's cross-border contacts here before sending
 // (T6): the reservation is the atomic gate; a failed dispatch's reservation is released.
 

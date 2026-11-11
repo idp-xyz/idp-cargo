@@ -25,7 +25,9 @@ type (
 		No             int     `json:"contact_no"`
 		Key            string  `json:"contact_key"`
 		PartyRole      string  `json:"party_role"`
+		PartyID        *string `json:"party_id"`
 		OrderID        string  `json:"order_id"`
+		Source         string  `json:"source"`
 		Classification string  `json:"classification"`
 		LegalPath      string  `json:"legal_path"`
 		Status         string  `json:"status"`
@@ -34,7 +36,6 @@ type (
 		Provide        *bool   `json:"consent_provide_to_others"`
 		CrossBorder    *bool   `json:"consent_cross_border"`
 		Basis          *string `json:"consent_basis"`
-		EvidenceRef    *string `json:"consent_evidence_ref"`
 		ORGRevision    *int64  `json:"consent_org_revision"`
 	}
 	outcomeRow struct {
@@ -75,11 +76,11 @@ func scanDispatch(row pgx.Row, tenant doc.TenantID) (*doc.Dispatch, int64, error
 	st.DocumentID, st.Kind, st.OrderingParty = doc.DocumentID(document), doc.Kind(kind), deref(ordering)
 	st.PreparedAt, st.EnteredAt = st.PreparedAt.UTC(), st.EnteredAt.UTC()
 	for _, c := range cr {
-		d := doc.DispatchContact{No: c.No, Key: c.Key, PartyRole: c.PartyRole, OrderID: c.OrderID, Classification: c.Classification, LegalPath: c.LegalPath,
-			Status: c.Status, OmitReason: deref(c.OmitReason)}
+		d := doc.DispatchContact{No: c.No, Key: c.Key, PartyRole: c.PartyRole, PartyID: deref(c.PartyID), OrderID: c.OrderID, Source: c.Source,
+			Classification: c.Classification, LegalPath: c.LegalPath, Status: c.Status, OmitReason: deref(c.OmitReason)}
 		if c.Provide != nil {
 			d.Consent = &doc.Consent{NoticeVersion: deref(c.NoticeVersion), ProvideToOthers: *c.Provide, CrossBorder: c.CrossBorder != nil && *c.CrossBorder,
-				Basis: deref(c.Basis), EvidenceRef: deref(c.EvidenceRef)}
+				Basis: deref(c.Basis)}
 			if c.ORGRevision != nil {
 				d.Consent.ORGRevision = *c.ORGRevision
 			}
@@ -171,16 +172,14 @@ func (s DispatchStore) Insert(ctx context.Context, x *doc.Dispatch) (int64, erro
 		return 0, err
 	}
 	for _, c := range st.Contacts {
-		var notice, basis, evidence any
-		var provide, cross, orgRevision any
+		var notice, basis, provide, cross, orgRevision any
 		if k := c.Consent; k != nil {
-			notice, basis, evidence, provide, cross, orgRevision = orNull(k.NoticeVersion), orNull(k.Basis), orNull(k.EvidenceRef), k.ProvideToOthers,
-				k.CrossBorder, k.ORGRevision
+			notice, basis, provide, cross, orgRevision = orNull(k.NoticeVersion), orNull(k.Basis), k.ProvideToOthers, k.CrossBorder, k.ORGRevision
 		}
-		if _, err = q.Exec(ctx, `INSERT INTO cargo_doc.dispatch_contact (tenant_id,dispatch_id,contact_no,contact_key,party_role,order_id,classification,
-            legal_path,status,omit_reason,consent_notice_version,consent_provide_to_others,consent_cross_border,consent_basis,consent_evidence_ref,
-            consent_org_revision) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`, string(st.TenantID), st.DispatchID, c.No, c.Key,
-			c.PartyRole, c.OrderID, c.Classification, c.LegalPath, c.Status, orNull(c.OmitReason), notice, provide, cross, basis, evidence,
+		if _, err = q.Exec(ctx, `INSERT INTO cargo_doc.dispatch_contact (tenant_id,dispatch_id,contact_no,contact_key,party_role,party_id,order_id,source,
+            classification,legal_path,status,omit_reason,consent_notice_version,consent_provide_to_others,consent_cross_border,consent_basis,
+            consent_org_revision) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`, string(st.TenantID), st.DispatchID, c.No, c.Key,
+			c.PartyRole, orNull(c.PartyID), c.OrderID, c.Source, c.Classification, c.LegalPath, c.Status, orNull(c.OmitReason), notice, provide, cross, basis,
 			orgRevision); err != nil {
 			return 0, err
 		}

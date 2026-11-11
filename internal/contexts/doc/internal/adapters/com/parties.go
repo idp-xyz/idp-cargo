@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strconv"
 
 	comapi "go.idp.xyz/idp-cargo/internal/contexts/com/api"
 	app "go.idp.xyz/idp-cargo/internal/contexts/doc/internal/application"
@@ -76,16 +75,16 @@ func (p Parties) Contacts(ctx context.Context, tenant doc.TenantID, actor, order
 		if !v.HasContact {
 			continue
 		}
-		c := doc.ContactSource{Key: "COM:" + order + ":" + v.Role + ":" + strconv.FormatInt(v.Version, 10), PartyRole: v.Role, OrderID: order,
-			PartyVersion: v.Version, Erased: true}
+		c := doc.ContactSource{Key: kernel.OrderContactKey(order, v.Role, v.Version), PartyRole: v.Role, PartyID: v.PartyID, OrderID: order,
+			PartyVersion: v.Version, Source: doc.SourceOrder, Erased: true}
 		if f := v.Contact; usable && f != nil {
-			if f.Source == comapi.FromORG && f.ORGContactID != "" {
-				c.Key = "ORG:" + f.ORGContactID
+			if f.Source == comapi.FromORG {
+				c.Key, c.Source, c.ORGContactID = kernel.ORGContactKey(v.PartyID, f.ORGContactID), doc.SourceORG, f.ORGContactID
 			}
 			c.Erased, c.Name, c.Phone, c.Mobile, c.Email = false, f.Contact.Name, f.Contact.Phone, f.Contact.Mobile, f.Contact.Email
 			if k := f.Consent; k != nil {
 				c.Consent = &doc.Consent{NoticeVersion: k.NoticeVersion, ProvideToOthers: k.ProvideToOthers, CrossBorder: k.CrossBorder, Basis: k.Basis,
-					EvidenceRef: k.EvidenceRef, ORGRevision: k.ORGRevision}
+					ORGRevision: k.ORGRevision}
 			}
 		}
 		out.Contacts = append(out.Contacts, c)

@@ -351,17 +351,15 @@ func TestTransportDocumentsWithEveryContext(t *testing.T) {
 		return d
 	}
 	d := dispatch("dispatch-agent", "DSP-AGENT", 26)
-	if d.Version != h.CurrentVersion || d.Recipient.Country != "US" || len(d.Contacts) != 2 || d.Contacts[0].Key != "ORG:CT-SHIPPER" ||
+	if d.Version != h.CurrentVersion || d.Recipient.Country != "US" || len(d.Contacts) != 2 || d.Contacts[0].Key != "ORG:shipper-co:CT-SHIPPER" ||
 		d.Contacts[0].Classification != docapi.ContactCrossBorder || d.Contacts[0].Status != docapi.ContactIncluded || d.Contacts[0].Consent.ORGRevision != 3 ||
 		d.Contacts[1].PartyRole != comapi.PartyConsignee || d.Contacts[1].OmitReason != docapi.OmitNoTransferConsent ||
-		!slices.Equal(d.CrossBorderKeys, []string{"ORG:CT-SHIPPER"}) || d.RegisterState != orgapi.TransferOK {
+		!slices.Equal(d.CrossBorderKeys, []string{"ORG:shipper-co:CT-SHIPPER"}) || d.RegisterState != orgapi.TransferOK {
 		t.Fatalf("dispatch to the agent: %+v", d)
 	}
-	copied, err := docModule.GetDispatchCopy(ctx, docapi.GetDispatchCopy{TenantID: tenant, ActorID: "doc-1", DispatchID: "DSP-AGENT"})
-	must("copy", err)
-	if !bytes.Contains(copied.PDF, []byte("(SHIPPER: Test Person A, +86 138 0000 0001, a@shipper.test)")) || bytes.Contains(copied.PDF, []byte("Test Person B")) ||
-		!bytes.Contains(copied.PDF, []byte("(SHA0000001)")) {
-		t.Fatal("the agent's copy carries the shipper's contact and not the consignee's")
+	if _, err = docModule.GetDispatchCopy(ctx, docapi.GetDispatchCopy{TenantID: tenant, ActorID: "doc-1", DispatchID: "DSP-AGENT"}); !errors.Is(err,
+		docapi.ErrRejected) || !strings.Contains(err.Error(), "NOT_RESERVED") {
+		t.Fatalf("a copy abroad before ORG's reservation: %v", err)
 	}
 	outcome := func(command, id, outcome string, revision int64, h int) error {
 		_, err := docModule.RecordDispatchOutcome(ctx, docapi.RecordDispatchOutcome{CommandID: command, TenantID: tenant, ActorID: "doc-1", DispatchID: id,
@@ -375,6 +373,12 @@ func TestTransportDocumentsWithEveryContext(t *testing.T) {
 		DispatchID: "DSP-AGENT", ContactKeys: d.CrossBorderKeys, OccurredAt: hours(26)})
 	if err != nil || reserved.Persons != 1 || reserved.State != orgapi.TransferWarning {
 		t.Fatalf("reservation: %+v %v", reserved, err)
+	}
+	copied, err := docModule.GetDispatchCopy(ctx, docapi.GetDispatchCopy{TenantID: tenant, ActorID: "doc-1", DispatchID: "DSP-AGENT"})
+	must("copy", err)
+	if !bytes.Contains(copied.PDF, []byte("(SHIPPER: Test Person A, +86 138 0000 0001, a@shipper.test)")) || bytes.Contains(copied.PDF, []byte("Test Person B")) ||
+		!bytes.Contains(copied.PDF, []byte("(SHA0000001)")) {
+		t.Fatal("the agent's copy carries the shipper's contact and not the consignee's")
 	}
 	must("sent", outcome("sent", "DSP-AGENT", docapi.DispatchSent, 1, 26))
 	// a second copy to the agent bounces: the person stays counted once, the client releases the reservation

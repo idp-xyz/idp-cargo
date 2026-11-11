@@ -120,14 +120,18 @@ func (s TransferRegister) Reserve(ctx context.Context, tenant org.TenantID, year
 	if err != nil {
 		return err
 	}
+	_, err = q.Exec(ctx, `INSERT INTO cargo_org.contact_transfer_dispatch (tenant_id,dispatch_id,year,reserved_by,reserved_at,entered_at)
+      VALUES ($1,$2,$3,$4,$5,$6)`, string(tenant), dispatch, year, by, at, entered)
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		return fmt.Errorf("%w: dispatch %s reserved its contacts before; a dispatch reserves once", org.ErrInvalidTransfer, dispatch)
+	}
+	if err != nil {
+		return err
+	}
 	for _, k := range keys {
-		_, err = q.Exec(ctx, `INSERT INTO cargo_org.contact_transfer_reservation (tenant_id,year,dispatch_id,contact_key,reserved_by,reserved_at,entered_at)
-          VALUES ($1,$2,$3,$4,$5,$6,$7)`, string(tenant), year, dispatch, k, by, at, entered)
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			return fmt.Errorf("%w: dispatch %s reserved %s already", org.ErrInvalidTransfer, dispatch, k)
-		}
-		if err != nil {
+		if _, err = q.Exec(ctx, `INSERT INTO cargo_org.contact_transfer_reservation (tenant_id,year,dispatch_id,contact_key,reserved_by,reserved_at,entered_at)
+          VALUES ($1,$2,$3,$4,$5,$6,$7)`, string(tenant), year, dispatch, k, by, at, entered); err != nil {
 			return err
 		}
 	}

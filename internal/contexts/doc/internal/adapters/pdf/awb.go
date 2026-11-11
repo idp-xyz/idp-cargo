@@ -21,15 +21,22 @@ func (Renderer) Template() string { return Template }
 
 var chinaTime = time.FixedZone("UTC+8", 8*3600)
 
+// kg shows grams as kilograms to the tenth, rounded half up.
 func kg(grams int64) string {
-	return strings.TrimSuffix(strings.TrimSuffix(fmt.Sprintf("%.1f", float64(grams)/1000), "0"), ".")
+	tenths := (grams + 50) / 100
+	if tenths%10 == 0 {
+		return fmt.Sprint(tenths / 10)
+	}
+	return fmt.Sprintf("%d.%d", tenths/10, tenths%10)
 }
 
+// m3 shows cubic centimetres as cubic metres to the thousandth, rounded half up.
 func m3(cm3 int64) string {
 	if cm3 == 0 {
 		return ""
 	}
-	return fmt.Sprintf("%.3f M3", float64(cm3)/1_000_000)
+	milli := (cm3 + 500) / 1000
+	return fmt.Sprintf("%d.%03d M3", milli/1000, milli%1000)
 }
 
 func partyLines(p doc.Party) string {
@@ -58,11 +65,31 @@ func partyLines(p doc.Party) string {
 	return b.String()
 }
 
+const (
+	boxText   = 8.5
+	lineGap   = 1.25
+	signature = 130.0 // nothing is written below this on the last page: the execution box and footer
+	bottom    = 50.0  // nor below this on other pages
+)
+
+// height is the height a box needs for its text, at least min.
+func height(w, min float64, text string) float64 {
+	return max(min, 21+float64(len(wrap(text, w-8, boxText)))*boxText*lineGap+2)
+}
+
 // box draws a labelled box and its text, top left at x, top.
 func box(p *Page, x, top, w, h float64, label, text string) {
 	p.Rect(x, top-h, w, h)
 	p.Text(x+4, top-10, 6.5, label)
-	p.Wrap(x+4, top-21, w-8, 8.5, text)
+	p.Wrap(x+4, top-21, w-8, boxText, text)
+}
+
+// pair draws two boxes side by side as high as the taller needs, at least min, and returns the top below them.
+func pair(p *Page, x, top, w1, w2, min float64, label1, text1, label2, text2 string) float64 {
+	h := max(height(w1, min, text1), height(w2, min, text2))
+	box(p, x, top, w1, h, label1, text1)
+	box(p, x+w1, top, w2, h, label2, text2)
+	return top - h
 }
 
 // Render lays out one version: the issuer, parties, route, flights, cargo, security status, issue place and date;
@@ -86,37 +113,34 @@ func (Renderer) Render(r app.Rendering) ([]byte, error) {
 		page.Text(left+half, top-14, 7.5, "Master air waybill "+c.MAWB)
 	}
 	top -= 26
-	box(page, left, top, half, 96, "Shipper's name and address", partyLines(c.Shipper))
 	capacity := "As consolidator"
 	if c.IssuerCapacity == "AGENT_OF_CARRIER" {
 		capacity = fmt.Sprintf("As agent of the carrier %s (prefix %s)", c.Airline.Designator, c.Airline.AWBPrefix)
 	}
-	box(page, left+half, top, half, 96, "Issued by", c.Issuer.Name+"\n"+capacity+"\n"+c.Issuer.Jurisdiction)
-	top -= 96
-	box(page, left, top, half, 96, "Consignee's name and address", partyLines(c.Consignee))
+	top = pair(page, left, top, half, half, 96, "Shipper's name and address", partyLines(c.Shipper), "Issued by",
+		c.Issuer.Name+"\n"+capacity+"\n"+c.Issuer.Jurisdiction)
 	notify := ""
 	if c.Notify != nil {
 		notify = partyLines(*c.Notify)
 	}
-	box(page, left+half, top, half, 96, "Notify party", notify)
-	top -= 96
+	top = pair(page, left, top, half, half, 96, "Consignee's name and address", partyLines(c.Consignee), "Notify party", notify)
 	var flights []string
 	for _, f := range c.Flights {
 		flights = append(flights, fmt.Sprintf("%s %s-%s %s", f.Flight, f.From.IATA, f.To.IATA, f.ETD.In(chinaTime).Format("2006-01-02")))
 	}
-	box(page, left, top, half/2, 40, "Airport of departure", c.Origin.IATA+"  "+c.Origin.Code)
-	box(page, left+half/2, top, half/2, 40, "Airport of destination", c.Destination.IATA+"  "+c.Destination.Code)
-	box(page, left+half, top, half, 40, "Flights", strings.Join(flights, "\n"))
-	top -= 40
-	box(page, left, top, half, 40, "Accounting information", "Freight "+c.PaymentIndicator)
+	airports := height(half, 40, strings.Join(flights, "\n"))
+	box(page, left, top, half/2, airports, "Airport of departure", c.Origin.IATA+"  "+c.Origin.Code)
+	box(page, left+half/2, top, half/2, airports, "Airport of destination", c.Destination.IATA+"  "+c.Destination.Code)
+	box(page, left+half, top, half, airports, "Flights", strings.Join(flights, "\n"))
+	top -= airports
 	security := c.Security.Status
 	for _, s := range c.Security.Screenings {
 		security += fmt.Sprintf("\n%s %s %s %s", s.Screener, s.Method, s.Reference, s.ScreenedAt.In(chinaTime).Format("2006-01-02 15:04"))
 	}
-	box(page, left+half, top, half, 40, "Security status", security)
-	top -= 40
-	box(page, left, top, width, 30, "Handling information", c.HandlingInformation)
-	top -= 30
+	top = pair(page, left, top, half, half, 40, "Accounting information", "Freight "+c.PaymentIndicator, "Security status", security)
+	handling := height(width, 30, c.HandlingInformation)
+	box(page, left, top, width, handling, "Handling information", c.HandlingInformation)
+	top -= handling
 
 	// cargo
 	page.Rect(left, top-26, width, 26)
@@ -133,42 +157,40 @@ func (Renderer) Render(r app.Rendering) ([]byte, error) {
 	page.Text(left+229, top-21, 8.5, m3(c.Cargo.VolumeCm3))
 	top -= 26
 	y := top - 12
-	newPage := func() {
-		page = &Page{}
-		pages = append(pages, page)
-		page.Text(left, PageHeight-40, 10, title+" "+c.Number+" (continued)")
-		y = PageHeight - 60
+	// write puts a text below the last, on a new page when it would reach the execution box (which a later page may
+	// leave room for) or the foot of the page.
+	write := func(x, gap, w, size float64, text string) {
+		need := float64(len(wrap(text, w, size))) * size * lineGap
+		if y-gap-need < signature {
+			page.Text(left, bottom-14, 6.5, "Continued on the next page")
+			page = &Page{}
+			pages = append(pages, page)
+			page.Text(left, PageHeight-40, 10, title+" "+c.Number+" (continued)")
+			y, gap = PageHeight-60, 0
+		}
+		y = page.Wrap(x, y-gap, w, size, text)
 	}
 	for _, l := range c.Cargo.Lines {
-		if y < 150 {
-			newPage()
-		}
 		text := fmt.Sprintf("%d %s %s", l.Pieces, l.PackageType, l.GoodsDescription)
 		if l.HAWB != "" {
 			text = fmt.Sprintf("HAWB %s  %d pcs  %s kg  %s", l.HAWB, l.Pieces, kg(l.GrossGrams), l.GoodsDescription)
 		}
-		y = page.Wrap(left+4, y, width-8, 8.5, text)
+		write(left+4, 0, width-8, boxText, text)
 	}
 	if c.Kind == string(doc.KindMAWB) {
-		if y < 150 {
-			newPage()
-		}
-		y = page.Wrap(left+4, y-4, width-8, 8.5, fmt.Sprintf("CONSOLIDATION AS PER ATTACHED MANIFEST: %d HOUSE(S)", len(c.Cargo.Lines)))
+		write(left+4, 4, width-8, boxText, fmt.Sprintf("CONSOLIDATION AS PER ATTACHED MANIFEST: %d HOUSE(S)", len(c.Cargo.Lines)))
 	}
-	if len(r.Contacts) > 0 {
-		if y < 170 {
-			newPage()
+	for i, k := range r.Contacts {
+		if i == 0 {
+			write(left+4, 8, width-8, 8, "Contacts:")
 		}
-		y = page.Wrap(left+4, y-8, width-8, 8, "Contacts:")
-		for _, k := range r.Contacts {
-			var parts []string
-			for _, s := range []string{k.Name, k.Phone, k.Mobile, k.Email} {
-				if strings.TrimSpace(s) != "" {
-					parts = append(parts, s)
-				}
+		var parts []string
+		for _, s := range []string{k.Name, k.Phone, k.Mobile, k.Email} {
+			if strings.TrimSpace(s) != "" {
+				parts = append(parts, s)
 			}
-			y = page.Wrap(left+12, y, width-16, 8, k.Role+": "+strings.Join(parts, ", "))
 		}
+		write(left+12, 0, width-16, 8, k.Role+": "+strings.Join(parts, ", "))
 	}
 
 	// execution and identity

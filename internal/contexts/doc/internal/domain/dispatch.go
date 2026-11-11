@@ -3,7 +3,10 @@ package domain
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"time"
+
+	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
 // DOC V0.2, DocumentDispatch with the P5 records: every copy of a document that leaves the tenant is a dispatch to
@@ -16,7 +19,7 @@ var (
 	ErrTransferBlocked     = errors.New("doc: DOC_TRANSFER_BLOCKED: the tenant's register of persons whose contacts went abroad this year is blocked; a standard contract or certification lifts it")
 	ErrTransferNotReserved = errors.New("doc: DOC_TRANSFER_NOT_RESERVED: ORG's register does not hold the dispatch's cross-border contacts; the API client reserves them before sending")
 	ErrInvalidDispatch     = errors.New("doc: invalid dispatch")
-	ErrCopyChanged         = errors.New("doc: DOC_COPY_CHANGED: the copy can no longer be made as recorded: a contact on it changed or was erased since")
+	ErrCopyChanged         = errors.New("doc: DOC_COPY_CHANGED: the copy can no longer be made as recorded: a contact on it changed, lost its consent or was erased since")
 )
 
 // Recipient roles, channels, classifications, legal paths and contact statuses of a dispatch.
@@ -33,7 +36,7 @@ const (
 	ChannelPrintHandover = "PRINT_HANDOVER"
 	ChannelPortal        = "PORTAL"
 
-	NotProvided = "NOT_PROVIDED" // the recipient is the ordering party
+	NotProvided = "NOT_PROVIDED" // the ordering party gets back a contact it gave, or its own
 	Provision   = "PROVISION"    // another party in mainland China
 	CrossBorder = "CROSS_BORDER" // a recipient abroad, Hong Kong, Macao and Taiwan included
 
@@ -48,6 +51,9 @@ const (
 	OmitNoProvideConsent  = "NO_CONSENT_TO_PROVIDE"
 	OmitNoTransferConsent = "NO_CONSENT_TO_TRANSFER"
 	OmitErased            = "ERASED"
+
+	SourceORG   = "ORG"   // a contact of ORG's address book, carried onto the order
+	SourceOrder = "ORDER" // a contact given on the order
 )
 
 func validRecipientRole(r string) bool {
@@ -70,23 +76,35 @@ type Recipient struct {
 	Role    string
 }
 
-// Consent is a contact's consent as COM froze it (privacy decision P4).
+// Consent is a contact's consent (privacy decision P4): as COM froze it on the order, narrowed by ORG's current
+// consent for a contact of ORG's address book. Where the consent's evidence is kept stays with COM and ORG.
 type Consent struct {
 	NoticeVersion   string
 	ProvideToOthers bool
 	CrossBorder     bool
 	Basis           string
-	EvidenceRef     string
 	ORGRevision     int64
 }
 
-// ContactSource is a contact of a document party as COM holds it: its key, the party role and order, its consent
-// and, for the copy only, the details, which DOC never stores.
+// Narrower is the consent both a and b give: none when either is none.
+func Narrower(a, b *Consent) *Consent {
+	if a == nil || b == nil {
+		return nil
+	}
+	return &Consent{NoticeVersion: b.NoticeVersion, ProvideToOthers: a.ProvideToOthers && b.ProvideToOthers, CrossBorder: a.CrossBorder && b.CrossBorder,
+		Basis: b.Basis, ORGRevision: b.ORGRevision}
+}
+
+// ContactSource is a contact of a document party as COM holds it: its key (kernel.ContactKey), the party, role and
+// order, where it came from, its consent and, for the copy only, the details, which DOC never stores.
 type ContactSource struct {
-	Key          string // ORG:<contact id> or COM:<order>:<role>:<party version>
+	Key          string
 	PartyRole    string
+	PartyID      string
 	OrderID      string
 	PartyVersion int64
+	Source       string // SourceORG or SourceOrder
+	ORGContactID string // a contact of ORG's address book; never stored by DOC
 	Consent      *Consent
 	Erased       bool
 	Name         string
@@ -100,7 +118,9 @@ type DispatchContact struct {
 	No             int
 	Key            string
 	PartyRole      string
+	PartyID        string
 	OrderID        string
+	Source         string
 	Consent        *Consent
 	Classification string
 	LegalPath      string
@@ -117,36 +137,66 @@ type RegisterView struct {
 	DispatchKeys  []string
 }
 
+// Classify says what giving a contact to a recipient is: NOT_PROVIDED when the recipient is the ordering party and
+// the contact is one it gave on the order or its own; else PROVISION to a recipient in mainland China and
+// CROSS_BORDER to one abroad, Hong Kong, Macao and Taiwan included.
+func Classify(r Recipient, orderingParty, source, party string) string {
+	switch {
+	case orderingParty != "" && r.PartyID == orderingParty && (source == SourceOrder || party == orderingParty):
+		return NotProvided
+	case r.Country == "CN":
+		return Provision
+	}
+	return CrossBorder
+}
+
+// Omission is why a contact cannot go to a recipient with a classification, or empty when it can.
+func Omission(classification string, c ContactSource) string {
+	switch {
+	case c.Erased:
+		return OmitErased
+	case classification == NotProvided:
+		return ""
+	case c.Consent == nil:
+		return OmitNoConsent
+	case !c.Consent.ProvideToOthers:
+		return OmitNoProvideConsent
+	case classification == CrossBorder && !c.Consent.CrossBorder:
+		return OmitNoTransferConsent
+	}
+	return ""
+}
+
 // Decide decides each contact for a recipient (OD-5 A: a contact without the consent the recipient needs is left
-// off the copy, with the reason): the ordering party itself is NOT_PROVIDED; a recipient in mainland China needs
-// consent to provide to others; one abroad needs consent to transfer abroad too, and the register must not be
-// blocked; the legal path abroad is the threshold exemption, or the tenant's safeguard once it is past the block.
+// off the copy, with the reason). A person on two roles goes by the narrower decision: left off for one, left off
+// for both. A contact going abroad needs the register not to be blocked; its legal path is the threshold exemption,
+// or the tenant's safeguard in force.
 func Decide(r Recipient, orderingParty string, contacts []ContactSource, register RegisterView) ([]DispatchContact, error) {
-	var out []DispatchContact
+	out := make([]DispatchContact, 0, len(contacts))
+	omitted := map[string]string{}
 	for i, c := range contacts {
-		d := DispatchContact{No: i + 1, Key: c.Key, PartyRole: c.PartyRole, OrderID: c.OrderID, Consent: c.Consent, Status: ContactIncluded, LegalPath: PathNone}
-		switch {
-		case r.PartyID == orderingParty:
-			d.Classification = NotProvided
-		case r.Country == "CN":
-			d.Classification = Provision
-		default:
-			d.Classification = CrossBorder
+		d := DispatchContact{No: i + 1, Key: c.Key, PartyRole: c.PartyRole, PartyID: c.PartyID, OrderID: c.OrderID, Source: c.Source, Consent: c.Consent,
+			Classification: Classify(r, orderingParty, c.Source, c.PartyID), Status: ContactIncluded, LegalPath: PathNone}
+		if reason := Omission(d.Classification, c); reason != "" {
+			d.Status, d.OmitReason = ContactOmitted, reason
+			if _, ok := omitted[c.Key]; !ok {
+				omitted[c.Key] = reason
+			}
 		}
-		omit := func(reason string) { d.Status, d.OmitReason, d.LegalPath = ContactOmitted, reason, PathNone }
-		switch {
-		case c.Erased:
-			omit(OmitErased)
-		case d.Classification == NotProvided:
-		case c.Consent == nil:
-			omit(OmitNoConsent)
-		case !c.Consent.ProvideToOthers:
-			omit(OmitNoProvideConsent)
-		case d.Classification == Provision:
+		out = append(out, d)
+	}
+	for i := range out {
+		d := &out[i]
+		if reason, ok := omitted[d.Key]; ok && d.Status == ContactIncluded {
+			d.Status, d.OmitReason = ContactOmitted, reason
+		}
+		if d.Status != ContactIncluded {
+			continue
+		}
+		switch d.Classification {
+		case Provision:
 			d.LegalPath = PathConsent
-		case !c.Consent.CrossBorder:
-			omit(OmitNoTransferConsent)
-		default:
+		case CrossBorder:
 			if register.State == "BLOCKED" {
 				return nil, ErrTransferBlocked
 			}
@@ -158,7 +208,6 @@ func Decide(r Recipient, orderingParty string, contacts []ContactSource, registe
 				d.LegalPath = PathCertification
 			}
 		}
-		out = append(out, d)
 	}
 	return out, nil
 }
@@ -230,7 +279,11 @@ func PrepareDispatch(st DispatchState, document *Document, by string, at time.Ti
 	if st.Recipient.Role == RecipientOrderingParty && (st.OrderingParty == "" || st.Recipient.PartyID != st.OrderingParty) {
 		return nil, fmt.Errorf("%w: the recipient is not the ordering party", ErrInvalidDispatch)
 	}
+	// the copy was rendered with the status read before this transaction
 	status := document.Status(st.Version)
+	if st.VersionStatus != status {
+		return nil, fmt.Errorf("%w: version %d is %s now", ErrConflict, st.Version, status)
+	}
 	switch status {
 	case VersionIssued:
 	case VersionDraft, VersionApproved:
@@ -240,14 +293,15 @@ func PrepareDispatch(st DispatchState, document *Document, by string, at time.Ti
 	default:
 		return nil, ErrNotDispatchable
 	}
-	if st.VersionStatus != status {
-		return nil, fmt.Errorf("%w: version %d is %s now", ErrConflict, st.Version, status)
-	}
 	st.TenantID, st.Kind, st.PreparedBy, st.PreparedAt, st.Outcomes = d.TenantID, d.Kind, by, at.UTC(), nil
+	seen := map[[2]string]bool{}
 	for i, c := range st.Contacts {
-		if c.No != i+1 || blank(c.Key) || (c.Status == ContactOmitted) == blank(c.OmitReason) {
-			return nil, ErrInvalidDispatch
+		k := [2]string{c.Key, c.PartyRole}
+		if c.No != i+1 || !kernel.ValidContactKey(c.Key) || seen[k] || (c.Source != SourceORG && c.Source != SourceOrder) || !identifier(c.OrderID) ||
+			c.Classification != Classify(st.Recipient, st.OrderingParty, c.Source, c.PartyID) || (c.Status == ContactOmitted) == blank(c.OmitReason) {
+			return nil, fmt.Errorf("%w: contact %d", ErrInvalidDispatch, i+1)
 		}
+		seen[k] = true
 	}
 	x := &Dispatch{state: st}
 	x.record(eventDispatchPrepared, at)
@@ -259,7 +313,7 @@ func PrepareDispatch(st DispatchState, document *Document, by string, at time.Ti
 func (x *Dispatch) CrossBorderKeys() []string {
 	var keys []string
 	for _, c := range x.state.Contacts {
-		if c.Classification == CrossBorder && c.Status == ContactIncluded {
+		if c.Classification == CrossBorder && c.Status == ContactIncluded && !slices.Contains(keys, c.Key) {
 			keys = append(keys, c.Key)
 		}
 	}
@@ -290,7 +344,7 @@ func (x *Dispatch) RecordOutcome(outcome, reference string, reserved []string, b
 	if outcome != DispatchSent && outcome != DispatchFailed && outcome != DispatchUnknown {
 		return fmt.Errorf("%w: outcome %q", ErrInvalidDispatch, outcome)
 	}
-	if (outcome != DispatchUnknown && !text(reference)) || blank(by) || at.Before(x.lastChange()) {
+	if (outcome != DispatchUnknown || reference != "") && !text(reference) || blank(by) || at.Before(x.lastChange()) {
 		return fmt.Errorf("%w: a sent or failed outcome needs the channel's reference or evidence, its author and a time not before the dispatch", ErrInvalidDispatch)
 	}
 	if outcome != DispatchFailed {

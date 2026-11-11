@@ -13,6 +13,7 @@ import (
 	app "go.idp.xyz/idp-cargo/internal/contexts/doc/internal/application"
 	doc "go.idp.xyz/idp-cargo/internal/contexts/doc/internal/domain"
 	orgapi "go.idp.xyz/idp-cargo/internal/contexts/org/api"
+	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
 // ORG is what DOC asks ORG.
@@ -64,6 +65,23 @@ func (d Directory) Register(ctx context.Context, tenant doc.TenantID, dispatch s
 	out := doc.RegisterView{Year: got.Year, Persons: got.Persons, State: got.State, DispatchKeys: got.DispatchKeys}
 	if got.Safeguard != nil {
 		out.SafeguardKind = got.Safeguard.Kind
+	}
+	return out, nil
+}
+
+func (d Directory) Consents(ctx context.Context, tenant doc.TenantID, actor, party string) (map[string]app.ORGConsent, error) {
+	got, err := d.ORG.GetPartyContacts(ctx, orgapi.GetPartyContacts{TenantID: string(tenant), ActorID: actor, PartyID: party, Purpose: kernel.PurposeDocuments})
+	if err != nil {
+		return nil, unknown("contacts of "+party, err)
+	}
+	out := map[string]app.ORGConsent{}
+	for _, c := range got.Contacts {
+		v := app.ORGConsent{Erased: c.Status == orgapi.StatusErased}
+		if k := c.Consent; k != nil {
+			v.Consent = &doc.Consent{NoticeVersion: k.NoticeVersion, ProvideToOthers: k.ProvideToOthers, CrossBorder: k.CrossBorder, Basis: k.Basis,
+				ORGRevision: k.Revision}
+		}
+		out[c.ContactID] = v
 	}
 	return out, nil
 }

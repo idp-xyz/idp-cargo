@@ -1,10 +1,10 @@
 -- IDP-Cargo DOC V0.2 / PostgreSQL 16. Run only as the migrator role, never at service start.
 -- DocumentDispatch with the P5 records (DOC candidate 24, decisions N1-DOC OD-4 A, OD-5 A; privacy decision P5): every
 -- copy of a document version that leaves the tenant is a dispatch to one recipient over one channel, with the copy's
--- SHA-256 and template, the version's status the copy shows, and one row per contact with its decision. No row holds a
--- name, phone or e-mail: contacts are named by key (ORG:<contact id> or COM:<order>:<role>:<party version>). A dispatch
--- changes only by its outcomes, SENT and FAILED final, UNKNOWN followed by SENT or FAILED. No foreign key leaves
--- cargo_doc.
+-- SHA-256 and template, the version's status the copy shows, and one row per contact and role with its decision. No
+-- row holds a name, phone, e-mail or consent evidence: contacts are named by key (kernel grammar: ORG:<party>:<contact id>,
+-- COM:<order>:<role>:<party version> or SHA:<digest>). A dispatch changes only by its outcomes, SENT and FAILED final,
+-- UNKNOWN followed by SENT or FAILED. No foreign key leaves cargo_doc.
 CREATE TABLE cargo_doc.document_dispatch (
  tenant_id text NOT NULL CHECK (length(btrim(tenant_id)) BETWEEN 1 AND 128),
  dispatch_id text NOT NULL CHECK (length(btrim(dispatch_id)) BETWEEN 1 AND 128),
@@ -32,7 +32,7 @@ CREATE TABLE cargo_doc.document_dispatch (
  FOREIGN KEY (tenant_id, document_id, version_no) REFERENCES cargo_doc.document_version (tenant_id, document_id, version_no),
  -- a draft goes to the ordering party only, as COM reported it
  CONSTRAINT document_dispatch_draft CHECK (version_status = 'ISSUED' OR recipient_role = 'ORDERING_PARTY'),
- CONSTRAINT document_dispatch_ordering_party CHECK (recipient_role <> 'ORDERING_PARTY' OR recipient_party_id = ordering_party_id)
+ CONSTRAINT document_dispatch_ordering_party CHECK (recipient_role <> 'ORDERING_PARTY' OR (ordering_party_id IS NOT NULL AND recipient_party_id = ordering_party_id))
 );
 CREATE INDEX document_dispatch_by_document ON cargo_doc.document_dispatch (tenant_id, document_id);
 CREATE INDEX document_dispatch_by_time ON cargo_doc.document_dispatch (tenant_id, prepared_at);
@@ -41,9 +41,11 @@ CREATE TABLE cargo_doc.dispatch_contact (
  tenant_id text NOT NULL,
  dispatch_id text NOT NULL,
  contact_no integer NOT NULL CHECK (contact_no > 0),
- contact_key text NOT NULL CHECK (length(contact_key) BETWEEN 3 AND 256 AND contact_key !~ '\s' AND position(':' IN contact_key) > 0),
+ contact_key text NOT NULL CHECK (contact_key ~ '^(ORG:[A-Za-z0-9._-]{1,128}:[A-Za-z0-9._-]{1,128}|COM:[A-Za-z0-9._-]{1,128}:(SHIPPER|CONSIGNEE|NOTIFY_PARTY):[1-9][0-9]{0,9}|SHA:[0-9a-f]{64})$'),
  party_role text NOT NULL CHECK (party_role IN ('SHIPPER','CONSIGNEE','NOTIFY_PARTY')),
+ party_id text CHECK (length(btrim(party_id)) BETWEEN 1 AND 128),
  order_id text NOT NULL CHECK (length(btrim(order_id)) BETWEEN 1 AND 128),
+ source text NOT NULL CHECK (source IN ('ORG','ORDER')),
  classification text NOT NULL CHECK (classification IN ('NOT_PROVIDED','PROVISION','CROSS_BORDER')),
  legal_path text NOT NULL CHECK (legal_path IN ('NONE','CONSENT','CONSENT_WITH_THRESHOLD_EXEMPTION','STANDARD_CONTRACT','CERTIFICATION')),
  status text NOT NULL CHECK (status IN ('INCLUDED','OMITTED')),
@@ -52,10 +54,9 @@ CREATE TABLE cargo_doc.dispatch_contact (
  consent_provide_to_others boolean,
  consent_cross_border boolean,
  consent_basis text CHECK (length(btrim(consent_basis)) BETWEEN 1 AND 64),
- consent_evidence_ref text CHECK (length(btrim(consent_evidence_ref)) BETWEEN 1 AND 500),
  consent_org_revision bigint CHECK (consent_org_revision >= 0),
  PRIMARY KEY (tenant_id, dispatch_id, contact_no),
- UNIQUE (tenant_id, dispatch_id, contact_key),
+ UNIQUE (tenant_id, dispatch_id, contact_key, party_role),
  FOREIGN KEY (tenant_id, dispatch_id) REFERENCES cargo_doc.document_dispatch (tenant_id, dispatch_id),
  CONSTRAINT dispatch_contact_omission CHECK ((status = 'OMITTED') = (omit_reason IS NOT NULL)),
  CONSTRAINT dispatch_contact_consent CHECK ((consent_provide_to_others IS NULL) = (consent_cross_border IS NULL)),
@@ -110,7 +111,9 @@ END $immutable$;
 
 -- At commit, for every dispatch a transaction writes: outcomes numbered from 1 without gaps, each but the last
 -- UNKNOWN; the state is the last outcome, or PREPARED; the kind is the document's; an issued copy shows a version
--- that was issued. The row is read as it stands at commit.
+-- that was issued; every contact is classified for the recipient (NOT_PROVIDED only for the ordering party getting
+-- back a contact it gave on the order or its own; else PROVISION in mainland China and CROSS_BORDER abroad) and one
+-- person is left off for every role or for none. The row is read as it stands at commit.
 CREATE FUNCTION cargo_doc.check_dispatch_at_commit() RETURNS trigger LANGUAGE plpgsql AS $fn$
 DECLARE
   x cargo_doc.document_dispatch;
@@ -130,7 +133,14 @@ BEGIN
   ok := outcomes = last_no AND NOT early_final AND x.state = coalesce(last_outcome, 'PREPARED')
     AND EXISTS (SELECT 1 FROM cargo_doc.transport_document d WHERE d.tenant_id = x.tenant_id AND d.document_id = x.document_id AND d.kind = x.kind)
     AND (x.version_status <> 'ISSUED' OR EXISTS (SELECT 1 FROM cargo_doc.document_version_issue i WHERE i.tenant_id = x.tenant_id
-      AND i.document_id = x.document_id AND i.version_no = x.version_no));
+      AND i.document_id = x.document_id AND i.version_no = x.version_no))
+    AND NOT EXISTS (SELECT 1 FROM cargo_doc.dispatch_contact c WHERE c.tenant_id = x.tenant_id AND c.dispatch_id = x.dispatch_id
+      AND c.classification <> CASE
+        WHEN x.recipient_party_id = x.ordering_party_id AND (c.source = 'ORDER' OR c.party_id = x.ordering_party_id) THEN 'NOT_PROVIDED'
+        WHEN x.recipient_country = 'CN' THEN 'PROVISION' ELSE 'CROSS_BORDER' END)
+    AND NOT EXISTS (SELECT 1 FROM cargo_doc.dispatch_contact c JOIN cargo_doc.dispatch_contact o ON o.tenant_id = c.tenant_id
+      AND o.dispatch_id = c.dispatch_id AND o.contact_key = c.contact_key WHERE c.tenant_id = x.tenant_id AND c.dispatch_id = x.dispatch_id
+      AND c.status <> o.status);
   IF NOT ok THEN
     RAISE EXCEPTION 'cargo_doc: dispatch %/% is inconsistent at commit (state %)', x.tenant_id, x.dispatch_id, x.state
       USING ERRCODE = 'check_violation', CONSTRAINT = 'document_dispatch_consistent';

@@ -10,15 +10,19 @@ import (
 // A version renders to PDF under a template (TemplateAWB): the same version, status and contacts give the same
 // bytes, and DOC keeps no PDF. Every copy that leaves the tenant is a dispatch to one ORG party over one channel:
 // DOC decides each contact of the document's parties for the recipient and records the decision with identifiers
-// only (never a name, phone or e-mail), with the copy's SHA-256. The ordering party gets every contact (it gave
-// them: NOT_PROVIDED); another party in mainland China only those consenting to be provided to others (PROVISION);
-// a party abroad, Hong Kong, Macao and Taiwan included, only those also consenting to go abroad (CROSS_BORDER), and
-// only while ORG's ContactTransferRegister v1 is not blocked. A contact without the consent needed is left off the
-// copy, with the reason.
+// only (never a name, phone or e-mail), with the copy's SHA-256. The ordering party gets back the contacts it gave
+// on the order and its own (NOT_PROVIDED); any other contact goes to a party in mainland China only with consent to
+// be provided to others (PROVISION), and to a party abroad, Hong Kong, Macao and Taiwan included, only with consent
+// to go abroad too (CROSS_BORDER) and while ORG's ContactTransferRegister v1 is not blocked. A contact without the
+// consent needed is left off the copy, with the reason; a person on two roles goes by the narrower decision. For a contact of ORG's address book, DOC also reads ORG's current consent (purpose
+// DOCUMENTS, with the actor's own authorization for ORG's ReadPartyContacts), so a consent withdrawn after the order
+// counts.
 //
 // The API client sends the copy (T6): it prepares the dispatch, reserves the dispatch's cross-border contact keys in
 // ORG (ReserveContactTransfers, keys from GetDispatch), fetches the copy (GetDispatchCopy), sends it, and records the
-// outcome. DOC records SENT or UNKNOWN only when ORG holds the reservation; after FAILED the client releases it.
+// outcome. DOC records SENT or UNKNOWN only when ORG holds the reservation, and hands out a copy carrying contacts
+// abroad only while ORG holds them; after FAILED the client releases them. Until ORG consumes DOC's events, the client
+// must not release the reservation of a dispatch recorded SENT or UNKNOWN: ORG cannot tell.
 
 // TemplateAWB is the air waybill layout of V0.2.
 const TemplateAWB = "IDP-AWB-V1"
@@ -139,8 +143,9 @@ type RenderedDocument struct {
 }
 
 // GetDispatchCopy renders a dispatch's copy again, with the contacts as COM holds them now; refused (ErrRejected,
-// DOC_COPY_CHANGED) when the copy would differ from the one recorded, such as after a contact was erased. ActorID
-// reads the contacts from COM.
+// DOC_COPY_CHANGED) when the copy would differ from the one recorded or a contact on it lost the consent it needs,
+// such as after a contact was erased or its consent withdrawn, and (DOC_TRANSFER_NOT_RESERVED) when it carries
+// contacts abroad that ORG's register does not hold for the dispatch. ActorID reads the contacts from COM and ORG.
 type GetDispatchCopy struct {
 	TenantID   string
 	ActorID    string
@@ -160,18 +165,21 @@ type ContactConsent struct {
 	ProvideToOthers bool
 	CrossBorder     bool
 	Basis           string
-	EvidenceRef     string
 	ORGRevision     int64
 }
 
-// DispatchContact is the provision record of one contact: its key (ORG:<contact id> or
-// COM:<order>:<role>:<party version>), the party role, the classification, the legal path and whether it was on the
-// copy, never the contact's details.
+// DispatchContact is the provision record of one contact: its key (kernel.ContactKey: ORG:<party>:<contact id>,
+// COM:<order>:<role>:<party version> or SHA:<digest>), the party and role, where the contact came from (ORG or
+// ORDER), the classification, the legal path and whether it was on the copy, never the contact's details. The
+// consent is the narrower of what COM froze and ORG's current consent; where its evidence is kept stays with COM
+// and ORG.
 type DispatchContact struct {
 	No             int
 	Key            string
 	PartyRole      string
+	PartyID        string
 	OrderID        string
+	Source         string
 	Classification string
 	LegalPath      string
 	Status         string

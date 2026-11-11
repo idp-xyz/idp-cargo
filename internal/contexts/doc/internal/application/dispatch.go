@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	doc "go.idp.xyz/idp-cargo/internal/contexts/doc/internal/domain"
@@ -66,7 +67,8 @@ type DispatchInput struct {
 }
 
 // copyContacts reads the contacts of a house version's first order, whose parties the version carries, from COM:
-// those of the party versions the version froze.
+// those of the party versions the version froze. A contact of ORG's address book goes by the narrower of the consent
+// COM froze and ORG's current one, so a consent withdrawn since the order counts; one ORG erased counts as erased.
 func (d Deps) copyContacts(ctx context.Context, s Scope, v doc.Version) (OrderContacts, error) {
 	if v.Doc.Kind != string(doc.KindHAWB) || len(v.Doc.Orders) == 0 {
 		return OrderContacts{}, nil
@@ -78,28 +80,47 @@ func (d Deps) copyContacts(ctx context.Context, s Scope, v doc.Version) (OrderCo
 	}
 	frozen := map[string]int64{doc.RecipientShipper: ref.ShipperVersion, doc.RecipientConsignee: ref.ConsigneeVersion, doc.RecipientNotifyParty: ref.NotifyVersion}
 	out := OrderContacts{OrderingParty: got.OrderingParty}
+	consents := map[string]map[string]ORGConsent{}
 	for _, c := range got.Contacts {
-		if version, ok := frozen[c.PartyRole]; ok && version != 0 && version == c.PartyVersion && c.OrderID == ref.OrderID {
-			out.Contacts = append(out.Contacts, c)
+		if version, ok := frozen[c.PartyRole]; !ok || version == 0 || version != c.PartyVersion || c.OrderID != ref.OrderID {
+			continue
 		}
+		if c.Source == doc.SourceORG && !c.Erased {
+			if c.ORGContactID == "" || c.PartyID == "" {
+				return OrderContacts{}, fmt.Errorf("%w: COM names no ORG contact for %s's contact", ErrUnknownSource, c.PartyRole)
+			}
+			if _, read := consents[c.PartyID]; !read {
+				if consents[c.PartyID], err = d.Directory.Consents(ctx, s.TenantID, s.ActorID, c.PartyID); err != nil {
+					return OrderContacts{}, err
+				}
+			}
+			current, ok := consents[c.PartyID][c.ORGContactID]
+			if !ok || current.Erased {
+				c.Erased = true
+			} else {
+				c.Consent = doc.Narrower(c.Consent, current.Consent)
+			}
+		}
+		out.Contacts = append(out.Contacts, c)
 	}
 	return out, nil
 }
 
 // printed returns the contacts a copy prints: those decided INCLUDED, as COM holds them now; ok is false when one
-// of them is no longer there as it was decided.
+// of them is no longer there, or no longer has the consent its classification needs.
 func printed(decided []doc.DispatchContact, sources []doc.ContactSource) ([]CopyContact, bool) {
-	byKey := map[string]doc.ContactSource{}
+	type key struct{ key, role string }
+	byKey := map[key]doc.ContactSource{}
 	for _, c := range sources {
-		byKey[c.Key] = c
+		byKey[key{c.Key, c.PartyRole}] = c
 	}
 	var out []CopyContact
 	for _, d := range decided {
 		if d.Status != doc.ContactIncluded {
 			continue
 		}
-		c, ok := byKey[d.Key]
-		if !ok || c.Erased {
+		c, ok := byKey[key{d.Key, d.PartyRole}]
+		if !ok || doc.Omission(d.Classification, c) != "" {
 			return nil, false
 		}
 		out = append(out, CopyContact{Role: d.PartyRole, Name: c.Name, Phone: c.Phone, Mobile: c.Mobile, Email: c.Email})
@@ -174,9 +195,9 @@ func (d Deps) PrepareDispatch(ctx context.Context, c Command, in DispatchInput) 
 }
 
 // DispatchCopy renders a dispatch's copy again from the version and the contacts as COM holds them now, and returns
-// it only if it is the copy recorded.
+// it only if it is the copy recorded and, when it carries contacts abroad, while ORG's register holds them.
 func (d Deps) DispatchCopy(ctx context.Context, s Scope, id string) ([]byte, *doc.Dispatch, error) {
-	if d.Dispatches == nil || d.Renderer == nil || d.Parties == nil {
+	if d.Dispatches == nil || d.Renderer == nil || d.Parties == nil || d.Directory == nil {
 		return nil, nil, ErrMissingDependency
 	}
 	var x *doc.Dispatch
@@ -192,6 +213,17 @@ func (d Deps) DispatchCopy(ctx context.Context, s Scope, id string) ([]byte, *do
 		return nil, nil, err
 	}
 	st := x.State()
+	if keys := x.CrossBorderKeys(); len(keys) > 0 {
+		register, err := d.Directory.Register(ctx, s.TenantID, id)
+		if err != nil {
+			return nil, nil, err
+		}
+		for _, k := range keys {
+			if !slices.Contains(register.DispatchKeys, k) {
+				return nil, nil, doc.ErrTransferNotReserved
+			}
+		}
+	}
 	if st.Template != d.Renderer.Template() {
 		return nil, nil, fmt.Errorf("%w: rendered under template %s", doc.ErrCopyChanged, st.Template)
 	}

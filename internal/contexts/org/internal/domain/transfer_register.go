@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-	"unicode"
 
 	"go.idp.xyz/idp-cargo/internal/kernel"
 )
@@ -77,19 +76,9 @@ var chinaTime = time.FixedZone("UTC+8", 8*3600)
 // TransferYear is the calendar year, in China time, a transfer at an instant counts in.
 func TransferYear(at time.Time) int { return at.In(chinaTime).Year() }
 
-// ValidContactKey reports whether a key identifies a person without carrying personal data: a short token
-// without spaces, such as ORG:<contact id> or COM:<order>:<role>:<version>.
-func ValidContactKey(k string) bool {
-	if len(k) < 3 || len(k) > 256 {
-		return false
-	}
-	for _, r := range k {
-		if unicode.IsSpace(r) || !unicode.IsPrint(r) {
-			return false
-		}
-	}
-	return strings.Contains(k, ":")
-}
+// ValidContactKey reports whether a key identifies a person in the kernel's grammar, which carries no personal data:
+// ORG:<party>:<contact id>, COM:<order>:<role>:<party version> or SHA:<digest>.
+func ValidContactKey(k string) bool { return kernel.ValidContactKey(k) }
 
 // Safeguard kinds that lift the block (PIPL art. 38).
 const (

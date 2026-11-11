@@ -49,6 +49,9 @@ type Receipt struct {
 	EntryID      string
 	EntryVersion int64
 	RequestHash  string
+	// Persons and State are a ContactTransferRegister reservation's or release's outcome; State is empty otherwise.
+	Persons int64
+	State   string
 }
 type TxRunner interface {
 	WithinTransaction(context.Context, func(context.Context) error) error

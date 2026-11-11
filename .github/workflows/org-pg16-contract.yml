@@ -70,8 +70,8 @@ jobs:
           GRANT INSERT ON cargo_org.party_identifier TO cargo_app;
           GRANT INSERT ON cargo_org.party_contact_consent,cargo_org.party_contact_access TO cargo_app;
           GRANT UPDATE (retired_by,retired_at,retire_reason,retired_revision) ON cargo_org.party_identifier TO cargo_app;
-          GRANT INSERT,UPDATE ON cargo_org.contact_transfer_register TO cargo_app;
-          GRANT INSERT ON cargo_org.contact_transfer_reservation,cargo_org.contact_transfer_safeguard TO cargo_app;
+          GRANT INSERT ON cargo_org.contact_transfer_register,cargo_org.contact_transfer_dispatch,cargo_org.contact_transfer_reservation,cargo_org.contact_transfer_safeguard TO cargo_app;
+          GRANT UPDATE (revision) ON cargo_org.contact_transfer_register TO cargo_app;
           GRANT UPDATE (released_by,released_at,release_entered_at) ON cargo_org.contact_transfer_reservation TO cargo_app;
           GRANT SELECT,INSERT,UPDATE ON cargo_rate.quote TO cargo_app;
           GRANT SELECT,INSERT ON cargo_rate.quote_line,cargo_rate.quote_exchange_rate,cargo_rate.command_receipt TO cargo_app;
