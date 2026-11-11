@@ -278,3 +278,54 @@ func TestRandomHousesKeepTheirInvariants(t *testing.T) {
 		}
 	}
 }
+
+// AIR V0.2: a house takes PHY's measures as FUL relays them, received then tendered (a terminal weight), with
+// the security state; the same plan and measures again are nothing to refresh.
+func TestHouseTakesRelayedMeasures(t *testing.T) {
+	m := opened(t)
+	at := t0.Add(time.Hour)
+	measured := func(version int, basis string, grams int64, security string) Plan {
+		p := plan("SH-1", 1)
+		p.EvidenceVersion, p.MeasuredBasis, p.MeasuredPieces, p.Security = version, basis, 6, security
+		p.MeasuredWeight, p.MeasuredVolume = kernel.Quantity{Unit: "GRM", Amount: grams}, kernel.Quantity{Unit: "MTQ", Amount: 0}
+		return p
+	}
+	bad := measured(0, BasisReceived, 310_000, SecurityPending)
+	if err := m.Associate(bad, "SHA1", "ops-1", at); !errors.Is(err, ErrInvalidChange) {
+		t.Fatalf("measures without FUL's evidence version: %v", err)
+	}
+	if err := m.Associate(measured(1, BasisReceived, 310_000, SecurityPending), "SHA1", "ops-1", at); err != nil {
+		t.Fatal(err)
+	}
+	h := m.Houses()[0]
+	if h.Facts.Basis != BasisReceived || h.Facts.Evidence != 1 || h.Facts.GrossWeight.Amount != 310_000 || h.Facts.Volume != (kernel.Quantity{}) ||
+		h.Facts.ChargeableGrams != 310_000 || h.Facts.Parts[0].Packs != 6 {
+		t.Fatalf("received measures, no volume, planned parts: %+v", h.Facts)
+	}
+	if err := m.Refresh(measured(2, BasisReceived, 310_000, SecurityPending), "ops-1", at); !errors.Is(err, ErrNothingToRefresh) {
+		t.Fatalf("a newer evidence version with the same measures: %v", err)
+	}
+	if err := m.Refresh(measured(3, BasisTendered, 312_200, SecurityCleared), "ops-1", at); err != nil {
+		t.Fatal(err)
+	}
+	h = m.Houses()[0]
+	if h.Facts.Basis != BasisTendered || h.Facts.Security != SecurityCleared || h.Facts.ChargeableGrams != 312_500 || h.HAWB != "SHA1" || h.Start != StartRefreshed {
+		t.Fatalf("tendered at the terminal weight, screened: %+v", h)
+	}
+	if pieces, grams, _, chargeable := m.Totals(); pieces != 6 || grams != 312_200 || chargeable != 312_500 {
+		t.Fatalf("master totals on the measures: %d %d %d", pieces, grams, chargeable)
+	}
+	if _, err := RestoreMovement(m.State()); err != nil {
+		t.Fatal(err)
+	}
+	unmeasured := plan("SH-9", 1)
+	unmeasured.EvidenceVersion = 4
+	if f, err := facts(unmeasured); err != nil || f.Basis != BasisPlanned || f.Evidence != 0 {
+		t.Fatalf("planned facts carry no evidence version: %+v %v", f, err)
+	}
+	broken := m.State()
+	broken.Entries[0].Facts.Evidence = 0
+	if _, err := RestoreMovement(broken); err == nil {
+		t.Fatal("measures need FUL's evidence version")
+	}
+}

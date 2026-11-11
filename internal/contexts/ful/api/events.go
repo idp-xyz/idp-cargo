@@ -15,11 +15,14 @@ const (
 	// FUL V0.4
 	ShipmentConsolAttachmentRecorded = "ShipmentConsolAttachmentRecorded.v1"
 	ShipmentConsolDetachmentRecorded = "ShipmentConsolDetachmentRecorded.v1"
+	ShipmentLoadEvidenceRecorded     = "ShipmentLoadEvidenceRecorded.v1"
+	ShipmentExecutionStatusChanged   = "ShipmentExecutionStatusChanged.v1"
 )
 
 // EventPayload is the JSON payload of every FUL event: identifiers only. SubjectID is the shipment;
 // events about one obligation add its id and version, events about a consol attachment the stage and the
-// consolidation.
+// consolidation, events about load evidence the stage, the consolidation it was tendered in (if any) and the
+// evidence version; consumers read the status and quantities through FUL's queries.
 type EventPayload struct {
 	TenantID          string `json:"tenant_id"`
 	SubjectID         string `json:"subject_id"`
@@ -27,4 +30,5 @@ type EventPayload struct {
 	ObligationVersion int64  `json:"obligation_version,omitempty"`
 	Stage             string `json:"stage,omitempty"`
 	ConsolidationID   string `json:"consolidation_id,omitempty"`
+	EvidenceNo        int    `json:"evidence_no,omitempty"`
 }

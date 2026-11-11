@@ -84,6 +84,7 @@ jobs:
           GRANT SELECT,INSERT ON cargo_ful.shipment_obligation,cargo_ful.shipment_plan_version,cargo_ful.shipment_plan_confirmation,cargo_ful.command_receipt TO cargo_app;
           GRANT UPDATE (released_by,released_at) ON cargo_ful.shipment_obligation TO cargo_app;
           GRANT SELECT,INSERT ON cargo_ful.shipment_consol_attachment TO cargo_app;
+          GRANT SELECT,INSERT ON cargo_ful.shipment_load_evidence TO cargo_app;
           GRANT UPDATE (ended_by,ended_at,end_reason,end_entered_at) ON cargo_ful.shipment_consol_attachment TO cargo_app;
           GRANT SELECT,INSERT,UPDATE ON cargo_phy.consolidation,cargo_phy.consol_membership TO cargo_app;
           GRANT SELECT,INSERT ON cargo_phy.consolidation_version,cargo_phy.membership_entry,cargo_phy.membership_entry_part,cargo_phy.command_receipt TO cargo_app;

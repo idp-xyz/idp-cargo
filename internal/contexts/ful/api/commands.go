@@ -147,6 +147,28 @@ type RecordConsolDetachment struct {
 	OccurredAt       time.Time
 }
 
+// RecordVerifiedLoadEvidence records what PHY verified of the shipment's cargo (PhysicalLoadEvidence v1,
+// relationship 8): FUL reads it for the consolidation it records the shipment attached to and keeps a new
+// version when PHY's facts changed; the same facts again change nothing and keep the revision. FUL derives the
+// execution status (NOT_STARTED, PARTIALLY_DEPARTED, DEPARTED, PARTIALLY_ARRIVED, ARRIVED) from it alone and
+// relays the measures to AIR in AirOperationPlan v1 (decision N1-PHY OD-2, option A). Departed packs are final
+// for planning: the shipment is then not cancelled, its route not amended and its plan not cut below them. A
+// cancelled shipment records nothing (SHIPMENT_CANCELLED). As the S1 API client runs the steps (T6), it calls
+// this after PHY's receipt, measurement, screening, tender and carrier steps.
+type RecordVerifiedLoadEvidence struct {
+	CommandID        string
+	TenantID         string
+	ActorID          string
+	ShipmentID       string
+	ExpectedRevision int64
+	OccurredAt       time.Time
+}
+
+// LoadEvidenceCommands records PHY's verified evidence in a shipment (FUL V0.4).
+type LoadEvidenceCommands interface {
+	RecordVerifiedLoadEvidence(ctx context.Context, cmd RecordVerifiedLoadEvidence) (Receipt, error)
+}
+
 // ConsolAttachmentCommands records PHY's consol membership in a shipment (FUL V0.4).
 type ConsolAttachmentCommands interface {
 	RecordConsolAttachment(ctx context.Context, cmd RecordConsolAttachment) (Receipt, error)
@@ -190,6 +212,7 @@ const (
 	ActionCancelShipment                = "CancelShipment"
 	ActionRecordConsolAttachment        = "RecordConsolAttachment"
 	ActionRecordConsolDetachment        = "RecordConsolDetachment"
+	ActionRecordVerifiedLoadEvidence    = "RecordVerifiedLoadEvidence"
 )
 
 // Authorizer decides whether a verified actor may perform a shipment action. The identity and policy

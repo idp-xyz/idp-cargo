@@ -143,8 +143,11 @@ type LoadIntent struct {
 // AirOperationPlan is AirOperationPlan v1 (relationship 9, FUL -> AIR): a shipment's plan as AIR needs it to
 // associate the house with the master waybill of its consolidation: the plan with its parts and package types,
 // and the consolidation FUL recorded the shipment attached to, with the PHY membership entry and revision
-// (decision N1-PHY OD-2, option A: membership reaches AIR through FUL). Quantities are planned; the measures PHY
-// verifies are relayed here once PHY receives cargo. It carries no names.
+// (decision N1-PHY OD-2, option A: membership and measures reach AIR through FUL). Packs, GrossWeight and Volume
+// are planned. Once FUL recorded PHY's evidence (EvidenceVersion > 0) it relays the measures: MeasuredBasis
+// TENDERED with what was tendered in the attached consolidation at the lots' latest measures, else RECEIVED with
+// the lots' latest measures once every lot completed receipt, else empty; with the security state of the cargo
+// and the execution status. It carries no names.
 type AirOperationPlan struct {
 	TenantID           string
 	ShipmentID         string
@@ -168,7 +171,31 @@ type AirOperationPlan struct {
 	ConsolidationID    string // empty when FUL records no attachment on the stage
 	MembershipEntryNo  int
 	MembershipRevision int64
+	// FUL V0.4, from PHY's verified evidence
+	EvidenceVersion     int
+	ExecutionStatus     string // NOT_STARTED, PARTIALLY_DEPARTED, DEPARTED, PARTIALLY_ARRIVED, ARRIVED
+	MeasuredBasis       string // "", MeasuredReceived or MeasuredTendered
+	MeasuredPacks       int64
+	MeasuredGrossWeight kernel.Quantity
+	MeasuredVolume      kernel.Quantity
+	SecurityStatus      string // "", SecurityPending, SecurityCleared or SecurityFailed
 }
+
+// Measure bases, security states and execution statuses of AirOperationPlan v1.
+const (
+	MeasuredReceived = "RECEIVED"
+	MeasuredTendered = "TENDERED"
+
+	SecurityPending = "PENDING"
+	SecurityCleared = "CLEARED"
+	SecurityFailed  = "FAILED"
+
+	ExecutionNotStarted        = "NOT_STARTED"
+	ExecutionPartiallyDeparted = "PARTIALLY_DEPARTED"
+	ExecutionDeparted          = "DEPARTED"
+	ExecutionPartiallyArrived  = "PARTIALLY_ARRIVED"
+	ExecutionArrived           = "ARRIVED"
+)
 
 // AirOperationPlanQueries is FUL's AirOperationPlan v1 for AIR. An unknown shipment yields ErrNotFound.
 type AirOperationPlanQueries interface {

@@ -179,10 +179,12 @@ func (m *Module) GetPhysicalLoadEvidence(ctx context.Context, q api.GetPhysicalL
 		return api.PhysicalLoadEvidence{}, classify(err)
 	}
 	out := api.PhysicalLoadEvidence{TenantID: q.TenantID, ShipmentID: q.ShipmentID, Lots: []api.LotEvidence{}, Tenders: []api.TenderEvidence{}}
+	byID := map[domain.CargoLotID]*domain.CargoLot{}
 	for _, r := range lots {
+		byID[r.Lot.ID()] = r.Lot
 		v := lotView(r)
-		e := api.LotEvidence{LotID: v.LotID, Revision: v.Revision, Facility: v.Facility, State: v.State, ReceivedPacks: v.ReceivedPacks,
-			LoadedPacks: v.LoadedPacks}
+		e := api.LotEvidence{LotID: v.LotID, Revision: v.Revision, Facility: v.Facility, State: v.State, Completed: r.Lot.Completed(),
+			ReceivedPacks: v.ReceivedPacks, LoadedPacks: v.LoadedPacks}
 		if n := len(v.Measurements); n > 0 {
 			e.Measurement = v.Measurements[n-1]
 		}
@@ -202,16 +204,13 @@ func (m *Module) GetPhysicalLoadEvidence(ctx context.Context, q api.GetPhysicalL
 		t := api.TenderEvidence{ExecutionID: v.ExecutionID, Revision: v.Revision, ConsolidationID: v.ConsolidationID, Kind: v.Kind, State: v.State,
 			Facility: v.Facility, ClosedAt: v.ClosedAt, CloseEvidence: v.CloseEvidence}
 		for _, l := range v.Lines {
-			if l.ShipmentID != q.ShipmentID {
-				continue
-			}
-			t.Lines = append(t.Lines, l)
-			t.LoadedPacks += l.LivePacks
-			t.GrossWeight = kernel.Quantity{Unit: l.LiveGrossWeight.Unit, Amount: t.GrossWeight.Amount + l.LiveGrossWeight.Amount}
-			if l.LiveVolume.Unit != "" {
-				t.Volume = kernel.Quantity{Unit: l.LiveVolume.Unit, Amount: t.Volume.Amount + l.LiveVolume.Amount}
+			if l.ShipmentID == q.ShipmentID {
+				t.Lines = append(t.Lines, l)
 			}
 		}
+		t.LoadedPacks, t.GrossWeight, t.Volume = r.Execution.HouseMeasure(shipment, byID)
+		pieces := r.Execution.HousePieces(shipment)
+		t.Departed, t.Arrived, t.Offloaded = pieces.Departed, pieces.Arrived, pieces.Offloaded
 		for _, e := range v.CarrierEvidence {
 			if e.ShipmentID == "" || e.ShipmentID == q.ShipmentID {
 				t.CarrierEvidence = append(t.CarrierEvidence, e)

@@ -563,13 +563,15 @@ type GetPhysicalLoadEvidence struct {
 	ShipmentID string
 }
 
-// LotEvidence is what PhysicalLoadEvidence v1 tells of one of the shipment's lots: received packs, the latest
-// measurement version and screening result, loaded packs and open discrepancies.
+// LotEvidence is what PhysicalLoadEvidence v1 tells of one of the shipment's lots: received packs, whether
+// receipt was completed, the latest measurement version and screening result, loaded packs and open
+// discrepancies.
 type LotEvidence struct {
 	LotID             string
 	Revision          int64
 	Facility          Facility
 	State             string
+	Completed         bool
 	ReceivedPacks     int64
 	LoadedPacks       int64
 	Measurement       Measurement // zero Version when none
@@ -578,8 +580,12 @@ type LotEvidence struct {
 }
 
 // TenderEvidence is what PhysicalLoadEvidence v1 tells of a load execution with lines of the shipment: the
-// shipment's lines (with their reversals applied), its live packs, gross weight and volume, the tender receipt,
-// the carrier's evidence of the master and of the shipment, and their open discrepancies.
+// shipment's lines (with their reversals applied); its live packs with their gross weight and volume, lines
+// measured for themselves as measured and apportioned lines at their lot's latest measurement (so a terminal
+// weight taken after the tender counts; volumes in different units are not added); the pieces of the shipment
+// the carrier's evidence shows departed, arrived and offloaded (its own reports, or the master's when they
+// cover the tender); the tender receipt, the carrier's evidence of the master and of the shipment, and their
+// open discrepancies.
 type TenderEvidence struct {
 	ExecutionID       string
 	Revision          int64
@@ -590,6 +596,9 @@ type TenderEvidence struct {
 	LoadedPacks       int64
 	GrossWeight       kernel.Quantity
 	Volume            kernel.Quantity
+	Departed          int64
+	Arrived           int64
+	Offloaded         int64
 	Lines             []LoadLine
 	ClosedAt          time.Time
 	CloseEvidence     Evidence

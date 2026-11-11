@@ -621,7 +621,10 @@ func (l *CargoLot) State() CargoLotState {
 func (l *CargoLot) ID() CargoLotID       { return l.state.LotID }
 func (l *CargoLot) Shipment() ShipmentID { return l.state.ShipmentID }
 func (l *CargoLot) Current() LotState    { return l.state.State }
-func (l *CargoLot) Pending() []Event     { return append([]Event(nil), l.pending...) }
+
+// Completed reports whether the lot's receipt was completed (a cancelled shipment's lot may close without).
+func (l *CargoLot) Completed() bool  { return !l.state.CompletedAt.IsZero() }
+func (l *CargoLot) Pending() []Event { return append([]Event(nil), l.pending...) }
 
 // OpenDiscrepancies returns the number of unresolved discrepancies.
 func (l *CargoLot) OpenDiscrepancies() int {

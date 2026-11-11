@@ -32,7 +32,9 @@ func (p Plans) Plan(ctx context.Context, tenant air.TenantID, shipment string) (
 	}
 	out := air.Plan{ShipmentID: shipment, Revision: got.Revision, Status: got.Status, PlanVersion: got.PlanVersion, LegalEntityID: got.LegalEntityID,
 		Mode: got.TransportMode, Origin: got.Origin, Destination: got.Destination, Window: got.DepartureWindow, Pieces: got.Packs,
-		GrossWeight: got.GrossWeight, Volume: got.Volume, ConsolidationID: got.ConsolidationID}
+		GrossWeight: got.GrossWeight, Volume: got.Volume, ConsolidationID: got.ConsolidationID, EvidenceVersion: got.EvidenceVersion,
+		MeasuredBasis: got.MeasuredBasis, MeasuredPieces: got.MeasuredPacks, MeasuredWeight: got.MeasuredGrossWeight, MeasuredVolume: got.MeasuredVolume,
+		Security: got.SecurityStatus}
 	for _, part := range got.Parts {
 		out.Parts = append(out.Parts, air.Part{ObligationID: part.ObligationID, ObligationVersion: part.ObligationVersion, OrderID: part.OrderID,
 			Packs: part.Packs, PackageType: part.PackageType, GrossWeight: part.GrossWeight, Volume: part.Volume})

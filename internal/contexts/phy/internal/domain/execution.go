@@ -869,3 +869,129 @@ func (x *LoadExecution) Acknowledge() {
 	x.pending, x.released, x.resolved = nil, nil, nil
 	x.stored = [5]int{len(st.Lines), len(st.Reversals), len(st.Holds), len(st.CarrierEvidence), len(st.Discrepancies)}
 }
+
+// HousePieces are a house's pieces in a tender as the carrier's evidence shows them.
+type HousePieces struct {
+	Departed  int64
+	Arrived   int64
+	Offloaded int64
+}
+
+// HousePieces attributes the carrier's evidence to a house of the tender. Each fact counts its largest report
+// per flight or voyage, summed over flights (a house split over two flights; N1 has direct flights only). A
+// house's own reports count as they are. Otherwise a master report covers the house: all its live pieces when
+// the master's pieces cover the whole tender, its live pieces less its own offloaded ones when they cover the
+// tender less the pieces offloaded from named houses, and none when PHY cannot tell which houses they were (an
+// offload reported for the master alone names no house).
+func (x *LoadExecution) HousePieces(shipment ShipmentID) HousePieces {
+	type key struct {
+		fact      CarrierFact
+		shipment  ShipmentID
+		transport string
+	}
+	largest := map[key]int64{}
+	for _, e := range x.state.CarrierEvidence {
+		k := key{e.Fact, e.ShipmentID, e.Transport}
+		largest[k] = max(largest[k], e.Pieces)
+	}
+	sum := func(fact CarrierFact, of func(ShipmentID) bool) int64 {
+		var n int64
+		for k, pieces := range largest {
+			if k.fact == fact && of(k.shipment) {
+				n += pieces
+			}
+		}
+		return n
+	}
+	house := func(s ShipmentID) bool { return s == shipment }
+	master := func(s ShipmentID) bool { return s == "" }
+	anyHouse := func(s ShipmentID) bool { return s != "" }
+	live, tendered := x.LiveFor(shipment), x.Tendered()
+	own := HousePieces{Departed: sum(CarrierDeparted, house), Arrived: sum(CarrierArrived, house), Offloaded: sum(CarrierOffloaded, house)}
+	offloaded := sum(CarrierOffloaded, anyHouse)
+	cover := func(masterPieces int64) int64 {
+		switch {
+		case masterPieces <= 0 || live == 0:
+			return 0
+		case masterPieces >= tendered:
+			return live
+		case masterPieces >= tendered-offloaded:
+			return max(live-own.Offloaded, 0)
+		}
+		return 0
+	}
+	out := own
+	if out.Departed == 0 {
+		out.Departed = cover(sum(CarrierDeparted, master))
+	}
+	if out.Arrived == 0 {
+		out.Arrived = cover(sum(CarrierArrived, master))
+	}
+	return out
+}
+
+// HouseMeasure returns a house's live packs in the tender with their gross weight and volume: lines measured for
+// themselves as measured; apportioned lines at their lot's latest measurement, less what the lot's lines measured
+// for themselves took, spread over the lot's other packs (the packs that complete the lot take the rest), so a
+// later terminal weight counts and a lot never weighs more than its measure. A volume not known for every
+// line, or in different units, is not known: the volume is then zero.
+func (x *LoadExecution) HouseMeasure(shipment ShipmentID, lots map[CargoLotID]*CargoLot) (int64, kernel.Quantity, kernel.Quantity) {
+	var packs int64
+	var weight, volume kernel.Quantity
+	unknown := false
+	addVolume := func(unit kernel.UnitCode, amount int64) {
+		switch {
+		case unit == "":
+			unknown = true
+		case volume.Unit == "" || volume.Unit == unit:
+			volume = kernel.Quantity{Unit: unit, Amount: volume.Amount + amount}
+		default:
+			unknown = true
+		}
+	}
+	type lotShare struct{ apportioned, measuredPacks, measuredWeight, measuredVolume int64 }
+	byLot := map[CargoLotID]*lotShare{}
+	for _, line := range x.state.Lines {
+		if line.ShipmentID != shipment {
+			continue
+		}
+		live, w, v := x.lineLive(line.No)
+		if live == 0 {
+			continue
+		}
+		packs += live
+		lot, ok := lots[line.LotID]
+		_, measured := lot.Measured()
+		if ok && measured && lot.Received() > 0 {
+			if byLot[line.LotID] == nil {
+				byLot[line.LotID] = &lotShare{}
+			}
+			s := byLot[line.LotID]
+			if line.Basis == BasisApportioned {
+				s.apportioned += live
+				continue
+			}
+			s.measuredPacks, s.measuredWeight, s.measuredVolume = s.measuredPacks+live, s.measuredWeight+w, s.measuredVolume+v
+		}
+		weight = kernel.Quantity{Unit: line.GrossWeight.Unit, Amount: weight.Amount + w}
+		addVolume(line.Volume.Unit, v)
+	}
+	for id, s := range byLot {
+		if s.apportioned == 0 {
+			continue
+		}
+		lot := lots[id]
+		m, _ := lot.Measured()
+		rest := lot.Received() - s.measuredPacks
+		w, v := max(m.GrossWeight.Amount-s.measuredWeight, 0), max(m.Volume.Amount-s.measuredVolume, 0)
+		if s.apportioned < rest {
+			w, v = share(w, s.apportioned, rest), share(v, s.apportioned, rest)
+		}
+		weight = kernel.Quantity{Unit: m.GrossWeight.Unit, Amount: weight.Amount + w}
+		addVolume(m.Volume.Unit, v)
+	}
+	if unknown {
+		volume = kernel.Quantity{}
+	}
+	return packs, weight, volume
+}

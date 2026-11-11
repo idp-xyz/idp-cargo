@@ -36,9 +36,13 @@ func FULEnvelope(commandID string, e ful.Event, recordedAt time.Time) (eventing.
 	if e.ConsolidationID != "" { // V0.4; the ids of earlier events stay as they were
 		key += "\x00" + e.Stage + "\x00" + e.ConsolidationID
 	}
+	if e.EvidenceNo != 0 {
+		key += "\x00evidence\x00" + strconv.Itoa(e.EvidenceNo)
+	}
 	digest := sha256.Sum256([]byte(key))
 	payload, err := json.Marshal(api.EventPayload{TenantID: string(e.TenantID), SubjectID: e.SubjectID,
-		ObligationID: string(e.ObligationID), ObligationVersion: e.ObligationVersion, Stage: e.Stage, ConsolidationID: e.ConsolidationID})
+		ObligationID: string(e.ObligationID), ObligationVersion: e.ObligationVersion, Stage: e.Stage, ConsolidationID: e.ConsolidationID,
+		EvidenceNo: e.EvidenceNo})
 	if err != nil {
 		return eventing.Envelope{}, err
 	}

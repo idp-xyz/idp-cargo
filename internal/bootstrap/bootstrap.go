@@ -138,10 +138,11 @@ func (p *Platform) PHY(ful fulapi.LoadIntentQueries, auth phyapi.Authorizer, opt
 
 // FULAndPHY assembles FUL and PHY, which read each other's query sides: PHY reads FUL's LoadIntent v1 before it
 // attaches or closes (relationship 7), and FUL reads PHY's ConsolMembership v1 before it records an attachment
-// (relationship 8). Neither writes to the other; the API client runs the steps (T6).
+// and PhysicalLoadEvidence v1 before it records load evidence (relationship 8). Neither writes to the other; the
+// API client runs the steps (T6).
 func (p *Platform) FULAndPHY(com comapi.Queries, fulAuth fulapi.Authorizer, phyAuth phyapi.Authorizer) (*ful.Module, *phy.Module, error) {
-	memberships := &consolMemberships{}
-	fulModule, err := p.FUL(com, fulAuth, ful.WithConsolMemberships(memberships))
+	forward := &phyQueries{}
+	fulModule, err := p.FUL(com, fulAuth, ful.WithConsolMemberships(forward), ful.WithPhysicalEvidence(forward))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -149,20 +150,28 @@ func (p *Platform) FULAndPHY(com comapi.Queries, fulAuth fulapi.Authorizer, phyA
 	if err != nil {
 		return nil, nil, err
 	}
-	memberships.phy = phyModule
+	forward.phy = phyModule
 	return fulModule, phyModule, nil
 }
 
-// consolMemberships forwards FUL's questions to PHY, which is assembled after FUL.
-type consolMemberships struct {
-	phy phyapi.ConsolMembershipQueries
+// phyQueries forwards FUL's questions to PHY (ConsolMembership v1 and PhysicalLoadEvidence v1), which is
+// assembled after FUL.
+type phyQueries struct {
+	phy *phy.Module
 }
 
-func (c *consolMemberships) GetConsolMembership(ctx context.Context, q phyapi.GetConsolMembership) (phyapi.ConsolMembership, error) {
+func (c *phyQueries) GetConsolMembership(ctx context.Context, q phyapi.GetConsolMembership) (phyapi.ConsolMembership, error) {
 	if c.phy == nil {
 		return phyapi.ConsolMembership{}, errors.New("bootstrap: PHY is not assembled")
 	}
 	return c.phy.GetConsolMembership(ctx, q)
+}
+
+func (c *phyQueries) GetPhysicalLoadEvidence(ctx context.Context, q phyapi.GetPhysicalLoadEvidence) (phyapi.PhysicalLoadEvidence, error) {
+	if c.phy == nil {
+		return phyapi.PhysicalLoadEvidence{}, errors.New("bootstrap: PHY is not assembled")
+	}
+	return c.phy.GetPhysicalLoadEvidence(ctx, q)
 }
 
 // BOOK assembles the BOOK bounded context. org confirms carriers through its query side (relationship 30);

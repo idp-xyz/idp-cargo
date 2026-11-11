@@ -69,6 +69,8 @@ type (
 		ChargeableGrams int64     `json:"chargeable_grams"`
 		ChargeableRule  string    `json:"chargeable_rule"`
 		Basis           string    `json:"basis"`
+		EvidenceVersion int       `json:"evidence_version"`
+		SecurityStatus  string    `json:"security_status"`
 		StartKind       string    `json:"start_kind"`
 		PredecessorNo   int       `json:"predecessor_no"`
 		AssociatedBy    string    `json:"associated_by"`
@@ -202,7 +204,7 @@ func readMovement(ctx context.Context, q queryRower, tenant air.TenantID, id air
 		entry := air.Entry{No: e.EntryNo, ShipmentID: e.ShipmentID, HAWB: e.HAWB, FULRevision: e.FULRevision, PlanVersion: e.PlanVersion,
 			Window: kernel.ValidityInterval{From: utc(e.WindowFrom), Until: utc(e.WindowUntil)},
 			Facts: air.Facts{Pieces: e.Pieces, GrossWeight: quantity(e.GrossWeightUnit, e.GrossWeight), Volume: quantity(e.VolumeUnit, e.Volume),
-				ChargeableGrams: e.ChargeableGrams, Rule: e.ChargeableRule, Basis: e.Basis},
+				ChargeableGrams: e.ChargeableGrams, Rule: e.ChargeableRule, Basis: e.Basis, Evidence: e.EvidenceVersion, Security: e.SecurityStatus},
 			Start: e.StartKind, Predecessor: e.PredecessorNo, By: e.AssociatedBy, At: utc(e.AssociatedAt), EnteredAt: utc(e.EnteredAt), End: e.EndKind,
 			EndedBy: e.EndedBy, EndedAt: utc(e.EndedAt), EndEnteredAt: utc(e.EndEnteredAt), Successor: e.SuccessorNo}
 		for _, p := range pr {
@@ -308,11 +310,12 @@ func (s MovementStore) writeAdded(ctx context.Context, q bentopg.Executor, m *ai
 		f := e.Facts
 		err := exec(`INSERT INTO cargo_air.house_waybill (tenant_id,movement_id,entry_no,shipment_id,hawb,ful_revision,plan_version,window_from,window_until,
             pieces,gross_weight_unit,gross_weight,volume_unit,volume,chargeable_grams,chargeable_rule,basis,start_kind,predecessor_no,associated_by,
-            associated_at,entered_at,end_kind,ended_by,ended_at,end_entered_at,successor_no)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)`,
+            associated_at,entered_at,end_kind,ended_by,ended_at,end_entered_at,successor_no,evidence_version,security_status)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)`,
 			e.No, e.ShipmentID, e.HAWB, e.FULRevision, e.PlanVersion, e.Window.From, orNull(e.Window.Until), f.Pieces, string(f.GrossWeight.Unit),
 			f.GrossWeight.Amount, orNull(string(f.Volume.Unit)), orNull(f.Volume.Amount), f.ChargeableGrams, f.Rule, f.Basis, e.Start, orNull(e.Predecessor),
-			e.By, e.At, e.EnteredAt, orNull(e.End), orNull(e.EndedBy), orNull(e.EndedAt), orNull(e.EndEnteredAt), orNull(e.Successor))
+			e.By, e.At, e.EnteredAt, orNull(e.End), orNull(e.EndedBy), orNull(e.EndedAt), orNull(e.EndEnteredAt), orNull(e.Successor), f.Evidence,
+			orNull(f.Security))
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" && (pgErr.ConstraintName == "house_waybill_one_live" || pgErr.ConstraintName == "house_waybill_live_hawb") {
 			return fmt.Errorf("%w: %s is associated with another movement", air.ErrAlreadyAssociated, e.ShipmentID)

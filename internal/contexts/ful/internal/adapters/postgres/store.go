@@ -113,6 +113,46 @@ type attachmentRow struct {
 	EndEnteredAt       time.Time `json:"end_entered_at"`
 }
 
+type evidenceRow struct {
+	EvidenceNo         int       `json:"evidence_no"`
+	Digest             string    `json:"digest"`
+	Lots               int       `json:"lots"`
+	ReceiptComplete    bool      `json:"receipt_complete"`
+	ReceivedPacks      int64     `json:"received_packs"`
+	ReceivedWeightUnit string    `json:"received_weight_unit"`
+	ReceivedWeight     int64     `json:"received_weight"`
+	ReceivedVolumeUnit string    `json:"received_volume_unit"`
+	ReceivedVolume     int64     `json:"received_volume"`
+	ConsolidationID    string    `json:"consolidation_id"`
+	TenderedPacks      int64     `json:"tendered_packs"`
+	TenderedWeightUnit string    `json:"tendered_weight_unit"`
+	TenderedWeight     int64     `json:"tendered_weight"`
+	TenderedVolumeUnit string    `json:"tendered_volume_unit"`
+	TenderedVolume     int64     `json:"tendered_volume"`
+	Departed           int64     `json:"departed"`
+	Arrived            int64     `json:"arrived"`
+	Offloaded          int64     `json:"offloaded"`
+	Security           string    `json:"security"`
+	OpenDiscrepancies  int       `json:"open_discrepancies"`
+	ExecutionStatus    string    `json:"execution_status"`
+	DepartedFinal      int64     `json:"departed_final"`
+	RecordedBy         string    `json:"recorded_by"`
+	RecordedAt         time.Time `json:"recorded_at"`
+	EnteredAt          time.Time `json:"entered_at"`
+}
+
+func (e evidenceRow) version() ful.EvidenceVersion {
+	return ful.EvidenceVersion{No: e.EvidenceNo, Digest: e.Digest, Execution: ful.ExecutionStatus(e.ExecutionStatus), Final: e.DepartedFinal, By: e.RecordedBy,
+		At: utc(e.RecordedAt), EnteredAt: utc(e.EnteredAt), Evidence: ful.LoadEvidence{Lots: e.Lots, ReceiptComplete: e.ReceiptComplete,
+			Received: ful.CargoScope{Packs: e.ReceivedPacks, GrossWeight: quantity(e.ReceivedWeightUnit, e.ReceivedWeight),
+				Volume: quantity(e.ReceivedVolumeUnit, e.ReceivedVolume)},
+			ConsolidationID: e.ConsolidationID,
+			Tendered: ful.CargoScope{Packs: e.TenderedPacks, GrossWeight: quantity(e.TenderedWeightUnit, e.TenderedWeight),
+				Volume: quantity(e.TenderedVolumeUnit, e.TenderedVolume)},
+			Departed: e.Departed, Arrived: e.Arrived, Offloaded: e.Offloaded, Security: ful.Security(e.Security),
+			OpenDiscrepancies: e.OpenDiscrepancies}}
+}
+
 type confirmationRow struct {
 	PlanNo      int       `json:"plan_no"`
 	ConfirmedBy string    `json:"confirmed_by"`
@@ -148,7 +188,7 @@ func readShipment(ctx context.Context, q queryRower, tenant ful.TenantID, id ful
 	var cancelledBy, cancelReason *string
 	var cancelledAt *time.Time
 	var revision int64
-	var obligationJSON, planJSON, confirmationJSON, attachmentJSON []byte
+	var obligationJSON, planJSON, confirmationJSON, attachmentJSON, evidenceJSON []byte
 	err := q.QueryRow(ctx, `SELECT s.customer_party_id, s.legal_entity_id, s.status, s.cancelled_by, s.cancelled_at, s.cancel_reason, s.revision,
         (SELECT coalesce(json_agg(o ORDER BY o.entry_no), '[]') FROM cargo_ful.shipment_obligation o
           WHERE o.tenant_id=s.tenant_id AND o.shipment_id=s.shipment_id),
@@ -157,10 +197,12 @@ func readShipment(ctx context.Context, q queryRower, tenant ful.TenantID, id ful
         (SELECT coalesce(json_agg(c ORDER BY c.plan_no), '[]') FROM cargo_ful.shipment_plan_confirmation c
           WHERE c.tenant_id=s.tenant_id AND c.shipment_id=s.shipment_id),
         (SELECT coalesce(json_agg(a ORDER BY a.attachment_no), '[]') FROM cargo_ful.shipment_consol_attachment a
-          WHERE a.tenant_id=s.tenant_id AND a.shipment_id=s.shipment_id)
+          WHERE a.tenant_id=s.tenant_id AND a.shipment_id=s.shipment_id),
+        (SELECT coalesce(json_agg(e ORDER BY e.evidence_no), '[]') FROM cargo_ful.shipment_load_evidence e
+          WHERE e.tenant_id=s.tenant_id AND e.shipment_id=s.shipment_id)
       FROM cargo_ful.shipment s WHERE s.tenant_id=$1 AND s.shipment_id=$2`, string(tenant), string(id)).Scan(
 		&st.CustomerPartyID, &st.LegalEntityID, &status, &cancelledBy, &cancelledAt, &cancelReason, &revision,
-		&obligationJSON, &planJSON, &confirmationJSON, &attachmentJSON)
+		&obligationJSON, &planJSON, &confirmationJSON, &attachmentJSON, &evidenceJSON)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, 0, bentorepo.ErrNotFound
 	}
@@ -171,9 +213,14 @@ func readShipment(ctx context.Context, q queryRower, tenant ful.TenantID, id ful
 	var plans []planRow
 	var confirmations []confirmationRow
 	var attachments []attachmentRow
+	var evidence []evidenceRow
 	if err = errors.Join(json.Unmarshal(obligationJSON, &obligations), json.Unmarshal(planJSON, &plans),
-		json.Unmarshal(confirmationJSON, &confirmations), json.Unmarshal(attachmentJSON, &attachments)); err != nil {
+		json.Unmarshal(confirmationJSON, &confirmations), json.Unmarshal(attachmentJSON, &attachments),
+		json.Unmarshal(evidenceJSON, &evidence)); err != nil {
 		return nil, 0, err
+	}
+	for _, e := range evidence {
+		st.Evidence = append(st.Evidence, e.version())
 	}
 	st.Status = ful.ShipmentStatus(status)
 	if cancelledAt != nil && cancelledBy != nil && cancelReason != nil {
@@ -342,6 +389,21 @@ func (s ShipmentStore) writeAdded(ctx context.Context, q bentopg.Executor, shipm
 			return fmt.Errorf("%w: shipment %s has a current consol attachment on stage %s", bentorepo.ErrConflict, st.ShipmentID, a.Stage)
 		}
 		if err != nil {
+			return err
+		}
+	}
+	for _, v := range shipment.AddedEvidence() {
+		e := v.Evidence
+		if _, err := q.Exec(ctx, `INSERT INTO cargo_ful.shipment_load_evidence (tenant_id,shipment_id,evidence_no,digest,lots,receipt_complete,
+            received_packs,received_weight_unit,received_weight,received_volume_unit,received_volume,consolidation_id,tendered_packs,
+            tendered_weight_unit,tendered_weight,tendered_volume_unit,tendered_volume,departed,arrived,offloaded,security,open_discrepancies,
+            execution_status,recorded_by,recorded_at,entered_at,departed_final)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)`,
+			string(st.TenantID), string(st.ShipmentID), v.No, v.Digest, e.Lots, e.ReceiptComplete, e.Received.Packs,
+			orNull(string(e.Received.GrossWeight.Unit)), e.Received.GrossWeight.Amount, orNull(string(e.Received.Volume.Unit)), e.Received.Volume.Amount,
+			orNull(e.ConsolidationID), e.Tendered.Packs, orNull(string(e.Tendered.GrossWeight.Unit)), e.Tendered.GrossWeight.Amount,
+			orNull(string(e.Tendered.Volume.Unit)), e.Tendered.Volume.Amount, e.Departed, e.Arrived, e.Offloaded, orNull(string(e.Security)),
+			e.OpenDiscrepancies, string(v.Execution), v.By, v.At, v.EnteredAt, v.Final); err != nil {
 			return err
 		}
 	}

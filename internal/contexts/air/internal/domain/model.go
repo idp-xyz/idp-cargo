@@ -1,9 +1,9 @@
-// Package domain is the model of AIR (Air Freight) V0.1: the air movement of an air consolidation, which holds
+// Package domain is the model of AIR (Air Freight) V0.1 and V0.2: the air movement of an air consolidation, which holds
 // the MAWB number and flights the airline confirmed in the consolidation's booking (decision N1-PHY OD-7), and
 // the house air waybill entries of its houses, each with the HAWB number the operating legal entity's series
 // gave it (decision N1-HAWB). Houses are FUL shipments that FUL reports attached to the consolidation (OD-2).
-// Quantities are FUL's planned ones until PHY's measures reach AIR; documents are DOC's. It depends on the
-// standard library and the kernel only.
+// Quantities are FUL's planned ones until FUL relays PHY's measures (V0.2: received, then tendered); documents
+// are DOC's. It depends on the standard library and the kernel only.
 package domain
 
 import (
@@ -31,7 +31,7 @@ var (
 	ErrAlreadyAssociated = errors.New("air: the house is associated already")
 	ErrNotAssociated     = errors.New("air: the house is not associated with the movement")
 	ErrStillAttached     = errors.New("air: FUL still reports the shipment attached to the consolidation")
-	ErrNothingToRefresh  = errors.New("air: FUL reports the plan version AIR froze")
+	ErrNothingToRefresh  = errors.New("air: FUL reports the plan version and the measures AIR froze")
 	ErrHousesLive        = errors.New("air: houses are associated with the movement")
 	ErrInvalidHAWB       = errors.New("air: a HAWB number has one to twelve capital letters and digits")
 	ErrUnits             = errors.New("air: weight in KGM, GRM or TNE and volume in MTQ, DMQ, CMQ or LTR")
@@ -112,8 +112,26 @@ type Part struct {
 // reference data with its editions later (backlog PB8).
 const ChargeableRule = "AIR-VOLUMETRIC-6000-HALF-KG-V1"
 
-// Basis of a house's quantities.
-const BasisPlanned = "PLANNED"
+// Basis of a house's quantities: FUL's plan, or PHY's measures as FUL relays them (decision N1-PHY OD-2, option
+// A): the lots' latest measures once received, what was tendered in the consolidation once tendered.
+const (
+	BasisPlanned  = "PLANNED"
+	BasisReceived = "RECEIVED"
+	BasisTendered = "TENDERED"
+)
+
+func basisValid(b string) bool { return b == BasisPlanned || b == BasisReceived || b == BasisTendered }
+
+// Security states FUL relays from PHY's screening results of AIR cargo; empty before any cargo is received.
+const (
+	SecurityPending = "PENDING"
+	SecurityCleared = "CLEARED"
+	SecurityFailed  = "FAILED"
+)
+
+func securityValid(s string) bool {
+	return s == "" || s == SecurityPending || s == SecurityCleared || s == SecurityFailed
+}
 
 // Grams converts a weight to grams.
 func Grams(q kernel.Quantity) (int64, error) {
