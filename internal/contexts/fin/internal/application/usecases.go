@@ -2,9 +2,11 @@ package application
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
+	bentorepo "go.idp.xyz/idp-bento-go/repository"
 	fin "go.idp.xyz/idp-cargo/internal/contexts/fin/internal/domain"
 	"go.idp.xyz/idp-cargo/internal/kernel"
 )
@@ -72,6 +74,185 @@ func (d Deps) RecordRate(ctx context.Context, c Command, e fin.RateEntry) (Recei
 			return Receipt{}, nil, err
 		}
 		return Receipt{SubjectID: c.Subject, NewRevision: revision, Version: len(p.State().Rates)}, p, nil
+	})
+}
+
+// changePolicy applies a change to the locked policy of the legal entity named by the command.
+func (d Deps) changePolicy(ctx context.Context, c Command, apply func(*fin.FinancePolicy) (int, error)) (Receipt, error) {
+	hash, entered, stored, replayed, err := d.begin(ctx, c)
+	if err != nil || replayed {
+		return stored, err
+	}
+	return d.write(ctx, c, hash, "FinancePolicy", func(txCtx context.Context) (Receipt, aggregate, error) {
+		p, revision, err := d.Policies.Load(txCtx, c.Scope.TenantID, c.Subject)
+		if err != nil {
+			return Receipt{}, nil, err
+		}
+		if revision != c.ExpectedRevision {
+			return Receipt{}, nil, fin.ErrConflict
+		}
+		version, err := apply(p)
+		if err != nil {
+			return Receipt{}, nil, err
+		}
+		p.Stamp(entered)
+		if revision, err = d.Policies.Save(txCtx, p, revision); err != nil {
+			return Receipt{}, nil, err
+		}
+		return Receipt{SubjectID: c.Subject, NewRevision: revision, Version: version}, p, nil
+	})
+}
+
+// SetTax records the next tax treatment version of a charge code in the legal entity's policy.
+func (d Deps) SetTax(ctx context.Context, c Command, t fin.TaxTreatment) (Receipt, error) {
+	return d.changePolicy(ctx, c, func(p *fin.FinancePolicy) (int, error) {
+		if err := p.SetTaxTreatment(t, c.Scope.ActorID, c.OccurredAt); err != nil {
+			return 0, err
+		}
+		return len(p.State().Taxes), nil
+	})
+}
+
+// RegisterSeries fixes the legal entity's number series of a note kind.
+func (d Deps) RegisterSeries(ctx context.Context, c Command, s fin.Series) (Receipt, error) {
+	return d.changePolicy(ctx, c, func(p *fin.FinancePolicy) (int, error) {
+		if err := p.RegisterSeries(s, c.Scope.ActorID, c.OccurredAt); err != nil {
+			return 0, err
+		}
+		return len(p.State().Series), nil
+	})
+}
+
+// SetProfile records the next version of a debtor's billing profile from ORG's identity of the debtor, read first
+// (T3); ExpectedRevision is the version the caller read, 0 for a new profile.
+func (d Deps) SetProfile(ctx context.Context, c Command, in fin.ProfileInput) (Receipt, error) {
+	if d.Directory == nil {
+		return Receipt{}, ErrMissingDependency
+	}
+	hash, entered, stored, replayed, err := d.begin(ctx, c)
+	if err != nil || replayed {
+		return stored, err
+	}
+	id, err := d.Directory.PartyIdentity(ctx, c.Scope.TenantID, c.Subject)
+	if err != nil {
+		return Receipt{}, err
+	}
+	return d.write(ctx, c, hash, "BillingProfile", func(txCtx context.Context) (Receipt, aggregate, error) {
+		b, found, err := d.Profiles.Load(txCtx, c.Scope.TenantID, c.Subject)
+		if err != nil {
+			return Receipt{}, nil, err
+		}
+		if !found {
+			if b, err = fin.NewProfile(c.Scope.TenantID, c.Subject); err != nil {
+				return Receipt{}, nil, err
+			}
+		}
+		if int64(len(b.State().Versions)) != c.ExpectedRevision {
+			return Receipt{}, nil, fin.ErrConflict
+		}
+		if err = b.Set(in, id, c.Scope.ActorID, c.OccurredAt); err != nil {
+			return Receipt{}, nil, err
+		}
+		b.Stamp(entered)
+		if err = d.Profiles.Save(txCtx, b); err != nil {
+			return Receipt{}, nil, err
+		}
+		n := len(b.State().Versions)
+		return Receipt{SubjectID: c.Subject, NewRevision: int64(n), Version: n}, b, nil
+	})
+}
+
+// draw takes numbers from the legal entity's series in the command's transaction: a failed command takes none.
+func (d Deps) draw(ctx context.Context, tenant fin.TenantID, p *fin.FinancePolicy) fin.Draw {
+	return func(kind string) (string, int64, error) {
+		s, ok := p.SeriesOf(kind)
+		if !ok {
+			return "", 0, fmt.Errorf("%w: %s of %s", fin.ErrNoSeries, kind, p.State().LegalEntityID)
+		}
+		seq, err := d.Series.Next(ctx, tenant, p.State().LegalEntityID, kind)
+		if err != nil {
+			return "", 0, err
+		}
+		number, err := s.Format(seq)
+		return number, seq, err
+	}
+}
+
+// DebitNoteAsk is a debit note as asked.
+type DebitNoteAsk struct {
+	ID          string
+	Debtor      string
+	LineNos     []int
+	Currency    kernel.CurrencyCode
+	InvoiceDate time.Time
+}
+
+// IssueDebitNote bills sell sides of the job to a debtor. Before FIN's transaction (T3) DOC reports the shipment's
+// issued house document (TransportDocumentSnapshot v1) and ORG confirms the debtor in a debtor role for the legal
+// entity and answers its identity; in the transaction FIN takes the debtor's billing profile, which must still name it
+// as ORG does, the terms of its credit account and the next number.
+func (d Deps) IssueDebitNote(ctx context.Context, c Command, in DebitNoteAsk) (Receipt, error) {
+	if d.Directory == nil || d.Documents == nil {
+		return Receipt{}, ErrMissingDependency
+	}
+	var document HouseDocument
+	var revision int64
+	var identity fin.PartyIdentity
+	return d.change(ctx, c, func(ctx context.Context, j *fin.FreightJob) (err error) {
+		st := j.State()
+		if document, err = d.Documents.HouseDocument(ctx, c.Scope.TenantID, st.ShipmentID); err != nil {
+			return err
+		}
+		if document.ShipmentID != st.ShipmentID || document.LegalEntityID != st.LegalEntityID {
+			return fmt.Errorf("%w: DOC reports house document %s of %s for %s", fin.ErrNoIssuedDocument, document.Number, document.LegalEntityID,
+				document.ShipmentID)
+		}
+		if revision, err = d.Directory.PartyInRole(ctx, c.Scope.TenantID, in.Debtor, st.LegalEntityID, DebtorRoles, c.OccurredAt); err != nil {
+			return err
+		}
+		identity, err = d.Directory.PartyIdentity(ctx, c.Scope.TenantID, in.Debtor)
+		return err
+	}, func(txCtx context.Context, j *fin.FreightJob, p *fin.FinancePolicy) (Receipt, error) {
+		st := j.State()
+		profile, found, err := d.Profiles.Load(txCtx, c.Scope.TenantID, in.Debtor)
+		if err != nil {
+			return Receipt{}, err
+		}
+		if !found {
+			return Receipt{}, fmt.Errorf("%w: %s", fin.ErrNoBillingProfile, in.Debtor)
+		}
+		version, _ := profile.Current()
+		if !version.Matches(identity) {
+			return Receipt{}, fmt.Errorf("%w: %s, version %d", fin.ErrProfileStale, in.Debtor, version.No)
+		}
+		var terms *fin.TermsVersion
+		account, _, err := d.Credit.Read(txCtx, c.Scope.TenantID, st.LegalEntityID, in.Debtor)
+		switch {
+		case err == nil:
+			if t, ok := account.CurrentTerms(); ok {
+				terms = &t
+			}
+		case !errors.Is(err, bentorepo.ErrNotFound):
+			return Receipt{}, err
+		}
+		n := fin.DebitNoteInput{ID: in.ID, DebtorPartyID: in.Debtor, DebtorRevision: revision, LineNos: in.LineNos, Currency: in.Currency,
+			InvoiceDate: in.InvoiceDate, Profile: version, Terms: terms, Document: document.DocumentRef}
+		if err = j.IssueDebitNote(n, p, d.draw(txCtx, c.Scope.TenantID, p), c.Scope.ActorID, c.OccurredAt); err != nil {
+			return Receipt{}, err
+		}
+		notes := j.State().Notes
+		return Receipt{Number: notes[len(notes)-1].Number}, nil
+	})
+}
+
+// IssueCreditNote reverses lines of a debit note of the job.
+func (d Deps) IssueCreditNote(ctx context.Context, c Command, in fin.CreditNoteInput) (Receipt, error) {
+	return d.change(ctx, c, nil, func(txCtx context.Context, j *fin.FreightJob, p *fin.FinancePolicy) (Receipt, error) {
+		if err := j.IssueCreditNote(in, p, d.draw(txCtx, c.Scope.TenantID, p), c.Scope.ActorID, c.OccurredAt); err != nil {
+			return Receipt{}, err
+		}
+		notes := j.State().Notes
+		return Receipt{Number: notes[len(notes)-1].Number}, nil
 	})
 }
 
@@ -152,9 +333,9 @@ func (d Deps) OpenJob(ctx context.Context, c Command, shipment string) (Receipt,
 }
 
 // change reads the job before FIN's transaction for the T3 questions, then applies the change to the locked job
-// under its legal entity's policy.
+// under its legal entity's policy (held FOR SHARE); apply answers the version and the number of a note it issued.
 func (d Deps) change(ctx context.Context, c Command, ask func(context.Context, *fin.FreightJob) error,
-	apply func(*fin.FreightJob, *fin.FinancePolicy) (int, error)) (Receipt, error) {
+	apply func(context.Context, *fin.FreightJob, *fin.FinancePolicy) (Receipt, error)) (Receipt, error) {
 	hash, entered, stored, replayed, err := d.begin(ctx, c)
 	if err != nil || replayed {
 		return stored, err
@@ -187,7 +368,7 @@ func (d Deps) change(ctx context.Context, c Command, ask func(context.Context, *
 		if err != nil {
 			return Receipt{}, nil, err
 		}
-		version, err := apply(j, p)
+		r, err := apply(txCtx, j, p)
 		if err != nil {
 			return Receipt{}, nil, err
 		}
@@ -195,7 +376,8 @@ func (d Deps) change(ctx context.Context, c Command, ask func(context.Context, *
 		if revision, err = d.Jobs.Save(txCtx, j, revision); err != nil {
 			return Receipt{}, nil, err
 		}
-		return Receipt{SubjectID: c.Subject, NewRevision: revision, Version: version}, j, nil
+		r.SubjectID, r.NewRevision = c.Subject, revision
+		return r, j, nil
 	})
 }
 
@@ -232,12 +414,10 @@ func (d Deps) ApplyBasis(ctx context.Context, c Command, quote, order string) (R
 				basis.QuoteRevision)
 		}
 		return nil
-	}, func(j *fin.FreightJob, p *fin.FinancePolicy) (int, error) {
+	}, func(_ context.Context, j *fin.FreightJob, p *fin.FinancePolicy) (Receipt, error) {
 		b := fin.Basis{BasisID: basis.BasisID, QuoteID: basis.QuoteID, QuoteRevision: basis.QuoteRevision, OrderID: order}
-		if err := j.ApplyBasis(b, basis.CustomerPartyID, basis.CustomerRevision, basis.Lines, p, c.Scope.ActorID, c.OccurredAt); err != nil {
-			return 0, err
-		}
-		return len(j.State().Bases), nil
+		err := j.ApplyBasis(b, basis.CustomerPartyID, basis.CustomerRevision, basis.Lines, p, c.Scope.ActorID, c.OccurredAt)
+		return Receipt{Version: len(j.State().Bases)}, err
 	})
 }
 
@@ -268,11 +448,9 @@ func (d Deps) RecordLine(ctx context.Context, c Command, in LineInput) (Receipt,
 			}
 		}
 		return nil
-	}, func(j *fin.FreightJob, p *fin.FinancePolicy) (int, error) {
-		if err := j.RecordLine(in.ChargeCode, in.Description, in.Sell, in.Cost, in.Reason, p, c.Scope.ActorID, c.OccurredAt); err != nil {
-			return 0, err
-		}
-		return len(j.State().Lines), nil
+	}, func(_ context.Context, j *fin.FreightJob, p *fin.FinancePolicy) (Receipt, error) {
+		err := j.RecordLine(in.ChargeCode, in.Description, in.Sell, in.Cost, in.Reason, p, c.Scope.ActorID, c.OccurredAt)
+		return Receipt{Version: len(j.State().Lines)}, err
 	})
 }
 
@@ -311,18 +489,16 @@ func (d Deps) Revise(ctx context.Context, c Command, in ReviseInput) (Receipt, e
 		}
 		in.Value.PartyRevision, err = d.Directory.PartyInRole(ctx, c.Scope.TenantID, in.Value.PartyID, st.LegalEntityID, roles, c.OccurredAt)
 		return err
-	}, func(j *fin.FreightJob, p *fin.FinancePolicy) (int, error) {
-		if err := j.ReviseSide(in.LineNo, in.Side, in.Expected, in.Value, in.Reason, p, c.Scope.ActorID, c.OccurredAt); err != nil {
-			return 0, err
-		}
-		return in.Expected + 1, nil
+	}, func(_ context.Context, j *fin.FreightJob, p *fin.FinancePolicy) (Receipt, error) {
+		err := j.ReviseSide(in.LineNo, in.Side, in.Expected, in.Value, in.Reason, p, c.Scope.ActorID, c.OccurredAt)
+		return Receipt{Version: in.Expected + 1}, err
 	})
 }
 
 // CancelJob cancels an open job with a reason.
 func (d Deps) CancelJob(ctx context.Context, c Command, reason string) (Receipt, error) {
-	return d.change(ctx, c, nil, func(j *fin.FreightJob, _ *fin.FinancePolicy) (int, error) {
-		return 0, j.Cancel(reason, c.Scope.ActorID, c.OccurredAt)
+	return d.change(ctx, c, nil, func(_ context.Context, j *fin.FreightJob, _ *fin.FinancePolicy) (Receipt, error) {
+		return Receipt{}, j.Cancel(reason, c.Scope.ActorID, c.OccurredAt)
 	})
 }
 
@@ -411,17 +587,18 @@ func (d Deps) Hold(ctx context.Context, c Command, legalEntity, debtor string, p
 	})
 }
 
-// Exposure is a debtor's estimated sell on the open jobs of a legal entity.
-func (d Deps) Exposure(ctx context.Context, tenant fin.TenantID, legalEntity, debtor string) (int64, error) {
+// Exposure is a debtor's sell on the open jobs of a legal entity: not yet billed, and billed on debit notes not
+// reversed.
+func (d Deps) Exposure(ctx context.Context, tenant fin.TenantID, legalEntity, debtor string) (unbilled, billed int64, err error) {
 	jobs, err := d.Jobs.OpenOf(ctx, tenant, legalEntity, "")
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	var sum int64
 	for _, j := range jobs {
-		sum += j.SellEstimate(debtor)
+		u, b := j.Exposure(debtor)
+		unbilled, billed = unbilled+u, billed+b
 	}
-	return sum, nil
+	return unbilled, billed, nil
 }
 
 // Reader runs reads in one snapshot each.

@@ -1,5 +1,6 @@
-// Package fin assembles the FIN (Freight Job Economics) bounded context, V0.1: finance policies, freight jobs with
-// estimated charges, and credit accounts with CreditStatus v1 for DOC. Code outside FIN uses it through package api;
+// Package fin assembles the FIN (Freight Job Economics) bounded context, V0.2: finance policies with tax treatments
+// and number series, freight jobs with estimated charges and the debit and credit notes billing them, billing
+// profiles, and credit accounts with CreditStatus v1 for DOC. Code outside FIN uses it through package api;
 // everything under internal/ is private to FIN.
 package fin
 
@@ -8,12 +9,15 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	bentopg "go.idp.xyz/idp-bento-go/postgres"
 	bentooutbox "go.idp.xyz/idp-bento-go/postgres/outbox"
 	bentorepo "go.idp.xyz/idp-bento-go/repository"
+	docapi "go.idp.xyz/idp-cargo/internal/contexts/doc/api"
 	"go.idp.xyz/idp-cargo/internal/contexts/fin/api"
+	docacl "go.idp.xyz/idp-cargo/internal/contexts/fin/internal/adapters/doc"
 	fulacl "go.idp.xyz/idp-cargo/internal/contexts/fin/internal/adapters/ful"
 	orgacl "go.idp.xyz/idp-cargo/internal/contexts/fin/internal/adapters/org"
 	"go.idp.xyz/idp-cargo/internal/contexts/fin/internal/adapters/postgres"
@@ -26,14 +30,15 @@ import (
 	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
-// Module wires FIN's use cases to PostgreSQL through IDP-Bento-Go, to FUL's CostDriver v1, RATE's PricingBasis v1 and
-// ORG's legal entities and party roles.
+// Module wires FIN's use cases to PostgreSQL through IDP-Bento-Go, to FUL's CostDriver v1, RATE's PricingBasis v1,
+// DOC's TransportDocumentSnapshot v1 and ORG's legal entities, party roles and party identity.
 type Module struct {
 	db        *bentopg.DB
 	outbox    *bentooutbox.Store
 	shipments application.Shipments
 	pricing   application.Pricing
 	directory application.Directory
+	documents application.Documents
 	auth      api.Authorizer
 	clock     bento.SystemClock
 	window    kernel.RecordWindow
@@ -51,18 +56,19 @@ var (
 	_ api.CreditStatusQueries = (*Module)(nil)
 )
 
-// New assembles FIN. ful answers CostDriver v1, rate PricingBasis v1 and org LegalEntityRef v1 and PartyRef v1; FIN
-// writes to none of them.
-func New(db *bentopg.DB, org orgacl.ORG, rate rateapi.PricingBasisQueries, ful fulapi.CostDriverQueries, auth api.Authorizer, opts ...Option) (*Module, error) {
-	if db == nil || org == nil || rate == nil || ful == nil || auth == nil {
-		return nil, errors.New("fin: module needs a database, ORG, RATE's pricing bases, FUL's cost drivers and an authorizer")
+// New assembles FIN. ful answers CostDriver v1, rate PricingBasis v1, doc TransportDocumentSnapshot v1 and org
+// LegalEntityRef v1, PartyRef v1 and party identity; FIN writes to none of them.
+func New(db *bentopg.DB, org orgacl.ORG, rate rateapi.PricingBasisQueries, ful fulapi.CostDriverQueries, doc docapi.TransportDocumentSnapshotQueries,
+	auth api.Authorizer, opts ...Option) (*Module, error) {
+	if db == nil || org == nil || rate == nil || ful == nil || doc == nil || auth == nil {
+		return nil, errors.New("fin: module needs a database, ORG, RATE's pricing bases, FUL's cost drivers, DOC's document snapshots and an authorizer")
 	}
 	outbox, err := bentooutbox.NewStore(db)
 	if err != nil {
 		return nil, err
 	}
 	m := &Module{db: db, outbox: outbox, shipments: fulacl.Shipments{FUL: ful}, pricing: rateacl.Pricing{RATE: rate}, directory: orgacl.Directory{ORG: org},
-		auth: auth, window: kernel.DefaultRecordWindow}
+		documents: docacl.Documents{DOC: doc}, auth: auth, window: kernel.DefaultRecordWindow}
 	for _, opt := range opts {
 		opt(m)
 	}
@@ -166,6 +172,57 @@ func (m *Module) ReleaseCreditHold(ctx context.Context, cmd api.ReleaseCreditHol
 	return receipt(r, err)
 }
 
+func (m *Module) SetChargeTaxTreatment(ctx context.Context, cmd api.SetChargeTaxTreatment) (api.Receipt, error) {
+	from, err := domain.ParseDate(cmd.EffectiveFrom)
+	if err != nil {
+		return api.Receipt{}, classify(err)
+	}
+	r, err := m.deps(cmd.TenantID, cmd.CommandID).SetTax(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, api.ActionSetChargeTaxTreatment,
+		cmd.LegalEntityID, cmd.ExpectedRevision, cmd.OccurredAt, cmd), domain.TaxTreatment{ChargeCode: cmd.ChargeCode, Treatment: cmd.Treatment,
+		RateBP: cmd.RateBP, EffectiveFrom: from})
+	if postgres.TaxInUse(err) {
+		err = fmt.Errorf("%w: %s from %s", domain.ErrTaxInUse, cmd.ChargeCode, cmd.EffectiveFrom)
+	}
+	return receipt(r, err)
+}
+
+func (m *Module) RegisterInvoiceSeries(ctx context.Context, cmd api.RegisterInvoiceSeries) (api.Receipt, error) {
+	r, err := m.deps(cmd.TenantID, cmd.CommandID).RegisterSeries(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, api.ActionRegisterInvoiceSeries,
+		cmd.LegalEntityID, cmd.ExpectedRevision, cmd.OccurredAt, cmd), domain.Series{Kind: cmd.Kind, Prefix: cmd.Prefix, Width: cmd.Width,
+		Start: cmd.FirstNumber})
+	return receipt(r, err)
+}
+
+func (m *Module) SetBillingProfile(ctx context.Context, cmd api.SetBillingProfile) (api.Receipt, error) {
+	r, err := m.deps(cmd.TenantID, cmd.CommandID).SetProfile(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, api.ActionSetBillingProfile,
+		cmd.DebtorPartyID, int64(cmd.ExpectedVersion), cmd.OccurredAt, cmd), domain.ProfileInput{BuyerKind: cmd.BuyerKind,
+		RegisteredAddress: cmd.RegisteredAddress, RegisteredPhone: cmd.RegisteredPhone, BankName: cmd.BankName, BankAccount: cmd.BankAccount,
+		EvidenceRef: cmd.EvidenceRef})
+	return receipt(r, err)
+}
+
+func (m *Module) IssueDebitNote(ctx context.Context, cmd api.IssueDebitNote) (api.Receipt, error) {
+	date, err := domain.ParseDate(cmd.InvoiceDate)
+	if err != nil {
+		return api.Receipt{}, classify(err)
+	}
+	r, err := m.deps(cmd.TenantID, cmd.CommandID).IssueDebitNote(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, api.ActionIssueDebitNote, cmd.JobID,
+		cmd.ExpectedRevision, cmd.OccurredAt, cmd), application.DebitNoteAsk{ID: cmd.InvoiceID, Debtor: cmd.DebtorPartyID,
+		LineNos: append([]int(nil), cmd.LineNos...), Currency: cmd.Currency, InvoiceDate: date})
+	return receipt(r, err)
+}
+
+func (m *Module) IssueCreditNote(ctx context.Context, cmd api.IssueCreditNote) (api.Receipt, error) {
+	date, err := domain.ParseDate(cmd.InvoiceDate)
+	if err != nil {
+		return api.Receipt{}, classify(err)
+	}
+	r, err := m.deps(cmd.TenantID, cmd.CommandID).IssueCreditNote(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, api.ActionIssueCreditNote,
+		cmd.JobID, cmd.ExpectedRevision, cmd.OccurredAt, cmd), domain.CreditNoteInput{ID: cmd.InvoiceID, DebitNoteID: cmd.DebitNoteID,
+		LineNos: append([]int(nil), cmd.LineNos...), Reason: cmd.Reason, InvoiceDate: date})
+	return receipt(r, err)
+}
+
 func (m *Module) GetFinancePolicy(ctx context.Context, q api.GetFinancePolicy) (api.FinancePolicy, error) {
 	var p *domain.FinancePolicy
 	var revision int64
@@ -182,6 +239,13 @@ func (m *Module) GetFinancePolicy(ctx context.Context, q api.GetFinancePolicy) (
 		out.Rates = append(out.Rates, api.ExchangeRateEntry{EntryNo: e.No, RateType: e.Type, From: e.From, Rate: e.Rate, Scale: e.Scale, FromDigits: e.FromDigits,
 			ToDigits: e.ToDigits, ValidFrom: e.ValidFrom, ValidUntil: e.ValidUntil, Source: e.Source, RecordedBy: e.By, RecordedAt: e.At, EndedBy: e.EndedBy,
 			EndReason: e.EndReason})
+	}
+	for _, t := range st.Taxes {
+		out.TaxTreatments = append(out.TaxTreatments, api.ChargeTaxTreatment{Version: t.No, ChargeCode: t.ChargeCode, Treatment: t.Treatment, RateBP: t.RateBP,
+			EffectiveFrom: t.EffectiveFrom.Format(time.DateOnly), SetBy: t.By, SetAt: t.At})
+	}
+	for _, x := range st.Series {
+		out.Series = append(out.Series, api.InvoiceSeries{Kind: x.Kind, Prefix: x.Prefix, Width: x.Width, FirstNumber: x.Start})
 	}
 	return out, nil
 }
@@ -207,15 +271,18 @@ func (m *Module) GetFreightJob(ctx context.Context, q api.GetFreightJob) (api.Fr
 func sideViews(vs []domain.SideVersion, currency kernel.CurrencyCode) []api.SideVersion {
 	var out []api.SideVersion
 	for _, v := range vs {
-		sv := api.SideVersion{Version: v.No, PartyID: v.PartyID, Amount: v.Amount, Local: kernel.Money{Currency: currency, Minor: v.Local}, Status: v.Status,
-			Reason: v.Reason, RecordedBy: v.By, RecordedAt: v.At}
-		if fx := v.FX; fx != nil {
-			sv.FX = &api.FxSnapshot{EntryNo: fx.EntryNo, RateType: fx.Type, Rate: fx.Rate, Scale: fx.Scale, FromDigits: fx.FromDigits, ToDigits: fx.ToDigits,
-				Source: fx.Source}
-		}
-		out = append(out, sv)
+		out = append(out, api.SideVersion{Version: v.No, PartyID: v.PartyID, Amount: v.Amount, Local: kernel.Money{Currency: currency, Minor: v.Local},
+			Status: v.Status, Reason: v.Reason, InvoiceID: v.InvoiceID, InvoiceLineNo: v.InvoiceLineNo, RecordedBy: v.By, RecordedAt: v.At, FX: fxView(v.FX)})
 	}
 	return out
+}
+
+func fxView(fx *domain.FxSnapshot) *api.FxSnapshot {
+	if fx == nil {
+		return nil
+	}
+	return &api.FxSnapshot{EntryNo: fx.EntryNo, RateType: fx.Type, Rate: fx.Rate, Scale: fx.Scale, FromDigits: fx.FromDigits, ToDigits: fx.ToDigits,
+		Source: fx.Source}
 }
 
 func jobView(j *domain.FreightJob, revision int64) api.FreightJob {
@@ -231,6 +298,10 @@ func jobView(j *domain.FreightJob, revision int64) api.FreightJob {
 		out.Lines = append(out.Lines, api.ChargeLine{LineNo: l.No, ChargeCode: l.ChargeCode, Description: l.Description, Source: l.Source, BasisNo: l.BasisNo,
 			QuoteLineNo: l.QuoteLineNo, Reason: l.Reason, Sell: sideViews(l.Sell, st.FunctionalCurrency), Cost: sideViews(l.Cost, st.FunctionalCurrency)})
 	}
+	for _, n := range st.Notes {
+		out.Notes = append(out.Notes, api.NoteSummary{InvoiceID: n.ID, Kind: n.Kind, Number: n.Number, DebtorPartyID: n.DebtorPartyID, State: n.State,
+			Total: kernel.Money{Currency: n.Currency, Minor: n.Total}})
+	}
 	return out
 }
 
@@ -241,7 +312,8 @@ func (m *Module) GetJobProfit(ctx context.Context, q api.GetJobProfit) (api.JobP
 	}
 	p := j.Profit()
 	money := func(n int64) kernel.Money { return kernel.Money{Currency: p.Currency, Minor: n} }
-	out := api.JobProfit{JobID: q.JobID, Revision: revision, Revenue: money(p.Revenue), Cost: money(p.Cost), Profit: money(p.Profit)}
+	out := api.JobProfit{JobID: q.JobID, Revision: revision, Revenue: money(p.Revenue), Invoiced: money(p.Invoiced), Cost: money(p.Cost),
+		Profit: money(p.Profit)}
 	for _, c := range p.Lines {
 		out.ByCode = append(out.ByCode, api.ChargeCodeProfit{ChargeCode: c.ChargeCode, Revenue: money(c.Revenue), Cost: money(c.Cost), Profit: money(c.Profit)})
 	}
@@ -265,10 +337,12 @@ func (m *Module) ListJobsForShipment(ctx context.Context, q api.ListJobsForShipm
 	return out, nil
 }
 
-func accountView(a *domain.CreditAccount, revision, exposure int64) api.CreditAccount {
+func accountView(a *domain.CreditAccount, revision, unbilled, billed int64) api.CreditAccount {
 	st := a.State()
+	exposure := unbilled + billed
 	out := api.CreditAccount{LegalEntityID: st.LegalEntityID, DebtorPartyID: st.DebtorPartyID, Revision: revision, Status: a.Status(),
-		Exposure: kernel.Money{Currency: st.Currency, Minor: exposure}}
+		Exposure: kernel.Money{Currency: st.Currency, Minor: exposure}, Unbilled: kernel.Money{Currency: st.Currency, Minor: unbilled},
+		Billed: kernel.Money{Currency: st.Currency, Minor: billed}}
 	for _, t := range st.Terms {
 		out.Terms = append(out.Terms, api.CreditTerms{Version: t.No, Limit: t.Limit, PaymentDays: t.PaymentDays, PaymentBasis: t.PaymentBasis, SetBy: t.By,
 			SetAt: t.At})
@@ -286,18 +360,18 @@ func accountView(a *domain.CreditAccount, revision, exposure int64) api.CreditAc
 func (m *Module) GetCreditAccount(ctx context.Context, q api.GetCreditAccount) (api.CreditAccount, error) {
 	d := m.deps(q.TenantID, "")
 	var a *domain.CreditAccount
-	var revision, exposure int64
+	var revision, unbilled, billed int64
 	err := d.Reader(ctx, func(txCtx context.Context) (err error) {
 		if a, revision, err = d.Credit.Read(txCtx, domain.TenantID(q.TenantID), q.LegalEntityID, q.DebtorPartyID); err != nil {
 			return err
 		}
-		exposure, err = d.Exposure(txCtx, domain.TenantID(q.TenantID), q.LegalEntityID, q.DebtorPartyID)
+		unbilled, billed, err = d.Exposure(txCtx, domain.TenantID(q.TenantID), q.LegalEntityID, q.DebtorPartyID)
 		return err
 	})
 	if err != nil {
 		return api.CreditAccount{}, classify(err)
 	}
-	return accountView(a, revision, exposure), nil
+	return accountView(a, revision, unbilled, billed), nil
 }
 
 func (m *Module) ListCreditExposure(ctx context.Context, q api.ListCreditExposure) ([]api.CreditAccount, error) {
@@ -312,20 +386,22 @@ func (m *Module) ListCreditExposure(ctx context.Context, q api.ListCreditExposur
 		if err != nil {
 			return err
 		}
-		exposure := map[string]int64{}
+		unbilled, billed := map[string]int64{}, map[string]int64{}
 		var debtors []string
 		for _, j := range jobs {
 			for _, d := range j.Debtors() {
-				if _, ok := exposure[d]; !ok {
+				if _, ok := unbilled[d]; !ok {
 					debtors = append(debtors, d)
 				}
-				exposure[d] += j.SellEstimate(d)
+				u, b := j.Exposure(d)
+				unbilled[d], billed[d] = unbilled[d]+u, billed[d]+b
 			}
 		}
 		held := map[string]bool{}
 		for i, a := range accounts {
-			held[a.State().DebtorPartyID] = true
-			out = append(out, accountView(a, revisions[i], exposure[a.State().DebtorPartyID]))
+			debtor := a.State().DebtorPartyID
+			held[debtor] = true
+			out = append(out, accountView(a, revisions[i], unbilled[debtor], billed[debtor]))
 		}
 		policy, found, err := d.Policies.Find(txCtx, domain.TenantID(q.TenantID), q.LegalEntityID)
 		if err != nil || !found {
@@ -334,9 +410,10 @@ func (m *Module) ListCreditExposure(ctx context.Context, q api.ListCreditExposur
 		currency := policy.State().FunctionalCurrency
 		slices.Sort(debtors)
 		for _, d := range debtors {
-			if !held[d] && exposure[d] != 0 {
+			if total := unbilled[d] + billed[d]; !held[d] && total != 0 {
 				out = append(out, api.CreditAccount{LegalEntityID: q.LegalEntityID, DebtorPartyID: d, Status: api.CreditNoAccount,
-					Exposure: kernel.Money{Currency: currency, Minor: exposure[d]}})
+					Exposure: kernel.Money{Currency: currency, Minor: total}, Unbilled: kernel.Money{Currency: currency, Minor: unbilled[d]},
+					Billed: kernel.Money{Currency: currency, Minor: billed[d]}})
 			}
 		}
 		return nil
@@ -354,6 +431,129 @@ func (m *Module) ListCreditExposure(ctx context.Context, q api.ListCreditExposur
 		return 2
 	}
 	slices.SortStableFunc(out, func(a, b api.CreditAccount) int { return rank(a) - rank(b) })
+	return out, nil
+}
+
+func profileVersionView(v domain.ProfileVersion) api.BillingProfileVersion {
+	return api.BillingProfileVersion{Version: v.No, BuyerKind: v.BuyerKind, Title: v.Title, TaxpayerNumber: v.TaxpayerNumber, PartyRevision: v.PartyRevision,
+		RegisteredAddress: v.RegisteredAddress, RegisteredPhone: v.RegisteredPhone, BankName: v.BankName, BankAccount: v.BankAccount, EvidenceRef: v.EvidenceRef,
+		SetBy: v.By, SetAt: v.At}
+}
+
+func (m *Module) GetBillingProfile(ctx context.Context, q api.GetBillingProfile) (api.BillingProfile, error) {
+	d := m.deps(q.TenantID, "")
+	var b *domain.BillingProfile
+	var found bool
+	err := d.Reader(ctx, func(txCtx context.Context) (err error) {
+		b, found, err = d.Profiles.Read(txCtx, domain.TenantID(q.TenantID), q.DebtorPartyID)
+		return err
+	})
+	if err == nil && !found {
+		err = fmt.Errorf("%w: billing profile %s", bentorepo.ErrNotFound, q.DebtorPartyID)
+	}
+	if err != nil {
+		return api.BillingProfile{}, classify(err)
+	}
+	out := api.BillingProfile{DebtorPartyID: q.DebtorPartyID}
+	for _, v := range b.State().Versions {
+		out.Versions = append(out.Versions, profileVersionView(v))
+	}
+	return out, nil
+}
+
+func dateView(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.Format(time.DateOnly)
+}
+
+// noteView shows a note of a job with the profile version it froze.
+func noteView(j *domain.FreightJob, n domain.Note, profile *domain.BillingProfile) api.DebtorInvoice {
+	st := j.State()
+	money := func(v int64) kernel.Money { return kernel.Money{Currency: n.Currency, Minor: v} }
+	local := func(v int64) kernel.Money { return kernel.Money{Currency: st.FunctionalCurrency, Minor: v} }
+	out := api.DebtorInvoice{InvoiceID: n.ID, Kind: n.Kind, Number: n.Number, JobID: st.JobID, LegalEntityID: st.LegalEntityID, ShipmentID: st.ShipmentID,
+		DebtorPartyID: n.DebtorPartyID, DebtorRevision: n.DebtorRevision, Currency: n.Currency, InvoiceDate: dateView(n.InvoiceDate),
+		DueDate: dateView(n.DueDate), PaymentDays: n.PaymentDays, PaymentBasis: n.PaymentBasis, TermsVersion: n.TermsVersion,
+		Document: api.DocumentRef(n.Document), CreditsInvoiceID: n.CreditsID, Reason: n.Reason, State: n.State, Total: money(n.Total),
+		LocalTotal: local(n.LocalTotal), IssuedBy: n.By, IssuedAt: n.At}
+	if profile != nil {
+		for _, v := range profile.State().Versions {
+			if v.No == n.ProfileVersion {
+				out.BillingProfile = profileVersionView(v)
+			}
+		}
+	}
+	for _, t := range n.TaxTotals() {
+		out.TaxTotals = append(out.TaxTotals, api.TaxTotal{Treatment: t.Treatment, RateBP: t.RateBP, Amount: money(t.Invoice), Local: local(t.Local)})
+	}
+	for _, l := range n.Lines {
+		out.Lines = append(out.Lines, api.DebtorInvoiceLine{LineNo: l.No, JobLineNo: l.JobLineNo, SideVersion: l.SideVersion, CreditsLineNo: l.CreditsLineNo,
+			ChargeCode: l.ChargeCode, Amount: l.Amount, Invoiced: money(l.Invoice), Local: local(l.Local), FX: fxView(l.FX), TaxVersion: l.Tax.No,
+			Treatment: l.Tax.Treatment, RateBP: l.Tax.RateBP})
+	}
+	if n.Kind == domain.KindDebitNote {
+		open := n.Total
+		for _, c := range j.Credits(n.ID) {
+			out.CreditNotes = append(out.CreditNotes, c.ID)
+			open += c.Total
+		}
+		out.Open = money(open)
+	}
+	return out
+}
+
+func (m *Module) GetDebtorInvoice(ctx context.Context, q api.GetDebtorInvoice) (api.DebtorInvoice, error) {
+	d := m.deps(q.TenantID, "")
+	var out api.DebtorInvoice
+	err := d.Reader(ctx, func(txCtx context.Context) error {
+		j, _, err := d.Jobs.OfNote(txCtx, domain.TenantID(q.TenantID), q.InvoiceID)
+		if err != nil {
+			return err
+		}
+		for _, n := range j.State().Notes {
+			if n.ID == q.InvoiceID {
+				profile, _, err := d.Profiles.Read(txCtx, domain.TenantID(q.TenantID), n.DebtorPartyID)
+				if err != nil {
+					return err
+				}
+				out = noteView(j, n, profile)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return api.DebtorInvoice{}, classify(err)
+	}
+	return out, nil
+}
+
+func (m *Module) ListOpenDebtorItems(ctx context.Context, q api.ListOpenDebtorItems) ([]api.DebtorInvoice, error) {
+	d := m.deps(q.TenantID, "")
+	out := []api.DebtorInvoice{}
+	err := d.Reader(ctx, func(txCtx context.Context) error {
+		jobs, err := d.Jobs.BilledTo(txCtx, domain.TenantID(q.TenantID), q.LegalEntityID, q.DebtorPartyID)
+		if err != nil {
+			return err
+		}
+		profile, _, err := d.Profiles.Read(txCtx, domain.TenantID(q.TenantID), q.DebtorPartyID)
+		if err != nil {
+			return err
+		}
+		for _, j := range jobs {
+			for _, n := range j.State().Notes {
+				if n.Kind == domain.KindDebitNote && n.State == domain.NoteIssued && n.DebtorPartyID == q.DebtorPartyID {
+					out = append(out, noteView(j, n, profile))
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, classify(err)
+	}
+	slices.SortStableFunc(out, func(a, b api.DebtorInvoice) int { return strings.Compare(a.DueDate+a.Number, b.DueDate+b.Number) })
 	return out, nil
 }
 
@@ -398,6 +598,9 @@ func (m *Module) deps(tenant, commandID string) application.Deps {
 		Shipments: m.shipments,
 		Pricing:   m.pricing,
 		Directory: m.directory,
+		Documents: m.documents,
+		Series:    postgres.Series{DB: m.db},
+		Profiles:  postgres.ProfileStore{DB: m.db},
 	}
 }
 
@@ -405,7 +608,7 @@ func receipt(r application.Receipt, err error) (api.Receipt, error) {
 	if err != nil {
 		return api.Receipt{}, classify(err)
 	}
-	return api.Receipt{CommandID: r.CommandID, SubjectID: r.SubjectID, NewRevision: r.NewRevision, Version: r.Version}, nil
+	return api.Receipt{CommandID: r.CommandID, SubjectID: r.SubjectID, NewRevision: r.NewRevision, Version: r.Version, Number: r.Number}, nil
 }
 
 type authorizer struct{ api.Authorizer }
@@ -432,7 +635,10 @@ func classify(err error) error {
 		errors.Is(err, domain.ErrRateOverlap), errors.Is(err, domain.ErrBasisApplied), errors.Is(err, domain.ErrNotPriceable),
 		errors.Is(err, domain.ErrNotOpenable), errors.Is(err, domain.ErrPartyRole), errors.Is(err, domain.ErrSideVersion), errors.Is(err, domain.ErrRateInUse),
 		errors.Is(err, application.ErrInvalidQuery), errors.Is(err, application.ErrUnknownSource), errors.Is(err, application.ErrNoPolicy),
-		errors.Is(err, application.ErrNotVerified), errors.Is(err, kernel.ErrOutsideRecordWindow), errors.Is(err, kernel.ErrAmountOverflow):
+		errors.Is(err, application.ErrNotVerified), errors.Is(err, kernel.ErrOutsideRecordWindow), errors.Is(err, kernel.ErrAmountOverflow),
+		errors.Is(err, domain.ErrInvoiced), errors.Is(err, domain.ErrNoIssuedDocument), errors.Is(err, domain.ErrNoBillingProfile),
+		errors.Is(err, domain.ErrProfileStale), errors.Is(err, domain.ErrTaxMissing), errors.Is(err, domain.ErrTaxInUse), errors.Is(err, domain.ErrNoSeries),
+		errors.Is(err, domain.ErrSeriesExhausted):
 		kind = api.ErrRejected
 	default:
 		return err

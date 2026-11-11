@@ -185,8 +185,11 @@ func TestFreightJobCharges(t *testing.T) {
 	if profit.Currency != "CNY" || profit.Revenue != 959_808 || profit.Cost != 748_846 || profit.Profit != 210_962 || len(profit.Lines) != 4 {
 		t.Fatalf("profit %+v", profit)
 	}
-	if j.SellEstimate("party-a") != 959_808 || j.SellEstimate("party-b") != 0 {
-		t.Fatalf("exposure %d", j.SellEstimate("party-a"))
+	if unbilled, billed := j.Exposure("party-a"); unbilled != 959_808 || billed != 0 {
+		t.Fatalf("exposure %d %d", unbilled, billed)
+	}
+	if unbilled, _ := j.Exposure("party-b"); unbilled != 0 {
+		t.Fatalf("exposure of another debtor %d", unbilled)
 	}
 	bases, lines, sides, _ := j.Added()
 	if len(bases) != 1 || len(lines) != 4 || len(sides) != 9 {
@@ -203,7 +206,10 @@ func TestFreightJobCharges(t *testing.T) {
 	if err = back.Cancel("", "fin-1", hour(6)); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("a cancellation without reason: %v", err)
 	}
-	if err = back.Cancel("shipment cancelled by the customer", "fin-1", hour(6)); err != nil || back.SellEstimate("party-a") != 0 {
+	if err = back.Cancel("shipment cancelled by the customer", "fin-1", hour(6)); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	if unbilled, _ := back.Exposure("party-a"); unbilled != 0 {
 		t.Fatalf("cancel: %v", err)
 	}
 	if err = back.RecordLine("X", "", &SideInput{PartyID: "party-a", Amount: cny(1)}, nil, "r", p, "fin-1", hour(7)); !errors.Is(err, ErrInvalidTransition) {

@@ -2,6 +2,9 @@ package domain
 
 import (
 	"fmt"
+	"regexp"
+	"strconv"
+	"strings"
 	"time"
 
 	"go.idp.xyz/idp-cargo/internal/kernel"
@@ -63,6 +66,58 @@ type FxSnapshot struct {
 	Source     string
 }
 
+// Charge tax treatments (china_localization; the tax adviser confirms each charge code): international freight
+// forwarding is exempt from VAT and takes ordinary fapiao only; domestic services are taxable at a rate; disbursements
+// pass through, pending the tax adviser. A charged amount is what the debtor pays; the fapiao splits out the tax.
+const (
+	TaxExemptIntlFreight = "EXEMPT_INTL_FREIGHT_FORWARDING"
+	TaxTaxable           = "TAXABLE"
+	TaxPassThrough       = "PASS_THROUGH_DISBURSEMENT"
+)
+
+// TaxTreatment is an immutable version of a charge code's tax treatment in the legal entity, in force from a date
+// until the code's next version; a TAXABLE one carries its VAT rate in basis points.
+type TaxTreatment struct {
+	No            int
+	ChargeCode    string
+	Treatment     string
+	RateBP        int
+	EffectiveFrom time.Time
+	By            string
+	At            time.Time
+	EnteredAt     time.Time
+}
+
+// Note kinds, each numbered from its own series of the legal entity.
+const (
+	KindDebitNote  = "DEBIT_NOTE"
+	KindCreditNote = "CREDIT_NOTE"
+)
+
+var seriesPrefix = regexp.MustCompile(`^[0-9A-Z][0-9A-Z-]{0,9}$`)
+
+// Series is a legal entity's number series of a note kind (MD-28: the numbering rule may come from the platform, the
+// numbers issued are FIN's): a prefix and a zero-padded sequence from Start, drawn in order as notes are issued and
+// never reused. The policy fixes the series; the next number lives with the series row the notes draw from.
+type Series struct {
+	Kind      string
+	Prefix    string
+	Width     int
+	Start     int64
+	By        string
+	At        time.Time
+	EnteredAt time.Time
+}
+
+// Format writes the number of a sequence value of the series.
+func (s Series) Format(seq int64) (string, error) {
+	digits := strconv.FormatInt(seq, 10)
+	if seq < s.Start || len(digits) > s.Width {
+		return "", fmt.Errorf("%w: %s series %s at %d", ErrSeriesExhausted, s.Kind, s.Prefix, seq)
+	}
+	return s.Prefix + strings.Repeat("0", s.Width-len(digits)) + digits, nil
+}
+
 // PolicyState is a stored policy, for persistence.
 type PolicyState struct {
 	TenantID           TenantID
@@ -73,21 +128,28 @@ type PolicyState struct {
 	OpenedAt           time.Time
 	EnteredAt          time.Time
 	Rates              []RateEntry
+	Taxes              []TaxTreatment
+	Series             []Series
 }
 
 // FinancePolicy is the aggregate root of a legal entity's finance settings: the functional currency and book,
-// fixed once opened (UL-08), and the exchange rate entries FIN converts with.
+// fixed once opened (UL-08), the exchange rate entries FIN converts with, the tax treatments of charge codes and
+// the number series of notes.
 type FinancePolicy struct {
 	state   PolicyState
 	stored  int
+	taxes   int   // tax treatments stored
+	series  int   // series stored
 	ended   []int // entries ended since the policy was loaded
 	pending []Event
 }
 
 const (
-	eventPolicyOpened = "FinancePolicyOpened.v1"
-	eventRateRecorded = "ExchangeRateRecorded.v1"
-	eventRateEnded    = "ExchangeRateEnded.v1"
+	eventPolicyOpened     = "FinancePolicyOpened.v1"
+	eventRateRecorded     = "ExchangeRateRecorded.v1"
+	eventRateEnded        = "ExchangeRateEnded.v1"
+	eventTaxSet           = "ChargeTaxTreatmentSet.v1"
+	eventSeriesRegistered = "InvoiceSeriesRegistered.v1"
 )
 
 // OpenPolicy opens a legal entity's policy with its functional currency, whose minor digits the kernel must know,
@@ -150,6 +212,76 @@ func (p *FinancePolicy) EndRate(no int, until time.Time, reason, by string, at t
 	return nil
 }
 
+// SetTaxTreatment records the next tax treatment version of a charge code, in force from a date after the code's
+// latest version's. The database refuses it when a debit note of the legal entity bills the code at or after the date
+// (FIN_TAX_TREATMENT_IN_USE).
+func (p *FinancePolicy) SetTaxTreatment(t TaxTreatment, by string, at time.Time) error {
+	switch {
+	case !ValidChargeCode(t.ChargeCode) || !date(t.EffectiveFrom) || blank(by) || at.IsZero():
+		return fmt.Errorf("%w: a tax treatment names its charge code and the date it is in force from", ErrInvalid)
+	case t.Treatment == TaxTaxable && (t.RateBP < 1 || t.RateBP > 3000),
+		t.Treatment != TaxTaxable && ((t.Treatment != TaxExemptIntlFreight && t.Treatment != TaxPassThrough) || t.RateBP != 0):
+		return fmt.Errorf("%w: a treatment is EXEMPT_INTL_FREIGHT_FORWARDING, PASS_THROUGH_DISBURSEMENT or TAXABLE with a rate of 1 to 3000 "+
+			"basis points", ErrInvalid)
+	}
+	for _, o := range p.state.Taxes {
+		if o.ChargeCode == t.ChargeCode && !t.EffectiveFrom.After(o.EffectiveFrom) {
+			return fmt.Errorf("%w: version %d of %s is in force from %s; a new version starts later", ErrInvalid, o.No, o.ChargeCode,
+				o.EffectiveFrom.Format(time.DateOnly))
+		}
+	}
+	t.No, t.By, t.At, t.EnteredAt = len(p.state.Taxes)+1, by, at.UTC(), time.Time{}
+	p.state.Taxes = append(p.state.Taxes, t)
+	p.record(eventTaxSet, at, t.No)
+	return nil
+}
+
+// TaxOn returns the tax treatment of a charge code in force on a date.
+func (p *FinancePolicy) TaxOn(code string, d time.Time) (TaxTreatment, bool) {
+	var found TaxTreatment
+	ok := false
+	for _, t := range p.state.Taxes {
+		if t.ChargeCode == code && !t.EffectiveFrom.After(d) && (!ok || t.EffectiveFrom.After(found.EffectiveFrom)) {
+			found, ok = t, true
+		}
+	}
+	return found, ok
+}
+
+// RegisterSeries fixes the legal entity's number series of a note kind, once: a prefix of one to ten capital letters,
+// digits and hyphens (not starting with a hyphen), a width of four to ten digits, twenty characters at most, and the
+// first number. The two kinds' prefixes never start one another, so their numbers never meet.
+func (p *FinancePolicy) RegisterSeries(s Series, by string, at time.Time) error {
+	switch {
+	case s.Kind != KindDebitNote && s.Kind != KindCreditNote, !seriesPrefix.MatchString(s.Prefix), s.Width < 4 || s.Width > 10,
+		len(s.Prefix)+s.Width > 20, s.Start < 1 || len(strconv.FormatInt(s.Start, 10)) > s.Width, blank(by), at.IsZero():
+		return fmt.Errorf("%w: a series names DEBIT_NOTE or CREDIT_NOTE, a prefix of capital letters, digits and hyphens, a width of 4 to 10 "+
+			"digits (20 characters in all) and a first number that fits", ErrInvalid)
+	}
+	for _, o := range p.state.Series {
+		switch {
+		case o.Kind == s.Kind:
+			return fmt.Errorf("%w: the %s series is registered with prefix %s", ErrInvalidTransition, o.Kind, o.Prefix)
+		case strings.HasPrefix(o.Prefix, s.Prefix) || strings.HasPrefix(s.Prefix, o.Prefix):
+			return fmt.Errorf("%w: prefix %s and the %s prefix %s start one another", ErrInvalid, s.Prefix, o.Kind, o.Prefix)
+		}
+	}
+	s.By, s.At, s.EnteredAt = by, at.UTC(), time.Time{}
+	p.state.Series = append(p.state.Series, s)
+	p.record(eventSeriesRegistered, at, len(p.state.Series))
+	return nil
+}
+
+// SeriesOf returns the series of a note kind.
+func (p *FinancePolicy) SeriesOf(kind string) (Series, bool) {
+	for _, s := range p.state.Series {
+		if s.Kind == kind {
+			return s, true
+		}
+	}
+	return Series{}, false
+}
+
 // Local converts an amount into the functional currency at the rate of the type in force at an instant; an amount
 // in the functional currency needs none.
 func (p *FinancePolicy) Local(m kernel.Money, rateType string, at time.Time) (int64, *FxSnapshot, error) {
@@ -191,23 +323,48 @@ func (p *FinancePolicy) Stamp(entered time.Time) {
 			e.EndEnteredAt = entered.UTC()
 		}
 	}
+	for i := range p.state.Taxes {
+		if p.state.Taxes[i].EnteredAt.IsZero() {
+			p.state.Taxes[i].EnteredAt = entered.UTC()
+		}
+	}
+	for i := range p.state.Series {
+		if p.state.Series[i].EnteredAt.IsZero() {
+			p.state.Series[i].EnteredAt = entered.UTC()
+		}
+	}
 }
 
 // RestorePolicy rebuilds a stored policy.
 func RestorePolicy(st PolicyState) (*FinancePolicy, error) {
-	st.Rates = append([]RateEntry(nil), st.Rates...)
+	st.Rates, st.Taxes, st.Series = append([]RateEntry(nil), st.Rates...), append([]TaxTreatment(nil), st.Taxes...), append([]Series(nil), st.Series...)
 	for i, e := range st.Rates {
 		if e.No != i+1 {
 			return nil, fmt.Errorf("%w: rate entry %d", ErrInvalid, i+1)
 		}
 	}
-	return &FinancePolicy{state: st, stored: len(st.Rates)}, nil
+	for i, t := range st.Taxes {
+		if t.No != i+1 {
+			return nil, fmt.Errorf("%w: tax treatment %d", ErrInvalid, i+1)
+		}
+	}
+	return &FinancePolicy{state: st, stored: len(st.Rates), taxes: len(st.Taxes), series: len(st.Series)}, nil
 }
 
 func (p *FinancePolicy) State() PolicyState {
 	st := p.state
-	st.Rates = append([]RateEntry(nil), st.Rates...)
+	st.Rates, st.Taxes, st.Series = append([]RateEntry(nil), st.Rates...), append([]TaxTreatment(nil), st.Taxes...), append([]Series(nil), st.Series...)
 	return st
+}
+
+// AddedTaxes returns the tax treatments set since the policy was loaded.
+func (p *FinancePolicy) AddedTaxes() []TaxTreatment {
+	return append([]TaxTreatment(nil), p.state.Taxes[p.taxes:]...)
+}
+
+// AddedSeries returns the series registered since the policy was loaded.
+func (p *FinancePolicy) AddedSeries() []Series {
+	return append([]Series(nil), p.state.Series[p.series:]...)
 }
 
 // AddedRates returns the entries recorded since the policy was loaded.
@@ -228,4 +385,6 @@ func (p *FinancePolicy) EndedRates() []RateEntry {
 	return out
 }
 
-func (p *FinancePolicy) Acknowledge() { p.pending, p.stored, p.ended = nil, len(p.state.Rates), nil }
+func (p *FinancePolicy) Acknowledge() {
+	p.pending, p.stored, p.ended, p.taxes, p.series = nil, len(p.state.Rates), nil, len(p.state.Taxes), len(p.state.Series)
+}

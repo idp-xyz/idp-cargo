@@ -1,5 +1,6 @@
-// Package org is FIN's anticorruption layer for ORG (ORG -> FIN): legal entities (LegalEntityRef v1) and the roles
-// of debtors and creditors (PartyRef v1). ORG's error kinds are kept as text only.
+// Package org is FIN's anticorruption layer for ORG (ORG -> FIN): legal entities (LegalEntityRef v1), the roles
+// of debtors and creditors (PartyRef v1) and debtors' identity for billing profiles. ORG's error kinds are kept as
+// text only.
 package org
 
 import (
@@ -17,6 +18,7 @@ import (
 type ORG interface {
 	orgapi.Queries
 	orgapi.LegalEntityQueries
+	orgapi.PartyIdentityQueries
 }
 
 // Directory reads ORG. Call it outside FIN's transactions.
@@ -53,4 +55,27 @@ func (d Directory) PartyInRole(ctx context.Context, tenant fin.TenantID, party, 
 		return r.Ref.PartyRevision, nil
 	}
 	return 0, fmt.Errorf("%w: %s holds none of %v for %s", fin.ErrPartyRole, party, refused, legalEntity)
+}
+
+// PartyIdentity asks ORG for a party's identity: the unified social credit code is the active CN_USCC identifier
+// registered in CN, if any.
+func (d Directory) PartyIdentity(ctx context.Context, tenant fin.TenantID, party string) (fin.PartyIdentity, error) {
+	id, err := d.ORG.GetPartyIdentity(ctx, orgapi.GetPartyIdentity{TenantID: string(tenant), PartyID: party})
+	if errors.Is(err, orgapi.ErrNotFound) {
+		return fin.PartyIdentity{}, fmt.Errorf("%w: party %s: %v", app.ErrUnknownSource, party, err.Error())
+	}
+	if err != nil {
+		return fin.PartyIdentity{}, err
+	}
+	if id.PartyID != party {
+		return fin.PartyIdentity{}, fmt.Errorf("%w: ORG answered for another party", app.ErrUnknownSource)
+	}
+	out := fin.PartyIdentity{PartyID: id.PartyID, Revision: id.Revision, Status: id.Status, LegalName: id.LegalName, EnglishName: id.EnglishName,
+		CountryCode: id.CountryCode}
+	for _, x := range id.Identifiers {
+		if x.Type == orgapi.IdentifierCNUSCC && x.Country == "CN" && !x.None {
+			out.USCC = x.Value
+		}
+	}
+	return out, nil
 }

@@ -1,5 +1,5 @@
-// Package postgres persists FIN's finance policies, freight jobs, credit accounts, command receipts and Outbox events
-// in the tenant's RLS scope.
+// Package postgres persists FIN's finance policies, freight jobs with their notes, billing profiles, credit accounts,
+// command receipts and Outbox events in the tenant's RLS scope.
 package postgres
 
 import (
@@ -75,6 +75,27 @@ type rateRow struct {
 	EndEntered *time.Time `json:"end_entered_at"`
 }
 
+type taxRow struct {
+	No            int       `json:"version_no"`
+	ChargeCode    string    `json:"charge_code"`
+	Treatment     string    `json:"treatment"`
+	RateBP        *int      `json:"rate_bp"`
+	EffectiveFrom string    `json:"effective_from"`
+	By            string    `json:"set_by"`
+	At            time.Time `json:"set_at"`
+	EnteredAt     time.Time `json:"entered_at"`
+}
+
+type seriesRow struct {
+	Kind      string    `json:"kind"`
+	Prefix    string    `json:"prefix"`
+	Width     int       `json:"width"`
+	Start     int64     `json:"start_seq"`
+	By        string    `json:"registered_by"`
+	At        time.Time `json:"registered_at"`
+	EnteredAt time.Time `json:"entered_at"`
+}
+
 func readPolicy(ctx context.Context, q bentopg.Querier, tenant fin.TenantID, le, lock string) (*fin.FinancePolicy, int64, error) {
 	if lock != "" {
 		var one int
@@ -89,11 +110,13 @@ func readPolicy(ctx context.Context, q bentopg.Querier, tenant fin.TenantID, le,
 	st := fin.PolicyState{TenantID: tenant, LegalEntityID: le}
 	var currency string
 	var revision int64
-	var rates []byte
+	var rates, taxes, series []byte
+	key := "c.tenant_id=p.tenant_id AND c.legal_entity_id=p.legal_entity_id"
 	err := q.QueryRow(ctx, `SELECT p.functional_currency,p.book_code,p.opened_by,p.opened_at,p.entered_at,p.revision,`+
-		children("exchange_rate_entry", "c.tenant_id=p.tenant_id AND c.legal_entity_id=p.legal_entity_id", "c.entry_no")+`
+		children("exchange_rate_entry", key, "c.entry_no")+`,`+children("charge_tax_treatment", key, "c.version_no")+`,`+
+		children("invoice_series", key, "c.kind")+`
       FROM cargo_fin.finance_policy p WHERE p.tenant_id=$1 AND p.legal_entity_id=$2`, string(tenant), le).Scan(&currency, &st.BookCode, &st.OpenedBy,
-		&st.OpenedAt, &st.EnteredAt, &revision, &rates)
+		&st.OpenedAt, &st.EnteredAt, &revision, &rates, &taxes, &series)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, 0, fmt.Errorf("%w: finance policy %s", bentorepo.ErrNotFound, le)
 	}
@@ -101,8 +124,22 @@ func readPolicy(ctx context.Context, q bentopg.Querier, tenant fin.TenantID, le,
 		return nil, 0, err
 	}
 	var rr []rateRow
-	if err = json.Unmarshal(rates, &rr); err != nil {
+	var tr []taxRow
+	var sr []seriesRow
+	if err = errors.Join(json.Unmarshal(rates, &rr), json.Unmarshal(taxes, &tr), json.Unmarshal(series, &sr)); err != nil {
 		return nil, 0, err
+	}
+	for _, t := range tr {
+		from, err := fin.ParseDate(t.EffectiveFrom)
+		if err != nil {
+			return nil, 0, err
+		}
+		st.Taxes = append(st.Taxes, fin.TaxTreatment{No: t.No, ChargeCode: t.ChargeCode, Treatment: t.Treatment, RateBP: deref(t.RateBP), EffectiveFrom: from,
+			By: t.By, At: utc(t.At), EnteredAt: utc(t.EnteredAt)})
+	}
+	for _, x := range sr {
+		st.Series = append(st.Series, fin.Series{Kind: x.Kind, Prefix: x.Prefix, Width: x.Width, Start: x.Start, By: x.By, At: utc(x.At),
+			EnteredAt: utc(x.EnteredAt)})
 	}
 	st.FunctionalCurrency, st.OpenedAt, st.EnteredAt = kernel.CurrencyCode(currency), st.OpenedAt.UTC(), st.EnteredAt.UTC()
 	for _, r := range rr {
@@ -206,7 +243,46 @@ func writeRates(ctx context.Context, q bentopg.Executor, p *fin.FinancePolicy) e
 			return err
 		}
 	}
+	for _, t := range p.AddedTaxes() {
+		if _, err := q.Exec(ctx, `INSERT INTO cargo_fin.charge_tax_treatment (tenant_id,legal_entity_id,version_no,charge_code,treatment,rate_bp,effective_from,
+            set_by,set_at,entered_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, string(st.TenantID), st.LegalEntityID, t.No, t.ChargeCode, t.Treatment,
+			orNull(t.RateBP), t.EffectiveFrom.Format(time.DateOnly), t.By, t.At, t.EnteredAt); err != nil {
+			return err
+		}
+	}
+	for _, x := range p.AddedSeries() {
+		if _, err := q.Exec(ctx, `INSERT INTO cargo_fin.invoice_series (tenant_id,legal_entity_id,kind,prefix,width,start_seq,next_seq,registered_by,
+            registered_at,entered_at) VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9)`, string(st.TenantID), st.LegalEntityID, x.Kind, x.Prefix, x.Width, x.Start, x.By,
+			x.At, x.EnteredAt); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// Series draws numbers from the legal entities' series.
+type Series struct{ DB *bentopg.DB }
+
+var _ app.SeriesStore = Series{}
+
+// Next takes the next sequence value of a series, holding the series row until the transaction ends; a value past
+// the series' width is refused by the database (invoice_series_range).
+func (s Series) Next(ctx context.Context, tenant fin.TenantID, legalEntity, kind string) (int64, error) {
+	q, err := s.DB.RequireExecutor(ctx)
+	if err != nil {
+		return 0, err
+	}
+	var seq int64
+	err = q.QueryRow(ctx, `UPDATE cargo_fin.invoice_series SET next_seq=next_seq+1 WHERE tenant_id=$1 AND legal_entity_id=$2 AND kind=$3
+      RETURNING next_seq-1`, string(tenant), legalEntity, kind).Scan(&seq)
+	var pgErr *pgconn.PgError
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return 0, fmt.Errorf("%w: %s of %s", fin.ErrNoSeries, kind, legalEntity)
+	case errors.As(err, &pgErr) && pgErr.Code == "23514" && pgErr.ConstraintName == "invoice_series_range":
+		return 0, fmt.Errorf("%w: %s of %s", fin.ErrSeriesExhausted, kind, legalEntity)
+	}
+	return seq, err
 }
 
 // JobStore loads and writes freight jobs.
@@ -255,11 +331,116 @@ type (
 		RateSource    *string   `json:"rate_source"`
 		Status        string    `json:"status"`
 		Reason        *string   `json:"reason"`
+		InvoiceID     *string   `json:"invoice_id"`
+		InvoiceLineNo *int      `json:"invoice_line_no"`
 		By            string    `json:"recorded_by"`
 		At            time.Time `json:"recorded_at"`
 		EnteredAt     time.Time `json:"entered_at"`
 	}
+	noteRow struct {
+		ID             string    `json:"invoice_id"`
+		Kind           string    `json:"kind"`
+		Number         string    `json:"number"`
+		Seq            int64     `json:"number_seq"`
+		Debtor         string    `json:"debtor_party_id"`
+		DebtorRevision int64     `json:"debtor_revision"`
+		ProfileVersion int       `json:"profile_version"`
+		Currency       string    `json:"currency"`
+		InvoiceDate    string    `json:"invoice_date"`
+		DueDate        *string   `json:"due_date"`
+		PaymentDays    *int      `json:"payment_days"`
+		PaymentBasis   *string   `json:"payment_basis"`
+		TermsVersion   *int      `json:"terms_version"`
+		DocumentID     *string   `json:"document_id"`
+		DocumentVer    *int      `json:"document_version"`
+		DocumentNumber *string   `json:"document_number"`
+		MasterNumber   *string   `json:"master_number"`
+		CreditsID      *string   `json:"credits_invoice_id"`
+		Reason         *string   `json:"reason"`
+		Total          int64     `json:"total_minor"`
+		LocalTotal     int64     `json:"local_total_minor"`
+		State          string    `json:"state"`
+		By             string    `json:"issued_by"`
+		At             time.Time `json:"issued_at"`
+		EnteredAt      time.Time `json:"entered_at"`
+	}
+	noteLineRow struct {
+		InvoiceID     string  `json:"invoice_id"`
+		No            int     `json:"line_no"`
+		JobLineNo     int     `json:"job_line_no"`
+		SideVersion   *int    `json:"side_version"`
+		CreditsLineNo *int    `json:"credits_line_no"`
+		ChargeCode    string  `json:"charge_code"`
+		Currency      string  `json:"currency"`
+		Amount        int64   `json:"amount_minor"`
+		Invoice       int64   `json:"invoice_minor"`
+		Local         int64   `json:"local_minor"`
+		RateEntryNo   *int    `json:"rate_entry_no"`
+		RateType      *string `json:"rate_type"`
+		Rate          *int64  `json:"rate"`
+		Scale         *int    `json:"scale"`
+		FromDigits    *int    `json:"from_digits"`
+		ToDigits      *int    `json:"to_digits"`
+		RateSource    *string `json:"rate_source"`
+		TaxVersion    int     `json:"tax_version"`
+		Treatment     string  `json:"treatment"`
+		RateBP        *int    `json:"rate_bp"`
+	}
 )
+
+func fxOf(entry *int, rateType *string, rate *int64, scale, from, to *int, source *string) *fin.FxSnapshot {
+	if rate == nil {
+		return nil
+	}
+	return &fin.FxSnapshot{EntryNo: deref(entry), Type: deref(rateType), Rate: *rate, Scale: deref(scale), FromDigits: deref(from), ToDigits: deref(to),
+		Source: deref(source)}
+}
+
+func fxArgs(fx *fin.FxSnapshot) []any {
+	if fx == nil {
+		return []any{nil, nil, nil, nil, nil, nil, nil}
+	}
+	return []any{fx.EntryNo, fx.Type, fx.Rate, fx.Scale, fx.FromDigits, fx.ToDigits, fx.Source}
+}
+
+func optionalDate(s *string) (time.Time, error) {
+	if s == nil {
+		return time.Time{}, nil
+	}
+	return fin.ParseDate(*s)
+}
+
+func notesOf(nr []noteRow, lr []noteLineRow) ([]fin.Note, error) {
+	var notes []fin.Note
+	index := map[string]int{}
+	for _, n := range nr {
+		invoice, err := fin.ParseDate(n.InvoiceDate)
+		if err != nil {
+			return nil, err
+		}
+		due, err := optionalDate(n.DueDate)
+		if err != nil {
+			return nil, err
+		}
+		index[n.ID] = len(notes)
+		notes = append(notes, fin.Note{ID: n.ID, Kind: n.Kind, Number: n.Number, Seq: n.Seq, DebtorPartyID: n.Debtor, DebtorRevision: n.DebtorRevision,
+			ProfileVersion: n.ProfileVersion, Currency: kernel.CurrencyCode(n.Currency), InvoiceDate: invoice, DueDate: due, PaymentDays: deref(n.PaymentDays),
+			PaymentBasis: deref(n.PaymentBasis), TermsVersion: deref(n.TermsVersion), Document: fin.DocumentRef{DocumentID: deref(n.DocumentID),
+				Version: deref(n.DocumentVer), Number: deref(n.DocumentNumber), MasterNumber: deref(n.MasterNumber)}, CreditsID: deref(n.CreditsID),
+			Reason: deref(n.Reason), State: n.State, Total: n.Total, LocalTotal: n.LocalTotal, By: n.By, At: utc(n.At), EnteredAt: utc(n.EnteredAt)})
+	}
+	for _, l := range lr {
+		i, ok := index[l.InvoiceID]
+		if !ok {
+			return nil, fmt.Errorf("%w: line of note %s", fin.ErrInvalid, l.InvoiceID)
+		}
+		notes[i].Lines = append(notes[i].Lines, fin.NoteLine{No: l.No, JobLineNo: l.JobLineNo, SideVersion: deref(l.SideVersion),
+			CreditsLineNo: deref(l.CreditsLineNo), ChargeCode: l.ChargeCode, Amount: kernel.Money{Currency: kernel.CurrencyCode(l.Currency), Minor: l.Amount},
+			Invoice: l.Invoice, Local: l.Local, FX: fxOf(l.RateEntryNo, l.RateType, l.Rate, l.Scale, l.FromDigits, l.ToDigits, l.RateSource),
+			Tax: fin.TaxRef{No: l.TaxVersion, Treatment: l.Treatment, RateBP: deref(l.RateBP)}})
+	}
+	return notes, nil
+}
 
 const jobColumns = `j.job_id,j.legal_entity_id,j.shipment_id,j.kind,j.functional_currency,j.book_code,j.customer_party_id,j.plan_version,j.state,j.opened_by,
   j.opened_at,j.entered_at,j.cancel_reason,j.cancelled_by,j.cancelled_at,j.cancel_entered_at,j.revision,`
@@ -267,7 +448,8 @@ const jobColumns = `j.job_id,j.legal_entity_id,j.shipment_id,j.kind,j.functional
 func jobChildren() string {
 	key := "c.tenant_id=j.tenant_id AND c.job_id=j.job_id"
 	return children("job_basis", key, "c.basis_no") + `,` + children("charge_line", key, "c.line_no") + `,` +
-		children("charge_side_version", key, "c.line_no, c.side DESC, c.version_no")
+		children("charge_side_version", key, "c.line_no, c.side DESC, c.version_no") + `,` +
+		children("debtor_invoice", key, "c.issued_at, c.entered_at, c.invoice_id") + `,` + children("debtor_invoice_line", key, "c.invoice_id, c.line_no")
 }
 
 func scanJob(row pgx.Row, tenant fin.TenantID) (*fin.FreightJob, int64, error) {
@@ -276,16 +458,23 @@ func scanJob(row pgx.Row, tenant fin.TenantID) (*fin.FreightJob, int64, error) {
 	var cancelReason, cancelledBy *string
 	var cancelledAt, cancelEntered *time.Time
 	var revision int64
-	var bases, lines, sides []byte
+	var bases, lines, sides, notes, noteLines []byte
 	err := row.Scan(&st.JobID, &st.LegalEntityID, &st.ShipmentID, &st.Kind, &currency, &st.BookCode, &st.CustomerPartyID, &st.PlanVersion, &st.State,
-		&st.OpenedBy, &st.OpenedAt, &st.EnteredAt, &cancelReason, &cancelledBy, &cancelledAt, &cancelEntered, &revision, &bases, &lines, &sides)
+		&st.OpenedBy, &st.OpenedAt, &st.EnteredAt, &cancelReason, &cancelledBy, &cancelledAt, &cancelEntered, &revision, &bases, &lines, &sides, &notes,
+		&noteLines)
 	if err != nil {
 		return nil, 0, err
 	}
 	var br []basisRow
 	var lr []lineRow
 	var sr []sideRow
-	if err = errors.Join(json.Unmarshal(bases, &br), json.Unmarshal(lines, &lr), json.Unmarshal(sides, &sr)); err != nil {
+	var nr []noteRow
+	var nlr []noteLineRow
+	if err = errors.Join(json.Unmarshal(bases, &br), json.Unmarshal(lines, &lr), json.Unmarshal(sides, &sr), json.Unmarshal(notes, &nr),
+		json.Unmarshal(noteLines, &nlr)); err != nil {
+		return nil, 0, err
+	}
+	if st.Notes, err = notesOf(nr, nlr); err != nil {
 		return nil, 0, err
 	}
 	st.FunctionalCurrency, st.OpenedAt, st.EnteredAt = kernel.CurrencyCode(currency), st.OpenedAt.UTC(), st.EnteredAt.UTC()
@@ -304,11 +493,8 @@ func scanJob(row pgx.Row, tenant fin.TenantID) (*fin.FreightJob, int64, error) {
 		}
 		sv := fin.SideVersion{Side: v.Side, No: v.No, PartyID: deref(v.PartyID), PartyRevision: v.PartyRevision,
 			Amount: kernel.Money{Currency: kernel.CurrencyCode(v.Currency), Minor: v.Amount}, Local: v.Local, Status: v.Status, Reason: deref(v.Reason),
-			By: v.By, At: utc(v.At), EnteredAt: utc(v.EnteredAt)}
-		if v.Rate != nil {
-			sv.FX = &fin.FxSnapshot{EntryNo: deref(v.RateEntryNo), Type: deref(v.RateType), Rate: *v.Rate, Scale: deref(v.Scale),
-				FromDigits: deref(v.FromDigits), ToDigits: deref(v.ToDigits), Source: deref(v.RateSource)}
-		}
+			InvoiceID: deref(v.InvoiceID), InvoiceLineNo: deref(v.InvoiceLineNo), By: v.By, At: utc(v.At), EnteredAt: utc(v.EnteredAt),
+			FX: fxOf(v.RateEntryNo, v.RateType, v.Rate, v.Scale, v.FromDigits, v.ToDigits, v.RateSource)}
 		l := &st.Lines[v.LineNo-1]
 		if v.Side == fin.SideSell {
 			l.Sell = append(l.Sell, sv)
@@ -383,6 +569,26 @@ func (s JobStore) ForShipment(ctx context.Context, tenant fin.TenantID, shipment
 func (s JobStore) OpenOf(ctx context.Context, tenant fin.TenantID, legalEntity, customer string) ([]*fin.FreightJob, error) {
 	out, _, err := s.list(ctx, tenant, `j.state='OPEN' AND j.legal_entity_id=$2 AND ($3::text = '' OR j.customer_party_id=$3)`, legalEntity, customer)
 	return out, err
+}
+
+// BilledTo lists the jobs of a legal entity with notes to a debtor.
+func (s JobStore) BilledTo(ctx context.Context, tenant fin.TenantID, legalEntity, debtor string) ([]*fin.FreightJob, error) {
+	out, _, err := s.list(ctx, tenant, `j.legal_entity_id=$2 AND EXISTS (SELECT 1 FROM cargo_fin.debtor_invoice n WHERE n.tenant_id=j.tenant_id
+      AND n.job_id=j.job_id AND n.debtor_party_id=$3)`, legalEntity, debtor)
+	return out, err
+}
+
+// OfNote reads the job of a note.
+func (s JobStore) OfNote(ctx context.Context, tenant fin.TenantID, invoiceID string) (*fin.FreightJob, int64, error) {
+	out, revisions, err := s.list(ctx, tenant, `EXISTS (SELECT 1 FROM cargo_fin.debtor_invoice n WHERE n.tenant_id=j.tenant_id AND n.job_id=j.job_id
+      AND n.invoice_id=$2)`, invoiceID)
+	if err != nil {
+		return nil, 0, err
+	}
+	if len(out) != 1 {
+		return nil, 0, fmt.Errorf("%w: note %s", bentorepo.ErrNotFound, invoiceID)
+	}
+	return out[0], revisions[0], nil
 }
 
 func (s JobStore) Insert(ctx context.Context, j *fin.FreightJob) (int64, error) {
@@ -460,17 +666,154 @@ func writeJob(ctx context.Context, q bentopg.Executor, j *fin.FreightJob) error 
 			return err
 		}
 	}
-	for i, v := range sides {
-		var entry, rate, scale, from, to any
-		var rateType, source any
-		if fx := v.FX; fx != nil {
-			entry, rateType, rate, scale, from, to, source = fx.EntryNo, fx.Type, fx.Rate, fx.Scale, fx.FromDigits, fx.ToDigits, fx.Source
+	notes, cancelled := j.AddedNotes()
+	for _, n := range notes {
+		if err := insertNote(ctx, q, st, n); err != nil {
+			return err
 		}
+	}
+	for _, n := range cancelled {
+		if _, err := q.Exec(ctx, `UPDATE cargo_fin.debtor_invoice SET state=$3 WHERE tenant_id=$1 AND invoice_id=$2`, string(st.TenantID), n.ID,
+			n.State); err != nil {
+			return err
+		}
+	}
+	for i, v := range sides {
+		args := append([]any{lineOf[i], v.Side, v.No, orNull(v.PartyID), v.PartyRevision, string(v.Amount.Currency), v.Amount.Minor, v.Local}, fxArgs(v.FX)...)
+		args = append(args, v.Status, orNull(v.Reason), orNull(v.InvoiceID), orNull(v.InvoiceLineNo), v.By, v.At, v.EnteredAt)
 		if err := exec(`INSERT INTO cargo_fin.charge_side_version (tenant_id,job_id,line_no,side,version_no,party_id,party_revision,currency,amount_minor,
-            local_minor,rate_entry_no,rate_type,rate,scale,from_digits,to_digits,rate_source,status,reason,recorded_by,recorded_at,entered_at)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`, lineOf[i], v.Side, v.No, orNull(v.PartyID), v.PartyRevision,
-			string(v.Amount.Currency), v.Amount.Minor, v.Local, entry, rateType, rate, scale, from, to, source, v.Status, orNull(v.Reason), v.By, v.At,
-			v.EnteredAt); err != nil {
+            local_minor,rate_entry_no,rate_type,rate,scale,from_digits,to_digits,rate_source,status,reason,invoice_id,invoice_line_no,recorded_by,recorded_at,
+            entered_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)`, args...); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func dateOrNull(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return t.Format(time.DateOnly)
+}
+
+// insertNote writes a note and its lines; a duplicate id, number or billed side is a conflict.
+func insertNote(ctx context.Context, q bentopg.Executor, st fin.JobState, n fin.Note) error {
+	var days, basis any
+	if n.Kind == fin.KindDebitNote {
+		days, basis = n.PaymentDays, n.PaymentBasis
+	}
+	_, err := q.Exec(ctx, `INSERT INTO cargo_fin.debtor_invoice (tenant_id,invoice_id,kind,job_id,legal_entity_id,number,number_seq,debtor_party_id,
+        debtor_revision,profile_version,currency,invoice_date,due_date,payment_days,payment_basis,terms_version,document_id,document_version,document_number,
+        master_number,credits_invoice_id,reason,total_minor,local_total_minor,state,issued_by,issued_at,entered_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)`,
+		string(st.TenantID), n.ID, n.Kind, st.JobID, st.LegalEntityID, n.Number, n.Seq, n.DebtorPartyID, n.DebtorRevision, n.ProfileVersion,
+		string(n.Currency), n.InvoiceDate.Format(time.DateOnly), dateOrNull(n.DueDate), days, basis, orNull(n.TermsVersion), orNull(n.Document.DocumentID),
+		orNull(n.Document.Version), orNull(n.Document.Number), orNull(n.Document.MasterNumber), orNull(n.CreditsID), orNull(n.Reason), n.Total,
+		n.LocalTotal, n.State, n.By, n.At, n.EnteredAt)
+	if err = noteConflict(err, n); err != nil {
+		return err
+	}
+	for _, l := range n.Lines {
+		var credits any
+		if l.CreditsLineNo > 0 {
+			credits = n.CreditsID
+		}
+		args := append([]any{string(st.TenantID), n.ID, l.No, st.JobID, l.JobLineNo, orNull(l.SideVersion), credits, orNull(l.CreditsLineNo),
+			l.ChargeCode, string(l.Amount.Currency), l.Amount.Minor, l.Invoice, l.Local}, fxArgs(l.FX)...)
+		args = append(args, l.Tax.No, l.Tax.Treatment, orNull(l.Tax.RateBP))
+		_, err = q.Exec(ctx, `INSERT INTO cargo_fin.debtor_invoice_line (tenant_id,invoice_id,line_no,job_id,job_line_no,side_version,credits_invoice_id,
+            credits_line_no,charge_code,currency,amount_minor,invoice_minor,local_minor,rate_entry_no,rate_type,rate,scale,from_digits,to_digits,rate_source,
+            tax_version,treatment,rate_bp) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)`, args...)
+		if err = noteConflict(err, n); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func noteConflict(err error, n fin.Note) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		switch pgErr.ConstraintName {
+		case "debtor_invoice_pkey":
+			return fmt.Errorf("%w: note %s", bentorepo.ErrAlreadyExists, n.ID)
+		case "debtor_invoice_number", "debtor_invoice_line_side_once", "debtor_invoice_line_reversed_once":
+			return fmt.Errorf("%w: note %s (%s)", bentorepo.ErrConflict, n.ID, pgErr.ConstraintName)
+		}
+	}
+	return err
+}
+
+// ProfileStore loads and writes billing profiles: a profile is its versions, and a version written twice at once is
+// a conflict on the key.
+type ProfileStore struct{ DB *bentopg.DB }
+
+var _ app.ProfileStore = ProfileStore{}
+
+func readProfile(ctx context.Context, q bentopg.Querier, tenant fin.TenantID, debtor string) (*fin.BillingProfile, bool, error) {
+	rows, err := q.Query(ctx, `SELECT version_no,buyer_kind,title,taxpayer_number,party_revision,registered_address,registered_phone,bank_name,bank_account,
+      evidence_ref,set_by,set_at,entered_at FROM cargo_fin.billing_profile_version WHERE tenant_id=$1 AND debtor_party_id=$2 ORDER BY version_no`,
+		string(tenant), debtor)
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+	st := fin.ProfileState{TenantID: tenant, DebtorPartyID: debtor}
+	for rows.Next() {
+		var v fin.ProfileVersion
+		var taxpayer, address, phone, bank, account *string
+		if err = rows.Scan(&v.No, &v.BuyerKind, &v.Title, &taxpayer, &v.PartyRevision, &address, &phone, &bank, &account, &v.EvidenceRef, &v.By, &v.At,
+			&v.EnteredAt); err != nil {
+			return nil, false, err
+		}
+		v.TaxpayerNumber, v.RegisteredAddress, v.RegisteredPhone, v.BankName, v.BankAccount = deref(taxpayer), deref(address), deref(phone), deref(bank),
+			deref(account)
+		v.At, v.EnteredAt = v.At.UTC(), v.EnteredAt.UTC()
+		st.Versions = append(st.Versions, v)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, false, err
+	}
+	if len(st.Versions) == 0 {
+		return nil, false, nil
+	}
+	b, err := fin.RestoreProfile(st)
+	return b, err == nil, err
+}
+
+func (s ProfileStore) Load(ctx context.Context, tenant fin.TenantID, debtor string) (*fin.BillingProfile, bool, error) {
+	q, err := s.DB.RequireExecutor(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	return readProfile(ctx, q, tenant, debtor)
+}
+
+func (s ProfileStore) Read(ctx context.Context, tenant fin.TenantID, debtor string) (*fin.BillingProfile, bool, error) {
+	q, err := s.DB.ReadExecutor(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	return readProfile(ctx, q, tenant, debtor)
+}
+
+func (s ProfileStore) Save(ctx context.Context, b *fin.BillingProfile) error {
+	q, err := s.DB.RequireExecutor(ctx)
+	if err != nil {
+		return err
+	}
+	st := b.State()
+	for _, v := range b.Added() {
+		_, err = q.Exec(ctx, `INSERT INTO cargo_fin.billing_profile_version (tenant_id,debtor_party_id,version_no,buyer_kind,title,taxpayer_number,party_revision,
+            registered_address,registered_phone,bank_name,bank_account,evidence_ref,set_by,set_at,entered_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+			string(st.TenantID), st.DebtorPartyID, v.No, v.BuyerKind, v.Title, orNull(v.TaxpayerNumber), v.PartyRevision, orNull(v.RegisteredAddress),
+			orNull(v.RegisteredPhone), orNull(v.BankName), orNull(v.BankAccount), v.EvidenceRef, v.By, v.At, v.EnteredAt)
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return fmt.Errorf("%w: billing profile %s version %d", bentorepo.ErrConflict, st.DebtorPartyID, v.No)
+		}
+		if err != nil {
 			return err
 		}
 	}
@@ -671,15 +1014,16 @@ func (s CommandReceipts) Find(ctx context.Context, tenant fin.TenantID, id strin
 	}
 	r := app.Receipt{CommandID: id}
 	var version *int
-	err = q.QueryRow(ctx, `SELECT request_sha256,result_id,result_revision,result_version FROM cargo_fin.command_receipt WHERE tenant_id=$1 AND command_id=$2`,
-		string(tenant), id).Scan(&r.RequestHash, &r.SubjectID, &r.NewRevision, &version)
+	var number *string
+	err = q.QueryRow(ctx, `SELECT request_sha256,result_id,result_revision,result_version,result_number FROM cargo_fin.command_receipt
+      WHERE tenant_id=$1 AND command_id=$2`, string(tenant), id).Scan(&r.RequestHash, &r.SubjectID, &r.NewRevision, &version, &number)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return app.Receipt{}, false, nil
 	}
 	if err != nil {
 		return app.Receipt{}, false, err
 	}
-	r.Version = deref(version)
+	r.Version, r.Number = deref(version), deref(number)
 	return r, true, nil
 }
 
@@ -688,8 +1032,8 @@ func (s CommandReceipts) Save(ctx context.Context, tenant fin.TenantID, r app.Re
 	if err != nil {
 		return err
 	}
-	_, err = q.Exec(ctx, `INSERT INTO cargo_fin.command_receipt (tenant_id,command_id,request_sha256,result_type,result_id,result_revision,result_version)
-      VALUES ($1,$2,$3,$4,$5,$6,$7)`, string(tenant), r.CommandID, r.RequestHash, kind, r.SubjectID, r.NewRevision, r.Version)
+	_, err = q.Exec(ctx, `INSERT INTO cargo_fin.command_receipt (tenant_id,command_id,request_sha256,result_type,result_id,result_revision,result_version,
+      result_number) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, string(tenant), r.CommandID, r.RequestHash, kind, r.SubjectID, r.NewRevision, r.Version, orNull(r.Number))
 	return err
 }
 
@@ -713,7 +1057,7 @@ func FINEnvelope(commandID string, e fin.Event, recordedAt time.Time) (eventing.
 	digest := sha256.Sum256([]byte(commandID + "\x00" + e.Type + "\x00" + string(e.TenantID) + "\x00" + e.SubjectID + "\x00" + strconv.Itoa(e.LineNo) + "\x00" +
 		e.Side + "\x00" + strconv.Itoa(e.Version)))
 	payload, err := json.Marshal(api.EventPayload{TenantID: string(e.TenantID), SubjectID: e.SubjectID, LegalEntityID: e.LegalEntityID, Version: e.Version,
-		ShipmentID: e.ShipmentID, DebtorPartyID: e.DebtorPartyID, LineNo: e.LineNo, Side: e.Side})
+		ShipmentID: e.ShipmentID, DebtorPartyID: e.DebtorPartyID, LineNo: e.LineNo, Side: e.Side, JobID: e.JobID})
 	if err != nil {
 		return eventing.Envelope{}, err
 	}
@@ -730,10 +1074,17 @@ func Conflict(err error) bool {
 		return false
 	}
 	switch pgErr.ConstraintName {
-	case "finance_policy_consistent", "freight_job_consistent", "credit_account_consistent", "fin_records_with_parent":
+	case "finance_policy_consistent", "freight_job_consistent", "credit_account_consistent", "fin_records_with_parent", "freight_job_invoices_consistent",
+		"invoice_series_consistent", "billing_profile_consistent":
 		return true
 	}
 	return false
+}
+
+// TaxInUse reports whether a tax treatment failed because a debit note bills its charge code at or after its date.
+func TaxInUse(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23514" && pgErr.ConstraintName == "charge_tax_treatment_in_use"
 }
 
 // RateInUse reports whether ending a rate entry failed because a charge was converted at it after the new end.

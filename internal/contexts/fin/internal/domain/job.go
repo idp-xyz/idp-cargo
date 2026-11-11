@@ -14,15 +14,15 @@ const (
 	KindSeaExportLCLHouse = "SEA_EXPORT_LCL_HOUSE"
 )
 
-// Job states: OPEN; CANCELLED when the shipment was cancelled or the job opened by mistake. Closure and reopening
-// come with invoicing and postings.
+// Job states: OPEN; CANCELLED when the shipment was cancelled or the job opened by mistake, with nothing invoiced.
+// Closure and reopening come with matching, recognition and postings.
 const (
 	JobOpen      = "OPEN"
 	JobCancelled = "CANCELLED"
 )
 
-// Sides, sources and side statuses of V0.1: a sell side is an estimate not yet invoiced (WIP), a cost side an
-// estimate not yet matched (accrual).
+// Sides, sources and side statuses: a sell side is an estimate not yet invoiced (ESTIMATED, WIP) or on an issued
+// debit note (INVOICED); a cost side is an estimate not yet matched (ACCRUED, accrual).
 const (
 	SideSell = "SELL"
 	SideCost = "COST"
@@ -31,13 +31,15 @@ const (
 	SourceManual = "MANUAL"
 
 	StatusEstimated = "ESTIMATED"
+	StatusInvoiced  = "INVOICED"
 	StatusAccrued   = "ACCRUED"
 )
 
 // SideVersion is one immutable version of a charge line's sell or cost side: the debtor or creditor (a cost side's
-// creditor may not be known yet), the amount in its currency, the local amount in the functional currency at the
-// ESTIMATE rate it was converted at (none when the currency is the functional one), the status and, from the
-// second version on, the reason.
+// creditor may not be known yet), the amount in its currency, the local amount in the functional currency at the rate
+// it was converted at (none when the currency is the functional one; ESTIMATE for estimates, the debit note's rate
+// for an INVOICED side), the status and, from the second version on, the reason. An INVOICED side names the debit
+// note line that billed it.
 type SideVersion struct {
 	Side          string
 	No            int
@@ -48,6 +50,8 @@ type SideVersion struct {
 	FX            *FxSnapshot
 	Status        string
 	Reason        string
+	InvoiceID     string
+	InvoiceLineNo int
 	By            string
 	At            time.Time
 	EnteredAt     time.Time
@@ -103,20 +107,23 @@ type JobState struct {
 	CancelEnteredAt    time.Time
 	Bases              []Basis
 	Lines              []ChargeLine
+	Notes              []Note
 }
 
 // FreightJob is the aggregate root of a house shipment's economics under one legal entity and book (UL-02,
-// UL-08, OD-1 A): estimated charges in V0.1; invoices, accruals' matches and pool shares later.
+// UL-08, OD-1 A): estimated charges and the debit and credit notes billing them (issued through the job, as they
+// change its sell sides; each keeps its own id and number); accruals' matches and pool shares later.
 type FreightJob struct {
-	state   JobState
-	stored  stored
-	pending []Event
+	state     JobState
+	stored    stored
+	cancelled []string // stored debit notes cancelled by a credit note since the job was loaded
+	pending   []Event
 }
 
-// stored counts what the database holds of a loaded job: bases, lines and side versions per line.
+// stored counts what the database holds of a loaded job: bases, lines, side versions per line and notes.
 type stored struct {
-	bases, lines int
-	sell, cost   map[int]int
+	bases, lines, notes int
+	sell, cost          map[int]int
 }
 
 const (
@@ -143,7 +150,7 @@ func OpenJob(st JobState, policy *FinancePolicy, by string, at time.Time) (*Frei
 		return nil, fmt.Errorf("%w: the policy is another legal entity's", ErrInvalid)
 	}
 	st.FunctionalCurrency, st.BookCode, st.State, st.OpenedBy, st.OpenedAt = p.FunctionalCurrency, p.BookCode, JobOpen, by, at.UTC()
-	st.Bases, st.Lines, st.CancelReason, st.CancelledBy, st.CancelledAt = nil, nil, "", "", time.Time{}
+	st.Bases, st.Lines, st.Notes, st.CancelReason, st.CancelledBy, st.CancelledAt = nil, nil, nil, "", "", time.Time{}
 	j := &FreightJob{state: st, stored: stored{sell: map[int]int{}, cost: map[int]int{}}}
 	j.record(eventJobOpened, at, 0)
 	return j, nil
@@ -304,6 +311,9 @@ func (j *FreightJob) ReviseSide(lineNo int, side string, expected int, in SideIn
 	if expected != len(*versions) {
 		return fmt.Errorf("%w: %s side of line %d is at version %d", ErrSideVersion, side, lineNo, len(*versions))
 	}
+	if n := len(*versions); n > 0 && (*versions)[n-1].Status == StatusInvoiced {
+		return fmt.Errorf("%w: line %d, debit note %s", ErrInvoiced, lineNo, (*versions)[n-1].InvoiceID)
+	}
 	discountLine := line.Source == SourceQuote && len(line.Sell) > 0 && line.Sell[0].Amount.Minor < 0
 	switch {
 	case side == SideCost && discountLine:
@@ -320,8 +330,8 @@ func (j *FreightJob) ReviseSide(lineNo int, side string, expected int, in SideIn
 	return nil
 }
 
-// Cancel cancels an OPEN job with a reason; nothing is invoiced in V0.1, and its applied quotes are free for
-// another job.
+// Cancel cancels an OPEN job with a reason when none of its sell sides is invoiced (credit notes return them first);
+// its applied quotes are free for another job.
 func (j *FreightJob) Cancel(reason, by string, at time.Time) error {
 	if err := j.open(by, at); err != nil {
 		return err
@@ -329,16 +339,23 @@ func (j *FreightJob) Cancel(reason, by string, at time.Time) error {
 	if !text(reason) {
 		return fmt.Errorf("%w: a cancellation needs a reason", ErrInvalid)
 	}
+	for _, l := range j.state.Lines {
+		if n := len(l.Sell); n > 0 && l.Sell[n-1].Status == StatusInvoiced {
+			return fmt.Errorf("%w: line %d, debit note %s", ErrInvoiced, l.No, l.Sell[n-1].InvoiceID)
+		}
+	}
 	j.state.State, j.state.CancelReason, j.state.CancelledBy, j.state.CancelledAt = JobCancelled, reason, by, at.UTC()
 	j.record(eventJobCancelled, at, 0)
 	return nil
 }
 
-// Profit is a job's estimated economics in the functional currency, per charge code and in total.
+// Profit is a job's economics in the functional currency, per charge code and in total: revenue from the latest sell
+// sides (invoiced ones at their debit note's local amount; Invoiced is that part), cost from the cost estimates.
 type Profit struct {
 	Currency kernel.CurrencyCode
 	Lines    []CodeProfit
 	Revenue  int64
+	Invoiced int64
 	Cost     int64
 	Profit   int64
 }
@@ -364,6 +381,9 @@ func (j *FreightJob) Profit() Profit {
 		}
 		if n := len(l.Sell); n > 0 {
 			out.Lines[i].Revenue += l.Sell[n-1].Local
+			if l.Sell[n-1].Status == StatusInvoiced {
+				out.Invoiced += l.Sell[n-1].Local
+			}
 		}
 		if n := len(l.Cost); n > 0 {
 			out.Lines[i].Cost += l.Cost[n-1].Local
@@ -378,19 +398,23 @@ func (j *FreightJob) Profit() Profit {
 	return out
 }
 
-// SellEstimate is the estimated sell of the job for a debtor in the functional currency: its exposure while the
-// job is open (no invoice exists in V0.1).
-func (j *FreightJob) SellEstimate(debtor string) int64 {
+// Exposure is a debtor's exposure on the job in the functional currency while the job is open: the sell not yet
+// billed (ESTIMATED sides, WIP) and the sell billed on debit notes not reversed (INVOICED sides; settlement comes
+// later, so every issued debit note stays open).
+func (j *FreightJob) Exposure(debtor string) (unbilled, billed int64) {
 	if j.state.State != JobOpen {
-		return 0
+		return 0, 0
 	}
-	var sum int64
 	for _, l := range j.state.Lines {
 		if n := len(l.Sell); n > 0 && l.Sell[n-1].PartyID == debtor {
-			sum += l.Sell[n-1].Local
+			if l.Sell[n-1].Status == StatusInvoiced {
+				billed += l.Sell[n-1].Local
+			} else {
+				unbilled += l.Sell[n-1].Local
+			}
 		}
 	}
-	return sum
+	return unbilled, billed
 }
 
 // Debtors lists the debtors of the job's sell sides, as their latest versions name them.
@@ -445,13 +469,30 @@ func (j *FreightJob) Stamp(entered time.Time) {
 			}
 		}
 	}
+	for i := range st.Notes {
+		if st.Notes[i].EnteredAt.IsZero() {
+			st.Notes[i].EnteredAt = e
+		}
+	}
 }
 
 // RestoreJob rebuilds a stored job.
 func RestoreJob(st JobState) (*FreightJob, error) {
 	st.Bases = append([]Basis(nil), st.Bases...)
 	st.Lines = slices.Clone(st.Lines)
-	s := stored{bases: len(st.Bases), lines: len(st.Lines), sell: map[int]int{}, cost: map[int]int{}}
+	st.Notes = slices.Clone(st.Notes)
+	s := stored{bases: len(st.Bases), lines: len(st.Lines), notes: len(st.Notes), sell: map[int]int{}, cost: map[int]int{}}
+	notes := map[string]*Note{}
+	for i := range st.Notes {
+		n := &st.Notes[i]
+		n.Lines = append([]NoteLine(nil), n.Lines...)
+		notes[n.ID] = n
+		for k, l := range n.Lines {
+			if l.No != k+1 || l.JobLineNo < 1 || l.JobLineNo > len(st.Lines) {
+				return nil, fmt.Errorf("%w: line %d of note %s", ErrInvalid, k+1, n.ID)
+			}
+		}
+	}
 	for i, b := range st.Bases {
 		if b.No != i+1 {
 			return nil, fmt.Errorf("%w: basis %d", ErrInvalid, i+1)
@@ -466,6 +507,12 @@ func RestoreJob(st JobState) (*FreightJob, error) {
 		for k, v := range l.Sell {
 			if v.No != k+1 || v.Side != SideSell {
 				return nil, fmt.Errorf("%w: sell side of line %d", ErrInvalid, i+1)
+			}
+			if v.Status == StatusInvoiced {
+				n := notes[v.InvoiceID]
+				if n == nil || v.InvoiceLineNo < 1 || v.InvoiceLineNo > len(n.Lines) || n.Lines[v.InvoiceLineNo-1].JobLineNo != l.No {
+					return nil, fmt.Errorf("%w: invoiced sell side of line %d", ErrInvalid, i+1)
+				}
 			}
 		}
 		for k, v := range l.Cost {
@@ -487,7 +534,25 @@ func (j *FreightJob) State() JobState {
 		st.Lines[i].Sell = append([]SideVersion(nil), st.Lines[i].Sell...)
 		st.Lines[i].Cost = append([]SideVersion(nil), st.Lines[i].Cost...)
 	}
+	st.Notes = slices.Clone(st.Notes)
+	for i := range st.Notes {
+		st.Notes[i].Lines = append([]NoteLine(nil), st.Notes[i].Lines...)
+	}
 	return st
+}
+
+// AddedNotes returns the notes issued since the job was loaded and the stored debit notes cancelled since, in their
+// new state.
+func (j *FreightJob) AddedNotes() (notes []Note, cancelled []Note) {
+	st := j.State()
+	for _, id := range j.cancelled {
+		for _, n := range st.Notes[:j.stored.notes] {
+			if n.ID == id {
+				cancelled = append(cancelled, n)
+			}
+		}
+	}
+	return st.Notes[j.stored.notes:], cancelled
 }
 
 // Added returns what was written since the job was loaded: bases, new lines and new side versions (of any line).
@@ -510,8 +575,8 @@ func (j *FreightJob) Pending() []Event { return append([]Event(nil), j.pending..
 
 // Acknowledge is permitted only after the transaction holding the job and its Outbox events commits.
 func (j *FreightJob) Acknowledge() {
-	j.pending = nil
-	j.stored = stored{bases: len(j.state.Bases), lines: len(j.state.Lines), sell: map[int]int{}, cost: map[int]int{}}
+	j.pending, j.cancelled = nil, nil
+	j.stored = stored{bases: len(j.state.Bases), lines: len(j.state.Lines), notes: len(j.state.Notes), sell: map[int]int{}, cost: map[int]int{}}
 	for _, l := range j.state.Lines {
 		j.stored.sell[l.No], j.stored.cost[l.No] = len(l.Sell), len(l.Cost)
 	}
