@@ -96,6 +96,13 @@ func TestIdentifierForms(t *testing.T) {
 		"no value":                  {Type: IdentifierRegistration, Country: "GB"},
 		"unknown type":              {Type: "PASSPORT", Country: "CN", Value: "E12345678"},
 		"country in lower case":     {Type: IdentifierRegistration, Country: "gb", Value: "12345"},
+		"IATA code of a state":      {Type: IdentifierIATAAirline, Country: "CN", Value: "MU"},
+		"IATA code of two digits":   {Type: IdentifierIATAAirline, Country: "ZZ", Value: "12"},
+		"IATA code of three":        {Type: IdentifierIATAAirline, Country: "ZZ", Value: "CES"},
+		"AWB prefix of two digits":  {Type: IdentifierIATAAWBPrefix, Country: "ZZ", Value: "78"},
+		"AWB prefix with a letter":  {Type: IdentifierIATAAWBPrefix, Country: "ZZ", Value: "78A"},
+		"SCAC of five letters":      {Type: IdentifierSCAC, Country: "ZZ", Value: "MAERS"},
+		"registration issued by ZZ": {Type: IdentifierRegistration, Country: "ZZ", Value: "12345"},
 	} {
 		id.EvidenceRef = "evidence"
 		if _, err := id.normalized(); !errors.Is(err, ErrInvalidIdentifier) {
@@ -108,6 +115,10 @@ func TestIdentifierForms(t *testing.T) {
 		"EORI":             {Type: IdentifierEUEORI, Country: "DE", Value: "DE123456789012345"},
 		"EIN":              {Type: IdentifierUSEIN, Country: "US", Value: "123456789"},
 		"UK company":       {Type: IdentifierRegistration, Country: "GB", Value: "01234567"},
+		"IATA designator":  {Type: IdentifierIATAAirline, Country: "ZZ", Value: "MU"},
+		"digit designator": {Type: IdentifierIATAAirline, Country: "ZZ", Value: "3U"},
+		"AWB prefix":       {Type: IdentifierIATAAWBPrefix, Country: "ZZ", Value: "781"},
+		"SCAC":             {Type: IdentifierSCAC, Country: "ZZ", Value: "MAEU"},
 	} {
 		id.EvidenceRef = "evidence"
 		if _, err := id.normalized(); err != nil {

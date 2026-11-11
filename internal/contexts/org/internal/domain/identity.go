@@ -31,7 +31,20 @@ const (
 	// IdentifierRegistration is any other national company registration code, the code a manifest gives
 	// for a foreign party.
 	IdentifierRegistration IdentifierType = "REGISTRATION"
+	// IdentifierIATAAirline is an airline's two-character IATA designator, such as MU, which its flight
+	// numbers carry. IATA, not a state, issues it, so its issuing country is InternationalIssuer.
+	IdentifierIATAAirline IdentifierType = "IATA_AIRLINE"
+	// IdentifierIATAAWBPrefix is an airline's three-digit IATA air waybill prefix, such as 781, the first part
+	// of every MAWB number it issues; issuing country InternationalIssuer.
+	IdentifierIATAAWBPrefix IdentifierType = "IATA_AWB_PREFIX"
+	// IdentifierSCAC is an ocean or road carrier's Standard Carrier Alpha Code of two to four letters, such as
+	// MAEU, issued by NMFTA; issuing country InternationalIssuer.
+	IdentifierSCAC IdentifierType = "SCAC"
 )
+
+// InternationalIssuer is the issuing country of identifiers that international bodies issue: ZZ, a code ISO
+// 3166-1 leaves to users. One active holder of such a value per tenant then holds worldwide.
+const InternationalIssuer = "ZZ"
 
 // Events of party identity. They name the identifier slot (type and issuing country), never the code: raw
 // legal identifiers do not travel in integration events (V0.2 rule).
@@ -56,6 +69,9 @@ var (
 	eoriForm         = regexp.MustCompile(`^[A-Z]{2}[0-9A-Z]{1,15}$`)
 	einForm          = regexp.MustCompile(`^[0-9]{9}$`)
 	registrationForm = regexp.MustCompile(`^[0-9A-Z][0-9A-Z-]{0,34}$`)
+	airlineForm      = regexp.MustCompile(`^([A-Z][0-9A-Z]|[0-9][A-Z])$`)
+	awbPrefixForm    = regexp.MustCompile(`^[0-9]{3}$`)
+	scacForm         = regexp.MustCompile(`^[A-Z]{2,4}$`)
 )
 
 // PartyIdentifier is one identifier of a party in one issuing country, or, with None, the recorded fact that
@@ -81,6 +97,10 @@ type IdentifierRetirement struct {
 	Reason    string
 	RetiredBy string
 	RetiredAt time.Time
+}
+
+func (t IdentifierType) international() bool {
+	return t == IdentifierIATAAirline || t == IdentifierIATAAWBPrefix || t == IdentifierSCAC
 }
 
 // ValidUSCC reports whether a code is a unified social credit code with a correct check character (GB 32100).
@@ -122,9 +142,16 @@ func (i PartyIdentifier) normalized() (PartyIdentifier, error) {
 		if i.Country != "US" {
 			return bad("issued in US only")
 		}
+	case IdentifierIATAAirline, IdentifierIATAAWBPrefix, IdentifierSCAC:
+		if i.Country != InternationalIssuer {
+			return bad("issued internationally, country " + InternationalIssuer)
+		}
 	case IdentifierAEO, IdentifierEUEORI, IdentifierRegistration:
 	default:
 		return bad("unknown type")
+	}
+	if i.Country == InternationalIssuer && !i.Type.international() {
+		return bad("issued by a state")
 	}
 	if i.None {
 		if i.Value != "" {
@@ -145,6 +172,12 @@ func (i PartyIdentifier) normalized() (PartyIdentifier, error) {
 		ok = einForm.MatchString(i.Value)
 	case IdentifierRegistration:
 		ok = registrationForm.MatchString(i.Value)
+	case IdentifierIATAAirline:
+		ok = airlineForm.MatchString(i.Value)
+	case IdentifierIATAAWBPrefix:
+		ok = awbPrefixForm.MatchString(i.Value)
+	case IdentifierSCAC:
+		ok = scacForm.MatchString(i.Value)
 	}
 	if !ok {
 		return bad("value")

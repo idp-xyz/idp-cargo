@@ -54,16 +54,26 @@ internal/contexts/phy/          PHY bounded context (Physical Logistics); in V0.
   internal/adapters/ful/        a shipment's LoadIntent v1 from FUL (anticorruption layer)
   internal/adapters/reference/  routes resolved against the location reference data
   internal/integration/         PG16 tests with a stand-in for FUL, including attaches racing a close
+internal/contexts/book/         BOOK bounded context (Carrier Booking); in V0.1 bookings for consolidations, recorded as sent and answered
+  module.go                     assembles BOOK; ORG's query side and the location reference data are passed in
+  api/                          BOOK's contract: booking commands, CarrierBooking v1, events, error kinds, Authorizer port
+  internal/domain/              CarrierBooking: request versions, steps sent and answered with evidence, capacity versions, allocations
+  internal/application/         command and query use cases and their ports
+  internal/adapters/postgres/   bookings, receipts and Outbox in cargo_book
+  internal/adapters/org/        the carrier's role and airline codes from ORG (anticorruption layer)
+  internal/adapters/reference/  legs resolved against the location reference data
+  internal/integration/         PG16 tests with stand-ins for ORG, including bookings racing for one MAWB number
 internal/bootstrap/             composition root: one connection pool, a Bento transaction owner per context and for the relay
 internal/kernel/                value objects shared by every context (ValidityInterval, Money, Quantity, LocationCode); standard library only
 internal/reference/             read-only reference data: api (the Locations contract contexts use) and locations (cargo_ref)
 internal/foundation/bento/      context-agnostic IDP-Bento-Go adaptation (tenant-bound transactions, clock)
 internal/foundation/messaging/  reliable messaging: Outbox relay, HTTP webhook publisher
-migrations/org/                 immutable ORG migrations 000001–000009
+migrations/org/                 immutable ORG migrations 000001–000010
 migrations/rate/                RATE migrations, starting with 000001_rate_quotes
 migrations/com/                 COM migrations 000001–000008
 migrations/ful/                 FUL migrations 000001–000004
 migrations/phy/                 PHY migrations, starting with 000001_phy_consolidation_membership
+migrations/book/                BOOK migrations, starting with 000001_book_carrier_bookings
 migrations/ref/                 reference data: location tables and the S1 location subset
 migrations/manifest/            order in which the contexts' migrations run
 tools/dependency-check/         package rules of the structure baseline; cross-context allowlist generated from the Context Map
@@ -71,7 +81,7 @@ tools/dependency-check/         package rules of the structure baseline; cross-c
 ```
 
 - Other contexts, transports, cross-context processes and the AI capability layer import `internal/contexts/org/api` only; the compiler rejects imports of `internal/contexts/org/internal/...` from outside ORG, and `tools/dependency-check` rejects the rest of what the layering and the Context Map do not allow.
-- Further contexts (BOOK, AIR, SEA, DOC, …), `internal/processes/` and `internal/ai/` get directories when their first real code lands; no empty scaffolding.
+- Further contexts (AIR, SEA, DOC, …), `internal/processes/` and `internal/ai/` get directories when their first real code lands; no empty scaffolding.
 - Design documents, review reports and evidence logs are kept in the IDP-Cargo master archive and are not published in this repository.
 
 ## Status of evidence
@@ -172,6 +182,15 @@ GitHub Actions, `ubuntu-24.04` runner, workflow `org-pg16-contract.yml`, on ever
   - Migrations `ful/000004_ful_consol_attachment` and `phy/000001_phy_consolidation_membership`. The database keeps versions, entries and parts immutable, ends an entry only once, freezes a closed consolidation's houses except a cancelled shipment's, checks at commit that a house joins only an OPEN consolidation and a cancelled consolidation keeps none, and that a cancelled shipment keeps no current attachment.
   - Tests: the consolidation and membership rules in the domain, a property test of random attaches, detaches, transfers, refreshes, closes and reopens; PG16 tests with a stand-in for FUL, writes past PHY refused, attaches racing a close (a closed consolidation holds only houses its close confirmed with FUL), and eight consolidations racing for one shipment (one wins); a PG16 slice with the real contexts in which two customers' AIR houses share a consolidation, one is shut out to the next flight, the other is shortloaded and refreshed, a cancelled shipment leaves, and the carriers' CNSHA resolves to the port of Shanghai.
   - Not yet: load units, cargo receipt, stuffing and loading (PHY), MAWB/HAWB and MBL/HBL facts (AIR, SEA), carrier booking (BOOK) and the manifest-change cause once a house is declared (CUS).
+- V2.32 implements BOOK V0.1 and ORG V0.6: the carrier booking of a consolidation, step 2 of the N1 forwarder daily loop, with the decisions N1-BOOK of 2026-11-10. Following N1-PHY OD-7, an air consolidation's MAWB number comes from the airline's booking confirmation recorded here; AIR takes it from CarrierBooking v1 next.
+  - The operator sends the request through the carrier's own channel and BOOK records it (OD-1): `DraftCarrierBooking` for AIR_CONSOL, SEA_LCL_CONSOL_EQUIPMENT or SEA_LCL_CO_LOAD, `AmendBookingRequest`, `RecordBookingRequestSent`, and the carrier's answers `RecordCarrierAcknowledgement`, `RecordCarrierConfirmation`, `RecordCarrierRejection`, `RecordCarrierChange`, `RecordCarrierDecline`; the forwarder's `RequestBookingChange` (answered by `RecordChangeConfirmed` or `RecordChangeRefused`), `RequestBookingCancellation` (`RecordCancellationConfirmed`), `WithdrawDraftBooking` and `ReassignBookingCapacity`. A request is never a confirmation, and a confirmation never loading or departure.
+  - Every sent request and every answer keeps its evidence: the SHA-256 and storage id of the e-mail, PDF or screenshot (OD-2); the same operator may record both, and both are recorded (OD-6). In V0.1 requests carry no personal contacts (OD-5, option C as the default content).
+  - Each confirmation, carrier change (schedule change, rollover, reduction, split) or confirmed change writes an immutable capacity version, at most what was requested (PARTIAL_CONFIRMATION when less), with legs from the request's first port to its last, flights of the airline or vessels and voyages (IMO check digit), estimated departure and arrival, and cut-offs as instants with their IANA time zone. The current version is allocated to the booking's one consolidation (OD-3); a change moves the allocation, a decline or cancellation releases it.
+  - The carrier must hold the role CARRIER in ORG for the legal entity at the business time, CO_LOADER for a co-load (OD-4); the party revision and role decision are frozen. ORG V0.6 records carrier codes as party identifiers issued internationally (country ZZ): the airline's IATA designator, its AWB prefix, and the SCAC; an airline needs the first two. An air consolidation's confirmation states exactly one MAWB number of the airline's prefix with a valid modulus-7 check digit; a carrier reference is unique among the tenant's live bookings of that carrier and type.
+  - Queries: `GetCarrierBooking` (CarrierBooking v1), `ListCapacityForConsumer`, `FindBookingByCarrierReference`, `ListBookingsAwaitingCarrier`, `ListCutOffsDue`.
+  - Migrations `org/000010_org_carrier_codes` and `book/000001_book_carrier_bookings`. The database keeps request versions, steps, capacity and allocation versions immutable, lets a reference only stop being live, never changes an ended booking, and checks at commit that the pointers name the latest versions, that exactly one allocation is active on the current capacity while the booking is in force, and that an air consolidation's confirmed booking has its MAWB number.
+  - Tests: the booking rules and a property test of random command sequences (the status follows the steps, at most one allocation active, never two MAWB numbers); PG16 tests with stand-ins for ORG, writes past BOOK refused, eight bookings racing for one MAWB number (one wins) and eight reassignments of one booking (one wins); a PG16 slice with ORG, PHY and BOOK in which an airline gets its codes and role, an air consolidation is booked and confirmed with its MAWB, found again by the MAWB, and a co-load needs a CO_LOADER.
+  - Not yet: AIR (MAWB/HAWB, linking the booking's flights), electronic booking channels, booking contacts and their provision records (P5), direct bookings for a shipment, and FUL's capacity links.
 
 Bento testkit contracts:
 

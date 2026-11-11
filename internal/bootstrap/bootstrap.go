@@ -13,6 +13,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	bentopg "go.idp.xyz/idp-bento-go/postgres"
 	bentooutbox "go.idp.xyz/idp-bento-go/postgres/outbox"
+	"go.idp.xyz/idp-cargo/internal/contexts/book"
+	bookapi "go.idp.xyz/idp-cargo/internal/contexts/book/api"
 	"go.idp.xyz/idp-cargo/internal/contexts/com"
 	comapi "go.idp.xyz/idp-cargo/internal/contexts/com/api"
 	"go.idp.xyz/idp-cargo/internal/contexts/ful"
@@ -159,6 +161,20 @@ func (c *consolMemberships) GetConsolMembership(ctx context.Context, q phyapi.Ge
 		return phyapi.ConsolMembership{}, errors.New("bootstrap: PHY is not assembled")
 	}
 	return c.phy.GetConsolMembership(ctx, q)
+}
+
+// BOOK assembles the BOOK bounded context. org confirms carriers through its query side (relationship 30);
+// legs are resolved against the location reference data (F2).
+func (p *Platform) BOOK(org orgapi.Queries, auth bookapi.Authorizer, opts ...book.Option) (*book.Module, error) {
+	db, err := p.newDB()
+	if err != nil {
+		return nil, err
+	}
+	locations, err := p.Locations()
+	if err != nil {
+		return nil, err
+	}
+	return book.New(db, org, auth, append([]book.Option{book.WithLocations(locations)}, opts...)...)
 }
 
 // Locations assembles the read-only location reference data (repository structure baseline §11).
