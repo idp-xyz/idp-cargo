@@ -43,6 +43,8 @@ const (
 	ActionReleaseObligationFromShipment ShipmentAction = "ReleaseObligationFromShipment"
 	ActionChangeShipmentPart            ShipmentAction = "ChangeShipmentPart"
 	ActionCancelShipment                ShipmentAction = "CancelShipment"
+	ActionRecordConsolAttachment        ShipmentAction = "RecordConsolAttachment"
+	ActionRecordConsolDetachment        ShipmentAction = "RecordConsolDetachment"
 )
 
 type Receipt struct {

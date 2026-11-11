@@ -54,6 +54,9 @@ const (
 	eventObligationReleased = "ShipmentObligationReleased.v1"
 	eventPartChanged        = "ShipmentPartChanged.v1"
 	eventCancelled          = "ShipmentCancelled.v1"
+	// FUL V0.4
+	eventConsolAttachmentRecorded = "ShipmentConsolAttachmentRecorded.v1"
+	eventConsolDetachmentRecorded = "ShipmentConsolDetachmentRecorded.v1"
 )
 
 // Event carries identifiers only; the Outbox adapter maps it to a Bento envelope.
@@ -64,6 +67,8 @@ type Event struct {
 	SubjectID         string
 	ObligationID      ObligationID
 	ObligationVersion int64
+	Stage             string // events about a consol attachment (V0.4)
+	ConsolidationID   string
 }
 
 // ObligationRef is a COM obligation version as FUL plans it, taken from ObligationSnapshot v2: the order
@@ -167,6 +172,7 @@ type ShipmentState struct {
 	CancelledBy     string
 	CancelledAt     time.Time
 	CancelReason    string
+	Attachments     []ConsolAttachment // FUL V0.4, in the order recorded
 }
 
 // Shipment is the aggregate root. Plan versions and confirmations are only added; a planned obligation
@@ -177,7 +183,10 @@ type Shipment struct {
 	plans         int   // plan versions already persisted
 	confirmations int   // confirmations already persisted
 	released      []int // persisted obligations released since, by index
-	pending       []Event
+	attachments   int   // consol attachments already persisted
+	// persisted consol attachments ended since, by index
+	endedAttachments []int
+	pending          []Event
 }
 
 const (
@@ -376,6 +385,13 @@ func (s *Shipment) Cancel(reason, by string, at time.Time) error {
 			s.release(i, by, at)
 		}
 	}
+	// The shipment's own allocation to a consolidation ends with it; PHY then ends the membership after asking
+	// FUL (EndMembershipForCancelledShipment).
+	for i := range s.state.Attachments {
+		if s.state.Attachments[i].Current() {
+			s.endAttachment(i, AttachmentShipmentCancelled, by, at)
+		}
+	}
 	s.state.CancelledBy, s.state.CancelledAt, s.state.CancelReason = by, at.UTC(), reason
 	s.state.Status = ShipmentCancelled
 	s.record(eventCancelled, at, nil)
@@ -403,6 +419,15 @@ func (s *Shipment) Stamp(entered time.Time) {
 	}
 	for i := s.confirmations; i < len(s.state.Confirmations); i++ {
 		s.state.Confirmations[i].EnteredAt = entered.UTC()
+	}
+	for i := range s.state.Attachments {
+		a := &s.state.Attachments[i]
+		if a.EnteredAt.IsZero() {
+			a.EnteredAt = entered.UTC()
+		}
+		if !a.Current() && a.EndEnteredAt.IsZero() {
+			a.EndEnteredAt = entered.UTC()
+		}
 	}
 }
 
@@ -447,6 +472,9 @@ func (s *Shipment) lastChange() time.Time {
 	}
 	for _, p := range s.state.Obligations {
 		last = later(later(last, p.AddedAt), p.ReleasedAt)
+	}
+	for _, a := range s.state.Attachments {
+		last = later(later(last, a.RecordedAt), a.EndedAt)
 	}
 	return later(last, s.state.CancelledAt)
 }
@@ -496,7 +524,9 @@ func RestoreShipment(st ShipmentState) (*Shipment, error) {
 	st.Obligations = append([]PlannedObligation(nil), st.Obligations...)
 	st.Plans = append([]PlanVersion(nil), st.Plans...)
 	st.Confirmations = append([]Confirmation(nil), st.Confirmations...)
-	s := &Shipment{state: st, obligations: len(st.Obligations), plans: len(st.Plans), confirmations: len(st.Confirmations)}
+	st.Attachments = append([]ConsolAttachment(nil), st.Attachments...)
+	s := &Shipment{state: st, obligations: len(st.Obligations), plans: len(st.Plans), confirmations: len(st.Confirmations),
+		attachments: len(st.Attachments)}
 	if err := s.validate(); err != nil {
 		return nil, err
 	}
@@ -549,7 +579,7 @@ func (s *Shipment) validate() error {
 	if derived := s.derivedStatus(); st.Status != derived {
 		return fmt.Errorf("%w: status %s, but the plan makes it %s", ErrInvalidShipment, st.Status, derived)
 	}
-	return nil
+	return s.validateAttachments()
 }
 
 // State returns a copy of the shipment for persistence and read models.
@@ -558,6 +588,7 @@ func (s *Shipment) State() ShipmentState {
 	st.Obligations = append([]PlannedObligation(nil), st.Obligations...)
 	st.Plans = append([]PlanVersion(nil), st.Plans...)
 	st.Confirmations = append([]Confirmation(nil), st.Confirmations...)
+	st.Attachments = append([]ConsolAttachment(nil), st.Attachments...)
 	return st
 }
 
@@ -591,8 +622,9 @@ func (s *Shipment) ReleasedObligations() map[int]PlannedObligation {
 
 // Acknowledge is permitted only after the transaction holding the shipment and its Outbox events commits.
 func (s *Shipment) Acknowledge() {
-	s.pending, s.released = nil, nil
+	s.pending, s.released, s.endedAttachments = nil, nil, nil
 	s.obligations, s.plans, s.confirmations = len(s.state.Obligations), len(s.state.Plans), len(s.state.Confirmations)
+	s.attachments = len(s.state.Attachments)
 }
 
 func (s *Shipment) record(kind string, at time.Time, ob *ObligationRef) {

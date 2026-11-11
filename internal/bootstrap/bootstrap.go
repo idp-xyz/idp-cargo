@@ -19,6 +19,8 @@ import (
 	fulapi "go.idp.xyz/idp-cargo/internal/contexts/ful/api"
 	"go.idp.xyz/idp-cargo/internal/contexts/org"
 	orgapi "go.idp.xyz/idp-cargo/internal/contexts/org/api"
+	"go.idp.xyz/idp-cargo/internal/contexts/phy"
+	phyapi "go.idp.xyz/idp-cargo/internal/contexts/phy/api"
 	"go.idp.xyz/idp-cargo/internal/contexts/rate"
 	rateapi "go.idp.xyz/idp-cargo/internal/contexts/rate/api"
 	"go.idp.xyz/idp-cargo/internal/foundation/bento"
@@ -102,8 +104,9 @@ func (p *Platform) COM(org ORGForCOM, rate rateapi.Queries, auth comapi.Authoriz
 }
 
 // FUL assembles the FUL bounded context. com is used only through its query side; routes are resolved
-// against the location reference data (F2), read on a transaction owner of its own.
-func (p *Platform) FUL(com comapi.Queries, auth fulapi.Authorizer) (*ful.Module, error) {
+// against the location reference data (F2), read on a transaction owner of its own. opts configure FUL; use
+// FULAndPHY for a FUL that records consol attachments.
+func (p *Platform) FUL(com comapi.Queries, auth fulapi.Authorizer, opts ...ful.Option) (*ful.Module, error) {
 	db, err := p.newDB()
 	if err != nil {
 		return nil, err
@@ -112,7 +115,50 @@ func (p *Platform) FUL(com comapi.Queries, auth fulapi.Authorizer) (*ful.Module,
 	if err != nil {
 		return nil, err
 	}
-	return ful.New(db, com, auth, ful.WithLocations(locations))
+	return ful.New(db, com, auth, append([]ful.Option{ful.WithLocations(locations)}, opts...)...)
+}
+
+// PHY assembles the PHY bounded context for consolidations. ful is used only through LoadIntent v1
+// (relationship 7); routes are resolved against the location reference data (F2).
+func (p *Platform) PHY(ful fulapi.LoadIntentQueries, auth phyapi.Authorizer, opts ...phy.Option) (*phy.Module, error) {
+	db, err := p.newDB()
+	if err != nil {
+		return nil, err
+	}
+	locations, err := p.Locations()
+	if err != nil {
+		return nil, err
+	}
+	return phy.New(db, ful, auth, append([]phy.Option{phy.WithLocations(locations)}, opts...)...)
+}
+
+// FULAndPHY assembles FUL and PHY, which read each other's query sides: PHY reads FUL's LoadIntent v1 before it
+// attaches or closes (relationship 7), and FUL reads PHY's ConsolMembership v1 before it records an attachment
+// (relationship 8). Neither writes to the other; the API client runs the steps (T6).
+func (p *Platform) FULAndPHY(com comapi.Queries, fulAuth fulapi.Authorizer, phyAuth phyapi.Authorizer) (*ful.Module, *phy.Module, error) {
+	memberships := &consolMemberships{}
+	fulModule, err := p.FUL(com, fulAuth, ful.WithConsolMemberships(memberships))
+	if err != nil {
+		return nil, nil, err
+	}
+	phyModule, err := p.PHY(fulModule, phyAuth)
+	if err != nil {
+		return nil, nil, err
+	}
+	memberships.phy = phyModule
+	return fulModule, phyModule, nil
+}
+
+// consolMemberships forwards FUL's questions to PHY, which is assembled after FUL.
+type consolMemberships struct {
+	phy phyapi.ConsolMembershipQueries
+}
+
+func (c *consolMemberships) GetConsolMembership(ctx context.Context, q phyapi.GetConsolMembership) (phyapi.ConsolMembership, error) {
+	if c.phy == nil {
+		return phyapi.ConsolMembership{}, errors.New("bootstrap: PHY is not assembled")
+	}
+	return c.phy.GetConsolMembership(ctx, q)
 }
 
 // Locations assembles the read-only location reference data (repository structure baseline §11).

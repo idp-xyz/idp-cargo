@@ -64,10 +64,14 @@ func TestTheModelEmitsThePublishedEventTypes(t *testing.T) {
 	route := domain.Route{Mode: domain.ModeSea, Origin: kernel.LocationCode{Scheme: kernel.UNLOCODE, Code: "CNSHA"},
 		Destination: kernel.LocationCode{Scheme: kernel.UNLOCODE, Code: "DEHAM"}, Departure: kernel.ValidityInterval{From: at, Until: at.Add(time.Hour)},
 		LocationEdition: "TEST-EDITION"}
+	member := domain.Membership{ConsolidationID: "C-1", EntryNo: 1, Revision: 1, AttachedAt: at, Mode: route.Mode, Origin: route.Origin,
+		Destination: route.Destination}
 	if err = errors.Join(
 		s.AddObligation(ref("OB-2"), "planner-1", at),
 		s.AmendPlan(route, "schedule", "planner-1", at),
 		s.Confirm("planner-2", at),
+		s.RecordConsolAttachment(member, "planner-1", at),
+		s.RecordConsolDetachment("C-1", domain.AttachmentDetached, "planner-1", at),
 		s.ReleaseObligation("OB-2", 1, "planner-1", at),
 		s.ChangePart("OB-1", 1, half, domain.CargoScope{}, "shortload", "planner-1", at),
 		s.Cancel("withdrawn", "planner-1", at),
@@ -75,7 +79,8 @@ func TestTheModelEmitsThePublishedEventTypes(t *testing.T) {
 		t.Fatal(err)
 	}
 	published := map[string]bool{api.ShipmentCreated: true, api.ShipmentObligationAdded: true, api.ShipmentPlanAmended: true,
-		api.ShipmentPlanConfirmed: true, api.ShipmentObligationReleased: true, api.ShipmentPartChanged: true, api.ShipmentCancelled: true}
+		api.ShipmentPlanConfirmed: true, api.ShipmentObligationReleased: true, api.ShipmentPartChanged: true, api.ShipmentCancelled: true,
+		api.ShipmentConsolAttachmentRecorded: true, api.ShipmentConsolDetachmentRecorded: true}
 	emitted := map[string]bool{}
 	for _, e := range s.Pending() {
 		if !published[e.Type] {
@@ -110,6 +115,9 @@ func TestClassifyMapsCausesToAPIKinds(t *testing.T) {
 		{domain.ErrIncompletePlan, api.ErrRejected},
 		{domain.ErrInvalidTransition, api.ErrRejected},
 		{domain.ErrInvalidChange, api.ErrRejected},
+		{domain.ErrConsolPlanMismatch, api.ErrRejected},
+		{domain.ErrNotAttached, api.ErrRejected},
+		{application.ErrMembershipMismatch, api.ErrRejected},
 		{fmt.Errorf("%w: COM said no", application.ErrNotPlannable), api.ErrRejected},
 		{application.ErrInvalidQuery, api.ErrRejected},
 		{kernel.ErrUnitMismatch, api.ErrRejected},

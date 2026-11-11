@@ -94,6 +94,57 @@ type GetShipmentPlanSnapshot struct {
 	ShipmentID string
 }
 
+// StageMain is the main carriage of a shipment's route, the only stage FUL V0.4 executes in the China export
+// slice (N1).
+const StageMain = "MAIN"
+
+// LoadIntentPart is the part of a COM obligation version a shipment intends to load, with the package type
+// COM recorded for the obligation.
+type LoadIntentPart struct {
+	ObligationID      string
+	ObligationVersion int64
+	OrderID           string
+	Packs             int64
+	PackageType       string // UN/ECE Recommendation 21, such as CT for cartons
+	GrossWeight       kernel.Quantity
+	Volume            kernel.Quantity // zero when the obligation declares none
+}
+
+// LoadIntent is LoadIntent v1 (relationship 7, FUL -> PHY): what a shipment intends to load on its main
+// carriage, read by PHY before it attaches the shipment to a consolidation and again before it closes one. It
+// is an intent, never a loading fact, and carries no names (MD-05). ConsolidationID is the consolidation FUL
+// recorded the shipment attached to on the stage, with the PHY membership entry; empty when none. PHY compares
+// PlanVersion, not Revision, with what it verified: recording the attachment moves the revision, not the plan.
+type LoadIntent struct {
+	TenantID          string
+	ShipmentID        string
+	Revision          int64
+	Status            string // StatusDraft, StatusPlanned or StatusCancelled
+	PlanVersion       int
+	ConfirmedVersion  int
+	CustomerPartyID   string
+	LegalEntityID     string
+	TransportMode     string
+	Origin            kernel.LocationCode
+	Destination       kernel.LocationCode
+	OriginIATA        string
+	DestinationIATA   string
+	LocationEdition   string
+	DepartureWindow   kernel.ValidityInterval
+	Packs             int64
+	GrossWeight       kernel.Quantity
+	Volume            kernel.Quantity
+	Parts             []LoadIntentPart // none once cancelled
+	Stage             string           // StageMain
+	ConsolidationID   string
+	MembershipEntryNo int
+}
+
+// LoadIntentQueries is FUL's LoadIntent v1 for PHY (FUL V0.4). An unknown shipment yields ErrNotFound.
+type LoadIntentQueries interface {
+	GetLoadIntent(ctx context.Context, q GetShipmentPlanSnapshot) (LoadIntent, error)
+}
+
 // Queries is FUL's read side for other contexts. An unknown shipment yields ErrNotFound.
 type Queries interface {
 	GetShipmentPlanSnapshot(ctx context.Context, q GetShipmentPlanSnapshot) (ShipmentPlanSnapshot, error)
