@@ -22,6 +22,7 @@ const (
 	RoleCustomer      RoleCode = "CUSTOMER"
 	RoleSupplier      RoleCode = "SUPPLIER"
 	RoleCarrier       RoleCode = "CARRIER"
+	RoleCoLoader      RoleCode = "CO_LOADER" // another consolidator that sells LCL or air consolidation space
 	RoleOverseasAgent RoleCode = "OVERSEAS_AGENT"
 	RoleShipper       RoleCode = "SHIPPER"
 	RoleConsignee     RoleCode = "CONSIGNEE"

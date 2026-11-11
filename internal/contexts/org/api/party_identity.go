@@ -2,15 +2,28 @@ package api
 
 import "context"
 
-// Identifier types of a party (MD-06; ORG V0.4). ORG keeps the codes; qualifications such as an AEO
+// Identifier types of a party (MD-06; ORG V0.4; the IATA and SCAC carrier codes since ORG V0.6). ORG keeps the codes; qualifications such as an AEO
 // certificate belong to CUS and tax treatment to FIN.
 const (
-	IdentifierCNUSCC       = "CN_USCC"      // unified social credit code, GB 32100, 18 characters with a check character; CN
-	IdentifierCNCustoms    = "CN_CUSTOMS"   // customs code of a Chinese consignor or consignee, 10 characters; CN
-	IdentifierAEO          = "AEO"          // authorized economic operator code as declarations print it: issuing country + code
-	IdentifierEUEORI       = "EU_EORI"      // EU EORI number: member state + up to 15 letters and digits
-	IdentifierUSEIN        = "US_EIN"       // US employer identification number, nine digits; US
-	IdentifierRegistration = "REGISTRATION" // any other national company registration code, as manifests give foreign parties
+	IdentifierCNUSCC        = "CN_USCC"         // unified social credit code, GB 32100, 18 characters with a check character; CN
+	IdentifierCNCustoms     = "CN_CUSTOMS"      // customs code of a Chinese consignor or consignee, 10 characters; CN
+	IdentifierAEO           = "AEO"             // authorized economic operator code as declarations print it: issuing country + code
+	IdentifierEUEORI        = "EU_EORI"         // EU EORI number: member state + up to 15 letters and digits
+	IdentifierUSEIN         = "US_EIN"          // US employer identification number, nine digits; US
+	IdentifierRegistration  = "REGISTRATION"    // any other national company registration code, as manifests give foreign parties
+	IdentifierIATAAirline   = "IATA_AIRLINE"    // airline designator of two characters, such as MU; country InternationalIssuer
+	IdentifierIATAAWBPrefix = "IATA_AWB_PREFIX" // airline's three-digit air waybill prefix, such as 781; country InternationalIssuer
+	IdentifierSCAC          = "SCAC"            // carrier's Standard Carrier Alpha Code, two to four letters; country InternationalIssuer
+)
+
+// InternationalIssuer is the issuing country of the identifiers international bodies issue (IATA, NMFTA): ZZ,
+// a code ISO 3166-1 leaves to users.
+const InternationalIssuer = "ZZ"
+
+// Partner role codes other contexts ask ResolvePartyRole about, besides those of RATE and COM.
+const (
+	RoleCarrier  = "CARRIER"   // an airline, shipping line or other carrier
+	RoleCoLoader = "CO_LOADER" // another consolidator selling LCL or air consolidation space (BOOK OD-4)
 )
 
 // Party identity actions an Authorizer decides on.
