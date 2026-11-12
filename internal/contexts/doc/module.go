@@ -232,7 +232,8 @@ func (m *Module) list(ctx context.Context, tenant, shipment, consolidation strin
 }
 
 // GetHouseDocumentSnapshot answers TransportDocumentSnapshot v1 for FIN: the valid issued version of the shipment's
-// house document (a HAWB in N1), issued or under amendment; anything else is not found.
+// house document (a HAWB in N1), issued or under amendment, or the version issued last at or before q.At; anything
+// else is not found.
 func (m *Module) GetHouseDocumentSnapshot(ctx context.Context, q api.GetHouseDocumentSnapshot) (api.TransportDocumentSnapshot, error) {
 	if q.TenantID == "" || q.ShipmentID == "" {
 		return api.TransportDocumentSnapshot{}, classify(application.ErrInvalidQuery)
@@ -264,9 +265,21 @@ func (m *Module) GetHouseDocumentSnapshot(ctx context.Context, q api.GetHouseDoc
 	if !ok || v.Issue == nil || d.Status(v.No) != domain.VersionIssued || st.ShipmentID != q.ShipmentID {
 		return api.TransportDocumentSnapshot{}, fmt.Errorf("%w: document %s has no valid issued version", api.ErrNotFound, house[0].DocumentID)
 	}
+	if !q.At.IsZero() {
+		ok = false
+		for _, x := range st.Versions {
+			if x.Issue != nil && !x.Issue.At.After(q.At) {
+				v, ok = x, true
+			}
+		}
+		if !ok {
+			return api.TransportDocumentSnapshot{}, fmt.Errorf("%w: document %s had no version issued at %s", api.ErrNotFound, house[0].DocumentID,
+				q.At.UTC().Format(time.RFC3339))
+		}
+	}
 	c := v.Doc
-	return api.TransportDocumentSnapshot{DocumentID: string(st.DocumentID), Kind: string(st.Kind), Version: v.No, VersionStatus: api.VersionIssued,
-		SHA256: v.SHA256, Number: c.Number, MasterNumber: c.MAWB, ShipmentID: st.ShipmentID, ConsolidationID: st.ConsolidationID,
+	return api.TransportDocumentSnapshot{DocumentID: string(st.DocumentID), Kind: string(st.Kind), Version: v.No, VersionStatus: d.Status(v.No),
+		SHA256: v.SHA256, Number: c.Number, MasterNumber: c.MAWB, ShipmentID: st.ShipmentID, ConsolidationID: c.ConsolidationID,
 		LegalEntityID: st.LegalEntityID, IssuedAt: v.Issue.At, Origin: c.Origin.Code, Destination: c.Destination.Code, Pieces: c.Cargo.Pieces,
 		GrossGrams: c.Cargo.GrossGrams, ChargeableGrams: c.Cargo.ChargeableGrams}, nil
 }

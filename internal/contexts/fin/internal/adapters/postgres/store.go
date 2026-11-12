@@ -290,28 +290,29 @@ type (
 		EnteredAt   time.Time `json:"entered_at"`
 	}
 	sideRow struct {
-		LineNo        int       `json:"line_no"`
-		Side          string    `json:"side"`
-		No            int       `json:"version_no"`
-		PartyID       *string   `json:"party_id"`
-		PartyRevision int64     `json:"party_revision"`
-		Currency      string    `json:"currency"`
-		Amount        int64     `json:"amount_minor"`
-		Local         int64     `json:"local_minor"`
-		RateEntryNo   *int      `json:"rate_entry_no"`
-		RateType      *string   `json:"rate_type"`
-		Rate          *int64    `json:"rate"`
-		Scale         *int      `json:"scale"`
-		FromDigits    *int      `json:"from_digits"`
-		ToDigits      *int      `json:"to_digits"`
-		RateSource    *string   `json:"rate_source"`
-		Status        string    `json:"status"`
-		Reason        *string   `json:"reason"`
-		InvoiceID     *string   `json:"invoice_id"`
-		InvoiceLineNo *int      `json:"invoice_line_no"`
-		By            string    `json:"recorded_by"`
-		At            time.Time `json:"recorded_at"`
-		EnteredAt     time.Time `json:"entered_at"`
+		LineNo        int        `json:"line_no"`
+		Side          string     `json:"side"`
+		No            int        `json:"version_no"`
+		PartyID       *string    `json:"party_id"`
+		PartyRevision int64      `json:"party_revision"`
+		Currency      string     `json:"currency"`
+		Amount        int64      `json:"amount_minor"`
+		Local         int64      `json:"local_minor"`
+		RateEntryNo   *int       `json:"rate_entry_no"`
+		RateType      *string    `json:"rate_type"`
+		Rate          *int64     `json:"rate"`
+		Scale         *int       `json:"scale"`
+		FromDigits    *int       `json:"from_digits"`
+		ToDigits      *int       `json:"to_digits"`
+		RateSource    *string    `json:"rate_source"`
+		Status        string     `json:"status"`
+		Reason        *string    `json:"reason"`
+		InvoiceID     *string    `json:"invoice_id"`
+		InvoiceLineNo *int       `json:"invoice_line_no"`
+		ConvertedAt   *time.Time `json:"converted_at"`
+		By            string     `json:"recorded_by"`
+		At            time.Time  `json:"recorded_at"`
+		EnteredAt     time.Time  `json:"entered_at"`
 	}
 	noteRow struct {
 		ID             string     `json:"invoice_id"`
@@ -473,8 +474,9 @@ func scanJob(row pgx.Row, tenant fin.TenantID) (*fin.FreightJob, int64, error) {
 		}
 		sv := fin.SideVersion{Side: v.Side, No: v.No, PartyID: deref(v.PartyID), PartyRevision: v.PartyRevision,
 			Amount: kernel.Money{Currency: kernel.CurrencyCode(v.Currency), Minor: v.Amount}, Local: v.Local, Status: v.Status, Reason: deref(v.Reason),
-			InvoiceID: deref(v.InvoiceID), InvoiceLineNo: deref(v.InvoiceLineNo), By: v.By, At: utc(v.At), EnteredAt: utc(v.EnteredAt),
-			FX: fxOf(v.RateEntryNo, v.RateType, v.Rate, v.Scale, v.FromDigits, v.ToDigits, v.RateSource)}
+			InvoiceID: deref(v.InvoiceID), InvoiceLineNo: deref(v.InvoiceLineNo), ConvertedAt: utc(deref(v.ConvertedAt)), By: v.By, At: utc(v.At),
+			EnteredAt: utc(v.EnteredAt),
+			FX:        fxOf(v.RateEntryNo, v.RateType, v.Rate, v.Scale, v.FromDigits, v.ToDigits, v.RateSource)}
 		l := &st.Lines[v.LineNo-1]
 		if v.Side == fin.SideSell {
 			l.Sell = append(l.Sell, sv)
@@ -555,6 +557,13 @@ func (s JobStore) OpenOf(ctx context.Context, tenant fin.TenantID, legalEntity, 
 func (s JobStore) BilledTo(ctx context.Context, tenant fin.TenantID, legalEntity, debtor string) ([]*fin.FreightJob, error) {
 	out, _, err := s.list(ctx, tenant, `j.legal_entity_id=$2 AND EXISTS (SELECT 1 FROM cargo_fin.debtor_invoice n WHERE n.tenant_id=j.tenant_id
       AND n.job_id=j.job_id AND n.debtor_party_id=$3)`, legalEntity, debtor)
+	return out, err
+}
+
+// WithOpenDebitNotes lists the jobs of a legal entity with an ISSUED debit note.
+func (s JobStore) WithOpenDebitNotes(ctx context.Context, tenant fin.TenantID, legalEntity string) ([]*fin.FreightJob, error) {
+	out, _, err := s.list(ctx, tenant, `j.legal_entity_id=$2 AND EXISTS (SELECT 1 FROM cargo_fin.debtor_invoice n WHERE n.tenant_id=j.tenant_id
+      AND n.job_id=j.job_id AND n.kind='DEBIT_NOTE' AND n.state='ISSUED')`, legalEntity)
 	return out, err
 }
 
@@ -660,10 +669,10 @@ func writeJob(ctx context.Context, q bentopg.Executor, j *fin.FreightJob) error 
 	}
 	for i, v := range sides {
 		args := append([]any{lineOf[i], v.Side, v.No, orNull(v.PartyID), v.PartyRevision, string(v.Amount.Currency), v.Amount.Minor, v.Local}, fxArgs(v.FX)...)
-		args = append(args, v.Status, orNull(v.Reason), orNull(v.InvoiceID), orNull(v.InvoiceLineNo), v.By, v.At, v.EnteredAt)
+		args = append(args, v.Status, orNull(v.Reason), orNull(v.InvoiceID), orNull(v.InvoiceLineNo), orNull(v.ConvertedAt), v.By, v.At, v.EnteredAt)
 		if err := exec(`INSERT INTO cargo_fin.charge_side_version (tenant_id,job_id,line_no,side,version_no,party_id,party_revision,currency,amount_minor,
-            local_minor,rate_entry_no,rate_type,rate,scale,from_digits,to_digits,rate_source,status,reason,invoice_id,invoice_line_no,recorded_by,recorded_at,
-            entered_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)`, args...); err != nil {
+            local_minor,rate_entry_no,rate_type,rate,scale,from_digits,to_digits,rate_source,status,reason,invoice_id,invoice_line_no,converted_at,recorded_by,recorded_at,
+            entered_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)`, args...); err != nil {
 			return err
 		}
 	}
@@ -1051,7 +1060,9 @@ func FINEnvelope(commandID string, e fin.Event, recordedAt time.Time) (eventing.
 	return envelope, envelope.Validate()
 }
 
-// Conflict reports whether a commit failed on one of FIN's deferred checks.
+// Conflict reports whether a commit failed on one of FIN's deferred checks. charge_side_return_converted is not one of
+// them: no race leads to it, only a binary older than fin/000004 writing a return without its conversion time, so it
+// stays an error and is not answered as a conflict to try again.
 func Conflict(err error) bool {
 	var pgErr *pgconn.PgError
 	if !errors.As(err, &pgErr) || pgErr.Code != "23514" {

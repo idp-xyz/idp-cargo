@@ -9,12 +9,14 @@ import (
 // a shipment's house document, which FIN bills on (MD-19). Drafts and approved versions are never billed on, so this
 // query answers issued versions only.
 
-// GetHouseDocumentSnapshot asks for the valid issued version of a shipment's house document. A shipment without a
-// house document, or whose house document is not issued or is cancelled, yields ErrNotFound. TenantID must come from
-// a verified principal.
+// GetHouseDocumentSnapshot asks for a shipment's house document: its valid issued version, or, with At, the version
+// issued last at or before At (ISSUED, or SUPERSEDED by a later amendment). A shipment without a house document, whose
+// house document is not issued or is cancelled, or with no version issued by At, yields ErrNotFound. TenantID must come
+// from a verified principal.
 type GetHouseDocumentSnapshot struct {
 	TenantID   string
 	ShipmentID string
+	At         time.Time
 }
 
 // TransportDocumentSnapshot is TransportDocumentSnapshot v1: the document, its valid version and what a bill
@@ -23,7 +25,7 @@ type TransportDocumentSnapshot struct {
 	DocumentID      string
 	Kind            string
 	Version         int
-	VersionStatus   string // ISSUED
+	VersionStatus   string // ISSUED, or SUPERSEDED for a version asked at an instant before a later amendment
 	SHA256          string
 	Number          string
 	MasterNumber    string

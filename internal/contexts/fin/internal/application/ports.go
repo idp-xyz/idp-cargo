@@ -77,6 +77,8 @@ type JobStore interface {
 	BilledTo(ctx context.Context, tenant fin.TenantID, legalEntity, debtor string) ([]*fin.FreightJob, error)
 	// OfNote reads the job of a note.
 	OfNote(ctx context.Context, tenant fin.TenantID, invoiceID string) (*fin.FreightJob, int64, error)
+	// WithOpenDebitNotes lists the jobs of a legal entity with an ISSUED debit note (one with a line not reversed).
+	WithOpenDebitNotes(ctx context.Context, tenant fin.TenantID, legalEntity string) ([]*fin.FreightJob, error)
 }
 
 // Numbers is the platform's sequence of a tenant's document type (idp-platform-go, MD-28), in FIN's schema: Next takes
@@ -177,10 +179,10 @@ type HouseDocument struct {
 	LegalEntityID string
 }
 
-// Documents reads DOC (DOC -> FIN), outside FIN's transactions: fin.ErrNoIssuedDocument when the shipment's house
-// document is not issued.
+// Documents reads DOC (DOC -> FIN), outside FIN's transactions: the shipment's house document version valid at an
+// instant (the valid one now with a zero instant); fin.ErrNoIssuedDocument when there is none.
 type Documents interface {
-	HouseDocument(ctx context.Context, tenant fin.TenantID, shipment string) (HouseDocument, error)
+	HouseDocument(ctx context.Context, tenant fin.TenantID, shipment string, at time.Time) (HouseDocument, error)
 }
 
 // Deps are the ports every FIN command uses.

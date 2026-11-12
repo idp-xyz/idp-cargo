@@ -295,7 +295,8 @@ func sideViews(vs []domain.SideVersion, currency kernel.CurrencyCode) []api.Side
 	var out []api.SideVersion
 	for _, v := range vs {
 		out = append(out, api.SideVersion{Version: v.No, PartyID: v.PartyID, Amount: v.Amount, Local: kernel.Money{Currency: currency, Minor: v.Local},
-			Status: v.Status, Reason: v.Reason, InvoiceID: v.InvoiceID, InvoiceLineNo: v.InvoiceLineNo, RecordedBy: v.By, RecordedAt: v.At, FX: fxView(v.FX)})
+			Status: v.Status, Reason: v.Reason, InvoiceID: v.InvoiceID, InvoiceLineNo: v.InvoiceLineNo, ConvertedAt: v.ConvertedAt, RecordedBy: v.By,
+			RecordedAt: v.At, FX: fxView(v.FX)})
 	}
 	return out
 }
@@ -577,6 +578,57 @@ func (m *Module) ListOpenDebtorItems(ctx context.Context, q api.ListOpenDebtorIt
 		return nil, classify(err)
 	}
 	slices.SortStableFunc(out, func(a, b api.DebtorInvoice) int { return strings.Compare(a.DueDate+a.Number, b.DueDate+b.Number) })
+	return out, nil
+}
+
+// ListDebitNotesOnChangedDocuments compares the house document each open debit note of the legal entity billed with
+// the valid one DOC answers now, asking DOC after FIN's read.
+func (m *Module) ListDebitNotesOnChangedDocuments(ctx context.Context, q api.ListDebitNotesOnChangedDocuments) ([]api.DocumentChange, error) {
+	d := m.deps(q.TenantID, "")
+	var jobs []*domain.FreightJob
+	if err := d.Reader(ctx, func(txCtx context.Context) (err error) {
+		jobs, err = d.Jobs.WithOpenDebitNotes(txCtx, domain.TenantID(q.TenantID), q.LegalEntityID)
+		return err
+	}); err != nil {
+		return nil, classify(err)
+	}
+	out := []api.DocumentChange{}
+	current := map[string]*api.DocumentRef{}
+	for _, j := range jobs {
+		st := j.State()
+		now, asked := current[st.ShipmentID]
+		if !asked {
+			h, err := m.documents.HouseDocument(ctx, domain.TenantID(q.TenantID), st.ShipmentID, time.Time{})
+			switch {
+			case errors.Is(err, domain.ErrNoIssuedDocument):
+			case err != nil:
+				return nil, classify(err)
+			default:
+				ref := api.DocumentRef(h.DocumentRef)
+				now = &ref
+			}
+			current[st.ShipmentID] = now
+		}
+		for _, n := range st.Notes {
+			if n.Kind != domain.KindDebitNote || n.State != domain.NoteIssued {
+				continue
+			}
+			c := api.DocumentChange{InvoiceID: n.ID, Number: n.Number, JobID: st.JobID, ShipmentID: st.ShipmentID, DebtorPartyID: n.DebtorPartyID,
+				Billed: api.DocumentRef(n.Document), Current: now}
+			switch {
+			case now == nil:
+				c.Change = api.DocumentCancelled
+			case now.DocumentID != n.Document.DocumentID:
+				c.Change = api.DocumentReplaced
+			case now.Version != n.Document.Version:
+				c.Change = api.DocumentAmended
+			default:
+				continue
+			}
+			out = append(out, c)
+		}
+	}
+	slices.SortFunc(out, func(a, b api.DocumentChange) int { return strings.Compare(a.Number, b.Number) })
 	return out, nil
 }
 

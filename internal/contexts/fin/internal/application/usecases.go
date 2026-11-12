@@ -264,7 +264,7 @@ func (d Deps) IssueDebitNote(ctx context.Context, c Command, in DebitNoteAsk) (R
 	var identity fin.PartyIdentity
 	return d.change(ctx, c, func(ctx context.Context, j *fin.FreightJob) (err error) {
 		st := j.State()
-		if document, err = d.Documents.HouseDocument(ctx, c.Scope.TenantID, st.ShipmentID); err != nil {
+		if document, err = d.Documents.HouseDocument(ctx, c.Scope.TenantID, st.ShipmentID, c.OccurredAt); err != nil {
 			return err
 		}
 		switch {

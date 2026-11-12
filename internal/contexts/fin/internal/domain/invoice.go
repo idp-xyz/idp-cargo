@@ -253,9 +253,10 @@ type CreditNoteInput struct {
 // once, every amount negated under the debit note's conversion and tax. A credit note reduces what the debtor owes (its
 // total is negative), and the lines it leaves on the debit note still total more than zero, so a discount line is
 // reversed with, or after, the lines it discounts. The note takes the next number of the credit note series; each
-// reversed sell side returns to ESTIMATED as a new version, at its amount converted at the ESTIMATE rate in force
-// (FIN_RATE_MISSING without one), to be revised or billed again, or at zero for a write-off; a debit note with every line
-// reversed is CANCELLED_BY_CREDIT_NOTE. Fapiao and their red-letter records come later (FB6), so none is asked for yet.
+// reversed sell side returns to ESTIMATED as a new version: the estimate it had before it was billed, with that
+// estimate's conversion (no rate need be in force now), to be revised or billed again, or zero for a write-off; a debit
+// note with every line reversed is CANCELLED_BY_CREDIT_NOTE. Fapiao and their red-letter records come later (FB6), so
+// none is asked for yet.
 func (j *FreightJob) IssueCreditNote(in CreditNoteInput, p *FinancePolicy, draw Draw, by string, at time.Time) error {
 	if err := j.open(by, at); err != nil {
 		return err
@@ -304,13 +305,25 @@ func (j *FreightJob) IssueCreditNote(in CreditNoteInput, p *FinancePolicy, draw 
 		if v.Status != StatusInvoiced || v.InvoiceID != d.ID || v.InvoiceLineNo != dl.No {
 			return fmt.Errorf("%w: the sell side of line %d is not the one debit note %s invoiced", ErrInvalid, dl.JobLineNo, d.Number)
 		}
-		amount := v.Amount
+		var back SideVersion
 		if in.WriteOff {
-			amount.Minor = 0
-		}
-		back, err := j.side(SideSell, v.PartyID, v.PartyRevision, amount, StatusEstimated, "credit note", p, v.No+1, by, at)
-		if err != nil {
-			return err
+			if back, err = j.side(SideSell, v.PartyID, v.PartyRevision, kernel.Money{Currency: v.Amount.Currency}, StatusEstimated, "credit note", p, v.No+1,
+				by, at); err != nil {
+				return err
+			}
+		} else {
+			if len(sell) < 2 {
+				return fmt.Errorf("%w: the sell side of line %d was not billed from an estimate", ErrInvalid, dl.JobLineNo)
+			}
+			before := sell[len(sell)-2] // the estimate the debit note billed (INVOICED follows an ESTIMATED version)
+			if before.Status != StatusEstimated || before.Amount != v.Amount {
+				return fmt.Errorf("%w: the sell side of line %d was not billed from an estimate of its amount", ErrInvalid, dl.JobLineNo)
+			}
+			back = SideVersion{Side: SideSell, No: v.No + 1, PartyID: v.PartyID, PartyRevision: v.PartyRevision, Amount: before.Amount, Local: before.Local,
+				FX: before.FX, Status: StatusEstimated, Reason: "credit note", By: by, At: at.UTC()}
+			if before.FX != nil {
+				back.ConvertedAt = before.converted()
+			}
 		}
 		returned = append(returned, back)
 		line := NoteLine{No: len(n.Lines) + 1, JobLineNo: dl.JobLineNo, CreditsLineNo: dl.No, ChargeCode: dl.ChargeCode,

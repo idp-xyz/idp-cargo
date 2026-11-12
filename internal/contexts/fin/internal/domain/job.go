@@ -52,9 +52,18 @@ type SideVersion struct {
 	Reason        string
 	InvoiceID     string
 	InvoiceLineNo int
+	ConvertedAt   time.Time // when its rate was applied, for an estimate a credit note returned at its earlier conversion; zero otherwise
 	By            string
 	At            time.Time
 	EnteredAt     time.Time
+}
+
+// converted is when the side's rate was applied.
+func (v SideVersion) converted() time.Time {
+	if v.ConvertedAt.IsZero() {
+		return v.At
+	}
+	return v.ConvertedAt
 }
 
 // ChargeLine is a charge of the job with at most one sell side and one cost side, each a series of versions. A

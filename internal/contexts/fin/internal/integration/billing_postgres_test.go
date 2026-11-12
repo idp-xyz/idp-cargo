@@ -6,12 +6,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	bentopg "go.idp.xyz/idp-bento-go/postgres"
 	docapi "go.idp.xyz/idp-cargo/internal/contexts/doc/api"
 	finmodule "go.idp.xyz/idp-cargo/internal/contexts/fin"
@@ -93,6 +95,57 @@ func (b *billing) profile(id, debtor, kind string, expected int) (api.Receipt, e
 func houseDocument(shipment, number string, issued time.Time) docapi.TransportDocumentSnapshot {
 	return docapi.TransportDocumentSnapshot{DocumentID: "DOC-" + shipment, Kind: "HAWB", Version: 1, VersionStatus: docapi.VersionIssued, Number: number,
 		MasterNumber: "781-12345675", ShipmentID: shipment, LegalEntityID: "LE", Origin: "CNSHA", Destination: "USJFK", IssuedAt: issued}
+}
+
+// ready gives the job of newBilling what a note needs besides the HAWB: the charge codes' tax treatments, the series
+// DN{seq:6} and CN{seq:6}, and the billing profiles of party-a and agent-ny.
+func (b *billing) ready(t *testing.T) {
+	t.Helper()
+	from := b.at.AddDate(0, 0, -5).Format(time.DateOnly)
+	b.policyChange(t)(b.tax("tax-freight", "AIR_FREIGHT", api.TaxExemptIntlFreight, 0, from))
+	b.policyChange(t)(b.tax("tax-doc", "DOC_FEE", api.TaxTaxable, 600, from))
+	b.policyChange(t)(b.tax("tax-dest", "DEST_FEE", api.TaxPassThrough, 0, from))
+	b.policyChange(t)(b.series("series-dn", api.KindDebitNote, "DN{seq:6}", 1))
+	b.policyChange(t)(b.series("series-cn", api.KindCreditNote, "CN{seq:6}", 1))
+	for debtor, kind := range map[string]string{"party-a": api.BuyerCNEnterprise, "agent-ny": api.BuyerForeign} {
+		if _, err := b.profile("profile-"+debtor, debtor, kind, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// rewrite changes one row of the tenant as the migrator role with the session's triggers off, to put a stored row into
+// a shape FIN does not write; $1 is the tenant.
+func (b *billing) rewrite(t *testing.T, sql string) {
+	t.Helper()
+	dsn := os.Getenv("IDP_CARGO_MIGRATOR_DSN")
+	if dsn == "" {
+		if os.Getenv("CI") != "" {
+			t.Fatal("IDP_CARGO_MIGRATOR_DSN required in CI; skipping forbidden")
+		}
+		t.Skip("set IDP_CARGO_MIGRATOR_DSN to rewrite stored rows")
+	}
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(ctx)
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, `SET LOCAL session_replication_role = replica`); err != nil {
+		t.Fatal(err)
+	}
+	tag, err := tx.Exec(ctx, sql, b.tenant)
+	if err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("rewrite: %d rows, %v", tag.RowsAffected(), err)
+	}
+	if err = tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // newBilling opens the policy with the three USD rate types (ESTIMATE 7.1234, INVOICE 7.2000, ACCOUNTING 7.1000) and the
@@ -332,25 +385,49 @@ func TestDebitAndCreditNotesOnPostgres(t *testing.T) {
 		ExpectedRevision: b.policy, EntryNo: 2, ValidUntil: b.hours(4), Reason: "wrong rate", OccurredAt: b.hours(9)})
 	rejected("ending the INVOICE rate a debit note used", err, "FIN_RATE_IN_USE")
 
-	// the USD debit note to the agent (ACCOUNTING rate) is reversed after the ESTIMATE rate ended: the side cannot
-	// return at its amount without an estimate rate, but can be written off
-	b.policyChange(t)(b.module.EndExchangeRate(ctx, api.EndExchangeRate{CommandID: "end-estimate-rate", TenantID: b.tenant, ActorID: "acct-1",
-		LegalEntityID: "LE", ExpectedRevision: b.policy, EntryNo: 1, ValidUntil: b.hours(10), Reason: "estimate rates move to the monthly table",
-		OccurredAt: b.hours(10)}))
-	agentCredit := b.credit("CN-3", "DN-2", 11, 1)
-	_, err = b.module.IssueCreditNote(ctx, agentCredit)
-	rejected("returning a USD side without an ESTIMATE rate", err, "FIN_RATE_MISSING")
-	agentCredit.CommandID, agentCredit.WriteOff, agentCredit.Reason = "credit-CN-3-off", true, "collect charge waived by the agent"
-	if r, err = b.module.IssueCreditNote(ctx, agentCredit); err != nil || r.Number != "CN000003" {
-		t.Fatalf("written off: %+v %v", r, err)
+	// the ESTIMATE rate ends just after the estimates were converted (at 2), the one CN-2 returned at 9 included; the
+	// USD debit note to the agent (ACCOUNTING rate) is reversed after the end: the side returns to its estimate before
+	// billing, at the estimate's own conversion (ESTIMATE 7.1234, CNY 1,424.68)
+	endEstimate := func(id string, until int) (api.Receipt, error) {
+		return b.module.EndExchangeRate(ctx, api.EndExchangeRate{CommandID: id, TenantID: b.tenant, ActorID: "acct-1", LegalEntityID: "LE",
+			ExpectedRevision: b.policy, EntryNo: 1, ValidUntil: b.hours(until), Reason: "estimate rates move to the monthly table", OccurredAt: b.hours(10)})
+	}
+	_, err = endEstimate("end-estimate-rate-2", 2)
+	rejected("ending the ESTIMATE rate at the estimates' conversion", err, "FIN_RATE_IN_USE")
+	b.policyChange(t)(endEstimate("end-estimate-rate", 3))
+	if r, err = b.module.IssueCreditNote(ctx, b.credit("CN-3", "DN-2", 11, 1)); err != nil || r.Number != "CN000003" {
+		t.Fatalf("returned after the ESTIMATE rate ended: %+v %v", r, err)
 	}
 	b.job = r.NewRevision
 	if note, err = b.module.GetDebtorInvoice(ctx, api.GetDebtorInvoice{TenantID: b.tenant, InvoiceID: "CN-3"}); err != nil || note.Total != usd(-20_000) ||
-		note.LocalTotal != cny(-142_000) || note.Lines[0].FX.RateType != api.RateAccounting || !note.WriteOff {
+		note.LocalTotal != cny(-142_000) || note.Lines[0].FX.RateType != api.RateAccounting || note.WriteOff {
 		t.Fatalf("credit note of the USD note: %+v %v", note, err)
 	}
+	job, err = b.module.GetFreightJob(ctx, api.GetFreightJob{TenantID: b.tenant, JobID: "JOB-A"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	estimate, back := job.Lines[2].Sell[0], job.Lines[2].Sell[len(job.Lines[2].Sell)-1]
+	if back.Status != api.StatusEstimated || back.Amount != usd(20_000) || back.Local != cny(142_468) || back.FX == nil || back.FX.EntryNo != 1 ||
+		back.FX.RateType != api.RateEstimate || !back.ConvertedAt.Equal(estimate.RecordedAt) || !back.RecordedAt.Equal(b.hours(11)) {
+		t.Fatalf("the agent's charge back at its estimate: %+v", job.Lines[2].Sell)
+	}
+	// billed again and waived: the write-off leaves nothing to bill
+	if r = b.issued(t, b.debit("DN-4", "JOB-A", 12, "agent-ny", "USD", 3)); r.Number != "DN000004" {
+		t.Fatalf("the agent billed again: %+v", r)
+	}
+	waive := b.credit("CN-4", "DN-4", 13, 1)
+	waive.WriteOff, waive.Reason = true, "collect charge waived by the agent"
+	if r, err = b.module.IssueCreditNote(ctx, waive); err != nil || r.Number != "CN000004" {
+		t.Fatalf("written off: %+v %v", r, err)
+	}
+	b.job = r.NewRevision
+	if note, err = b.module.GetDebtorInvoice(ctx, api.GetDebtorInvoice{TenantID: b.tenant, InvoiceID: "CN-4"}); err != nil || note.Total != usd(-20_000) ||
+		note.LocalTotal != cny(-142_000) || !note.WriteOff {
+		t.Fatalf("the write-off: %+v %v", note, err)
+	}
 	if job, err = b.module.GetFreightJob(ctx, api.GetFreightJob{TenantID: b.tenant, JobID: "JOB-A"}); err != nil ||
-		job.Lines[2].Sell[len(job.Lines[2].Sell)-1].Amount != usd(0) {
+		job.Lines[2].Sell[len(job.Lines[2].Sell)-1].Amount != usd(0) || job.Lines[2].Sell[len(job.Lines[2].Sell)-1].FX != nil {
 		t.Fatalf("the agent's charge written off: %+v %v", job.Lines[2].Sell, err)
 	}
 	if items, err = b.module.ListOpenDebtorItems(ctx, api.ListOpenDebtorItems{TenantID: b.tenant, LegalEntityID: "LE", DebtorPartyID: "agent-ny"}); err != nil ||
@@ -399,6 +476,54 @@ func TestDebitAndCreditNotesOnPostgres(t *testing.T) {
 		t.Fatal("a number drawn without a note")
 	} else if _, constraint := sqlState(err); constraint != "invoice_series_consistent" {
 		t.Fatalf("a number drawn without a note: %v", err)
+	}
+	// a conversion time belongs to an estimate with a rate, and is not after the version's own time
+	for name, sql := range map[string]string{
+		"a conversion time on a billed side": `INSERT INTO cargo_fin.charge_side_version (tenant_id,job_id,line_no,side,version_no,party_id,party_revision,currency,
+            amount_minor,local_minor,rate_entry_no,rate_type,rate,scale,from_digits,to_digits,rate_source,status,invoice_id,invoice_line_no,reason,
+            recorded_by,recorded_at,entered_at,converted_at) SELECT tenant_id,job_id,line_no,side,4,party_id,party_revision,currency,amount_minor,local_minor,
+            rate_entry_no,rate_type,rate,scale,from_digits,to_digits,rate_source,'INVOICED','DN-1',1,'x','x',now(),now(),converted_at
+            FROM cargo_fin.charge_side_version WHERE job_id='JOB-A' AND line_no=1 AND version_no=3`,
+		"converted after it was recorded": `INSERT INTO cargo_fin.charge_side_version (tenant_id,job_id,line_no,side,version_no,party_id,party_revision,currency,
+            amount_minor,local_minor,rate_entry_no,rate_type,rate,scale,from_digits,to_digits,rate_source,status,reason,recorded_by,recorded_at,entered_at,
+            converted_at) SELECT tenant_id,job_id,line_no,side,4,party_id,party_revision,currency,amount_minor,local_minor,rate_entry_no,rate_type,rate,scale,
+            from_digits,to_digits,rate_source,status,'x','x',converted_at,now(),converted_at+interval '1 second'
+            FROM cargo_fin.charge_side_version WHERE job_id='JOB-A' AND line_no=1 AND version_no=3`,
+		"a conversion time without a rate": `INSERT INTO cargo_fin.charge_side_version (tenant_id,job_id,line_no,side,version_no,party_id,party_revision,currency,
+            amount_minor,local_minor,status,reason,recorded_by,recorded_at,entered_at,converted_at) SELECT tenant_id,job_id,line_no,side,5,party_id,
+            party_revision,currency,amount_minor,local_minor,'ESTIMATED','x','x',now(),now(),now()
+            FROM cargo_fin.charge_side_version WHERE job_id='JOB-A' AND line_no=2 AND version_no=3`,
+	} {
+		err := b.within(t, func(ctx context.Context, e bentopg.Executor) error {
+			_, err := e.Exec(ctx, sql)
+			return err
+		})
+		if _, constraint := sqlState(err); constraint != "charge_side_converted" {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	// the returned AIR_FREIGHT estimate (version 3) copied as a revision recorded now, keeping its conversion at 2 when
+	// the ESTIMATE rate was in force: only a credit note's return keeps an earlier conversion
+	if err = b.within(t, func(ctx context.Context, e bentopg.Executor) error {
+		for _, sql := range []string{
+			`UPDATE cargo_fin.freight_job SET revision=revision+1 WHERE job_id='JOB-A'`,
+			`INSERT INTO cargo_fin.charge_side_version (tenant_id,job_id,line_no,side,version_no,party_id,party_revision,currency,amount_minor,local_minor,
+               rate_entry_no,rate_type,rate,scale,from_digits,to_digits,rate_source,status,reason,recorded_by,recorded_at,entered_at,converted_at)
+             SELECT tenant_id,job_id,line_no,side,4,party_id,party_revision,currency,amount_minor,local_minor,rate_entry_no,rate_type,rate,scale,from_digits,
+               to_digits,rate_source,status,'revised past FIN','x',now(),now(),converted_at
+             FROM cargo_fin.charge_side_version WHERE job_id='JOB-A' AND line_no=1 AND version_no=3 AND converted_at IS NOT NULL`,
+		} {
+			if tag, err := e.Exec(ctx, sql); err != nil {
+				return err
+			} else if tag.RowsAffected() != 1 {
+				return fmt.Errorf("%s: %d rows", sql[:40], tag.RowsAffected())
+			}
+		}
+		return nil
+	}); err == nil {
+		t.Fatal("a revised estimate converted before it was recorded")
+	} else if _, constraint := sqlState(err); constraint != "freight_job_consistent" {
+		t.Fatalf("a revised estimate converted before it was recorded: %v", err)
 	}
 	// A forged copy of DN-3 with its number drawn and the job written, billing a side version that does not exist:
 	// every other check passes, the job's note check does not.
@@ -789,5 +914,208 @@ func TestDatabaseRendersNumbersAsThePlatform(t *testing.T) {
 	}
 	if compared != len(templates)*len(dates)*3 {
 		t.Fatalf("compared %d", compared)
+	}
+}
+
+// A debit note bills the house document version valid at its business time; the review list shows the open debit
+// notes whose document was amended, cancelled or replaced since, until a credit note closes them.
+func TestDebitNotesFollowTheHouseDocument(t *testing.T) {
+	ctx := context.Background()
+	b := newBilling(t)
+	b.ready(t)
+	v1 := houseDocument("SH-A", "SHA0000001", b.hours(3))
+	v2 := v1
+	v2.Version, v2.IssuedAt, v2.SHA256 = 2, b.hours(6), "v2"
+	v1.VersionStatus = docapi.VersionSuperseded
+	b.w.mu.Lock()
+	b.w.documents["SH-A"], b.w.earlier["SH-A"] = v2, []docapi.TransportDocumentSnapshot{v1}
+	b.w.mu.Unlock()
+	changes := func() []api.DocumentChange {
+		t.Helper()
+		out, err := b.module.ListDebitNotesOnChangedDocuments(ctx, api.ListDebitNotesOnChangedDocuments{TenantID: b.tenant, LegalEntityID: "LE"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+
+	// entered after the amendment, the note of hour 4 bills version 1; the note of hour 7 bills version 2
+	b.issued(t, b.debit("DN-1", "JOB-A", 4, "party-a", "CNY", 1, 2))
+	b.issued(t, b.debit("DN-2", "JOB-A", 7, "agent-ny", "USD", 3))
+	note, err := b.module.GetDebtorInvoice(ctx, api.GetDebtorInvoice{TenantID: b.tenant, InvoiceID: "DN-1"})
+	if err != nil || note.Document.Version != 1 || !note.Document.IssuedAt.Equal(b.hours(3)) {
+		t.Fatalf("a backdated note: %+v %v", note.Document, err)
+	}
+	if note, err = b.module.GetDebtorInvoice(ctx, api.GetDebtorInvoice{TenantID: b.tenant, InvoiceID: "DN-2"}); err != nil || note.Document.Version != 2 {
+		t.Fatalf("a note after the amendment: %+v %v", note.Document, err)
+	}
+	if got := changes(); len(got) != 1 || got[0].InvoiceID != "DN-1" || got[0].Number != "DN000001" || got[0].Change != api.DocumentAmended ||
+		got[0].Billed.Version != 1 || got[0].Current == nil || got[0].Current.Version != 2 || got[0].ShipmentID != "SH-A" || got[0].DebtorPartyID != "party-a" ||
+		got[0].JobID != "JOB-A" {
+		t.Fatalf("amended: %+v", got)
+	}
+	if got, err := b.module.ListDebitNotesOnChangedDocuments(ctx, api.ListDebitNotesOnChangedDocuments{TenantID: b.tenant, LegalEntityID: "LE-2"}); err != nil ||
+		len(got) != 0 {
+		t.Fatalf("another legal entity: %+v %v", got, err)
+	}
+
+	// the HAWB cancelled: both notes, nothing valid now
+	b.w.mu.Lock()
+	delete(b.w.documents, "SH-A")
+	b.w.mu.Unlock()
+	if got := changes(); len(got) != 2 || got[0].InvoiceID != "DN-1" || got[1].InvoiceID != "DN-2" || got[0].Change != api.DocumentCancelled ||
+		got[1].Change != api.DocumentCancelled || got[0].Current != nil || got[1].Billed.Version != 2 {
+		t.Fatalf("cancelled: %+v", got)
+	}
+	_, err = b.module.IssueDebitNote(ctx, b.debit("DN-X", "JOB-A", 8, "party-a", "CNY", 2))
+	if !errors.Is(err, api.ErrRejected) || !strings.Contains(err.Error(), "FIN_NO_ISSUED_DOCUMENT") {
+		t.Fatalf("billing a cancelled HAWB: %v", err)
+	}
+
+	// another HAWB issued for the shipment: replaced; a credit note closes DN-1
+	replacement := houseDocument("SH-A", "SHA0000002", b.hours(8))
+	replacement.DocumentID = "DOC-SH-A-2"
+	b.w.mu.Lock()
+	b.w.documents["SH-A"], b.w.earlier["SH-A"] = replacement, nil
+	b.w.mu.Unlock()
+	if got := changes(); len(got) != 2 || got[0].Change != api.DocumentReplaced || got[1].Change != api.DocumentReplaced ||
+		got[0].Current == nil || got[0].Current.DocumentID != "DOC-SH-A-2" || got[0].Current.Number != "SHA0000002" || got[0].Billed.DocumentID != "DOC-SH-A" {
+		t.Fatalf("replaced: %+v", got)
+	}
+	r, err := b.module.IssueCreditNote(ctx, b.credit("CN-1", "DN-1", 9, 1, 2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.job = r.NewRevision
+	if got := changes(); len(got) != 1 || got[0].InvoiceID != "DN-2" {
+		t.Fatalf("after the credit note: %+v", got)
+	}
+	// billed again on the new HAWB: nothing to review for it
+	b.issued(t, b.debit("DN-3", "JOB-A", 10, "party-a", "CNY", 1, 2))
+	if got := changes(); len(got) != 1 || got[0].InvoiceID != "DN-2" {
+		t.Fatalf("billed on the new HAWB: %+v", got)
+	}
+}
+
+var errRolledBack = errors.New("rolled back")
+
+// At commit the database holds a credit note's return to the estimate it returns to (clause (h) of the job's note
+// check): the estimate billed with its conversion and conversion time, or zero for a write-off. A return FIN V0.2 wrote,
+// with its conversion but no conversion time, stays valid and the job goes on; no new return is written that way.
+func TestReturnedEstimatesAreCheckedAtCommit(t *testing.T) {
+	ctx := context.Background()
+	b := newBilling(t)
+	b.ready(t)
+	b.w.mu.Lock()
+	b.w.documents["SH-A"] = houseDocument("SH-A", "SHA0000001", b.hours(3))
+	b.w.mu.Unlock()
+	credited := func(cmd api.IssueCreditNote) {
+		t.Helper()
+		r, err := b.module.IssueCreditNote(ctx, cmd)
+		if err != nil {
+			t.Fatalf("%s: %v", cmd.InvoiceID, err)
+		}
+		b.job = r.NewRevision
+	}
+	// line 3 (USD 200.00 to the agent) billed and returned; line 1 (USD 1,200.00) billed and written off; line 2
+	// (CNY 300.00) billed and returned: each is version 3 of its side
+	b.issued(t, b.debit("DN-1", "JOB-A", 4, "agent-ny", "USD", 3))
+	b.issued(t, b.debit("DN-2", "JOB-A", 4, "party-a", "CNY", 1))
+	b.issued(t, b.debit("DN-3", "JOB-A", 4, "party-a", "CNY", 2))
+	credited(b.credit("CN-1", "DN-1", 5, 1))
+	waive := b.credit("CN-2", "DN-2", 5, 1)
+	waive.WriteOff = true
+	credited(waive)
+	credited(b.credit("CN-3", "DN-3", 5, 1))
+
+	// the job's commit checks on its rows as they are, nothing kept
+	check := func() error {
+		err := b.within(t, func(ctx context.Context, e bentopg.Executor) error {
+			for _, sql := range []string{`UPDATE cargo_fin.freight_job SET revision=revision+1 WHERE job_id='JOB-A'`, `SET CONSTRAINTS ALL IMMEDIATE`} {
+				if _, err := e.Exec(ctx, sql); err != nil {
+					return err
+				}
+			}
+			return errRolledBack
+		})
+		if errors.Is(err, errRolledBack) {
+			return nil
+		}
+		return err
+	}
+	if err := check(); err != nil {
+		t.Fatalf("the job as FIN wrote it: %v", err)
+	}
+	// version 3 of a line's sell side, alone or with the estimate billed (version 1)
+	const (
+		update     = `UPDATE cargo_fin.charge_side_version SET `
+		ofLine     = ` WHERE tenant_id=$1 AND job_id='JOB-A' AND side='SELL' AND version_no=3 AND line_no=`
+		updateFrom = `UPDATE cargo_fin.charge_side_version w SET `
+		estimateOf = ` FROM cargo_fin.charge_side_version p WHERE p.tenant_id=w.tenant_id AND p.job_id=w.job_id AND p.line_no=w.line_no AND p.side=w.side
+            AND p.version_no=1 AND w.tenant_id=$1 AND w.job_id='JOB-A' AND w.side='SELL' AND w.version_no=3 AND w.line_no=`
+		itsAmount = `amount_minor=p.amount_minor, local_minor=p.local_minor`
+		itsRate   = `rate_entry_no=p.rate_entry_no, rate_type=p.rate_type, rate=p.rate, scale=p.scale, from_digits=p.from_digits, to_digits=p.to_digits,
+            rate_source=p.rate_source, converted_at=p.recorded_at`
+		zero   = `amount_minor=0, local_minor=0`
+		noRate = `rate_entry_no=NULL, rate_type=NULL, rate=NULL, scale=NULL, from_digits=NULL, to_digits=NULL, rate_source=NULL, converted_at=NULL`
+	)
+	const usdReturn = ofLine + `3`
+	for _, c := range []struct{ name, wrong, right string }{
+		{"a return converted at another time than its estimate",
+			update + `converted_at=converted_at+interval '1 microsecond'` + usdReturn, update + `converted_at=converted_at-interval '1 microsecond'` + usdReturn},
+		{"a return at zero without a write-off", update + zero + `, ` + noRate + usdReturn, updateFrom + itsAmount + `, ` + itsRate + estimateOf + `3`},
+		{"a return at another amount than its estimate",
+			update + `amount_minor=amount_minor+1, local_minor=local_minor+1` + ofLine + `2`, update + `amount_minor=amount_minor-1, local_minor=local_minor-1` + ofLine + `2`},
+		{"a write-off returned at its amount", updateFrom + itsAmount + `, ` + itsRate + estimateOf + `1`, update + zero + `, ` + noRate + ofLine + `1`},
+		{"a write-off keeping its estimate's rate", updateFrom + itsRate + estimateOf + `1`, update + noRate + ofLine + `1`},
+	} {
+		b.rewrite(t, c.wrong)
+		if _, constraint := sqlState(check()); constraint != "freight_job_invoices_consistent" {
+			t.Fatalf("%s: %v", c.name, check())
+		}
+		b.rewrite(t, c.right)
+		if err := check(); err != nil {
+			t.Fatalf("%s, put back: %v", c.name, err)
+		}
+	}
+
+	// the return as FIN V0.2 wrote it (the ESTIMATE rate in force when it was recorded, no conversion time) stays valid:
+	// the side is billed again and credited, and returns to that estimate, converted when it was recorded
+	b.rewrite(t, update+`converted_at=NULL`+usdReturn)
+	if err := check(); err != nil {
+		t.Fatalf("a return FIN V0.2 wrote: %v", err)
+	}
+	b.issued(t, b.debit("DN-4", "JOB-A", 6, "agent-ny", "USD", 3))
+	// a new return written that way is refused, with the job written and before any other check
+	err := b.within(t, func(ctx context.Context, e bentopg.Executor) error {
+		for _, sql := range []string{
+			`INSERT INTO cargo_fin.charge_side_version (tenant_id,job_id,line_no,side,version_no,party_id,party_revision,currency,amount_minor,local_minor,
+               rate_entry_no,rate_type,rate,scale,from_digits,to_digits,rate_source,status,reason,recorded_by,recorded_at,entered_at)
+             SELECT tenant_id,job_id,line_no,side,5,party_id,party_revision,currency,amount_minor,local_minor,rate_entry_no,rate_type,rate,scale,from_digits,
+               to_digits,rate_source,status,'returned past FIN','x',now(),now()
+             FROM cargo_fin.charge_side_version WHERE job_id='JOB-A' AND line_no=3 AND version_no=3`,
+			`UPDATE cargo_fin.freight_job SET revision=revision+1 WHERE job_id='JOB-A'`,
+		} {
+			if tag, err := e.Exec(ctx, sql); err != nil {
+				return err
+			} else if tag.RowsAffected() != 1 {
+				return fmt.Errorf("%d rows", tag.RowsAffected())
+			}
+		}
+		return nil
+	})
+	if _, constraint := sqlState(err); constraint != "charge_side_return_converted" {
+		t.Fatalf("a new return without its conversion time: %v", err)
+	}
+	credited(b.credit("CN-4", "DN-4", 7, 1))
+	job, err := b.module.GetFreightJob(ctx, api.GetFreightJob{TenantID: b.tenant, JobID: "JOB-A"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sell := job.Lines[2].Sell
+	old, back := sell[2], sell[len(sell)-1]
+	if len(sell) != 5 || !old.ConvertedAt.IsZero() || !old.RecordedAt.Equal(b.hours(5)) || back.Status != api.StatusEstimated || back.Amount != usd(20_000) ||
+		back.Local != cny(142_468) || back.FX == nil || *back.FX != *old.FX || !back.ConvertedAt.Equal(old.RecordedAt) || !back.RecordedAt.Equal(b.hours(7)) {
+		t.Fatalf("returned to the V0.2 return: %+v", sell)
 	}
 }
