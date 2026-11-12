@@ -1060,7 +1060,9 @@ func FINEnvelope(commandID string, e fin.Event, recordedAt time.Time) (eventing.
 	return envelope, envelope.Validate()
 }
 
-// Conflict reports whether a commit failed on one of FIN's deferred checks.
+// Conflict reports whether a commit failed on one of FIN's deferred checks. charge_side_return_converted is not one of
+// them: no race leads to it, only a binary older than fin/000004 writing a return without its conversion time, so it
+// stays an error and is not answered as a conflict to try again.
 func Conflict(err error) bool {
 	var pgErr *pgconn.PgError
 	if !errors.As(err, &pgErr) || pgErr.Code != "23514" {

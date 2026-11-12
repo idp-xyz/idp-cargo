@@ -1017,13 +1017,16 @@ func TestReturnedEstimatesAreCheckedAtCommit(t *testing.T) {
 		}
 		b.job = r.NewRevision
 	}
-	// line 3 (USD 200.00 to the agent) billed and returned; line 2 (CNY 300.00) billed and written off
+	// line 3 (USD 200.00 to the agent) billed and returned; line 1 (USD 1,200.00) billed and written off; line 2
+	// (CNY 300.00) billed and returned: each is version 3 of its side
 	b.issued(t, b.debit("DN-1", "JOB-A", 4, "agent-ny", "USD", 3))
-	b.issued(t, b.debit("DN-2", "JOB-A", 4, "party-a", "CNY", 2))
+	b.issued(t, b.debit("DN-2", "JOB-A", 4, "party-a", "CNY", 1))
+	b.issued(t, b.debit("DN-3", "JOB-A", 4, "party-a", "CNY", 2))
 	credited(b.credit("CN-1", "DN-1", 5, 1))
 	waive := b.credit("CN-2", "DN-2", 5, 1)
 	waive.WriteOff = true
 	credited(waive)
+	credited(b.credit("CN-3", "DN-3", 5, 1))
 
 	// the job's commit checks on its rows as they are, nothing kept
 	check := func() error {
@@ -1043,23 +1046,28 @@ func TestReturnedEstimatesAreCheckedAtCommit(t *testing.T) {
 	if err := check(); err != nil {
 		t.Fatalf("the job as FIN wrote it: %v", err)
 	}
-	const usdReturn = ` WHERE tenant_id=$1 AND job_id='JOB-A' AND line_no=3 AND side='SELL' AND version_no=3`
-	const waived = ` WHERE tenant_id=$1 AND job_id='JOB-A' AND line_no=2 AND side='SELL' AND version_no=3`
-	const fromEstimate = `amount_minor=p.amount_minor, local_minor=p.local_minor, rate_entry_no=p.rate_entry_no, rate_type=p.rate_type, rate=p.rate,
-        scale=p.scale, from_digits=p.from_digits, to_digits=p.to_digits, rate_source=p.rate_source
-        FROM cargo_fin.charge_side_version p WHERE p.tenant_id=w.tenant_id AND p.job_id=w.job_id AND p.line_no=w.line_no AND p.side=w.side AND p.version_no=1
-        AND w.tenant_id=$1 AND w.job_id='JOB-A' AND w.side='SELL' AND w.version_no=3 AND w.line_no=`
+	// version 3 of a line's sell side, alone or with the estimate billed (version 1)
+	const (
+		update     = `UPDATE cargo_fin.charge_side_version SET `
+		ofLine     = ` WHERE tenant_id=$1 AND job_id='JOB-A' AND side='SELL' AND version_no=3 AND line_no=`
+		updateFrom = `UPDATE cargo_fin.charge_side_version w SET `
+		estimateOf = ` FROM cargo_fin.charge_side_version p WHERE p.tenant_id=w.tenant_id AND p.job_id=w.job_id AND p.line_no=w.line_no AND p.side=w.side
+            AND p.version_no=1 AND w.tenant_id=$1 AND w.job_id='JOB-A' AND w.side='SELL' AND w.version_no=3 AND w.line_no=`
+		itsAmount = `amount_minor=p.amount_minor, local_minor=p.local_minor`
+		itsRate   = `rate_entry_no=p.rate_entry_no, rate_type=p.rate_type, rate=p.rate, scale=p.scale, from_digits=p.from_digits, to_digits=p.to_digits,
+            rate_source=p.rate_source, converted_at=p.recorded_at`
+		zero   = `amount_minor=0, local_minor=0`
+		noRate = `rate_entry_no=NULL, rate_type=NULL, rate=NULL, scale=NULL, from_digits=NULL, to_digits=NULL, rate_source=NULL, converted_at=NULL`
+	)
+	const usdReturn = ofLine + `3`
 	for _, c := range []struct{ name, wrong, right string }{
 		{"a return converted at another time than its estimate",
-			`UPDATE cargo_fin.charge_side_version SET converted_at=converted_at+interval '1 microsecond'` + usdReturn,
-			`UPDATE cargo_fin.charge_side_version SET converted_at=converted_at-interval '1 microsecond'` + usdReturn},
-		{"a return at zero without a write-off",
-			`UPDATE cargo_fin.charge_side_version SET amount_minor=0, local_minor=0, rate_entry_no=NULL, rate_type=NULL, rate=NULL, scale=NULL,
-               from_digits=NULL, to_digits=NULL, rate_source=NULL, converted_at=NULL` + usdReturn,
-			`UPDATE cargo_fin.charge_side_version w SET converted_at=p.recorded_at, ` + fromEstimate + `3`},
-		{"a write-off returned at its amount",
-			`UPDATE cargo_fin.charge_side_version w SET ` + fromEstimate + `2`,
-			`UPDATE cargo_fin.charge_side_version SET amount_minor=0, local_minor=0` + waived},
+			update + `converted_at=converted_at+interval '1 microsecond'` + usdReturn, update + `converted_at=converted_at-interval '1 microsecond'` + usdReturn},
+		{"a return at zero without a write-off", update + zero + `, ` + noRate + usdReturn, updateFrom + itsAmount + `, ` + itsRate + estimateOf + `3`},
+		{"a return at another amount than its estimate",
+			update + `amount_minor=amount_minor+1, local_minor=local_minor+1` + ofLine + `2`, update + `amount_minor=amount_minor-1, local_minor=local_minor-1` + ofLine + `2`},
+		{"a write-off returned at its amount", updateFrom + itsAmount + `, ` + itsRate + estimateOf + `1`, update + zero + `, ` + noRate + ofLine + `1`},
+		{"a write-off keeping its estimate's rate", updateFrom + itsRate + estimateOf + `1`, update + noRate + ofLine + `1`},
 	} {
 		b.rewrite(t, c.wrong)
 		if _, constraint := sqlState(check()); constraint != "freight_job_invoices_consistent" {
@@ -1073,11 +1081,11 @@ func TestReturnedEstimatesAreCheckedAtCommit(t *testing.T) {
 
 	// the return as FIN V0.2 wrote it (the ESTIMATE rate in force when it was recorded, no conversion time) stays valid:
 	// the side is billed again and credited, and returns to that estimate, converted when it was recorded
-	b.rewrite(t, `UPDATE cargo_fin.charge_side_version SET converted_at=NULL`+usdReturn)
+	b.rewrite(t, update+`converted_at=NULL`+usdReturn)
 	if err := check(); err != nil {
 		t.Fatalf("a return FIN V0.2 wrote: %v", err)
 	}
-	b.issued(t, b.debit("DN-3", "JOB-A", 6, "agent-ny", "USD", 3))
+	b.issued(t, b.debit("DN-4", "JOB-A", 6, "agent-ny", "USD", 3))
 	// a new return written that way is refused, with the job written and before any other check
 	err := b.within(t, func(ctx context.Context, e bentopg.Executor) error {
 		for _, sql := range []string{
@@ -1099,7 +1107,7 @@ func TestReturnedEstimatesAreCheckedAtCommit(t *testing.T) {
 	if _, constraint := sqlState(err); constraint != "charge_side_return_converted" {
 		t.Fatalf("a new return without its conversion time: %v", err)
 	}
-	credited(b.credit("CN-3", "DN-3", 7, 1))
+	credited(b.credit("CN-4", "DN-4", 7, 1))
 	job, err := b.module.GetFreightJob(ctx, api.GetFreightJob{TenantID: b.tenant, JobID: "JOB-A"})
 	if err != nil {
 		t.Fatal(err)
