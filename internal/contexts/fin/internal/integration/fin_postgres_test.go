@@ -72,7 +72,8 @@ type world struct {
 	bases      map[string]rateapi.PricingBasis
 	roles      map[string][]string // party -> roles held for LE
 	identities map[string]orgapi.PartyIdentity
-	documents  map[string]docapi.TransportDocumentSnapshot // shipment -> issued house document
+	documents  map[string]docapi.TransportDocumentSnapshot   // shipment -> valid house document, at its valid version
+	earlier    map[string][]docapi.TransportDocumentSnapshot // shipment -> earlier issued versions of that document, oldest first
 	suspended  bool
 }
 
@@ -93,7 +94,20 @@ func (w *world) GetHouseDocumentSnapshot(_ context.Context, q docapi.GetHouseDoc
 	if !ok {
 		return docapi.TransportDocumentSnapshot{}, fmt.Errorf("%w: stub", docapi.ErrNotFound)
 	}
-	return d, nil
+	if q.At.IsZero() {
+		return d, nil
+	}
+	// as DOC: the version of the valid document issued last at or before At
+	var found *docapi.TransportDocumentSnapshot
+	for _, v := range append(slices.Clone(w.earlier[q.ShipmentID]), d) {
+		if !v.IssuedAt.After(q.At) {
+			found = &v
+		}
+	}
+	if found == nil {
+		return docapi.TransportDocumentSnapshot{}, fmt.Errorf("%w: stub, none issued by then", docapi.ErrNotFound)
+	}
+	return *found, nil
 }
 
 func (w *world) GetShipmentCostDriver(_ context.Context, q fulapi.GetShipmentCostDriver) (fulapi.CostDriver, error) {
@@ -163,7 +177,7 @@ func newFixture(t *testing.T) *fixture {
 				CountryCode: "CN", Identifiers: []orgapi.PartyIdentifier{{Type: orgapi.IdentifierCNUSCC, Country: "CN", Value: "91310000MA1FL8TQ2X"}}},
 			"agent-ny": {PartyID: "agent-ny", Revision: 2, Status: "ACTIVE", LegalName: "NY Forwarding Inc.", CountryCode: "US"},
 		},
-		documents: map[string]docapi.TransportDocumentSnapshot{}}
+		documents: map[string]docapi.TransportDocumentSnapshot{}, earlier: map[string][]docapi.TransportDocumentSnapshot{}}
 	f := &fixture{db: testDB(t), w: w, at: at, tenant: "cargo-fin-" + time.Now().UTC().Format("20060102T150405.000000000")}
 	m, err := finmodule.New(f.db, w, w, w, w, allow{})
 	if err != nil {

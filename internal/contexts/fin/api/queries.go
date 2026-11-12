@@ -105,6 +105,7 @@ type SideVersion struct {
 	Reason        string
 	InvoiceID     string
 	InvoiceLineNo int
+	ConvertedAt   time.Time // when FX was applied, if before RecordedAt: an estimate a credit note returned
 	RecordedBy    string
 	RecordedAt    time.Time
 }
@@ -329,7 +330,31 @@ type (
 	// ListOpenDebtorItems lists a debtor's open debit notes with a legal entity (not every line reversed), the oldest
 	// due first.
 	ListOpenDebtorItems struct{ TenantID, LegalEntityID, DebtorPartyID string }
+	// ListDebitNotesOnChangedDocuments lists a legal entity's open debit notes whose house document changed after
+	// billing, for a person to decide (a credit note, a corrected bill): FIN asks DOC when asked, as it consumes no DOC
+	// event yet.
+	ListDebitNotesOnChangedDocuments struct{ TenantID, LegalEntityID string }
 )
+
+// Changes of a billed house document.
+const (
+	DocumentCancelled = "DOCUMENT_CANCELLED" // the shipment has no valid house document now
+	DocumentReplaced  = "DOCUMENT_REPLACED"  // another house document holds the shipment now
+	DocumentAmended   = "DOCUMENT_AMENDED"   // a later version of the document was issued
+)
+
+// DocumentChange is an open debit note whose house document changed: the document billed and the valid one now (nil
+// when there is none).
+type DocumentChange struct {
+	InvoiceID     string
+	Number        string
+	JobID         string
+	ShipmentID    string
+	DebtorPartyID string
+	Change        string
+	Billed        DocumentRef
+	Current       *DocumentRef
+}
 
 // Queries is FIN's read side. Unknown policies, jobs, accounts, profiles and notes yield ErrNotFound.
 type Queries interface {
@@ -342,4 +367,5 @@ type Queries interface {
 	GetBillingProfile(ctx context.Context, q GetBillingProfile) (BillingProfile, error)
 	GetDebtorInvoice(ctx context.Context, q GetDebtorInvoice) (DebtorInvoice, error)
 	ListOpenDebtorItems(ctx context.Context, q ListOpenDebtorItems) ([]DebtorInvoice, error)
+	ListDebitNotesOnChangedDocuments(ctx context.Context, q ListDebitNotesOnChangedDocuments) ([]DocumentChange, error)
 }

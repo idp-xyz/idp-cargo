@@ -355,6 +355,9 @@ func TestTransportDocumentsOnPostgres(t *testing.T) {
 	snapshot := func() (api.TransportDocumentSnapshot, error) {
 		return f.module.GetHouseDocumentSnapshot(ctx, api.GetHouseDocumentSnapshot{TenantID: f.tenant, ShipmentID: "SH-A"})
 	}
+	snapshotAt := func(at time.Time) (api.TransportDocumentSnapshot, error) {
+		return f.module.GetHouseDocumentSnapshot(ctx, api.GetHouseDocumentSnapshot{TenantID: f.tenant, ShipmentID: "SH-A", At: at})
+	}
 	if _, err = snapshot(); !errors.Is(err, api.ErrNotFound) {
 		t.Fatalf("TransportDocumentSnapshot v1 of an approved draft: %v", err)
 	}
@@ -407,11 +410,32 @@ func TestTransportDocumentsOnPostgres(t *testing.T) {
 		d.Versions[1].ApprovedBy != "doc-2" {
 		t.Fatalf("amended: %+v", d.Versions)
 	}
+	// at an instant: the version issued last by then, superseded or not; before the first issue, none
+	if _, err = snapshotAt(f.hours(3).Add(-time.Microsecond)); !errors.Is(err, api.ErrNotFound) {
+		t.Fatalf("TransportDocumentSnapshot v1 before the first issue: %v", err)
+	}
+	for _, c := range []struct {
+		at      time.Time
+		version int
+		status  string
+	}{{f.hours(3), 1, api.VersionSuperseded}, {f.hours(5).Add(-time.Microsecond), 1, api.VersionSuperseded}, {f.hours(5), 2, api.VersionIssued},
+		{f.hours(30), 2, api.VersionIssued}, {time.Time{}, 2, api.VersionIssued}} {
+		s, err := snapshotAt(c.at)
+		if err != nil || s.DocumentID != "DOC-H1" || s.Version != c.version || s.VersionStatus != c.status || s.Number != "SHA0000001" {
+			t.Fatalf("TransportDocumentSnapshot v1 at %s: %+v %v", c.at, s, err)
+		}
+	}
+	if s, err := snapshotAt(f.hours(4)); err != nil || s.ChargeableGrams != 318_000 || !s.IssuedAt.Equal(f.hours(3)) {
+		t.Fatalf("version 1 as it was issued: %+v %v", s, err)
+	}
 	// an amendment to change the consignee: the client releases the lock, COM changes the party, the amendment is
 	// abandoned and the parties do not match the issued version any more, so the lock must hold the old parties
 	if _, err = f.module.OpenDocumentAmendment(ctx, api.OpenDocumentAmendment{CommandID: "amend-h1-party", TenantID: f.tenant, ActorID: "doc-1",
 		DocumentID: "DOC-H1", ExpectedRevision: 6, Reason: "consignee to change", OccurredAt: f.hours(6)}); err != nil {
 		t.Fatal(err)
+	}
+	if s, err := snapshotAt(f.hours(6)); err != nil || s.Version != 2 || s.VersionStatus != api.VersionIssued {
+		t.Fatalf("TransportDocumentSnapshot v1 at an instant while amending: %+v %v", s, err)
 	}
 	f.w.order("O-A", 2)
 	if _, err = f.module.AbandonDocumentAmendment(ctx, api.AbandonDocumentAmendment{CommandID: "abandon-unlocked", TenantID: f.tenant, ActorID: "doc-1",
@@ -496,6 +520,9 @@ func TestTransportDocumentsOnPostgres(t *testing.T) {
 	if _, err = snapshot(); !errors.Is(err, api.ErrNotFound) {
 		t.Fatalf("TransportDocumentSnapshot v1 of a cancelled HAWB: %v", err)
 	}
+	if _, err = snapshotAt(f.hours(5)); !errors.Is(err, api.ErrNotFound) {
+		t.Fatalf("TransportDocumentSnapshot v1 of a cancelled HAWB at an instant it was valid: %v", err)
+	}
 	again := draft
 	again.CommandID, again.DocumentID, again.OccurredAt = "draft-h2", "DOC-H2", f.hours(14)
 	f.w.order("O-A", 2, "DOC-H2")
@@ -509,6 +536,12 @@ func TestTransportDocumentsOnPostgres(t *testing.T) {
 	}
 	if s, err := snapshot(); err != nil || s.DocumentID != "DOC-H2" || s.Version != 1 || s.Number != "SHA0000001" {
 		t.Fatalf("TransportDocumentSnapshot v1 of the new HAWB: %+v %v", s, err)
+	}
+	if _, err = snapshotAt(f.hours(13)); !errors.Is(err, api.ErrNotFound) {
+		t.Fatalf("TransportDocumentSnapshot v1 before the new HAWB was issued: %v", err)
+	}
+	if s, err := snapshotAt(f.hours(14)); err != nil || s.DocumentID != "DOC-H2" || s.Version != 1 || s.VersionStatus != api.VersionIssued {
+		t.Fatalf("TransportDocumentSnapshot v1 of the new HAWB at its issue: %+v %v", s, err)
 	}
 	f.w.mu.Lock()
 	rolled := f.w.facts["AM-1"]
