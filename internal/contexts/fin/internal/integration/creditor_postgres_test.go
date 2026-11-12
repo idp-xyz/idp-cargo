@@ -17,6 +17,7 @@ import (
 	bentopg "go.idp.xyz/idp-bento-go/postgres"
 	"go.idp.xyz/idp-cargo/internal/contexts/fin/api"
 	fulapi "go.idp.xyz/idp-cargo/internal/contexts/ful/api"
+	scope "go.idp.xyz/idp-cargo/internal/foundation/bento"
 	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
@@ -718,7 +719,8 @@ INSERT INTO cargo_fin.pool_cost_version (tenant_id,pool_id,line_no,version_no,cr
 		}
 	}
 
-	// a match written at REPEATABLE READ, where the read after the lock would miss what others committed
+	// a match written at REPEATABLE READ, where the read after the lock would miss what others committed: refused when
+	// the invoice is written, before the match check would refuse it at commit
 	conn, err := pgx.Connect(ctx, os.Getenv("IDP_CARGO_POSTGRES_DSN"))
 	if err != nil {
 		t.Fatal(err)
@@ -735,10 +737,142 @@ INSERT INTO cargo_fin.pool_cost_version (tenant_id,pool_id,line_no,version_no,cr
             final,local_minor,accrual_amount_minor,accrual_local_minor,prior_amount_minor,prior_local_minor,variance_minor,variance_local_minor)
             VALUES ($1,'CI-R',1,1,'JOB_COST','JOB-C','COST',1,1,5000,false,5000,10000,10000,0,0,0,0)`} {
 		if _, err = tx.Exec(ctx, s, f.tenant); err != nil {
-			t.Fatal(err)
+			break
 		}
 	}
-	if state, constraint := sqlState(tx.Commit(ctx)); state != "23514" || constraint != "fin_read_committed" {
-		t.Fatalf("a match at REPEATABLE READ: state %s constraint %s", state, constraint)
+	if state, constraint := sqlState(err); state != "23514" || constraint != "fin_read_committed" {
+		t.Fatalf("a match at REPEATABLE READ: %v (state %s constraint %s)", err, state, constraint)
+	}
+	_ = tx.Rollback(ctx)
+}
+
+// A cost matched after PHY cancelled the consolidation stays on the consolidation (RETAINED, as CargoWise leaves an
+// unapportioned charge on the consol): not while houses are on it, not without a reason, never with shares; the pool
+// then closes and the consolidation's profit shows it retained.
+func TestRetainedOnPostgres(t *testing.T) {
+	a := creditorWorld(t)
+	ctx, f := a.ctx, a.fixture
+	cancelled := a.w.costBases["CONSOL-1"]
+	cancelled.State, cancelled.Houses = "CANCELLED", nil
+	retain := api.ApportionConsolCosts{CommandID: "retain-early", TenantID: f.tenant, ActorID: "fin-1", PoolID: "P-1", ExpectedRevision: a.pool("P-1").Revision,
+		Method: api.MethodRetained, Reason: "MU's no-show charge", OccurredAt: a.hours(4)}
+	_, err := f.module.ApportionConsolCosts(ctx, retain)
+	a.rejected("retained while PHY reports houses", err, "retained on the consolidation only once")
+
+	// PHY cancels the flight's consolidation; MU bills a no-show charge of 1,200.00 USD on its freight accrual
+	a.w.mu.Lock()
+	a.w.costBases["CONSOL-1"] = cancelled
+	a.w.mu.Unlock()
+	a.must(f.module.RecordCreditorInvoice(ctx, a.record("CI-NS", "airline-mu", "MU-NS", 5, "USD", line("AIR_FREIGHT", 120_000))))
+	a.must(f.module.MatchCreditorInvoice(ctx, a.match("CI-NS", "ap-1", 5, onPool("P-1", 1, 1, 120_000, true))))
+	a.must(f.module.ApproveCostVariance(ctx, api.ApproveCostVariance{CommandID: "approve-ns", TenantID: f.tenant, ActorID: "ctrl-1", InvoiceID: "CI-NS",
+		ExpectedRevision: a.invoice("CI-NS").Revision, Reason: "no-show charge per MU's conditions", OccurredAt: a.hours(5)}))
+	a.must(f.module.ReleasePoolAccrual(ctx, api.ReleasePoolAccrual{CommandID: "release-cfs", TenantID: f.tenant, ActorID: "fin-1", PoolID: "P-1",
+		ExpectedRevision: a.pool("P-1").Revision, LineNo: 2, ExpectedVersion: 1, Reason: "nothing went through the CFS", OccurredAt: a.hours(5)}))
+	_, err = f.module.ApportionConsolCosts(ctx, api.ApportionConsolCosts{CommandID: "apportion-cancelled", TenantID: f.tenant, ActorID: "fin-1",
+		PoolID: "P-1", ExpectedRevision: a.pool("P-1").Revision, OccurredAt: a.hours(6)})
+	a.rejected("apportioned on a cancelled consolidation", err, "FIN_POOL_NO_BASIS")
+	noReason := retain
+	noReason.CommandID, noReason.ExpectedRevision, noReason.Reason, noReason.OccurredAt = "retain-no-reason", a.pool("P-1").Revision, "", a.hours(6)
+	_, err = f.module.ApportionConsolCosts(ctx, noReason)
+	a.rejected("retained without a reason", err, "needs a reason")
+	retain.CommandID, retain.ExpectedRevision, retain.OccurredAt = "retain", a.pool("P-1").Revision, a.hours(6)
+	if r := a.must(f.module.ApportionConsolCosts(ctx, retain)); r.Version != 2 {
+		t.Fatalf("retained: %+v", r)
+	}
+	kept := a.pool("P-1").Apportionments[1]
+	if len(kept.Lines) != 2 || kept.Lines[0].Method != api.MethodRetained || kept.Lines[0].Amount != usd(120_000) || kept.Lines[0].Local != cny(864_000) ||
+		len(kept.Lines[0].Shares) != 0 || kept.Lines[1].Local != cny(0) || kept.Lines[0].Reason != "MU's no-show charge" {
+		t.Fatalf("retained apportionment: %+v", kept)
+	}
+	if p, err := f.module.GetJobProfit(ctx, api.GetJobProfit{TenantID: f.tenant, JobID: "JOB-A"}); err != nil || p.PoolCost != cny(0) || len(p.PoolShares) != 0 {
+		t.Fatalf("JOB-A bears none of it: %+v %v", p, err)
+	}
+	// past FIN: a share on a retained line
+	err = f.within(t, func(ctx context.Context, e bentopg.Executor) error {
+		for _, s := range []string{`UPDATE cargo_fin.consol_cost_pool SET revision=revision+1 WHERE tenant_id=$1 AND pool_id='P-1'`,
+			`INSERT INTO cargo_fin.pool_apportionment_share (tenant_id,pool_id,apportionment_no,line_no,share_no,shipment_id,job_id,quantity,unit,amount_minor,
+                local_minor) VALUES ($1,'P-1',2,1,1,'SH-A','JOB-A',1,NULL,120000,864000)`} {
+			if _, err := e.Exec(ctx, s, f.tenant); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if state, constraint := sqlState(err); state != "23514" || constraint != "pool_apportionment_conserves" {
+		t.Fatalf("a share on a retained line: %v (state %s, constraint %s)", err, state, constraint)
+	}
+	a.must(f.module.CloseConsolCostPool(ctx, api.CloseConsolCostPool{CommandID: "close", TenantID: f.tenant, ActorID: "fin-1", PoolID: "P-1",
+		ExpectedRevision: a.pool("P-1").Revision, OccurredAt: a.hours(7)}))
+	consol, err := f.module.GetConsolProfit(ctx, api.GetConsolProfit{TenantID: f.tenant, ConsolidationID: "CONSOL-1"})
+	if err != nil || consol.State != api.PoolClosed || consol.Pooled != cny(864_000) || consol.Retained != cny(864_000) || consol.Apportioned != cny(0) ||
+		consol.Unapportioned != cny(0) || len(consol.Houses) != 0 {
+		t.Fatalf("consol profit: %+v %v", consol, err)
+	}
+}
+
+// Queries read one snapshot (REPEATABLE READ, READ ONLY), so a commit landing between their statements is not seen;
+// and no FIN table, of this version or an earlier one, takes a write at another level than READ COMMITTED.
+func TestSnapshotsAndIsolationOnPostgres(t *testing.T) {
+	a := creditorWorld(t)
+	ctx, f := a.ctx, a.fixture
+	count := func(ctx context.Context, e bentopg.Querier) int {
+		var n int
+		if err := e.QueryRow(ctx, `SELECT count(*) FROM cargo_fin.creditor_invoice WHERE tenant_id=$1`, f.tenant).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	err := (scope.TenantTransactor{DB: f.db, Tenant: f.tenant, Snapshot: true}).WithinTransaction(ctx, func(txCtx context.Context) error {
+		e, err := f.db.RequireExecutor(txCtx)
+		if err != nil {
+			return err
+		}
+		var level, readOnly string
+		if err = e.QueryRow(txCtx, `SELECT current_setting('transaction_isolation'), current_setting('transaction_read_only')`).Scan(&level, &readOnly); err != nil {
+			return err
+		}
+		if level != "repeatable read" || readOnly != "on" {
+			t.Fatalf("a snapshot read at %s, read only %s", level, readOnly)
+		}
+		before := count(txCtx, e)
+		a.must(f.module.RecordCreditorInvoice(context.Background(), a.record("CI-1", "trucker", "TR-1", 3, "CNY", line("PICKUP", 1_000))))
+		if after := count(txCtx, e); after != before {
+			t.Fatalf("the snapshot saw a commit: %d then %d", before, after)
+		}
+		_, err = e.Exec(txCtx, `UPDATE cargo_fin.creditor_invoice SET revision=revision+1 WHERE tenant_id=$1`, f.tenant)
+		return err
+	})
+	if state, _ := sqlState(err); state != "25006" {
+		t.Fatalf("a write in a snapshot read: %v", err)
+	}
+	if invoices, err := f.module.ListCreditorInvoices(ctx, api.ListCreditorInvoices{TenantID: f.tenant, LegalEntityID: "LE"}); err != nil || len(invoices) != 1 {
+		t.Fatalf("a query after the commit: %+v %v", invoices, err)
+	}
+
+	for _, level := range []pgx.TxIsoLevel{pgx.RepeatableRead, pgx.Serializable} {
+		for _, write := range []string{
+			`UPDATE cargo_fin.debtor_receipt_allocation SET reversed_by=reversed_by WHERE tenant_id=$1`, // V0.3, no row needed
+			`UPDATE cargo_fin.freight_job SET revision=revision+1 WHERE tenant_id=$1 AND job_id='JOB-A'`,
+			`INSERT INTO cargo_fin.debtor_receipt (tenant_id) SELECT $1 WHERE false`, // V0.3, a statement of no row
+		} {
+			conn, err := pgx.Connect(ctx, os.Getenv("IDP_CARGO_POSTGRES_DSN"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			tx, err := conn.BeginTx(ctx, pgx.TxOptions{IsoLevel: level})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = tx.Exec(ctx, `SELECT set_config('app.tenant_id',$1,true)`, f.tenant); err != nil {
+				t.Fatal(err)
+			}
+			_, err = tx.Exec(ctx, write, f.tenant)
+			if state, constraint := sqlState(err); state != "23514" || constraint != "fin_read_committed" {
+				t.Errorf("%s at %s: %v (state %s, constraint %s)", write, level, err, state, constraint)
+			}
+			_ = tx.Rollback(ctx)
+			_ = conn.Close(ctx)
+		}
 	}
 }

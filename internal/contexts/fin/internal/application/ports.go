@@ -277,7 +277,10 @@ type CreditorInvoiceStore interface {
 
 // Deps are the ports every FIN command uses.
 type Deps struct {
-	Tx        TxRunner
+	Tx TxRunner
+	// Snapshot runs queries (Reader) in one read-only snapshot, so a view never mixes rows from before and after a
+	// commit; commands never use it.
+	Snapshot  TxRunner
 	Policies  PolicyStore
 	Jobs      JobStore
 	Credit    CreditStore

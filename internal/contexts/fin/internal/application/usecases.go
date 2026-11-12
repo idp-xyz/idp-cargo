@@ -674,6 +674,9 @@ func (d Deps) Exposure(ctx context.Context, tenant fin.TenantID, legalEntity, de
 
 // Reader runs reads in one snapshot each.
 func (d Deps) Reader(ctx context.Context, fn func(context.Context) error) error {
+	if d.Snapshot != nil {
+		return d.Snapshot.WithinTransaction(ctx, fn)
+	}
 	if d.Tx == nil {
 		return ErrMissingDependency
 	}

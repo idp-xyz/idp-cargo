@@ -34,6 +34,10 @@ const (
 	MethodVolume     = "VOLUME"
 	MethodPieces     = "PIECES"
 	MethodManual     = "MANUAL"
+	// MethodRetained keeps a line's cost on the consolidation, with a reason, once PHY reports it cancelled or without
+	// a house left to bear it: as CargoWise leaves a consol charge on the consol when it is not apportioned, the cost is
+	// the consolidation's own (a dead freight or cancellation charge), not a house's.
+	MethodRetained = "RETAINED"
 )
 
 // What an apportionment used as its basis: the houses' loaded facts, or the plan scope PHY verified at attach while
@@ -416,6 +420,9 @@ func (p *ConsolCostPool) Apportion(in ApportionInput, basis CostBasis, by string
 	if err := p.open(by, at); err != nil {
 		return err
 	}
+	if in.Method == MethodRetained {
+		return p.retain(in, basis, by, at)
+	}
 	if basis.ConsolidationID != p.state.ConsolidationID || len(basis.Houses) == 0 {
 		return fmt.Errorf("%w: PHY reports no live houses of consolidation %s", ErrPoolNoBasis, p.state.ConsolidationID)
 	}
@@ -484,6 +491,41 @@ func (p *ConsolCostPool) Apportion(in ApportionInput, basis CostBasis, by string
 				Amount: amounts[i], Local: locals[i]})
 		}
 		a.Lines = append(a.Lines, la)
+	}
+	p.state.Apportionments = append(p.state.Apportionments, a)
+	p.record(eventPoolApportioned, at, a.No)
+	return nil
+}
+
+// retain keeps the named lines' costs (every line when none is named) on the consolidation, with a reason: allowed
+// only once PHY reports the consolidation cancelled or without a house left, so that while houses bear a consolidation
+// its costs reach their jobs. The lines' current costs are recorded and no share is written; a later apportionment
+// supersedes it as any other.
+func (p *ConsolCostPool) retain(in ApportionInput, basis CostBasis, by string, at time.Time) error {
+	lineNos := slices.Clone(in.LineNos)
+	if len(lineNos) == 0 {
+		for _, l := range p.state.Lines {
+			lineNos = append(lineNos, l.No)
+		}
+	}
+	slices.Sort(lineNos)
+	switch {
+	case basis.ConsolidationID != p.state.ConsolidationID || basis.Revision < 1:
+		return fmt.Errorf("%w: PHY answered consolidation %s for %s", ErrInvalid, basis.ConsolidationID, p.state.ConsolidationID)
+	case basis.State != "CANCELLED" && len(basis.Houses) > 0:
+		return fmt.Errorf("%w: a cost is retained on the consolidation only once PHY reports it cancelled or without houses; %s has %d",
+			ErrInvalid, p.state.ConsolidationID, len(basis.Houses))
+	case !text(in.Reason) || len(in.Manual) > 0:
+		return fmt.Errorf("%w: a cost retained on the consolidation needs a reason and takes no shares", ErrInvalid)
+	case len(lineNos) == 0 || slices.Contains(lineNos, 0) || lineNos[len(lineNos)-1] > len(p.state.Lines) || len(slices.Compact(lineNos)) != len(lineNos):
+		return fmt.Errorf("%w: lines of the pool, each once", ErrInvalid)
+	}
+	a := Apportionment{No: len(p.state.Apportionments) + 1, BasisRevision: basis.Revision, Stage: BasisActual, By: by, At: at.UTC()}
+	for _, no := range lineNos {
+		versions := p.state.Lines[no-1].Versions
+		cost, local := p.LineCost(no)
+		a.Lines = append(a.Lines, LineApportionment{LineNo: no, LineVersion: versions[len(versions)-1].No, Method: MethodRetained, Reason: in.Reason,
+			Amount: cost, Local: local})
 	}
 	p.state.Apportionments = append(p.state.Apportionments, a)
 	p.record(eventPoolApportioned, at, a.No)
@@ -711,6 +753,8 @@ func (p *ConsolCostPool) Close(basis CostBasis, by string, at time.Time) error {
 		case la.Amount != cost || la.Local != local:
 			return fmt.Errorf("%w: cost line %d was apportioned at %d (%d local); its final cost is %d (%d local)", ErrPoolNotClosable, l.No, la.Amount,
 				la.Local, cost, local)
+		case la.Method == MethodRetained && !gone && (cost != 0 || local != 0):
+			return fmt.Errorf("%w: cost line %d is retained on the consolidation while PHY reports houses on it", ErrPoolNotClosable, l.No)
 		case cost == 0 && local == 0, gone:
 			continue // every share is zero, or no basis is left to compare
 		case a.Stage != BasisActual || !loaded || len(la.Shares) != len(houses):

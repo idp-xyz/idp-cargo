@@ -123,7 +123,7 @@ func (m *Module) GetConsolProfit(ctx context.Context, q api.GetConsolProfit) (ap
 		pools[0].Matched(consumed)
 		local := func(n int64) kernel.Money { return kernel.Money{Currency: st.FunctionalCurrency, Minor: n} }
 		out = api.ConsolProfit{ConsolidationID: q.ConsolidationID, PoolID: st.PoolID, LegalEntityID: st.LegalEntityID, State: st.State}
-		var pooled, matched, apportioned int64
+		var pooled, matched, apportioned, retained int64
 		type house struct {
 			jobID string
 			pool  int64
@@ -137,6 +137,10 @@ func (m *Module) GetConsolProfit(ctx context.Context, q api.GetConsolProfit) (ap
 			if !ok {
 				continue
 			}
+			if la.Method == domain.MethodRetained {
+				retained += la.Local
+				continue
+			}
 			for _, s := range la.Shares {
 				apportioned += s.Local
 				if byShipment[s.ShipmentID] == nil {
@@ -145,7 +149,8 @@ func (m *Module) GetConsolProfit(ctx context.Context, q api.GetConsolProfit) (ap
 				byShipment[s.ShipmentID].pool += s.Local
 			}
 		}
-		out.Pooled, out.Matched, out.Apportioned, out.Unapportioned = local(pooled), local(matched), local(apportioned), local(pooled-apportioned)
+		out.Pooled, out.Matched, out.Apportioned, out.Retained = local(pooled), local(matched), local(apportioned), local(retained)
+		out.Unapportioned = local(pooled - apportioned - retained)
 		shipments := make([]string, 0, len(byShipment))
 		for s := range byShipment {
 			shipments = append(shipments, s)

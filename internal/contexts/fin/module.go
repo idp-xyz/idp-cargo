@@ -728,6 +728,7 @@ func (m *Module) GetCreditStatus(ctx context.Context, q api.GetCreditStatus) (ap
 func (m *Module) deps(tenant, commandID string) application.Deps {
 	return application.Deps{
 		Tx:        bento.TenantTransactor{DB: m.db, Tenant: tenant},
+		Snapshot:  bento.TenantTransactor{DB: m.db, Tenant: tenant, Snapshot: true},
 		Policies:  postgres.PolicyStore{DB: m.db},
 		Jobs:      postgres.JobStore{DB: m.db},
 		Credit:    postgres.CreditStore{DB: m.db},

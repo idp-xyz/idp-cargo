@@ -8,8 +8,10 @@
 -- and releases: what is matched is the sum of the live matches of invoices not cancelled. A consol cost pool closes
 -- once every line is matched final or released, by invoices neither disputed nor awaiting approval, and apportioned at
 -- its final cost; it reopens with a reason. An apportionment now records the line cost it divided: what is matched
--- plus what is still accrued. Rows written before stay valid: an apportionment line of FIN V0.4 has no figures of its
--- own and divided its version's.
+-- plus what is still accrued; once PHY cancelled the consolidation or no house is left on it, a person may keep a
+-- line's cost on the consolidation instead (RETAINED, with a reason), as CargoWise leaves a consol charge on the consol
+-- when it is not apportioned. Rows written before stay valid: an apportionment line of FIN V0.4 has no figures of its
+-- own and divided its version's. Every write to cargo_fin runs at READ COMMITTED, which its commit checks need.
 
 -- Cost variance thresholds of a legal entity (OD-9 B), versioned on its policy.
 CREATE TABLE cargo_fin.cost_variance_threshold (
@@ -39,6 +41,11 @@ ALTER TABLE cargo_fin.consol_cost_pool DROP CONSTRAINT consol_cost_pool_state_ch
   ADD CONSTRAINT consol_cost_pool_state_check CHECK (state IN ('OPEN','CLOSED'));
 
 -- The line cost an apportionment divided (FIN V0.5); NULL on lines of FIN V0.4, which divided their version's figures.
+-- RETAINED keeps the line's cost on the consolidation, with a reason and no shares, once no house is left to bear it.
+ALTER TABLE cargo_fin.pool_apportionment_line DROP CONSTRAINT pool_apportionment_line_method_check,
+  ADD CONSTRAINT pool_apportionment_line_method_check CHECK (method IN ('CHARGEABLE','VOLUME','PIECES','MANUAL','RETAINED')),
+  DROP CONSTRAINT pool_apportionment_line_reason,
+  ADD CONSTRAINT pool_apportionment_line_reason CHECK ((method IN ('MANUAL','RETAINED')) = (reason IS NOT NULL));
 ALTER TABLE cargo_fin.pool_apportionment_line ADD COLUMN amount_minor bigint, ADD COLUMN local_minor bigint,
   ADD CONSTRAINT pool_apportionment_line_cost CHECK ((amount_minor IS NULL) = (local_minor IS NULL) AND amount_minor >= 0 AND local_minor >= 0
     AND amount_minor <= 2000000000000000 AND local_minor <= 2000000000000000);
@@ -552,7 +559,8 @@ CREATE CONSTRAINT TRIGGER freight_job_accruals_consistent AFTER UPDATE ON cargo_
   DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION cargo_fin.check_job_accrual_at_commit();
 
 -- The conservation rule, as fin/000006, against the line cost the apportionment divided (its version's figures for an
--- apportionment line of FIN V0.4).
+-- apportionment line of FIN V0.4); a RETAINED line keeps its cost on the consolidation and has no share. That no house
+-- was left when it was retained is checked by FIN with PHY's answer: PHY's facts are not in this schema.
 CREATE OR REPLACE FUNCTION cargo_fin.pool_line_shares_check(t text, pool text, ano integer, line integer) RETURNS void LANGUAGE plpgsql AS $fn$
 DECLARE
   al cargo_fin.pool_apportionment_line;
@@ -562,8 +570,10 @@ BEGIN
   SELECT * INTO al FROM cargo_fin.pool_apportionment_line WHERE tenant_id = t AND pool_id = pool AND apportionment_no = ano AND line_no = line;
   SELECT * INTO v FROM cargo_fin.pool_cost_version
     WHERE tenant_id = t AND pool_id = pool AND line_no = al.line_no AND version_no = al.line_version;
-  SELECT count(*) = coalesce(max(s.share_no), 0) AND count(*) >= 1
-      AND coalesce(sum(s.amount_minor), -1) = coalesce(al.amount_minor, v.amount_minor) AND coalesce(sum(s.local_minor), -1) = coalesce(al.local_minor, v.local_minor)
+  SELECT CASE WHEN al.method = 'RETAINED' THEN count(*) = 0 AND al.amount_minor IS NOT NULL
+      ELSE count(*) = coalesce(max(s.share_no), 0) AND count(*) >= 1
+        AND coalesce(sum(s.amount_minor), -1) = coalesce(al.amount_minor, v.amount_minor)
+        AND coalesce(sum(s.local_minor), -1) = coalesce(al.local_minor, v.local_minor) END
     INTO ok FROM cargo_fin.pool_apportionment_share s
     WHERE s.tenant_id = t AND s.pool_id = pool AND s.apportionment_no = ano AND s.line_no = line;
   IF ok IS DISTINCT FROM true THEN
@@ -768,6 +778,26 @@ BEGIN
   END IF;
   RETURN NULL;
 END $fn$;
+
+-- Every write to cargo_fin runs at READ COMMITTED: FIN's commit checks lock the rows other transactions write (jobs,
+-- pools, receipts, the policy) and then read what those committed, which only READ COMMITTED's per-statement snapshot
+-- sees. This covers the checks of earlier versions too (settlements, pool shares, tax treatments, rate ends). A
+-- statement-level trigger on every table refuses an INSERT, UPDATE or DELETE at another level before it runs; a table
+-- added later gets one in its own migration.
+CREATE FUNCTION cargo_fin.writes_read_committed() RETURNS trigger LANGUAGE plpgsql AS $fn$
+BEGIN
+  PERFORM cargo_fin.require_read_committed();
+  RETURN NULL;
+END $fn$;
+DO $rc$
+DECLARE tbl text;
+BEGIN
+  FOR tbl IN SELECT c.relname FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'cargo_fin' AND c.relkind IN ('r','p') ORDER BY c.relname LOOP
+    EXECUTE format('CREATE TRIGGER %I BEFORE INSERT OR UPDATE OR DELETE ON cargo_fin.%I FOR EACH STATEMENT EXECUTE FUNCTION cargo_fin.writes_read_committed()',
+      tbl || '_read_committed', tbl);
+  END LOOP;
+END $rc$;
 
 DO $rls$
 DECLARE tbl text;

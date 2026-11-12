@@ -600,3 +600,45 @@ func TestMatchedAccrualKeepsItsCreditor(t *testing.T) {
 		t.Fatalf("another creditor named on a pool line: %v", err)
 	}
 }
+
+// Once PHY cancelled the consolidation (or no house is left), a cost is kept on it with a reason (RETAINED, as
+// CargoWise leaves an unapportioned charge on the consol) and the pool closes; while houses are on it, it is not.
+func TestRetainedOnTheConsolidation(t *testing.T) {
+	p := pool(t, airBasis())
+	recordCost(t, p, "AIRFREIGHT", cny(100_000), MethodChargeable)
+	if err := p.Apportion(ApportionInput{Jobs: jobs()}, airBasis(), "ops-1", hour(4)); err != nil {
+		t.Fatal(err)
+	}
+	// the airline's no-show charge after PHY cancelled the consolidation
+	p.Matched(map[int]Consumption{1: {Amount: 120_000, Local: 120_000, Final: true}})
+	cancelled := airBasis()
+	cancelled.State, cancelled.Houses = "CANCELLED", nil
+	if err := p.Apportion(ApportionInput{Jobs: jobs()}, cancelled, "ops-1", hour(5)); !errors.Is(err, ErrPoolNoBasis) {
+		t.Fatalf("apportioned with no house: %v", err)
+	}
+	if err := p.Apportion(ApportionInput{Method: MethodRetained, Reason: "no-show charge of the cancelled flight"}, airBasis(), "ops-1", hour(5)); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("retained while houses are on the consolidation: %v", err)
+	}
+	if err := p.Apportion(ApportionInput{Method: MethodRetained}, cancelled, "ops-1", hour(5)); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("retained without a reason: %v", err)
+	}
+	if err := p.Close(cancelled, "ops-1", hour(5)); !errors.Is(err, ErrPoolNotClosable) {
+		t.Fatalf("closed with line 1 apportioned at its accrual: %v", err)
+	}
+	if err := p.Apportion(ApportionInput{Method: MethodRetained, Reason: "no-show charge of the cancelled flight"}, cancelled, "ops-1", hour(5)); err != nil {
+		t.Fatal(err)
+	}
+	_, la, _ := p.SharesOfLine(1)
+	if la.Method != MethodRetained || la.Amount != 120_000 || la.Local != 120_000 || len(la.Shares) != 0 || la.Reason == "" {
+		t.Fatalf("retained line: %+v", la)
+	}
+	if err := p.Close(airBasis(), "ops-1", hour(6)); !errors.Is(err, ErrPoolNotClosable) {
+		t.Fatalf("closed with a retained line while PHY reports houses: %v", err)
+	}
+	if err := p.Close(cancelled, "ops-1", hour(6)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RestorePool(p.State()); err != nil {
+		t.Fatal(err)
+	}
+}

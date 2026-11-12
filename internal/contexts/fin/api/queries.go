@@ -638,6 +638,7 @@ type ConsolProfit struct {
 	Pooled          kernel.Money
 	Matched         kernel.Money
 	Apportioned     kernel.Money
+	Retained        kernel.Money // kept on the consolidation (RETAINED): the consolidation's own cost
 	Unapportioned   kernel.Money
 	Houses          []HouseProfit
 }

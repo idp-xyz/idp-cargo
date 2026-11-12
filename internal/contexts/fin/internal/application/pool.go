@@ -196,7 +196,7 @@ func (d Deps) ApportionPoolCosts(ctx context.Context, c Command, in ApportionAsk
 		if err != nil {
 			return err
 		}
-		if basis.ConsolidationID != st.ConsolidationID || basis.State == "CANCELLED" {
+		if basis.ConsolidationID != st.ConsolidationID || (basis.State == "CANCELLED" && in.Method != fin.MethodRetained) {
 			return fmt.Errorf("%w: PHY reports consolidation %s %s", fin.ErrPoolNoBasis, st.ConsolidationID, basis.State)
 		}
 		return nil

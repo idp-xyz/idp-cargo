@@ -436,6 +436,10 @@ const (
 	MethodVolume     = "VOLUME"
 	MethodPieces     = "PIECES"
 	MethodManual     = "MANUAL"
+	// MethodRetained keeps lines' costs on the consolidation (FIN V0.5), with a reason, once PHY reports it cancelled
+	// or without a house left: the consolidation's own cost, such as dead freight, as CargoWise leaves a consol charge
+	// on the consol when it is not apportioned.
+	MethodRetained = "RETAINED"
 
 	BasisActual  = "ACTUAL"
 	BasisPlanned = "PLANNED"
@@ -503,7 +507,9 @@ type ManualShare struct {
 // by packs (FIN_POOL_UNIT, FIN_POOL_NO_BASIS); MANUAL divides one line by Manual shares, naming every house once and
 // summing to the line's amount (FIN_MANUAL_SHARES), with a reason. Shares conserve the line's amount and its local
 // amount exactly (largest remainder, ties to the first shipment). A new apportionment supersedes earlier ones line by
-// line.
+// line. Since FIN V0.5 each line's current cost is divided (what creditor invoices matched plus what is still
+// accrued); RETAINED keeps the lines' costs on the consolidation with a reason, and only once PHY reports it cancelled
+// or without houses.
 type ApportionConsolCosts struct {
 	CommandID        string
 	TenantID         string
