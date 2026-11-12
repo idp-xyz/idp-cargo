@@ -21,11 +21,13 @@ import (
 	docacl "go.idp.xyz/idp-cargo/internal/contexts/fin/internal/adapters/doc"
 	fulacl "go.idp.xyz/idp-cargo/internal/contexts/fin/internal/adapters/ful"
 	orgacl "go.idp.xyz/idp-cargo/internal/contexts/fin/internal/adapters/org"
+	phyacl "go.idp.xyz/idp-cargo/internal/contexts/fin/internal/adapters/phy"
 	"go.idp.xyz/idp-cargo/internal/contexts/fin/internal/adapters/postgres"
 	rateacl "go.idp.xyz/idp-cargo/internal/contexts/fin/internal/adapters/rate"
 	"go.idp.xyz/idp-cargo/internal/contexts/fin/internal/application"
 	"go.idp.xyz/idp-cargo/internal/contexts/fin/internal/domain"
 	fulapi "go.idp.xyz/idp-cargo/internal/contexts/ful/api"
+	phyapi "go.idp.xyz/idp-cargo/internal/contexts/phy/api"
 	rateapi "go.idp.xyz/idp-cargo/internal/contexts/rate/api"
 	"go.idp.xyz/idp-cargo/internal/foundation/bento"
 	"go.idp.xyz/idp-cargo/internal/foundation/numbering"
@@ -41,6 +43,7 @@ type Module struct {
 	pricing   application.Pricing
 	directory application.Directory
 	documents application.Documents
+	physical  application.Physical
 	auth      api.Authorizer
 	clock     bento.SystemClock
 	window    kernel.RecordWindow
@@ -59,19 +62,19 @@ var (
 	_ api.CreditStatusQueries = (*Module)(nil)
 )
 
-// New assembles FIN. ful answers CostDriver v1, rate PricingBasis v1, doc TransportDocumentSnapshot v1 and org
-// LegalEntityRef v1, PartyRef v1 and party identity; FIN writes to none of them.
+// New assembles FIN. ful answers CostDriver v1, rate PricingBasis v1, doc TransportDocumentSnapshot v1, phy
+// PhysicalCostBasis v1 and org LegalEntityRef v1, PartyRef v1 and party identity; FIN writes to none of them.
 func New(db *bentopg.DB, org orgacl.ORG, rate rateapi.PricingBasisQueries, ful fulapi.CostDriverQueries, doc docapi.TransportDocumentSnapshotQueries,
-	auth api.Authorizer, opts ...Option) (*Module, error) {
-	if db == nil || org == nil || rate == nil || ful == nil || doc == nil || auth == nil {
-		return nil, errors.New("fin: module needs a database, ORG, RATE's pricing bases, FUL's cost drivers, DOC's document snapshots and an authorizer")
+	phy phyapi.PhysicalCostBasisQueries, auth api.Authorizer, opts ...Option) (*Module, error) {
+	if db == nil || org == nil || rate == nil || ful == nil || doc == nil || phy == nil || auth == nil {
+		return nil, errors.New("fin: module needs a database, ORG, RATE's pricing bases, FUL's cost drivers, DOC's document snapshots, PHY's cost bases and an authorizer")
 	}
 	outbox, err := bentooutbox.NewStore(db)
 	if err != nil {
 		return nil, err
 	}
 	m := &Module{db: db, outbox: outbox, shipments: fulacl.Shipments{FUL: ful}, pricing: rateacl.Pricing{RATE: rate}, directory: orgacl.Directory{ORG: org},
-		documents: docacl.Documents{DOC: doc}, auth: auth, window: kernel.DefaultRecordWindow}
+		documents: docacl.Documents{DOC: doc}, physical: phyacl.Physical{PHY: phy}, auth: auth, window: kernel.DefaultRecordWindow}
 	if m.numbers, err = numbering.NewSequences(db, "cargo_fin"); err != nil {
 		return nil, err
 	}
@@ -331,14 +334,25 @@ func jobView(j *domain.FreightJob, revision int64) api.FreightJob {
 }
 
 func (m *Module) GetJobProfit(ctx context.Context, q api.GetJobProfit) (api.JobProfit, error) {
-	j, revision, err := m.job(ctx, q.TenantID, q.JobID)
+	d := m.deps(q.TenantID, "")
+	var j *domain.FreightJob
+	var revision int64
+	var shares []application.PoolShare
+	err := d.Reader(ctx, func(txCtx context.Context) (err error) {
+		if j, revision, err = d.Jobs.Read(txCtx, domain.TenantID(q.TenantID), q.JobID); err != nil {
+			return err
+		}
+		shares, err = d.Pools.SharesOfJob(txCtx, domain.TenantID(q.TenantID), q.JobID)
+		return err
+	})
 	if err != nil {
 		return api.JobProfit{}, classify(err)
 	}
 	p := j.Profit()
 	money := func(n int64) kernel.Money { return kernel.Money{Currency: p.Currency, Minor: n} }
+	poolShares, pool := poolShareViews(shares, p.Currency)
 	out := api.JobProfit{JobID: q.JobID, Revision: revision, Revenue: money(p.Revenue), Invoiced: money(p.Invoiced), Cost: money(p.Cost),
-		Profit: money(p.Profit)}
+		PoolCost: money(pool), Profit: money(p.Profit - pool), PoolShares: poolShares}
 	for _, c := range p.Lines {
 		out.ByCode = append(out.ByCode, api.ChargeCodeProfit{ChargeCode: c.ChargeCode, Revenue: money(c.Revenue), Cost: money(c.Cost), Profit: money(c.Profit)})
 	}
@@ -714,6 +728,8 @@ func (m *Module) deps(tenant, commandID string) application.Deps {
 		Profiles:  postgres.ProfileStore{DB: m.db},
 
 		DebtorReceipts: postgres.ReceiptStore{DB: m.db},
+		Pools:          postgres.PoolStore{DB: m.db},
+		Physical:       m.physical,
 	}
 }
 
@@ -752,7 +768,9 @@ func classify(err error) error {
 		errors.Is(err, domain.ErrInvoiced), errors.Is(err, domain.ErrNoIssuedDocument), errors.Is(err, domain.ErrNoBillingProfile),
 		errors.Is(err, domain.ErrProfileStale), errors.Is(err, domain.ErrTaxMissing), errors.Is(err, domain.ErrTaxInUse), errors.Is(err, domain.ErrNoSeries),
 		errors.Is(err, domain.ErrSeriesExhausted), errors.Is(err, numbering.ErrSeeded), errors.Is(err, domain.ErrSettled),
-		errors.Is(err, domain.ErrOverAllocated), errors.Is(err, domain.ErrNotAllocatable), errors.Is(err, domain.ErrEvidenceUsed):
+		errors.Is(err, domain.ErrOverAllocated), errors.Is(err, domain.ErrNotAllocatable), errors.Is(err, domain.ErrEvidenceUsed),
+		errors.Is(err, domain.ErrCrossLegalEntity), errors.Is(err, domain.ErrPoolJobMissing), errors.Is(err, domain.ErrPoolUnit),
+		errors.Is(err, domain.ErrPoolNoBasis), errors.Is(err, domain.ErrManualShares), errors.Is(err, domain.ErrCostVersion):
 		kind = api.ErrRejected
 	default:
 		return err

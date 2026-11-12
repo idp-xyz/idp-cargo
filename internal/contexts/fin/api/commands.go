@@ -426,13 +426,103 @@ type CancelDebtorReceipt struct {
 	OccurredAt       time.Time
 }
 
+// Apportionment methods of a consol cost pool (OD-6 A: CHARGEABLE is the default of both modes) and the stages an
+// apportionment is based on: the houses' loaded facts (ACTUAL), or the attach plan scope while loading evidence is
+// not complete (PLANNED, to be re-apportioned once it is).
+const (
+	MethodChargeable = "CHARGEABLE"
+	MethodVolume     = "VOLUME"
+	MethodPieces     = "PIECES"
+	MethodManual     = "MANUAL"
+
+	BasisActual  = "ACTUAL"
+	BasisPlanned = "PLANNED"
+)
+
+// OpenConsolCostPool opens the consol cost pool of a consolidation (FIN V0.4, FB3): FIN reads PHY's
+// PhysicalCostBasis v1; the consolidation must be an air consolidation or an LCL co-load and not cancelled, and its
+// operating legal entity, VERIFIED in ORG, becomes the pool's (FIN_CROSS_LEGAL_ENTITY otherwise; cross-entity pools
+// come with intercompany charges). One pool per consolidation and legal entity (UL-08); the pool freezes the
+// functional currency and book. Matching creditor invoices and closing the pool come with FB4.
+type OpenConsolCostPool struct {
+	CommandID       string
+	TenantID        string
+	ActorID         string
+	PoolID          string
+	ConsolidationID string
+	OccurredAt      time.Time
+}
+
+// RecordConsolCost adds a cost line of the whole consolidation to the pool, entered by hand with a reason: a charge
+// code, the supplier's reference (the MAWB, the co-loader or CFS booking; optional), the line's default apportionment
+// method, and the amount, converted at the ESTIMATE rate (FIN_RATE_MISSING). Cost.PartyID names the creditor (CARRIER,
+// CO_LOADER or OVERSEAS_AGENT for the pool's legal entity), or stays empty while not known.
+type RecordConsolCost struct {
+	CommandID        string
+	TenantID         string
+	ActorID          string
+	PoolID           string
+	ExpectedRevision int64
+	ChargeCode       string
+	Description      string
+	SupplierRef      string
+	Method           string
+	Cost             ChargeSide
+	Reason           string
+	OccurredAt       time.Time
+}
+
+// ReviseConsolCost writes the next version of a pool cost line with a reason; the line keeps its creditor unless
+// Value.PartyID names another. ExpectedVersion is the line's latest version read (FIN_COST_VERSION).
+type ReviseConsolCost struct {
+	CommandID        string
+	TenantID         string
+	ActorID          string
+	PoolID           string
+	ExpectedRevision int64
+	LineNo           int
+	ExpectedVersion  int
+	Value            ChargeSide
+	Reason           string
+	OccurredAt       time.Time
+}
+
+// ManualShare is a hand-given share of one house shipment, in the line's currency.
+type ManualShare struct {
+	ShipmentID string
+	Amount     int64
+}
+
+// ApportionConsolCosts divides pool cost lines' latest versions over the house jobs (LineNos; every line when
+// empty). FIN reads PHY's PhysicalCostBasis v1 first: the basis is the houses' loaded facts when every house has
+// loading evidence (ACTUAL), the attach plan scope otherwise (PLANNED). Every live house needs an OPEN job of the
+// pool's legal entity (FIN_POOL_JOB_MISSING). Method overrides each line's default: CHARGEABLE weighs by the air
+// chargeable weight (6000 cm³ per kg, rounded up to 500 g) or the LCL W/M freight tonnes; VOLUME by volume; PIECES
+// by packs (FIN_POOL_UNIT, FIN_POOL_NO_BASIS); MANUAL divides one line by Manual shares, naming every house once and
+// summing to the line's amount (FIN_MANUAL_SHARES), with a reason. Shares conserve the line's amount and its local
+// amount exactly (largest remainder, ties to the first shipment). A new apportionment supersedes earlier ones line by
+// line.
+type ApportionConsolCosts struct {
+	CommandID        string
+	TenantID         string
+	ActorID          string
+	PoolID           string
+	ExpectedRevision int64
+	LineNos          []int
+	Method           string
+	Manual           []ManualShare
+	Reason           string
+	OccurredAt       time.Time
+}
+
 // Receipt confirms a committed command; replaying the command returns it again. SubjectID is the legal entity
-// (policy), the job (job and note commands), the debtor (billing profile), <legal entity>/<debtor> (credit account) or
-// the debtor receipt; Version is the rate entry recorded or ended, the tax treatment set, the series registered, the
-// pricing basis applied, the charge line recorded, the side version written, the billing profile version, the terms
-// version set, the hold placed or released, or the last allocation written or the one reversed (0 for opening a policy
-// or job, cancelling a job, issuing a note, and recording or cancelling a debtor receipt); Number is the number of a
-// note issued. For a billing profile NewRevision is its version.
+// (policy), the job (job and note commands), the debtor (billing profile), <legal entity>/<debtor> (credit account),
+// the debtor receipt or the pool (pool commands); Version is the rate entry recorded or ended, the tax treatment set,
+// the series registered, the pricing basis applied, the charge line recorded, the side version written, the billing
+// profile version, the terms version set, the hold placed or released, the last allocation written or the one
+// reversed, the pool cost line recorded, the cost version written or the apportionment made (0 for opening a policy,
+// job or pool, cancelling a job, issuing a note, and recording or cancelling a debtor receipt); Number is the number
+// of a note issued. For a billing profile NewRevision is its version.
 type Receipt struct {
 	CommandID   string
 	SubjectID   string
@@ -463,6 +553,10 @@ type Commands interface {
 	AllocateDebtorReceipt(ctx context.Context, cmd AllocateDebtorReceipt) (Receipt, error)
 	ReverseDebtorReceiptAllocation(ctx context.Context, cmd ReverseDebtorReceiptAllocation) (Receipt, error)
 	CancelDebtorReceipt(ctx context.Context, cmd CancelDebtorReceipt) (Receipt, error)
+	OpenConsolCostPool(ctx context.Context, cmd OpenConsolCostPool) (Receipt, error)
+	RecordConsolCost(ctx context.Context, cmd RecordConsolCost) (Receipt, error)
+	ReviseConsolCost(ctx context.Context, cmd ReviseConsolCost) (Receipt, error)
+	ApportionConsolCosts(ctx context.Context, cmd ApportionConsolCosts) (Receipt, error)
 }
 
 // Actions an Authorizer decides on: the command names.
@@ -489,6 +583,11 @@ const (
 	ActionAllocateDebtorReceipt          = "AllocateDebtorReceipt"
 	ActionReverseDebtorReceiptAllocation = "ReverseDebtorReceiptAllocation"
 	ActionCancelDebtorReceipt            = "CancelDebtorReceipt"
+
+	ActionOpenConsolCostPool   = "OpenConsolCostPool"
+	ActionRecordConsolCost     = "RecordConsolCost"
+	ActionReviseConsolCost     = "ReviseConsolCost"
+	ActionApportionConsolCosts = "ApportionConsolCosts"
 )
 
 // Authorizer decides whether a verified actor may perform an action on a subject.

@@ -32,6 +32,13 @@ const (
 	DebtorReceiptAllocated          = "DebtorReceiptAllocated.v1"
 	DebtorReceiptAllocationReversed = "DebtorReceiptAllocationReversed.v1"
 	DebtorReceiptCancelled          = "DebtorReceiptCancelled.v1"
+
+	// Pool events have the pool as subject and the consolidation in ShipmentID; Version is the cost line recorded or
+	// revised, or the apportionment made.
+	ConsolCostPoolOpened   = "ConsolCostPoolOpened.v1"
+	ConsolCostRecorded     = "ConsolCostRecorded.v1"
+	ConsolCostRevised      = "ConsolCostRevised.v1"
+	ConsolCostsApportioned = "ConsolCostsApportioned.v1"
 )
 
 // EventPayload is the JSON payload of every FIN event: identifiers and versions only, never amounts, names or tax

@@ -23,6 +23,7 @@ import (
 	"go.idp.xyz/idp-cargo/internal/contexts/fin/api"
 	fulapi "go.idp.xyz/idp-cargo/internal/contexts/ful/api"
 	orgapi "go.idp.xyz/idp-cargo/internal/contexts/org/api"
+	phyapi "go.idp.xyz/idp-cargo/internal/contexts/phy/api"
 	rateapi "go.idp.xyz/idp-cargo/internal/contexts/rate/api"
 	scope "go.idp.xyz/idp-cargo/internal/foundation/bento"
 	"go.idp.xyz/idp-cargo/internal/kernel"
@@ -74,7 +75,18 @@ type world struct {
 	identities map[string]orgapi.PartyIdentity
 	documents  map[string]docapi.TransportDocumentSnapshot   // shipment -> valid house document, at its valid version
 	earlier    map[string][]docapi.TransportDocumentSnapshot // shipment -> earlier issued versions of that document, oldest first
+	costBases  map[string]phyapi.PhysicalCostBasis           // consolidation -> PhysicalCostBasis v1
 	suspended  bool
+}
+
+func (w *world) GetPhysicalCostBasis(_ context.Context, q phyapi.GetPhysicalCostBasis) (phyapi.PhysicalCostBasis, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	b, ok := w.costBases[q.ConsolidationID]
+	if !ok {
+		return phyapi.PhysicalCostBasis{}, fmt.Errorf("%w: stub", phyapi.ErrNotFound)
+	}
+	return b, nil
 }
 
 func (w *world) GetPartyIdentity(_ context.Context, q orgapi.GetPartyIdentity) (orgapi.PartyIdentity, error) {
@@ -177,9 +189,10 @@ func newFixture(t *testing.T) *fixture {
 				CountryCode: "CN", Identifiers: []orgapi.PartyIdentifier{{Type: orgapi.IdentifierCNUSCC, Country: "CN", Value: "91310000MA1FL8TQ2X"}}},
 			"agent-ny": {PartyID: "agent-ny", Revision: 2, Status: "ACTIVE", LegalName: "NY Forwarding Inc.", CountryCode: "US"},
 		},
-		documents: map[string]docapi.TransportDocumentSnapshot{}, earlier: map[string][]docapi.TransportDocumentSnapshot{}}
+		documents: map[string]docapi.TransportDocumentSnapshot{}, earlier: map[string][]docapi.TransportDocumentSnapshot{},
+		costBases: map[string]phyapi.PhysicalCostBasis{}}
 	f := &fixture{db: testDB(t), w: w, at: at, tenant: "cargo-fin-" + time.Now().UTC().Format("20060102T150405.000000000")}
-	m, err := finmodule.New(f.db, w, w, w, w, allow{})
+	m, err := finmodule.New(f.db, w, w, w, w, w, allow{})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -232,15 +232,16 @@ type ORGForFIN interface {
 }
 
 // FIN assembles the FIN bounded context. org answers LegalEntityRef v1, PartyRef v1 and party identities, rate
-// PricingBasis v1, ful CostDriver v1 and doc TransportDocumentSnapshot v1, each through its query side. DOC asks FIN
-// for CreditStatus v1 in turn, so FIN is assembled first with a DocumentSnapshots that is bound to DOC once DOC exists.
+// PricingBasis v1, ful CostDriver v1, doc TransportDocumentSnapshot v1 and phy PhysicalCostBasis v1, each through its
+// query side. DOC asks FIN for CreditStatus v1 in turn, so FIN is assembled first with a DocumentSnapshots that is
+// bound to DOC once DOC exists.
 func (p *Platform) FIN(org ORGForFIN, rate rateapi.PricingBasisQueries, ful fulapi.CostDriverQueries, doc docapi.TransportDocumentSnapshotQueries,
-	auth finapi.Authorizer, opts ...fin.Option) (*fin.Module, error) {
+	phy phyapi.PhysicalCostBasisQueries, auth finapi.Authorizer, opts ...fin.Option) (*fin.Module, error) {
 	db, err := p.newDB()
 	if err != nil {
 		return nil, err
 	}
-	return fin.New(db, org, rate, ful, doc, auth, opts...)
+	return fin.New(db, org, rate, ful, doc, phy, auth, opts...)
 }
 
 // ErrDocumentsUnbound is returned while a DocumentSnapshots is not bound to DOC.

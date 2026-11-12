@@ -66,7 +66,7 @@ func TestTransportDocumentsWithEveryContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	documents := &DocumentSnapshots{}
-	finModule, err := platform.FIN(orgModule, rateModule, fulModule, documents, allowAll{})
+	finModule, err := platform.FIN(orgModule, rateModule, fulModule, documents, phyModule, allowAll{})
 	if err != nil {
 		t.Fatal(err)
 	}

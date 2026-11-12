@@ -118,6 +118,7 @@ jobs:
           GRANT UPDATE (valid_until,ended_by,ended_at,end_reason,end_entered_at) ON cargo_fin.exchange_rate_entry TO cargo_app;
           GRANT UPDATE (state,cancel_reason,cancelled_by,cancelled_at,cancel_entered_at,revision,updated_at) ON cargo_fin.freight_job TO cargo_app;
           GRANT UPDATE (live) ON cargo_fin.job_basis TO cargo_app;
+          GRANT UPDATE (state,revision,updated_at) ON cargo_fin.consol_cost_pool TO cargo_app;
           GRANT UPDATE (state,revision,updated_at) ON cargo_fin.credit_account TO cargo_app;
           GRANT UPDATE (released_by,released_at,release_reason,release_entered_at) ON cargo_fin.credit_hold TO cargo_app;
           GRANT UPDATE (state) ON cargo_fin.debtor_invoice TO cargo_app;

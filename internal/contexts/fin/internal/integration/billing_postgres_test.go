@@ -797,7 +797,7 @@ func TestTaxTreatmentRacesDebitNotes(t *testing.T) {
 func TestNumbersFollowTheInvoiceDatePeriod(t *testing.T) {
 	ctx := context.Background()
 	f := newFixture(t)
-	m, err := finmodule.New(f.db, f.w, f.w, f.w, f.w, allow{}, finmodule.WithRecordWindow(kernel.RecordWindow{MaxBackdate: 100 * 24 * time.Hour,
+	m, err := finmodule.New(f.db, f.w, f.w, f.w, f.w, f.w, allow{}, finmodule.WithRecordWindow(kernel.RecordWindow{MaxBackdate: 100 * 24 * time.Hour,
 		Skew: 5 * time.Minute}))
 	if err != nil {
 		t.Fatal(err)

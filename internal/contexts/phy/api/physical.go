@@ -631,3 +631,44 @@ type PhysicalQueries interface {
 	GetLoadExecution(ctx context.Context, q GetLoadExecution) (LoadExecution, error)
 	ListOpenDiscrepancies(ctx context.Context, q ListOpenDiscrepancies) ([]OpenDiscrepancy, error)
 }
+
+// GetPhysicalCostBasis asks for a consolidation's cost basis (PhysicalCostBasis v1).
+type GetPhysicalCostBasis struct {
+	TenantID        string
+	ConsolidationID string
+}
+
+// HouseCostBasis is one live house of PhysicalCostBasis v1: the scope PHY froze when it attached the house
+// (Packs, GrossWeight, Volume) and what its tenders actually loaded (lines measured for themselves as
+// measured, apportioned lines at their lot's latest measurement; packs, weight or volume in mixed units are
+// not added and read zero). A house nothing was loaded of has zero LoadedPacks and a zero LastLoadedAt.
+type HouseCostBasis struct {
+	ShipmentID         string
+	MembershipRevision int64
+	Packs              int64
+	GrossWeight        kernel.Quantity
+	Volume             kernel.Quantity // zero when the shipment declares none
+	LoadedPacks        int64
+	LoadedGrossWeight  kernel.Quantity
+	LoadedVolume       kernel.Quantity
+	LastLoadedAt       time.Time // business time of the latest live load line
+}
+
+// PhysicalCostBasis is PhysicalCostBasis v1 (PHY -> FIN): the physical facts FIN apportions a consolidation's
+// pooled costs over. Houses are the live houses in shipment order. FIN apportions from these and never writes
+// them back.
+type PhysicalCostBasis struct {
+	TenantID               string
+	ConsolidationID        string
+	Revision               int64
+	Mode                   string
+	Kind                   string
+	OperatingLegalEntityID string
+	State                  string
+	Houses                 []HouseCostBasis
+}
+
+// PhysicalCostBasisQueries is PhysicalCostBasis v1, which FIN reads.
+type PhysicalCostBasisQueries interface {
+	GetPhysicalCostBasis(ctx context.Context, q GetPhysicalCostBasis) (PhysicalCostBasis, error)
+}

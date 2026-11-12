@@ -124,6 +124,39 @@ func (r Reads) Evidence(ctx context.Context, tenant phy.TenantID, shipment phy.S
 	return lots, executions, err
 }
 
+// CostBasis reads a consolidation, its live houses, its load executions and the houses' lots in one snapshot,
+// for PhysicalCostBasis v1.
+func (r Reads) CostBasis(ctx context.Context, tenant phy.TenantID, id phy.ConsolidationID) (*phy.Consolidation, int64, []House,
+	[]ExecutionRead, map[phy.ShipmentID][]LotRead, error) {
+	if tenant == "" || id == "" {
+		return nil, 0, nil, nil, nil, ErrInvalidQuery
+	}
+	var c *phy.Consolidation
+	var revision int64
+	var houses []House
+	var executions []ExecutionRead
+	lots := map[phy.ShipmentID][]LotRead{}
+	err := r.Tx.WithinTransaction(ctx, func(txCtx context.Context) error {
+		var err error
+		if c, revision, err = r.Consolidations.Read(txCtx, tenant, id); err != nil {
+			return err
+		}
+		if houses, err = r.Consolidations.LiveHouses(txCtx, tenant, id); err != nil {
+			return err
+		}
+		if executions, err = r.Executions.ByConsolidation(txCtx, tenant, id); err != nil {
+			return err
+		}
+		for _, h := range houses {
+			if lots[h.ShipmentID], err = r.Lots.ByShipment(txCtx, tenant, h.ShipmentID); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	return c, revision, houses, executions, lots, err
+}
+
 // OpenDiscrepancies lists open discrepancies by the time they were raised.
 func (r Reads) OpenDiscrepancies(ctx context.Context, tenant phy.TenantID, f DiscrepancyFilter) ([]OpenDiscrepancy, error) {
 	if f.Limit == 0 {
