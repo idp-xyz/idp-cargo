@@ -36,7 +36,8 @@ func (allowAll) AuthorizeFinAction(context.Context, string, string, string, stri
 // the client releases the lock, and setting the party races the client locking again; whichever wins, the
 // document ends consistent with COM. DOC V0.2 then sends the HAWB to the destination agent in the US: the shipper's
 // contact, consenting to go abroad, is on the copy once the client has reserved it in ORG's register; the
-// consignee's, consenting only to be provided in China, is left off.
+// consignee's, consenting only to be provided in China, is left off. FIN V0.2 then bills the job on the issued HAWB
+// with a debit note and waives the document fee with a credit note.
 func TestTransportDocumentsWithEveryContext(t *testing.T) {
 	ctx := context.Background()
 	platform := openPlatform(t)
@@ -64,7 +65,8 @@ func TestTransportDocumentsWithEveryContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	finModule, err := platform.FIN(orgModule, rateModule, fulModule, allowAll{})
+	documents := &DocumentSnapshots{}
+	finModule, err := platform.FIN(orgModule, rateModule, fulModule, documents, allowAll{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,6 +74,7 @@ func TestTransportDocumentsWithEveryContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	documents.Bind(docModule)
 	tenant := uniqueTenant("cargo-doc-")
 	seedORG(t, platform, tenant, "party-a", "airline-mu", "shipper-co", "consignee-us", "notify-us", "agent-ny")
 	at := time.Now().UTC().Add(-48 * time.Hour).Truncate(time.Microsecond)
@@ -441,5 +444,64 @@ func TestTransportDocumentsWithEveryContext(t *testing.T) {
 	if provisions, err := docModule.ListContactProvisions(ctx, docapi.ListContactProvisions{TenantID: tenant, ActorID: "privacy-officer", From: at,
 		Until: hours(48)}); err != nil || len(provisions) != 2 || provisions[0].State != docapi.DispatchSent || provisions[1].State != docapi.DispatchFailed {
 		t.Fatalf("provision records: %+v %v", provisions, err)
+	}
+
+	// FIN V0.2: the HAWB is issued, so the job is billed on it. A debit note in CNY converts the USD freight at the
+	// INVOICE rate, under party-a's billing profile (a foreign buyer, as ORG registers it in the US), the charge codes'
+	// tax treatments and the legal entity's debit note series; a credit note then waives the document fee.
+	policyRevision := int64(2)
+	policyStep := func(name string) func(finapi.Receipt, error) {
+		return func(r finapi.Receipt, err error) {
+			t.Helper()
+			must(name, err)
+			policyRevision = r.NewRevision
+		}
+	}
+	policyStep("invoice rate")(finModule.RecordExchangeRate(ctx, finapi.RecordExchangeRate{CommandID: "fin-invoice-rate", TenantID: tenant, ActorID: "acct-1",
+		LegalEntityID: "LE", ExpectedRevision: policyRevision, RateType: finapi.RateInvoice, From: "USD", Rate: 72_000, Scale: 4, FromDigits: 2, ToDigits: 2,
+		ValidFrom: at, ValidUntil: at.AddDate(0, 1, 0), Source: "bank selling rate", OccurredAt: hours(28)}))
+	taxFrom := at.AddDate(0, 0, -1).Format(time.DateOnly)
+	for _, x := range []struct {
+		code, treatment string
+		bp              int
+	}{{"FREIGHT", finapi.TaxExemptIntlFreight, 0}, {"DOC_FEE", finapi.TaxTaxable, 600}} {
+		policyStep("tax " + x.code)(finModule.SetChargeTaxTreatment(ctx, finapi.SetChargeTaxTreatment{CommandID: "fin-tax-" + x.code, TenantID: tenant,
+			ActorID: "tax-1", LegalEntityID: "LE", ExpectedRevision: policyRevision, ChargeCode: x.code, Treatment: x.treatment, RateBP: x.bp,
+			EffectiveFrom: taxFrom, OccurredAt: hours(28)}))
+	}
+	for _, x := range [][2]string{{finapi.KindDebitNote, "SHADN"}, {finapi.KindCreditNote, "SHACN"}} {
+		policyStep("series " + x[0])(finModule.RegisterInvoiceSeries(ctx, finapi.RegisterInvoiceSeries{CommandID: "fin-series-" + x[0], TenantID: tenant,
+			ActorID: "acct-1", LegalEntityID: "LE", ExpectedRevision: policyRevision, Kind: x[0], Prefix: x[1], Width: 6, FirstNumber: 1, OccurredAt: hours(28)}))
+	}
+	_, err = finModule.SetBillingProfile(ctx, finapi.SetBillingProfile{CommandID: "fin-profile", TenantID: tenant, ActorID: "bill-1", DebtorPartyID: "party-a",
+		BuyerKind: finapi.BuyerForeign, EvidenceRef: "account opening form AO-2026-118", OccurredAt: hours(28)})
+	must("billing profile", err)
+	r, err := finModule.RecordChargeLine(ctx, finapi.RecordChargeLine{CommandID: "fin-doc-fee", TenantID: tenant, ActorID: "fin-1", JobID: "JOB-A",
+		ExpectedRevision: 2, ChargeCode: "DOC_FEE", Sell: &finapi.ChargeSide{PartyID: "party-a", Amount: kernel.Money{Currency: "CNY", Minor: 30_000}},
+		Reason: "HAWB fee", OccurredAt: hours(28)})
+	must("document fee", err)
+	invoiceDate := hours(28).Format(time.DateOnly)
+	r, err = finModule.IssueDebitNote(ctx, finapi.IssueDebitNote{CommandID: "fin-debit", TenantID: tenant, ActorID: "bill-1", JobID: "JOB-A",
+		ExpectedRevision: r.NewRevision, InvoiceID: "DN-A", DebtorPartyID: "party-a", LineNos: []int{1, 2}, Currency: "CNY", InvoiceDate: invoiceDate,
+		OccurredAt: hours(28)})
+	if err != nil || r.Number != "SHADN000001" {
+		t.Fatalf("debit note: %+v %v", r, err)
+	}
+	note, err := finModule.GetDebtorInvoice(ctx, finapi.GetDebtorInvoice{TenantID: tenant, InvoiceID: "DN-A"})
+	// USD 1,000.00 at 7.2000 = CNY 7,200.00, and CNY 300.00
+	if err != nil || note.Total.Minor != 750_000 || note.Document.DocumentID != "DOC-HAWB-A" || note.Document.Version != h.CurrentVersion ||
+		note.Document.Number != "SHA0000001" || note.Document.MasterNumber != "781-12345675" || note.BillingProfile.Title != "Fixture Corp" ||
+		note.TermsVersion != 1 || note.PaymentBasis != finapi.TermsFromMonthEnd || len(note.TaxTotals) != 2 {
+		t.Fatalf("debit note on the issued HAWB: %+v %v", note, err)
+	}
+	r, err = finModule.IssueCreditNote(ctx, finapi.IssueCreditNote{CommandID: "fin-credit", TenantID: tenant, ActorID: "bill-1", JobID: "JOB-A",
+		ExpectedRevision: r.NewRevision, InvoiceID: "CN-A", DebitNoteID: "DN-A", LineNos: []int{2}, Reason: "fee waived for the first shipment",
+		WriteOff: true, InvoiceDate: invoiceDate, OccurredAt: hours(28)})
+	if err != nil || r.Number != "SHACN000001" {
+		t.Fatalf("credit note: %+v %v", r, err)
+	}
+	account, err := finModule.GetCreditAccount(ctx, finapi.GetCreditAccount{TenantID: tenant, LegalEntityID: "LE", DebtorPartyID: "party-a"})
+	if err != nil || account.Billed.Minor != 720_000 || account.Unbilled.Minor != 0 {
+		t.Fatalf("exposure after the credit note: %+v %v", account, err)
 	}
 }

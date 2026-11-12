@@ -352,8 +352,19 @@ func TestTransportDocumentsOnPostgres(t *testing.T) {
 	if _, err = issue("issue-junior", "doc-junior", "FIN not in service", 2, 3); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("an override by someone not allowed: %v", err)
 	}
+	snapshot := func() (api.TransportDocumentSnapshot, error) {
+		return f.module.GetHouseDocumentSnapshot(ctx, api.GetHouseDocumentSnapshot{TenantID: f.tenant, ShipmentID: "SH-A"})
+	}
+	if _, err = snapshot(); !errors.Is(err, api.ErrNotFound) {
+		t.Fatalf("TransportDocumentSnapshot v1 of an approved draft: %v", err)
+	}
 	if r, err = issue("issue-h1", "doc-2", "FIN not in service", 2, 3); err != nil || r.Version != 1 {
 		t.Fatalf("issue: %+v %v", r, err)
+	}
+	if s, err := snapshot(); err != nil || s.DocumentID != "DOC-H1" || s.Kind != api.KindHAWB || s.Version != 1 || s.VersionStatus != api.VersionIssued ||
+		s.Number != "SHA0000001" || s.MasterNumber != "781-12345675" || s.LegalEntityID != "LE" || s.ChargeableGrams != 318_000 || s.Origin == "" ||
+		!s.IssuedAt.Equal(f.hours(3)) || len(s.SHA256) != 64 {
+		t.Fatalf("TransportDocumentSnapshot v1 of the issued HAWB: %+v %v", s, err)
 	}
 	d := f.get(t, "DOC-H1")
 	if d.State != api.StateIssued || d.CurrentVersion != 1 || d.Number != "SHA0000001" || d.Versions[0].CreditBasis != api.CreditOverride ||
@@ -482,6 +493,9 @@ func TestTransportDocumentsOnPostgres(t *testing.T) {
 	if d = f.get(t, "DOC-H1"); d.Versions[3].Status != api.VersionCancelled || d.CurrentVersion != 0 {
 		t.Fatalf("cancelled: %+v", d)
 	}
+	if _, err = snapshot(); !errors.Is(err, api.ErrNotFound) {
+		t.Fatalf("TransportDocumentSnapshot v1 of a cancelled HAWB: %v", err)
+	}
 	again := draft
 	again.CommandID, again.DocumentID, again.OccurredAt = "draft-h2", "DOC-H2", f.hours(14)
 	f.w.order("O-A", 2, "DOC-H2")
@@ -492,6 +506,9 @@ func TestTransportDocumentsOnPostgres(t *testing.T) {
 	if _, err = f.module.IssueTransportDocument(ctx, api.IssueTransportDocument{CommandID: "issue-h2", TenantID: f.tenant, ActorID: "doc-2", DocumentID: "DOC-H2",
 		ExpectedRevision: 2, CreditOverrideReason: "FIN not in service", OccurredAt: f.hours(14)}); err != nil {
 		t.Fatalf("the shipment's own number again: %v", err)
+	}
+	if s, err := snapshot(); err != nil || s.DocumentID != "DOC-H2" || s.Version != 1 || s.Number != "SHA0000001" {
+		t.Fatalf("TransportDocumentSnapshot v1 of the new HAWB: %+v %v", s, err)
 	}
 	f.w.mu.Lock()
 	rolled := f.w.facts["AM-1"]

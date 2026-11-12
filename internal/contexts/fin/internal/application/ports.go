@@ -1,6 +1,6 @@
 // Package application runs FIN's use cases. Business rules stay in domain; this package orders the steps: replay
-// check, authorization, questions to FUL, RATE and ORG outside any FIN transaction (rule T3), and one transaction for
-// the aggregate, its Outbox events and the command receipt (rule T2).
+// check, authorization, questions to FUL, RATE, DOC and ORG outside any FIN transaction (rule T3), and one transaction
+// for the aggregate, its Outbox events and the command receipt (rule T2).
 package application
 
 import (
@@ -23,7 +23,7 @@ var (
 	ErrIdempotencyConflict = errors.New("fin application: command id reused with a different payload")
 	ErrMissingDependency   = errors.New("fin application: required dependency missing")
 	ErrInvalidQuery        = errors.New("fin application: invalid query")
-	ErrUnknownSource       = errors.New("fin application: FUL, RATE or ORG does not know what the command refers to")
+	ErrUnknownSource       = errors.New("fin application: FUL, RATE, DOC or ORG does not know what the command refers to")
 	ErrNoPolicy            = errors.New("fin application: FIN_NO_POLICY: the legal entity has no finance policy; open one first")
 	ErrNotVerified         = errors.New("fin application: the legal entity is not VERIFIED in ORG")
 )
@@ -43,6 +43,7 @@ type Receipt struct {
 	SubjectID   string
 	NewRevision int64
 	Version     int
+	Number      string // the number of a note issued
 	RequestHash string
 }
 
@@ -72,6 +73,24 @@ type JobStore interface {
 	ForShipment(ctx context.Context, tenant fin.TenantID, shipment string) ([]*fin.FreightJob, []int64, error)
 	// OpenOf lists the open jobs of a legal entity, of one customer when customer is not empty.
 	OpenOf(ctx context.Context, tenant fin.TenantID, legalEntity, customer string) ([]*fin.FreightJob, error)
+	// BilledTo lists the jobs of a legal entity with notes to a debtor.
+	BilledTo(ctx context.Context, tenant fin.TenantID, legalEntity, debtor string) ([]*fin.FreightJob, error)
+	// OfNote reads the job of a note.
+	OfNote(ctx context.Context, tenant fin.TenantID, invoiceID string) (*fin.FreightJob, int64, error)
+}
+
+// SeriesStore draws the next sequence value of a legal entity's series of a note kind, holding the series until the
+// transaction ends (fin.ErrNoSeries without one, fin.ErrSeriesExhausted past its width).
+type SeriesStore interface {
+	Next(ctx context.Context, tenant fin.TenantID, legalEntity, kind string) (int64, error)
+}
+
+// ProfileStore loads and writes billing profiles and reports whether the debtor has one; a version written twice at
+// once is a conflict.
+type ProfileStore interface {
+	Load(ctx context.Context, tenant fin.TenantID, debtor string) (*fin.BillingProfile, bool, error)
+	Read(ctx context.Context, tenant fin.TenantID, debtor string) (*fin.BillingProfile, bool, error)
+	Save(context.Context, *fin.BillingProfile) error
 }
 
 // CreditStore loads and writes credit accounts; Load locks the account row and reports whether it exists.
@@ -138,11 +157,27 @@ type Pricing interface {
 	QuoteBasis(ctx context.Context, tenant fin.TenantID, quote string) (PricingBasis, error)
 }
 
-// Directory reads ORG (ORG -> FIN), outside FIN's transactions: whether a legal entity is VERIFIED, and the revision
-// of a party ORG confirms in one of the roles for a legal entity at an instant (fin.ErrPartyRole otherwise).
+// Directory reads ORG (ORG -> FIN), outside FIN's transactions: whether a legal entity is VERIFIED, the revision of
+// a party ORG confirms in one of the roles for a legal entity at an instant (fin.ErrPartyRole otherwise), and a party's
+// identity (names, country and unified social credit code).
 type Directory interface {
 	LegalEntityVerified(ctx context.Context, tenant fin.TenantID, legalEntity string) (bool, error)
 	PartyInRole(ctx context.Context, tenant fin.TenantID, party, legalEntity string, roles []string, at time.Time) (int64, error)
+	PartyIdentity(ctx context.Context, tenant fin.TenantID, party string) (fin.PartyIdentity, error)
+}
+
+// HouseDocument is what FIN reads of DOC's TransportDocumentSnapshot v1: the valid issued version of a shipment's
+// house document.
+type HouseDocument struct {
+	fin.DocumentRef
+	ShipmentID    string
+	LegalEntityID string
+}
+
+// Documents reads DOC (DOC -> FIN), outside FIN's transactions: fin.ErrNoIssuedDocument when the shipment's house
+// document is not issued.
+type Documents interface {
+	HouseDocument(ctx context.Context, tenant fin.TenantID, shipment string) (HouseDocument, error)
 }
 
 // Deps are the ports every FIN command uses.
@@ -159,6 +194,9 @@ type Deps struct {
 	Shipments Shipments
 	Pricing   Pricing
 	Directory Directory
+	Documents Documents
+	Series    SeriesStore
+	Profiles  ProfileStore
 }
 
 // Command is what every FIN command carries: Subject is the legal entity, the job or <legal entity>/<debtor>.
@@ -176,7 +214,8 @@ func (d Deps) begin(ctx context.Context, c Command) (hash string, entered time.T
 	if err = ctx.Err(); err != nil {
 		return
 	}
-	if d.Tx == nil || d.Policies == nil || d.Jobs == nil || d.Credit == nil || d.Receipts == nil || d.Outbox == nil || d.Auth == nil || d.Clock == nil {
+	if d.Tx == nil || d.Policies == nil || d.Jobs == nil || d.Credit == nil || d.Series == nil || d.Profiles == nil || d.Receipts == nil || d.Outbox == nil ||
+		d.Auth == nil || d.Clock == nil {
 		return "", time.Time{}, Receipt{}, false, ErrMissingDependency
 	}
 	if c.Scope.TenantID == "" || strings.TrimSpace(c.Scope.ActorID) == "" || c.CommandID == "" || c.OccurredAt.IsZero() {

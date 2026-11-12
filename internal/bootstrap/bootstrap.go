@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -223,20 +224,51 @@ func (p *Platform) DOC(air airapi.AirDocFactsQueries, com comapi.OrderPartyQueri
 	return doc.New(db, air, com, org, credit, auth, opts...)
 }
 
-// ORGForFIN is what FIN reads of ORG: party roles and legal entities.
+// ORGForFIN is what FIN reads of ORG: party roles, legal entities and party identities.
 type ORGForFIN interface {
 	orgapi.Queries
 	orgapi.LegalEntityQueries
+	orgapi.PartyIdentityQueries
 }
 
-// FIN assembles the FIN bounded context. org answers LegalEntityRef v1 and PartyRef v1, rate PricingBasis v1 and ful
-// CostDriver v1, each through its query side.
-func (p *Platform) FIN(org ORGForFIN, rate rateapi.PricingBasisQueries, ful fulapi.CostDriverQueries, auth finapi.Authorizer, opts ...fin.Option) (*fin.Module, error) {
+// FIN assembles the FIN bounded context. org answers LegalEntityRef v1, PartyRef v1 and party identities, rate
+// PricingBasis v1, ful CostDriver v1 and doc TransportDocumentSnapshot v1, each through its query side. DOC asks FIN
+// for CreditStatus v1 in turn, so FIN is assembled first with a DocumentSnapshots that is bound to DOC once DOC exists.
+func (p *Platform) FIN(org ORGForFIN, rate rateapi.PricingBasisQueries, ful fulapi.CostDriverQueries, doc docapi.TransportDocumentSnapshotQueries,
+	auth finapi.Authorizer, opts ...fin.Option) (*fin.Module, error) {
 	db, err := p.newDB()
 	if err != nil {
 		return nil, err
 	}
-	return fin.New(db, org, rate, ful, auth, opts...)
+	return fin.New(db, org, rate, ful, doc, auth, opts...)
+}
+
+// ErrDocumentsUnbound is returned while a DocumentSnapshots is not bound to DOC.
+var ErrDocumentsUnbound = errors.New("bootstrap: DOC's document snapshots are not bound yet")
+
+// DocumentSnapshots forwards TransportDocumentSnapshot v1 to DOC once bound: FIN and DOC ask each other (CreditStatus
+// v1 one way, TransportDocumentSnapshot v1 the other), so the one assembled first holds this until the other exists.
+// Bind it once, before serving.
+type DocumentSnapshots struct {
+	mu  sync.RWMutex
+	doc docapi.TransportDocumentSnapshotQueries
+}
+
+// Bind connects the snapshots to DOC.
+func (s *DocumentSnapshots) Bind(doc docapi.TransportDocumentSnapshotQueries) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.doc = doc
+}
+
+func (s *DocumentSnapshots) GetHouseDocumentSnapshot(ctx context.Context, q docapi.GetHouseDocumentSnapshot) (docapi.TransportDocumentSnapshot, error) {
+	s.mu.RLock()
+	doc := s.doc
+	s.mu.RUnlock()
+	if doc == nil {
+		return docapi.TransportDocumentSnapshot{}, ErrDocumentsUnbound
+	}
+	return doc.GetHouseDocumentSnapshot(ctx, q)
 }
 
 // Locations assembles the read-only location reference data (repository structure baseline §11).

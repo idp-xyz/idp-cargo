@@ -52,8 +52,9 @@ type Option func(*Module)
 func WithRecordWindow(w kernel.RecordWindow) Option { return func(m *Module) { m.window = w } }
 
 var (
-	_ api.Commands = (*Module)(nil)
-	_ api.Queries  = (*Module)(nil)
+	_ api.Commands                         = (*Module)(nil)
+	_ api.Queries                          = (*Module)(nil)
+	_ api.TransportDocumentSnapshotQueries = (*Module)(nil)
 )
 
 // New assembles DOC. air answers AirDocFacts v1 (relationship 11), com OrderParties v1 and org LegalEntityRef v1,
@@ -228,6 +229,46 @@ func (m *Module) list(ctx context.Context, tenant, shipment, consolidation strin
 			Revision: s.Revision, CurrentVersion: s.CurrentVersion, LatestVersion: s.LatestVersion})
 	}
 	return out, nil
+}
+
+// GetHouseDocumentSnapshot answers TransportDocumentSnapshot v1 for FIN: the valid issued version of the shipment's
+// house document (a HAWB in N1), issued or under amendment; anything else is not found.
+func (m *Module) GetHouseDocumentSnapshot(ctx context.Context, q api.GetHouseDocumentSnapshot) (api.TransportDocumentSnapshot, error) {
+	if q.TenantID == "" || q.ShipmentID == "" {
+		return api.TransportDocumentSnapshot{}, classify(application.ErrInvalidQuery)
+	}
+	r := m.reads(q.TenantID)
+	found, err := r.List(ctx, domain.TenantID(q.TenantID), q.ShipmentID, "")
+	if err != nil {
+		return api.TransportDocumentSnapshot{}, classify(err)
+	}
+	var house []application.Summary
+	for _, s := range found {
+		if s.Kind == domain.KindHAWB && (s.State == domain.StateIssued || s.State == domain.StateAmending) {
+			house = append(house, s)
+		}
+	}
+	switch len(house) {
+	case 0:
+		return api.TransportDocumentSnapshot{}, fmt.Errorf("%w: shipment %s has no issued house document", api.ErrNotFound, q.ShipmentID)
+	case 1:
+	default:
+		return api.TransportDocumentSnapshot{}, fmt.Errorf("doc: shipment %s has %d valid house documents", q.ShipmentID, len(house))
+	}
+	d, _, err := r.Document(ctx, domain.TenantID(q.TenantID), house[0].DocumentID)
+	if err != nil {
+		return api.TransportDocumentSnapshot{}, classify(err)
+	}
+	v, ok := d.Current()
+	st := d.State()
+	if !ok || v.Issue == nil || d.Status(v.No) != domain.VersionIssued || st.ShipmentID != q.ShipmentID {
+		return api.TransportDocumentSnapshot{}, fmt.Errorf("%w: document %s has no valid issued version", api.ErrNotFound, house[0].DocumentID)
+	}
+	c := v.Doc
+	return api.TransportDocumentSnapshot{DocumentID: string(st.DocumentID), Kind: string(st.Kind), Version: v.No, VersionStatus: api.VersionIssued,
+		SHA256: v.SHA256, Number: c.Number, MasterNumber: c.MAWB, ShipmentID: st.ShipmentID, ConsolidationID: st.ConsolidationID,
+		LegalEntityID: st.LegalEntityID, IssuedAt: v.Issue.At, Origin: c.Origin.Code, Destination: c.Destination.Code, Pieces: c.Cargo.Pieces,
+		GrossGrams: c.Cargo.GrossGrams, ChargeableGrams: c.Cargo.ChargeableGrams}, nil
 }
 
 func (m *Module) GetIssuanceAuthority(ctx context.Context, q api.GetIssuanceAuthority) (api.IssuanceAuthority, error) {

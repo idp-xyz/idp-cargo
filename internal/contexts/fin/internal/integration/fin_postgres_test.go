@@ -1,7 +1,7 @@
 //go:build integration
 
-// Package integration runs FIN against PostgreSQL 16 with stand-ins for FUL's CostDriver v1, RATE's PricingBasis v1
-// and ORG. The real contexts together are tested by the composition root.
+// Package integration runs FIN against PostgreSQL 16 with stand-ins for FUL's CostDriver v1, RATE's PricingBasis v1,
+// DOC's TransportDocumentSnapshot v1 and ORG. The real contexts together are tested by the composition root.
 package integration
 
 import (
@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	bentopg "go.idp.xyz/idp-bento-go/postgres"
+	docapi "go.idp.xyz/idp-cargo/internal/contexts/doc/api"
 	finmodule "go.idp.xyz/idp-cargo/internal/contexts/fin"
 	"go.idp.xyz/idp-cargo/internal/contexts/fin/api"
 	fulapi "go.idp.xyz/idp-cargo/internal/contexts/ful/api"
@@ -64,13 +65,35 @@ func testDB(t *testing.T) *bentopg.DB {
 func cny(n int64) kernel.Money { return kernel.Money{Currency: "CNY", Minor: n} }
 func usd(n int64) kernel.Money { return kernel.Money{Currency: "USD", Minor: n} }
 
-// world stands in for FUL, RATE and ORG.
+// world stands in for FUL, RATE, DOC and ORG.
 type world struct {
-	mu        sync.Mutex
-	drivers   map[string]fulapi.CostDriver
-	bases     map[string]rateapi.PricingBasis
-	roles     map[string][]string // party -> roles held for LE
-	suspended bool
+	mu         sync.Mutex
+	drivers    map[string]fulapi.CostDriver
+	bases      map[string]rateapi.PricingBasis
+	roles      map[string][]string // party -> roles held for LE
+	identities map[string]orgapi.PartyIdentity
+	documents  map[string]docapi.TransportDocumentSnapshot // shipment -> issued house document
+	suspended  bool
+}
+
+func (w *world) GetPartyIdentity(_ context.Context, q orgapi.GetPartyIdentity) (orgapi.PartyIdentity, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	id, ok := w.identities[q.PartyID]
+	if !ok {
+		return orgapi.PartyIdentity{}, fmt.Errorf("%w: stub", orgapi.ErrNotFound)
+	}
+	return id, nil
+}
+
+func (w *world) GetHouseDocumentSnapshot(_ context.Context, q docapi.GetHouseDocumentSnapshot) (docapi.TransportDocumentSnapshot, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	d, ok := w.documents[q.ShipmentID]
+	if !ok {
+		return docapi.TransportDocumentSnapshot{}, fmt.Errorf("%w: stub", docapi.ErrNotFound)
+	}
+	return d, nil
 }
 
 func (w *world) GetShipmentCostDriver(_ context.Context, q fulapi.GetShipmentCostDriver) (fulapi.CostDriver, error) {
@@ -134,9 +157,15 @@ func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	at := time.Now().UTC().Add(-24 * time.Hour).Truncate(time.Microsecond)
 	w := &world{drivers: map[string]fulapi.CostDriver{}, bases: map[string]rateapi.PricingBasis{},
-		roles: map[string][]string{"party-a": {"CUSTOMER"}, "agent-ny": {"OVERSEAS_AGENT"}, "airline-mu": {"CARRIER"}, "trucker": {"CO_LOADER"}}}
+		roles: map[string][]string{"party-a": {"CUSTOMER"}, "agent-ny": {"OVERSEAS_AGENT"}, "airline-mu": {"CARRIER"}, "trucker": {"CO_LOADER"}},
+		identities: map[string]orgapi.PartyIdentity{
+			"party-a": {PartyID: "party-a", Revision: 4, Status: "ACTIVE", LegalName: "上海甲贸易有限公司", EnglishName: "Shanghai Jia Trading Co., Ltd.",
+				CountryCode: "CN", Identifiers: []orgapi.PartyIdentifier{{Type: orgapi.IdentifierCNUSCC, Country: "CN", Value: "91310000MA1FL8TQ2X"}}},
+			"agent-ny": {PartyID: "agent-ny", Revision: 2, Status: "ACTIVE", LegalName: "NY Forwarding Inc.", CountryCode: "US"},
+		},
+		documents: map[string]docapi.TransportDocumentSnapshot{}}
 	f := &fixture{db: testDB(t), w: w, at: at, tenant: "cargo-fin-" + time.Now().UTC().Format("20060102T150405.000000000")}
-	m, err := finmodule.New(f.db, w, w, w, allow{})
+	m, err := finmodule.New(f.db, w, w, w, w, allow{})
 	if err != nil {
 		t.Fatal(err)
 	}

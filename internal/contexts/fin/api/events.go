@@ -4,7 +4,9 @@ package api
 const Source = "idp-cargo.fin"
 
 // Published event types (FinanceEvent v1 carries them to EVT as identifiers). Policy events have the legal entity as
-// subject, job events the job, credit events <legal entity>/<debtor>.
+// subject (InvoiceSeriesRegistered <legal entity>/<kind>), job events the job (a note's billed and returned sides are
+// ChargeSideRevised too), note events the note (with its job), billing profile events the debtor, credit events
+// <legal entity>/<debtor>.
 const (
 	FinancePolicyOpened  = "FinancePolicyOpened.v1"
 	ExchangeRateRecorded = "ExchangeRateRecorded.v1"
@@ -17,6 +19,13 @@ const (
 	CreditTermsSet       = "CreditTermsSet.v1"
 	CreditHoldPlaced     = "CreditHoldPlaced.v1"
 	CreditHoldReleased   = "CreditHoldReleased.v1"
+
+	ChargeTaxTreatmentSet   = "ChargeTaxTreatmentSet.v1"
+	InvoiceSeriesRegistered = "InvoiceSeriesRegistered.v1"
+	BillingProfileSet       = "BillingProfileSet.v1"
+	DebtorInvoiceIssued     = "DebtorInvoiceIssued.v1"    // a debit note
+	DebtorInvoiceCancelled  = "DebtorInvoiceCancelled.v1" // a debit note whose every line a credit note reversed
+	CreditNoteIssued        = "CreditNoteIssued.v1"
 )
 
 // EventPayload is the JSON payload of every FIN event: identifiers and versions only, never amounts, names or tax
@@ -30,4 +39,5 @@ type EventPayload struct {
 	DebtorPartyID string `json:"debtor_party_id,omitempty"`
 	LineNo        int    `json:"line_no,omitempty"` // ChargeLineRecorded and ChargeSideRevised: the line; Version is the side's version
 	Side          string `json:"side,omitempty"`    // ChargeSideRevised: SELL or COST
+	JobID         string `json:"job_id,omitempty"`  // DebtorInvoiceIssued, DebtorInvoiceCancelled and CreditNoteIssued: the note's job
 }
