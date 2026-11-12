@@ -12,6 +12,7 @@ type Reads struct {
 	Tx        TxRunner
 	Movements MovementStore
 	Series    SeriesStore
+	Numbers   Numbers
 	Register  HAWBRegister
 }
 

@@ -20,15 +20,15 @@ func write(t *testing.T, path, content string) {
 func TestManifestOrdersContextDirectories(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "migrations")
 	manifest := filepath.Join(root, "manifest", "contexts.txt")
-	write(t, manifest, "# order\nalpha\n\nbeta\n")
-	dirs, err := readManifest(manifest)
+	write(t, manifest, "# order\nalpha\n\nbeta numbering\n")
+	entries, err := readManifest(manifest)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := filepath.Join(root, "alpha") + "," + filepath.Join(root, "beta"); strings.Join(dirs, ",") != want {
-		t.Fatalf("dirs = %v, want %s", dirs, want)
+	if len(entries) != 2 || entries[0] != (entry{Dir: filepath.Join(root, "alpha")}) || entries[1] != (entry{Dir: filepath.Join(root, "beta"), Numbering: true}) {
+		t.Fatalf("entries = %+v", entries)
 	}
-	for _, bad := range []string{"alpha\nalpha\n", "../org\n", "# nothing\n"} {
+	for _, bad := range []string{"alpha\nalpha\n", "../org\n", "# nothing\n", "alpha options\n", "alpha numbering numbering\n"} {
 		write(t, manifest, bad)
 		if _, err := readManifest(manifest); err == nil {
 			t.Errorf("manifest %q must be rejected", bad)
@@ -56,18 +56,19 @@ func TestMigrationFilesCarryTheirContext(t *testing.T) {
 }
 
 func TestRepositoryManifestLoads(t *testing.T) {
-	dirs, err := readManifest(filepath.Join("..", "..", "migrations", "manifest", "contexts.txt"))
+	entries, err := readManifest(filepath.Join("..", "..", "migrations", "manifest", "contexts.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := load(entries)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var ids []string
-	for _, d := range dirs {
-		items, err := loadDirectory(d)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, m := range items {
-			ids = append(ids, m.ID)
+	for _, m := range items {
+		ids = append(ids, m.ID)
+		if (strings.HasPrefix(m.Ledger, "platform:") != strings.Contains(m.ID, ":")) || m.Ledger == "" {
+			t.Fatalf("ledger id %q of %q", m.Ledger, m.ID)
 		}
 	}
 	want := []string{"000001_ref_locations", "000002_ref_locations_s1_subset", "000001_org_identity", "000002_org_roles", "000003_org_merge", "000004_org_audit_reference",
@@ -75,7 +76,8 @@ func TestRepositoryManifestLoads(t *testing.T) {
 		"000002_com_obligation_lifecycle", "000003_com_reservation_per_shipment", "000004_com_order_correction_policy_terms", "000005_com_order_status_derived", "000006_com_order_parties", "000007_com_order_closure_contact_retention", "000008_com_contact_consent_access", "000009_com_order_party_lock",
 		"000001_ful_shipments", "000002_ful_shipment_parts", "000003_ful_location_resolution", "000004_ful_consol_attachment", "000005_ful_load_evidence",
 		"000006_ful_goods_and_screening", "000007_ful_cost_driver", "000001_phy_consolidation_membership", "000002_phy_cargo_lots_tender", "000001_book_carrier_bookings",
-		"000001_air_movement_waybills", "000002_air_measured_facts", "000003_air_doc_facts", "000001_doc_transport_documents", "000002_doc_rendering_dispatch", "000003_doc_credit_decision", "000001_fin_jobs_credit", "000002_fin_billing"}
+		"cargo_air:platform_numbering_0001_numbering_sequence", "000001_air_movement_waybills", "000002_air_measured_facts", "000003_air_doc_facts",
+		"000004_air_hawb_numbering", "000001_doc_transport_documents", "000002_doc_rendering_dispatch", "000003_doc_credit_decision", "cargo_fin:platform_numbering_0001_numbering_sequence", "000001_fin_jobs_credit", "000002_fin_billing", "000003_fin_numbering"}
 	if strings.Join(ids, " ") != strings.Join(want, " ") {
 		t.Fatalf("migration order = %v, want %v", ids, want)
 	}

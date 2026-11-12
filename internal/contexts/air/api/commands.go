@@ -44,17 +44,18 @@ type LinkCarrierBooking struct {
 	OccurredAt       time.Time
 }
 
-// RegisterHawbSeries gives a legal entity its HAWB series: a prefix of one to four letters and digits followed
-// by a zero-padded sequence of Width digits, from Next. One series per legal entity; prefix and width make
-// numbers of at most twelve characters.
+// RegisterHawbSeries gives a legal entity its HAWB numbering, once (N1-HAWB; numbers from idp-platform-go, MD-28): a
+// template of capital letters and digits with date parts and one sequence, such as SHA{seq:7} or SHA{yy}{seq:6}
+// (tokens {yyyy}, {yy}, {mm}, {q} and one {seq:N} with N from 4 to 10; the sequence resets by the finest date part),
+// whose numbers are HAWB numbers (twelve characters at most), and the first number, from which the sequence of the
+// registration's period starts.
 type RegisterHawbSeries struct {
 	CommandID     string
 	TenantID      string
 	ActorID       string
 	LegalEntityID string
-	Prefix        string
-	Width         int
-	Next          int64
+	Template      string
+	FirstNumber   int64
 	OccurredAt    time.Time
 }
 

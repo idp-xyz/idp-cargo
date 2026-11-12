@@ -87,14 +87,14 @@ type taxRow struct {
 }
 
 type seriesRow struct {
-	Kind      string    `json:"kind"`
-	Prefix    string    `json:"prefix"`
-	Width     int       `json:"width"`
-	Start     int64     `json:"start_seq"`
-	Next      int64     `json:"next_seq"`
-	By        string    `json:"registered_by"`
-	At        time.Time `json:"registered_at"`
-	EnteredAt time.Time `json:"entered_at"`
+	Kind        string    `json:"kind"`
+	Prefix      string    `json:"prefix"`
+	Template    string    `json:"template"`
+	FirstNumber int64     `json:"first_number"`
+	SeedPeriod  string    `json:"seed_period"`
+	By          string    `json:"registered_by"`
+	At          time.Time `json:"registered_at"`
+	EnteredAt   time.Time `json:"entered_at"`
 }
 
 func readPolicy(ctx context.Context, q bentopg.Querier, tenant fin.TenantID, le, lock string) (*fin.FinancePolicy, int64, error) {
@@ -139,8 +139,8 @@ func readPolicy(ctx context.Context, q bentopg.Querier, tenant fin.TenantID, le,
 			By: t.By, At: utc(t.At), EnteredAt: utc(t.EnteredAt)})
 	}
 	for _, x := range sr {
-		st.Series = append(st.Series, fin.Series{Kind: x.Kind, Prefix: x.Prefix, Width: x.Width, Start: x.Start, Next: x.Next, By: x.By, At: utc(x.At),
-			EnteredAt: utc(x.EnteredAt)})
+		st.Series = append(st.Series, fin.Series{Kind: x.Kind, Prefix: x.Prefix, Template: x.Template, FirstNumber: x.FirstNumber, SeedPeriod: x.SeedPeriod,
+			By: x.By, At: utc(x.At), EnteredAt: utc(x.EnteredAt)})
 	}
 	st.FunctionalCurrency, st.OpenedAt, st.EnteredAt = kernel.CurrencyCode(currency), st.OpenedAt.UTC(), st.EnteredAt.UTC()
 	for _, r := range rr {
@@ -252,38 +252,13 @@ func writeRates(ctx context.Context, q bentopg.Executor, p *fin.FinancePolicy) e
 		}
 	}
 	for _, x := range p.AddedSeries() {
-		if _, err := q.Exec(ctx, `INSERT INTO cargo_fin.invoice_series (tenant_id,legal_entity_id,kind,prefix,width,start_seq,next_seq,registered_by,
-            registered_at,entered_at) VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9)`, string(st.TenantID), st.LegalEntityID, x.Kind, x.Prefix, x.Width, x.Start, x.By,
-			x.At, x.EnteredAt); err != nil {
+		if _, err := q.Exec(ctx, `INSERT INTO cargo_fin.invoice_series (tenant_id,legal_entity_id,kind,prefix,template,first_number,seed_period,registered_by,
+            registered_at,entered_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, string(st.TenantID), st.LegalEntityID, x.Kind, x.Prefix, x.Template,
+			x.FirstNumber, x.SeedPeriod, x.By, x.At, x.EnteredAt); err != nil {
 			return err
 		}
 	}
 	return nil
-}
-
-// Series draws numbers from the legal entities' series.
-type Series struct{ DB *bentopg.DB }
-
-var _ app.SeriesStore = Series{}
-
-// Next takes the next sequence value of a series, holding the series row until the transaction ends; a value past
-// the series' width is refused by the database (invoice_series_range).
-func (s Series) Next(ctx context.Context, tenant fin.TenantID, legalEntity, kind string) (int64, error) {
-	q, err := s.DB.RequireExecutor(ctx)
-	if err != nil {
-		return 0, err
-	}
-	var seq int64
-	err = q.QueryRow(ctx, `UPDATE cargo_fin.invoice_series SET next_seq=next_seq+1 WHERE tenant_id=$1 AND legal_entity_id=$2 AND kind=$3
-      RETURNING next_seq-1`, string(tenant), legalEntity, kind).Scan(&seq)
-	var pgErr *pgconn.PgError
-	switch {
-	case errors.Is(err, pgx.ErrNoRows):
-		return 0, fmt.Errorf("%w: %s of %s", fin.ErrNoSeries, kind, legalEntity)
-	case errors.As(err, &pgErr) && pgErr.Code == "23514" && pgErr.ConstraintName == "invoice_series_range":
-		return 0, fmt.Errorf("%w: %s of %s", fin.ErrSeriesExhausted, kind, legalEntity)
-	}
-	return seq, err
 }
 
 // JobStore loads and writes freight jobs.
@@ -343,6 +318,7 @@ type (
 		Kind           string     `json:"kind"`
 		Number         string     `json:"number"`
 		Seq            int64      `json:"number_seq"`
+		Period         string     `json:"number_period"`
 		Debtor         string     `json:"debtor_party_id"`
 		DebtorRevision int64      `json:"debtor_revision"`
 		ProfileVersion int        `json:"profile_version"`
@@ -426,7 +402,7 @@ func notesOf(nr []noteRow, lr []noteLineRow) ([]fin.Note, error) {
 			return nil, err
 		}
 		index[n.ID] = len(notes)
-		notes = append(notes, fin.Note{ID: n.ID, Kind: n.Kind, Number: n.Number, Seq: n.Seq, DebtorPartyID: n.Debtor, DebtorRevision: n.DebtorRevision,
+		notes = append(notes, fin.Note{ID: n.ID, Kind: n.Kind, Number: n.Number, Seq: n.Seq, Period: n.Period, DebtorPartyID: n.Debtor, DebtorRevision: n.DebtorRevision,
 			ProfileVersion: n.ProfileVersion, Currency: kernel.CurrencyCode(n.Currency), InvoiceDate: invoice, DueDate: due, PaymentDays: deref(n.PaymentDays),
 			PaymentBasis: deref(n.PaymentBasis), TermsVersion: deref(n.TermsVersion), Document: fin.DocumentRef{DocumentID: deref(n.DocumentID),
 				Version: deref(n.DocumentVer), Number: deref(n.DocumentNumber), MasterNumber: deref(n.MasterNumber),
@@ -707,11 +683,11 @@ func insertNote(ctx context.Context, q bentopg.Executor, st fin.JobState, n fin.
 	if n.Kind == fin.KindDebitNote {
 		days, basis = n.PaymentDays, n.PaymentBasis
 	}
-	_, err := q.Exec(ctx, `INSERT INTO cargo_fin.debtor_invoice (tenant_id,invoice_id,kind,job_id,legal_entity_id,number,number_seq,debtor_party_id,
+	_, err := q.Exec(ctx, `INSERT INTO cargo_fin.debtor_invoice (tenant_id,invoice_id,kind,job_id,legal_entity_id,number,number_seq,number_period,debtor_party_id,
         debtor_revision,profile_version,currency,invoice_date,due_date,payment_days,payment_basis,terms_version,document_id,document_version,document_number,
         master_number,document_issued_at,credits_invoice_id,reason,write_off,total_minor,local_total_minor,state,issued_by,issued_at,entered_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30)`,
-		string(st.TenantID), n.ID, n.Kind, st.JobID, st.LegalEntityID, n.Number, n.Seq, n.DebtorPartyID, n.DebtorRevision, n.ProfileVersion,
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31)`,
+		string(st.TenantID), n.ID, n.Kind, st.JobID, st.LegalEntityID, n.Number, n.Seq, n.Period, n.DebtorPartyID, n.DebtorRevision, n.ProfileVersion,
 		string(n.Currency), n.InvoiceDate.Format(time.DateOnly), dateOrNull(n.DueDate), days, basis, orNull(n.TermsVersion), orNull(n.Document.DocumentID),
 		orNull(n.Document.Version), orNull(n.Document.Number), orNull(n.Document.MasterNumber), orNull(n.Document.IssuedAt), orNull(n.CreditsID),
 		orNull(n.Reason), n.WriteOff, n.Total,

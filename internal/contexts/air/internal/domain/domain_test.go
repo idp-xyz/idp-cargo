@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"strings"
 	"testing"
 	"time"
 
@@ -204,30 +205,26 @@ func TestWindowDrift(t *testing.T) {
 	}
 }
 
+// A series is a template and a first number, fixed once; AIR's application checks the template against the
+// platform's language and the HAWB form, and the platform's sequence draws the numbers.
 func TestHawbSeries(t *testing.T) {
 	for _, bad := range []struct {
-		prefix string
-		width  int
-		next   int64
-	}{{"SHANG", 6, 1}, {"SH", 3, 1}, {"SHA0", 9, 1}, {"sh", 6, 1}, {"SH", 6, 0}} {
-		if _, err := RegisterSeries("T", "LE", bad.prefix, bad.width, bad.next, "ops", t0); !errors.Is(err, ErrInvalidSeries) {
+		template string
+		first    int64
+	}{{"", 1}, {" SHA{seq:7}", 1}, {"SHA{seq:7}", 0}, {strings.Repeat("S", 41), 1}} {
+		if _, err := RegisterSeries("T", "LE", bad.template, bad.first, "", "ops", t0); !errors.Is(err, ErrInvalidSeries) {
 			t.Errorf("%+v: %v", bad, err)
 		}
 	}
-	s, err := RegisterSeries("T", "LE", "SHA", 4, 9998, "ops", t0)
+	s, err := RegisterSeries("T", "LE", "SHA{yy}{seq:6}", 9998, "2026", "ops", t0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"SHA9998", "SHA9999"} {
-		if got, err := s.Draw(); err != nil || got != want {
-			t.Fatalf("draw %s: %s %v", want, got, err)
-		}
-	}
-	if _, err = s.Draw(); !errors.Is(err, ErrSeriesExhausted) {
-		t.Fatalf("exhausted: %v", err)
+	if st := s.State(); st.Template != "SHA{yy}{seq:6}" || st.FirstNumber != 9998 || st.SeedPeriod != "2026" || len(s.Pending()) != 1 {
+		t.Fatalf("series: %+v", st)
 	}
 	if _, err = RestoreSeries(s.State()); err != nil {
-		t.Fatalf("an exhausted series restores: %v", err)
+		t.Fatalf("restore: %v", err)
 	}
 }
 

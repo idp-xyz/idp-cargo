@@ -399,32 +399,20 @@ func (s MovementStore) ByMAWB(ctx context.Context, tenant air.TenantID, mawb str
 	return air.MovementID(id), err == nil, err
 }
 
-// SeriesStore loads and writes HAWB series.
+// SeriesStore reads and writes HAWB series.
 type SeriesStore struct{ DB *bentopg.DB }
 
 var _ app.SeriesStore = SeriesStore{}
-
-func (s SeriesStore) Load(ctx context.Context, tenant air.TenantID, le string) (*air.Series, int64, error) {
-	q, err := s.DB.RequireExecutor(ctx)
-	if err != nil {
-		return nil, 0, err
-	}
-	return readSeries(ctx, q, tenant, le, " FOR UPDATE")
-}
 
 func (s SeriesStore) Read(ctx context.Context, tenant air.TenantID, le string) (*air.Series, int64, error) {
 	q, err := s.DB.ReadExecutor(ctx)
 	if err != nil {
 		return nil, 0, err
 	}
-	return readSeries(ctx, q, tenant, le, "")
-}
-
-func readSeries(ctx context.Context, q queryRower, tenant air.TenantID, le, lock string) (*air.Series, int64, error) {
 	st := air.SeriesState{TenantID: tenant, LegalEntityID: le}
 	var revision int64
-	err := q.QueryRow(ctx, `SELECT prefix,width,next_seq,registered_by,registered_at,entered_at,revision FROM cargo_air.hawb_series
-      WHERE tenant_id=$1 AND legal_entity_id=$2`+lock, string(tenant), le).Scan(&st.Prefix, &st.Width, &st.Next, &st.By, &st.At, &st.EnteredAt, &revision)
+	err = q.QueryRow(ctx, `SELECT template,first_number,seed_period,registered_by,registered_at,entered_at,revision FROM cargo_air.hawb_series
+      WHERE tenant_id=$1 AND legal_entity_id=$2`, string(tenant), le).Scan(&st.Template, &st.FirstNumber, &st.SeedPeriod, &st.By, &st.At, &st.EnteredAt, &revision)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, 0, fmt.Errorf("%w: %s", app.ErrNoSeries, le)
 	}
@@ -443,27 +431,12 @@ func (s SeriesStore) Insert(ctx context.Context, series *air.Series) (int64, err
 	}
 	st := series.State()
 	var revision int64
-	err = q.QueryRow(ctx, `INSERT INTO cargo_air.hawb_series (tenant_id,legal_entity_id,prefix,width,next_seq,registered_by,registered_at,entered_at)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING revision`, string(st.TenantID), st.LegalEntityID, st.Prefix, st.Width, st.Next, st.By, st.At,
-		st.EnteredAt).Scan(&revision)
+	err = q.QueryRow(ctx, `INSERT INTO cargo_air.hawb_series (tenant_id,legal_entity_id,template,first_number,seed_period,registered_by,registered_at,
+      entered_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING revision`, string(st.TenantID), st.LegalEntityID, st.Template, st.FirstNumber, st.SeedPeriod,
+		st.By, st.At, st.EnteredAt).Scan(&revision)
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "hawb_series_pkey" {
 		return 0, fmt.Errorf("%w: %s has a HAWB series", bentorepo.ErrAlreadyExists, st.LegalEntityID)
-	}
-	return revision, err
-}
-
-func (s SeriesStore) Save(ctx context.Context, series *air.Series, expected int64) (int64, error) {
-	q, err := s.DB.RequireExecutor(ctx)
-	if err != nil {
-		return 0, err
-	}
-	st := series.State()
-	var revision int64
-	err = q.QueryRow(ctx, `UPDATE cargo_air.hawb_series SET next_seq=$3,revision=revision+1 WHERE tenant_id=$1 AND legal_entity_id=$2 AND revision=$4
-      RETURNING revision`, string(st.TenantID), st.LegalEntityID, st.Next, expected).Scan(&revision)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, fmt.Errorf("%w: series of %s", bentorepo.ErrConflict, st.LegalEntityID)
 	}
 	return revision, err
 }

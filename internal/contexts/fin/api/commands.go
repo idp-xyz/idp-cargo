@@ -197,10 +197,13 @@ const (
 	NoteCancelled = "CANCELLED_BY_CREDIT_NOTE"
 )
 
-// RegisterInvoiceSeries fixes a legal entity's number series of a note kind, once (MD-28): numbers are Prefix (one to
-// ten capital letters, digits or hyphens) and the sequence zero-padded to Width digits (4 to 10, twenty characters in
-// all), from FirstNumber, drawn in order at issue without gaps. The debit and credit note prefixes never start one
-// another.
+// RegisterInvoiceSeries fixes a legal entity's numbering of a note kind, once (numbers from idp-platform-go, MD-28): a
+// template such as DN{seq:6}, DN{yy}{seq:5} or CN{yyyy}{mm}-{seq:4} — a literal prefix of one to ten capital letters,
+// digits or hyphens, then literals, the date tokens {yyyy}, {yy}, {mm}, {q} and one {seq:N} with N from 4 to 10 —
+// whose numbers are 5 to 20 capital letters, digits and hyphens. The sequence resets by the finest date token (year,
+// quarter, month, or never) and a note takes the period of its invoice date; numbers are drawn at issue without gaps
+// within a period. FirstNumber starts the sequence of the registration's period. The debit and credit note prefixes
+// never start one another.
 type RegisterInvoiceSeries struct {
 	CommandID        string
 	TenantID         string
@@ -208,8 +211,7 @@ type RegisterInvoiceSeries struct {
 	LegalEntityID    string
 	ExpectedRevision int64
 	Kind             string
-	Prefix           string
-	Width            int
+	Template         string
 	FirstNumber      int64
 	OccurredAt       time.Time
 }

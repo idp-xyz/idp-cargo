@@ -81,7 +81,7 @@ func TestShortloadReceivedTenderedAndReconciledWithEveryContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err = airModule.RegisterHawbSeries(ctx, airapi.RegisterHawbSeries{CommandID: "series", TenantID: tenant, ActorID: "ops-1", LegalEntityID: "LE",
-		Prefix: "SHA", Width: 7, Next: 1, OccurredAt: hours(12)}); err != nil {
+		Template: "SHA{seq:7}", FirstNumber: 1, OccurredAt: hours(12)}); err != nil {
 		t.Fatal(err)
 	}
 	for i, s := range []string{"SH-A", "SH-B"} {

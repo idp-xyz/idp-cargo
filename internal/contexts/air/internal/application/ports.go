@@ -15,6 +15,7 @@ import (
 	"time"
 
 	air "go.idp.xyz/idp-cargo/internal/contexts/air/internal/domain"
+	"go.idp.xyz/idp-cargo/internal/foundation/numbering"
 	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
@@ -65,12 +66,19 @@ type MovementStore interface {
 	ByMAWB(context.Context, air.TenantID, string) (air.MovementID, bool, error)
 }
 
-// SeriesStore loads and writes HAWB series; Load locks the series row for drawing.
+// SeriesStore reads and writes HAWB series, which never change once registered.
 type SeriesStore interface {
-	Load(context.Context, air.TenantID, string) (*air.Series, int64, error)
 	Read(context.Context, air.TenantID, string) (*air.Series, int64, error)
 	Insert(context.Context, *air.Series) (int64, error)
-	Save(context.Context, *air.Series, int64) (int64, error)
+}
+
+// Numbers is the platform's sequence of a tenant's document type (idp-platform-go, MD-28), in AIR's schema: Next takes
+// the next value in the command's transaction, Seed starts a sequence after a value, Last answers the last value per
+// period.
+type Numbers interface {
+	Next(ctx context.Context, tenant, docType, period string) (int64, error)
+	Seed(ctx context.Context, tenant, docType, period string, last int64) error
+	Last(ctx context.Context, tenant, docType string) (map[string]int64, error)
 }
 
 // Registration is where a HAWB number belongs.
@@ -120,6 +128,7 @@ type Deps struct {
 	Tx        TxRunner
 	Movements MovementStore
 	Series    SeriesStore
+	Numbers   Numbers
 	Register  HAWBRegister
 	Receipts  Receipts
 	Outbox    IntegrationOutbox
@@ -145,7 +154,7 @@ func (d Deps) begin(ctx context.Context, c Command) (hash string, entered time.T
 	if err = ctx.Err(); err != nil {
 		return
 	}
-	if d.Tx == nil || d.Movements == nil || d.Series == nil || d.Register == nil || d.Receipts == nil || d.Outbox == nil || d.Auth == nil || d.Clock == nil {
+	if d.Tx == nil || d.Movements == nil || d.Series == nil || d.Numbers == nil || d.Register == nil || d.Receipts == nil || d.Outbox == nil || d.Auth == nil || d.Clock == nil {
 		return "", time.Time{}, Receipt{}, false, ErrMissingDependency
 	}
 	if c.Scope.TenantID == "" || strings.TrimSpace(c.Scope.ActorID) == "" || c.CommandID == "" || c.OccurredAt.IsZero() {
@@ -304,7 +313,8 @@ func (d Deps) Change(ctx context.Context, c Command, read func(context.Context, 
 }
 
 // HAWB returns the number a house takes: the one it holds under the legal entity, else the one given, else the next
-// of the entity's series, which is drawn under the series' lock. A number taken is registered to the shipment.
+// of the entity's template, taken from the platform's sequence of the period of the business time in this
+// transaction. A number taken is registered to the shipment.
 func (d Deps) HAWB(ctx context.Context, tenant air.TenantID, legalEntity, shipment, given string, at time.Time) (string, error) {
 	held, ok, err := d.Register.OfShipment(ctx, tenant, legalEntity, shipment)
 	if err != nil {
@@ -322,33 +332,66 @@ func (d Deps) HAWB(ctx context.Context, tenant air.TenantID, legalEntity, shipme
 		}
 		return given, d.Register.Claim(ctx, tenant, legalEntity, given, shipment, false, at)
 	}
-	s, revision, err := d.Series.Load(ctx, tenant, legalEntity)
+	s, _, err := d.Series.Read(ctx, tenant, legalEntity)
 	if err != nil {
 		return "", err
 	}
-	number, err := s.Draw()
+	tmpl, err := numbering.Parse(s.State().Template)
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", air.ErrInvalidSeries, err)
+	}
+	seq, err := d.Numbers.Next(ctx, string(tenant), numbering.DocType(DocTypeHAWB, legalEntity), tmpl.Period(at))
 	if err != nil {
 		return "", err
 	}
-	if _, err = d.Series.Save(ctx, s, revision); err != nil {
+	number, err := tmpl.Render(seq, at)
+	switch {
+	case errors.Is(err, numbering.ErrExhausted):
+		return "", fmt.Errorf("%w: %v", air.ErrSeriesExhausted, err)
+	case err != nil:
 		return "", err
+	case !air.ValidHAWB(number):
+		return "", fmt.Errorf("%w: the template renders %q", air.ErrInvalidHAWB, number)
 	}
 	return number, d.Register.Claim(ctx, tenant, legalEntity, number, shipment, true, at)
 }
 
-// RegisterSeries gives a legal entity its HAWB series.
-func (d Deps) RegisterSeries(ctx context.Context, c Command, legalEntity, prefix string, width int, next int64) (Receipt, error) {
+// DocTypeHAWB is the document type of HAWB numbers in the platform's sequences (<type>/<legal entity>).
+const DocTypeHAWB = "HAWB"
+
+// RegisterSeries gives a legal entity its HAWB numbering: a template of the platform's language in Cargo's subset
+// whose numbers are HAWB numbers (capital letters and digits, twelve at most), and its first number, which seeds the
+// sequence of the registration's period.
+func (d Deps) RegisterSeries(ctx context.Context, c Command, legalEntity, template string, first int64) (Receipt, error) {
 	hash, entered, stored, replayed, err := d.begin(ctx, c)
 	if err != nil || replayed {
 		return stored, err
 	}
+	tmpl, err := numbering.Parse(template)
+	if err != nil {
+		return Receipt{}, fmt.Errorf("%w: %v", air.ErrInvalidSeries, err)
+	}
+	longest, err := tmpl.Longest()
+	if err != nil || !air.ValidHAWB(longest) {
+		return Receipt{}, fmt.Errorf("%w: %s renders %q; HAWB numbers are capital letters and digits, twelve at most", air.ErrInvalidSeries, template, longest)
+	}
+	if _, err = tmpl.Render(first, c.OccurredAt); err != nil {
+		return Receipt{}, fmt.Errorf("%w: first number %d: %v", air.ErrInvalidSeries, first, err)
+	}
+	period := tmpl.Period(c.OccurredAt)
 	return d.write(ctx, c, hash, "HawbSeries", func(txCtx context.Context) (Receipt, []aggregate, error) {
-		s, err := air.RegisterSeries(c.Scope.TenantID, legalEntity, prefix, width, next, c.Scope.ActorID, c.OccurredAt)
+		s, err := air.RegisterSeries(c.Scope.TenantID, legalEntity, template, first, period, c.Scope.ActorID, c.OccurredAt)
 		if err != nil {
 			return Receipt{}, nil, err
 		}
 		s.Stamp(entered)
 		revision, err := d.Series.Insert(txCtx, s)
-		return Receipt{SubjectID: legalEntity, NewRevision: revision}, []aggregate{s}, err
+		if err != nil {
+			return Receipt{}, nil, err
+		}
+		if err = d.Numbers.Seed(txCtx, string(c.Scope.TenantID), numbering.DocType(DocTypeHAWB, legalEntity), period, first-1); err != nil {
+			return Receipt{}, nil, err
+		}
+		return Receipt{SubjectID: legalEntity, NewRevision: revision}, []aggregate{s}, nil
 	})
 }
