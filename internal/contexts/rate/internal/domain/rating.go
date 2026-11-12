@@ -41,6 +41,7 @@ const (
 	GapCallForPricing Gap = "CALL_FOR_PRICING" // the line is priced by a person
 	GapBaseMissing    Gap = "BASE_MISSING"     // a PERCENT_OF line's base charge was not rated
 	GapBaseCurrency   Gap = "BASE_CURRENCY"    // the base charge is in another currency
+	GapNoQuantity     Gap = "NO_QUANTITY"      // a PER_UNIT line's quantity is not stated: the input is incomplete for it
 )
 
 // Cargo is what an evaluation rates: pieces, gross weight in grams, volume in cubic centimetres and documents.
@@ -131,7 +132,7 @@ func (in EvaluationInput) check() error {
 		return fmt.Errorf("%w: purpose %q", ErrInvalidEvaluation, in.Purpose)
 	case !identifier(string(in.LegalEntityID)):
 		return fmt.Errorf("%w: a legal entity", ErrInvalidEvaluation)
-	case len(sides) == 0 || len(slices.Compact(sides)) != len(in.Sides) || !sides[0].Valid() || !sides[len(sides)-1].Valid():
+	case len(sides) == 0 || len(slices.Compact(sides)) != len(in.Sides) || slices.ContainsFunc(sides, func(s Side) bool { return !s.Valid() }):
 		return fmt.Errorf("%w: SELL, BUY or both, once each", ErrInvalidEvaluation)
 	case in.Customer.PartyID != "" && (!identifier(in.Customer.PartyID) || in.Customer.PartyRevision < 1):
 		return fmt.Errorf("%w: a customer ORG confirmed", ErrInvalidEvaluation)
@@ -145,8 +146,10 @@ func (in EvaluationInput) check() error {
 		return fmt.Errorf("%w: a service level code and the GENERAL commodity class", ErrInvalidEvaluation)
 	case in.At.IsZero():
 		return fmt.Errorf("%w: a business time", ErrInvalidEvaluation)
-	case in.Cargo.Pieces < 0 || in.Cargo.GrossGrams < 0 || in.Cargo.VolumeCM3 < 0 || in.Cargo.Documents < 0:
-		return fmt.Errorf("%w: cargo quantities are not negative", ErrInvalidEvaluation)
+	case in.Cargo.Pieces < 0 || in.Cargo.GrossGrams < 0 || in.Cargo.VolumeCM3 < 0 || in.Cargo.Documents < 0 || in.Cargo.Pieces > MaxCount ||
+		in.Cargo.Documents > MaxCount || in.Cargo.GrossGrams > MaxQuantity || in.Cargo.VolumeCM3 > MaxVolume:
+		return fmt.Errorf("%w: cargo quantities from 0 up to %d g, %d cm3 and %d pieces or documents", ErrInvalidEvaluation, int64(MaxQuantity),
+			int64(MaxVolume), MaxCount)
 	case in.SubjectKind != "" && in.SubjectKind != "QUOTE" && in.SubjectKind != "SHIPMENT" && in.SubjectKind != "CONSOLIDATION":
 		return fmt.Errorf("%w: subject kind %q", ErrInvalidEvaluation, in.SubjectKind)
 	case (in.SubjectKind == "") != (in.SubjectID == "") || (in.SubjectID != "" && !identifier(in.SubjectID)) || in.SubjectVersion < 0:
@@ -503,10 +506,14 @@ func rateLine(s *SnapshotLine, l RateLine, c Cargo) error {
 		s.Rate = l.Rate
 		return bound(s, l, new(big.Rat).SetFrac(big.NewInt(l.Rate.Minor), scale))
 	}
-	if c.VolumeCM3 > (1<<62)/1000 {
-		return fmt.Errorf("%w: volume", kernel.ErrAmountOverflow)
+	if c.VolumeCM3 > MaxVolume || c.GrossGrams > MaxQuantity || c.Pieces > MaxCount || c.Documents > MaxCount || l.Step < 1 || l.Step > MaxStep {
+		return fmt.Errorf("%w: quantities beyond their bounds", kernel.ErrAmountOverflow)
 	}
 	q := Quantity(l, c)
+	if q == 0 {
+		s.Gap = GapNoQuantity
+		return nil
+	}
 	q = ceilDiv(q, l.Step) * l.Step
 	q = max(q, l.MinQuantity)
 	s.Quantity, s.Charged = q, q

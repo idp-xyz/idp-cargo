@@ -298,7 +298,7 @@ func classify(err error) error {
 		kind = api.ErrUnauthorized
 	case errors.Is(err, application.ErrIdempotencyConflict):
 		kind = api.ErrIdempotencyConflict
-	case errors.Is(err, domain.ErrConflict), errors.Is(err, bentorepo.ErrConflict), errors.Is(err, bentorepo.ErrAlreadyExists):
+	case errors.Is(err, domain.ErrConflict), errors.Is(err, bentorepo.ErrConflict), errors.Is(err, bentorepo.ErrAlreadyExists), postgres.Conflict(err):
 		kind = api.ErrConflict
 	case errors.Is(err, bentorepo.ErrNotFound):
 		kind = api.ErrNotFound

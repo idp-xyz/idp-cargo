@@ -126,8 +126,10 @@ type RateBreak struct {
 // RateLine prices one charge code of an entry. Rate is in minor units of Currency times 10^-RateScale: per shipment
 // for FLAT, per kilogram, cubic metre, W/M, piece or document for PER_UNIT. PER_UNIT quantities are whole base units
 // (grams, cubic centimetres, thousandths of a W/M, pieces, documents), rounded up to Step and raised to MinQuantity;
-// a zero Step, MinQuantity or VolumeFactor takes the default of OD-8: KG_CHARGEABLE 500 g steps and 6000 cm3 per kg,
-// FREIGHT_TONNE 1 m3 = 1 t (1,000,000 cm3 per tonne) and at least 1 W/M (1000), other units steps of 1. PERCENT_OF
+// a zero Step, MinQuantity or VolumeFactor takes the default of OD-8: KG_CHARGEABLE on AIR 500 g steps and 6000 cm3
+// per kg, on SEA 1 t = 1 m3 (1000 cm3 per kg); FREIGHT_TONNE 1 m3 = 1 t (1,000,000 cm3 per tonne) and at least 1 W/M
+// (1000); other units steps of 1. A PER_UNIT line rates nothing when the cargo does not state its quantity (a
+// NO_QUANTITY gap). Discount codes are quote lines, never rates (R9). PERCENT_OF
 // is PercentBP basis points of BaseCode's amount in the same evaluation and currency. Minimum and Maximum (0: none)
 // are in minor units. A CallForPricing line has no rate: rating reports a gap. No and Edition are set in views.
 type RateLine struct {
@@ -171,8 +173,9 @@ type RateEntry struct {
 	Lines         []RateLine
 }
 
-// CreateRateCard opens a card of a legal entity: a SELL TARIFF for any customer, a SELL CUSTOMER card of a party
-// ORG confirms as CUSTOMER, or a BUY SUPPLIER card of a party ORG confirms as CARRIER, CO_LOADER or OVERSEAS_AGENT.
+// CreateRateCard opens a card of a legal entity: a SELL TARIFF for any customer, a SELL CUSTOMER card of a party ORG
+// confirms in a role a quote goes to (R7: CUSTOMER, OVERSEAS_AGENT, SHIPPER or CONSIGNEE), or a BUY SUPPLIER card of a
+// party ORG confirms as CARRIER, CO_LOADER or OVERSEAS_AGENT.
 type CreateRateCard struct {
 	CommandID     string
 	TenantID      string
@@ -220,7 +223,8 @@ type SetRateCardEntries struct {
 // same time (RATE_VERSION_OVERLAP), charge codes listed, active and applying to the entry's mode, service levels
 // listed, a start not before the record window. A SELL tariff is published by the pricing manager
 // (ActionApproveTariff), who approves it; approving a version one prepared needs ActionApproveOwnTariff and is
-// flagged. ORG confirms a supplier card's party again. A CUSTOMER card is published by accepting its AGREEMENT quote.
+// flagged: everyone who drafted the version or set its entries prepared it. ORG confirms a supplier card's party again. A
+// CUSTOMER card is published by accepting its AGREEMENT quote.
 type PublishRateCardVersion struct {
 	CommandID        string
 	TenantID         string
@@ -231,8 +235,8 @@ type PublishRateCardVersion struct {
 	OccurredAt       time.Time
 }
 
-// WithdrawRateCardVersion takes a PUBLISHED version out of rating from the time recorded, with a reason; snapshots
-// that used it keep it, and a later version may start then.
+// WithdrawRateCardVersion ends a PUBLISHED version at the time recorded, with a reason: it still rates business times
+// before then, nothing after; snapshots that used it keep it, and a later version may start then.
 type WithdrawRateCardVersion struct {
 	CommandID        string
 	TenantID         string
@@ -253,7 +257,7 @@ type RateCardVersionHeader struct {
 	Currency       kernel.CurrencyCode
 	SourceRef      string
 	FilingRef      string
-	PreparedBy     string
+	Preparers      []string // who drafted the version and everyone who set its entries since
 	PreparedAt     time.Time
 	PublishedBy    string
 	PublishedAt    time.Time
@@ -304,7 +308,8 @@ const (
 // EvaluateRates rates a lane and cargo at OccurredAt on the published versions valid then and records a snapshot
 // (RATE never invents a price: what it cannot rate is a gap). SELL takes the customer's CUSTOMER card first and the
 // tariff for the charge codes it lacks (OD-1 A); BUY takes the given carrier's cards or the lowest total among the
-// supplier cards (OD-2 A). ORG confirms a named customer in the CUSTOMER role.
+// supplier cards (OD-2 A). ORG confirms a named customer in a role a quote goes to (R7: CUSTOMER, OVERSEAS_AGENT,
+// SHIPPER or CONSIGNEE).
 type EvaluateRates struct {
 	CommandID       string
 	TenantID        string
@@ -346,6 +351,7 @@ const (
 	GapCallForPricing = "CALL_FOR_PRICING"
 	GapBaseMissing    = "BASE_MISSING"
 	GapBaseCurrency   = "BASE_CURRENCY"
+	GapNoQuantity     = "NO_QUANTITY"
 )
 
 // RateSnapshotLine is a rated charge or a gap: the card, version, entry and line it came from, the quantity in base

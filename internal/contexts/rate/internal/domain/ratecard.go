@@ -149,8 +149,8 @@ type RateCardVersion struct {
 	Currency       kernel.CurrencyCode // the default currency of new lines
 	SourceRef      string              // the supplier's tariff document, a contract number or the accepting quote
 	FilingRef      string              // SEA SELL: the rate filing reference, when filed
-	PreparedBy     string              // who drafted or last set its entries
-	PreparedAt     time.Time
+	Preparers      []string            // who drafted it and everyone who set its entries since, in order
+	PreparedAt     time.Time           // when its entries were last set
 	PublishedBy    string
 	PublishedAt    time.Time
 	ApprovedBy     string // SELL TARIFF: the pricing manager who approved it (the publisher)
@@ -160,6 +160,22 @@ type RateCardVersion struct {
 	WithdrawReason string
 	Entries        []RateEntry
 	loaded         bool // entries read (DRAFT versions and those asked for)
+}
+
+// Effective is when a version rates: a PUBLISHED one its validity; a WITHDRAWN one its validity up to the time the
+// withdrawal was recorded (from then on it rates nothing, and a later version may start); a DRAFT none.
+func (v RateCardVersion) Effective() (VersionValidity, bool) {
+	switch v.Status {
+	case VersionPublished:
+		return v.Validity, true
+	case VersionWithdrawn:
+		eff := v.Validity
+		if eff.Until.IsZero() || v.WithdrawnAt.Before(eff.Until) {
+			eff.Until = v.WithdrawnAt
+		}
+		return eff, eff.From.Before(eff.Until)
+	}
+	return VersionValidity{}, false
 }
 
 // RateCardState is a card's header and its versions.
@@ -192,11 +208,15 @@ const (
 	EventRateCardVersionWithdrawn = "RateCardVersionWithdrawn.v1"
 )
 
-// Limits of a version.
+// Limits of a version, and of the quantities a line and a cargo state, so that no quantity arithmetic overflows.
 const (
-	MaxEntries = 500
-	MaxLines   = 100
-	MaxBreaks  = 20
+	MaxEntries  = 500
+	MaxLines    = 100
+	MaxBreaks   = 20
+	MaxStep     = 1_000_000_000      // base units, and cubic centimetres per kilogram or tonne
+	MaxQuantity = 1_000_000_000_000  // base units: a million tonnes in grams
+	MaxVolume   = 10_000_000_000_000 // cubic centimetres: ten million cubic metres
+	MaxCount    = 1_000_000_000      // pieces or documents
 )
 
 var (
@@ -302,7 +322,7 @@ func (c *RateCard) DraftVersion(in VersionInput, copied []RateEntry, by string, 
 	}
 	no := len(c.state.Versions) + 1
 	v := RateCardVersion{No: no, Status: VersionDraft, Validity: in.Validity.utc(), Currency: in.Currency, SourceRef: strings.TrimSpace(in.SourceRef),
-		FilingRef: strings.TrimSpace(in.FilingRef), PreparedBy: by, PreparedAt: at.UTC(), loaded: true}
+		FilingRef: strings.TrimSpace(in.FilingRef), Preparers: []string{by}, PreparedAt: at.UTC(), loaded: true}
 	if len(copied) > 0 {
 		v.Entries = cloneEntries(copied)
 		if err := checkEntries(c.state, v); err != nil {
@@ -352,7 +372,10 @@ func (c *RateCard) SetEntries(no int, entries []RateEntry, by string, at time.Ti
 	if err = checkEntries(c.state, next); err != nil {
 		return err
 	}
-	next.PreparedBy, next.PreparedAt = by, at.UTC()
+	if !slices.Contains(next.Preparers, by) {
+		next.Preparers = append(slices.Clone(next.Preparers), by)
+	}
+	next.PreparedAt = at.UTC()
 	*v = next
 	c.mark(no, true)
 	return nil
@@ -391,10 +414,13 @@ func (c *RateCard) Publish(no int, cat Catalogue, p Publication) error {
 		return fmt.Errorf("%w: version %d has no entry", ErrNotPublishable, no)
 	case strings.TrimSpace(p.By) == "" || p.At.IsZero():
 		return fmt.Errorf("%w: a publication needs an actor and a time", ErrInvalidRateCard)
-	case c.state.Scope == ScopeTariff && strings.TrimSpace(p.ApprovedBy) == "":
-		return fmt.Errorf("%w: a SELL tariff is approved by the pricing manager", ErrNotPublishable)
-	case c.state.Scope == ScopeTariff && (p.ApprovedBy == v.PreparedBy) != p.SelfApprove:
-		return fmt.Errorf("%w: the approval of a version its approver prepared is a self-approval", ErrNotPublishable)
+	case c.state.Scope == ScopeTariff && (strings.TrimSpace(p.ApprovedBy) == "" || p.ApprovedBy != p.By):
+		return fmt.Errorf("%w: a SELL tariff is approved by the pricing manager who publishes it", ErrNotPublishable)
+	case c.state.Scope == ScopeTariff && slices.Contains(v.Preparers, p.ApprovedBy) != p.SelfApprove:
+		return fmt.Errorf("%w: the approval of a version its approver drafted or set is a self-approval", ErrNotPublishable)
+	}
+	if err := checkEntries(c.state, *v); err != nil {
+		return err
 	}
 	for _, e := range v.Entries {
 		if !cat.ServiceLevelListed(e.ServiceLevel) {
@@ -413,12 +439,14 @@ func (c *RateCard) Publish(no int, cat Catalogue, p Publication) error {
 					return fmt.Errorf("%w: entry %d line %d: charge code %s is inactive", ErrNotPublishable, e.No, l.No, code)
 				case !cv.AppliesTo(e.Mode) && code == l.ChargeCode:
 					return fmt.Errorf("%w: entry %d line %d: charge code %s does not apply to %s", ErrNotPublishable, e.No, l.No, code, e.Mode)
+				case cv.Group == GroupDiscount && code == l.ChargeCode:
+					return fmt.Errorf("%w: entry %d line %d: %s is a discount, a quote line, never a rate (R9)", ErrNotPublishable, e.No, l.No, code)
 				}
 			}
 		}
 	}
 	for _, o := range c.state.Versions {
-		if o.No != no && o.Status == VersionPublished && o.Validity.overlaps(v.Validity) {
+		if eff, ok := o.Effective(); o.No != no && ok && eff.overlaps(v.Validity) {
 			return fmt.Errorf("%w: version %d", ErrVersionOverlap, o.No)
 		}
 	}
@@ -529,8 +557,10 @@ func checkEntry(st RateCardState, v RateCardVersion, e RateEntry) error {
 		return fmt.Errorf("%w: 1 to %d lines", ErrInvalidRateCard, MaxLines)
 	}
 	if !e.Validity.From.IsZero() || !e.Validity.Until.IsZero() {
+		// [From, Until) with Until open or after From, starting within the version and, when both end, ending by it
 		w := VersionValidity{From: e.Validity.From, Until: e.Validity.Until}
-		if !e.Validity.Valid() || w.From.Before(v.Validity.From) || (!v.Validity.Until.IsZero() && w.Until.After(v.Validity.Until)) {
+		if !e.Validity.Valid() || w.From.Before(v.Validity.From) || (!v.Validity.Until.IsZero() && !w.From.Before(v.Validity.Until)) ||
+			(!v.Validity.Until.IsZero() && w.Until.After(v.Validity.Until)) {
 			return fmt.Errorf("%w: an entry's validity lies within its version's", ErrInvalidRateCard)
 		}
 	}
@@ -565,6 +595,8 @@ func (l RateLine) check() error {
 		return fmt.Errorf("%w: calculator %q", ErrInvalidRateCard, l.Calculator)
 	case l.Rate.Minor < 0 || l.Rate.Scale < 0 || l.Rate.Scale > 6 || l.Minimum < 0 || l.Maximum < 0 || (l.Maximum > 0 && l.Maximum < l.Minimum):
 		return fmt.Errorf("%w: a rate at scale 0 to 6, a minimum and a maximum not below it, none negative", ErrInvalidRateCard)
+	case l.Step > MaxStep || l.MinQuantity > MaxQuantity || l.VolumeFactor > MaxStep:
+		return fmt.Errorf("%w: a step and a volume factor up to %d, a minimum quantity up to %d", ErrInvalidRateCard, MaxStep, MaxQuantity)
 	case len(l.Breaks) > MaxBreaks:
 		return fmt.Errorf("%w: at most %d breaks", ErrInvalidRateCard, MaxBreaks)
 	case l.CallForPricing && (l.Rate.Minor != 0 || l.Minimum != 0 || l.Maximum != 0 || len(l.Breaks) > 0 || l.PercentBP != 0):
@@ -588,7 +620,7 @@ func (l RateLine) check() error {
 		}
 		prev := int64(0)
 		for _, b := range l.Breaks {
-			if b.From <= prev || b.Rate < 0 {
+			if b.From <= prev || b.Rate < 0 || b.From > MaxQuantity {
 				return fmt.Errorf("%w: breaks ascend from above 0 and have rates not below 0", ErrInvalidRateCard)
 			}
 			prev = b.From

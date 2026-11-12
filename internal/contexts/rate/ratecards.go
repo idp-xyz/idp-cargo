@@ -88,13 +88,19 @@ func (m *Module) DraftRateCardVersion(ctx context.Context, c api.DraftRateCardVe
 			SourceRef: c.SourceRef, FilingRef: c.FilingRef}, OccurredAt: stored(c.OccurredAt)}))
 }
 
-// Defaults of OD-8 for a PER_UNIT line that leaves them zero.
-func lineDefaults(l domain.RateLine) domain.RateLine {
+// Defaults of OD-8 for a PER_UNIT line that leaves them zero, by the entry's mode: AIR chargeable weight at 6000 cm3
+// per kg in steps of 0.5 kg; SEA chargeable weight at 1 t = 1 m3 (1000 cm3 per kg) and W/M at 1 t = 1 m3, at least
+// 1 W/M.
+func lineDefaults(l domain.RateLine, mode domain.Mode) domain.RateLine {
 	if l.Calculator != domain.CalcPerUnit {
 		return l
 	}
 	switch l.Unit {
 	case domain.UnitKgChargeable:
+		if mode == domain.ModeSea {
+			l.Step, l.VolumeFactor = cmpOr(l.Step, 1), cmpOr(l.VolumeFactor, 1000)
+			break
+		}
 		l.Step, l.VolumeFactor = cmpOr(l.Step, 500), cmpOr(l.VolumeFactor, 6000)
 	case domain.UnitFreightTonne:
 		l.Step, l.VolumeFactor, l.MinQuantity = cmpOr(l.Step, 1), cmpOr(l.VolumeFactor, 1_000_000), cmpOr(l.MinQuantity, 1000)
@@ -126,7 +132,7 @@ func toEntries(in []api.RateEntry) []domain.RateEntry {
 			for _, b := range l.Breaks {
 				line.Breaks = append(line.Breaks, domain.RateBreak{From: b.From, Rate: b.Rate})
 			}
-			out[i].Lines = append(out[i].Lines, lineDefaults(line))
+			out[i].Lines = append(out[i].Lines, lineDefaults(line, out[i].Mode))
 		}
 	}
 	return out
@@ -224,7 +230,7 @@ func (m *Module) ListChargeCodes(ctx context.Context, q api.ListChargeCodes) ([]
 
 func headerView(v domain.RateCardVersion) api.RateCardVersionHeader {
 	return api.RateCardVersionHeader{Version: v.No, Status: string(v.Status), ValidFrom: v.Validity.From, ValidUntil: v.Validity.Until, Currency: v.Currency,
-		SourceRef: v.SourceRef, FilingRef: v.FilingRef, PreparedBy: v.PreparedBy, PreparedAt: v.PreparedAt, PublishedBy: v.PublishedBy,
+		SourceRef: v.SourceRef, FilingRef: v.FilingRef, Preparers: v.Preparers, PreparedAt: v.PreparedAt, PublishedBy: v.PublishedBy,
 		PublishedAt: v.PublishedAt, ApprovedBy: v.ApprovedBy, SelfApproved: v.SelfApproved, WithdrawnBy: v.WithdrawnBy, WithdrawnAt: v.WithdrawnAt,
 		WithdrawReason: v.WithdrawReason}
 }

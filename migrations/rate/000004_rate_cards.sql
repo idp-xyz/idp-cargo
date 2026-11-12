@@ -3,7 +3,8 @@
 -- breaks, and rate snapshots. Parties are ORG party ids with the revision ORG confirmed, locations UN/LOCODEs resolved
 -- against the location reference data; there are no cross-schema foreign keys.
 
--- The starter list every tenant's catalogue starts with (version 0 of a code); RATE's application reads it.
+-- The starter list every tenant's catalogue starts with (version 0 of a code), for SQL and reports: RATE's application
+-- holds the same list (domain.StarterChargeCodes), and a test keeps the two equal.
 CREATE TABLE cargo_rate.charge_code_starter (
  code text PRIMARY KEY CHECK (code ~ '^[A-Z][A-Z0-9_]{1,15}$'),
  name_zh text NOT NULL,
@@ -73,7 +74,7 @@ CREATE TABLE cargo_rate.rate_card_version (
  currency char(3) NOT NULL CHECK (currency ~ '^[A-Z]{3}$'),
  source_ref text CHECK (length(source_ref) <= 200),
  filing_ref text CHECK (length(btrim(filing_ref)) BETWEEN 1 AND 100),
- prepared_by text NOT NULL CHECK (length(btrim(prepared_by)) > 0),
+ preparers text[] NOT NULL CHECK (cardinality(preparers) BETWEEN 1 AND 100 AND array_position(preparers, NULL) IS NULL),
  prepared_at timestamptz NOT NULL,
  published_by text,
  published_at timestamptz,
@@ -89,8 +90,8 @@ CREATE TABLE cargo_rate.rate_card_version (
    (published_at IS NULL) = (published_by IS NULL) AND (published_at IS NULL) = (status = 'DRAFT')
    AND (withdrawn_at IS NULL) = (withdrawn_by IS NULL) AND (withdrawn_at IS NULL) = (withdraw_reason IS NULL)
    AND (withdrawn_at IS NULL) = (status <> 'WITHDRAWN')
-   AND (approved_by IS NULL) = (self_approved IS NULL) AND (approved_by IS NULL OR published_at IS NOT NULL)
-   AND (self_approved IS NULL OR self_approved = (approved_by = prepared_by)))
+   AND (approved_by IS NULL) = (self_approved IS NULL) AND (approved_by IS NULL OR (published_at IS NOT NULL AND approved_by = published_by))
+   AND (self_approved IS NULL OR self_approved = (approved_by = ANY (preparers))))
 );
 -- A card has at most one DRAFT version at a time.
 CREATE UNIQUE INDEX rate_card_one_draft ON cargo_rate.rate_card_version (tenant_id, rate_card_id) WHERE status = 'DRAFT';
@@ -117,7 +118,7 @@ CREATE TABLE cargo_rate.rate_entry (
  FOREIGN KEY (tenant_id, rate_card_id, version_no) REFERENCES cargo_rate.rate_card_version (tenant_id, rate_card_id, version_no),
  CHECK ((mode, container_mode) IN (('AIR','LOOSE'),('SEA','LCL'))),
  CHECK (origin <> destination AND (via IS NULL OR (via <> origin AND via <> destination))),
- CHECK ((valid_from IS NULL) = (valid_until IS NULL) AND (valid_from IS NULL OR valid_from < valid_until))
+ CHECK ((valid_from IS NOT NULL OR valid_until IS NULL) AND (valid_until IS NULL OR valid_from < valid_until))
 );
 
 CREATE TABLE cargo_rate.rate_line (
@@ -234,7 +235,7 @@ CREATE TABLE cargo_rate.rate_snapshot_line (
  maximum_applied boolean NOT NULL,
  currency char(3),
  amount_minor bigint NOT NULL CHECK (amount_minor >= 0),
- gap text CHECK (gap IN ('NO_RATE','CALL_FOR_PRICING','BASE_MISSING','BASE_CURRENCY')),
+ gap text CHECK (gap IN ('NO_RATE','CALL_FOR_PRICING','BASE_MISSING','BASE_CURRENCY','NO_QUANTITY')),
  PRIMARY KEY (tenant_id, snapshot_id, line_no),
  FOREIGN KEY (tenant_id, snapshot_id) REFERENCES cargo_rate.rate_snapshot (tenant_id, snapshot_id),
  -- a gap has no amount: RATE never prices a missing rate at zero
@@ -279,19 +280,26 @@ BEGIN
 END $fn$;
 CREATE TRIGGER rate_card_rules BEFORE UPDATE OR DELETE ON cargo_rate.rate_card FOR EACH ROW EXECUTE FUNCTION cargo_rate.rate_card_rules();
 
--- A version is written with its card, DRAFT; it is then published once and withdrawn once. What it states never
--- changes once published; a DRAFT changes only who prepared it.
+-- A version is written DRAFT, numbered after the card's last version; it is then published once and withdrawn once.
+-- What it states never changes once published. While it stays a DRAFT, those who set its entries join its preparers
+-- (never leave them); the update that publishes it changes none.
 CREATE FUNCTION cargo_rate.rate_card_version_rules() RETURNS trigger LANGUAGE plpgsql AS $fn$
 BEGIN
   IF TG_OP = 'INSERT' THEN
     IF NEW.status <> 'DRAFT' THEN
       RAISE EXCEPTION 'cargo_rate: a version of rate card %/% is written as a DRAFT', NEW.tenant_id, NEW.rate_card_id USING ERRCODE = 'restrict_violation';
     END IF;
+    IF NEW.version_no > 1 AND NOT EXISTS (SELECT 1 FROM cargo_rate.rate_card_version v WHERE v.tenant_id = NEW.tenant_id
+         AND v.rate_card_id = NEW.rate_card_id AND v.version_no = NEW.version_no - 1) THEN
+      RAISE EXCEPTION 'cargo_rate: version % of rate card %/% does not follow version %', NEW.version_no, NEW.tenant_id, NEW.rate_card_id,
+        NEW.version_no - 1 USING ERRCODE = 'check_violation', CONSTRAINT = 'rate_card_version_sequence';
+    END IF;
     RETURN NEW;
   END IF;
   IF TG_OP = 'DELETE' OR (NEW.tenant_id, NEW.rate_card_id, NEW.version_no, NEW.valid_from, NEW.valid_until, NEW.currency, NEW.source_ref, NEW.filing_ref)
        IS DISTINCT FROM (OLD.tenant_id, OLD.rate_card_id, OLD.version_no, OLD.valid_from, OLD.valid_until, OLD.currency, OLD.source_ref, OLD.filing_ref)
-     OR (OLD.status <> 'DRAFT' AND (NEW.prepared_by, NEW.prepared_at) IS DISTINCT FROM (OLD.prepared_by, OLD.prepared_at))
+     OR ((OLD.status <> 'DRAFT' OR NEW.status <> 'DRAFT') AND (NEW.preparers, NEW.prepared_at) IS DISTINCT FROM (OLD.preparers, OLD.prepared_at))
+     OR NEW.preparers[1:cardinality(OLD.preparers)] IS DISTINCT FROM OLD.preparers
      OR (OLD.published_at IS NOT NULL AND (NEW.published_by, NEW.published_at, NEW.approved_by, NEW.self_approved)
        IS DISTINCT FROM (OLD.published_by, OLD.published_at, OLD.approved_by, OLD.self_approved))
      OR (OLD.withdrawn_at IS NOT NULL AND (NEW.status, NEW.withdrawn_by, NEW.withdrawn_at, NEW.withdraw_reason)
@@ -331,8 +339,15 @@ BEGIN
   END LOOP;
 END $content$;
 
+-- When a version rates: a PUBLISHED one its validity, a WITHDRAWN one its validity up to the withdrawal, a DRAFT never.
+CREATE FUNCTION cargo_rate.rates_in(v cargo_rate.rate_card_version) RETURNS tstzrange LANGUAGE sql IMMUTABLE AS $fn$
+  SELECT CASE v.status WHEN 'PUBLISHED' THEN tstzrange(v.valid_from, v.valid_until)
+    WHEN 'WITHDRAWN' THEN tstzrange(v.valid_from, greatest(v.valid_from, least(v.valid_until, v.withdrawn_at)))
+    ELSE 'empty'::tstzrange END
+$fn$;
+
 -- At commit, with the card row locked first (so publications of one card take turns) and at READ COMMITTED (so the
--- check reads what committed before it): no two PUBLISHED versions of a card are valid at the same instant; a
+-- check reads what committed before it): no two versions of a card rate at the same instant; a
 -- published version has entries, each with lines; a SELL tariff is approved; a CUSTOMER version is not published
 -- here (it is published by accepting its AGREEMENT quote, RATE V0.5 part 3).
 CREATE FUNCTION cargo_rate.check_rate_card_version_at_commit() RETURNS trigger LANGUAGE plpgsql AS $fn$
@@ -344,9 +359,9 @@ BEGIN
   END IF;
   SELECT k.scope INTO c FROM cargo_rate.rate_card k WHERE k.tenant_id = NEW.tenant_id AND k.rate_card_id = NEW.rate_card_id FOR NO KEY UPDATE;
   IF NOT FOUND OR EXISTS (SELECT 1 FROM cargo_rate.rate_card_version v WHERE v.tenant_id = NEW.tenant_id AND v.rate_card_id = NEW.rate_card_id
-       AND v.status = 'PUBLISHED' AND EXISTS (SELECT 1 FROM cargo_rate.rate_card_version o WHERE o.tenant_id = v.tenant_id
-         AND o.rate_card_id = v.rate_card_id AND o.version_no <> v.version_no AND o.status = 'PUBLISHED'
-         AND tstzrange(o.valid_from, o.valid_until) && tstzrange(v.valid_from, v.valid_until))) THEN
+       AND v.status <> 'DRAFT' AND EXISTS (SELECT 1 FROM cargo_rate.rate_card_version o WHERE o.tenant_id = v.tenant_id
+         AND o.rate_card_id = v.rate_card_id AND o.version_no <> v.version_no AND o.status <> 'DRAFT'
+         AND cargo_rate.rates_in(o) && cargo_rate.rates_in(v))) THEN
     RAISE EXCEPTION 'cargo_rate: published versions of rate card %/% overlap', NEW.tenant_id, NEW.rate_card_id
       USING ERRCODE = 'check_violation', CONSTRAINT = 'rate_version_overlap';
   END IF;
@@ -363,6 +378,22 @@ BEGIN
 END $fn$;
 CREATE CONSTRAINT TRIGGER rate_card_version_consistent AFTER INSERT OR UPDATE ON cargo_rate.rate_card_version
   DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION cargo_rate.check_rate_card_version_at_commit();
+
+-- A snapshot's candidates and lines are written with it, in its transaction, and of a side it was asked for: a recorded
+-- snapshot is never extended.
+CREATE FUNCTION cargo_rate.check_snapshot_part_at_commit() RETURNS trigger LANGUAGE plpgsql AS $fn$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM cargo_rate.rate_snapshot s WHERE s.tenant_id = NEW.tenant_id AND s.snapshot_id = NEW.snapshot_id
+       AND s.xmin = pg_current_xact_id()::xid AND NEW.side = ANY (s.sides)) THEN
+    RAISE EXCEPTION 'cargo_rate: % of snapshot %/% is written with it, for a side it was asked for', TG_TABLE_NAME, NEW.tenant_id, NEW.snapshot_id
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'rate_snapshot_written_once';
+  END IF;
+  RETURN NULL;
+END $fn$;
+CREATE CONSTRAINT TRIGGER rate_snapshot_candidate_written_once AFTER INSERT ON cargo_rate.rate_snapshot_candidate
+  DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION cargo_rate.check_snapshot_part_at_commit();
+CREATE CONSTRAINT TRIGGER rate_snapshot_line_written_once AFTER INSERT ON cargo_rate.rate_snapshot_line
+  DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION cargo_rate.check_snapshot_part_at_commit();
 
 -- Tenant isolation as in 000001. Code versions, cards and snapshots are written with their command receipt.
 DO $rls$

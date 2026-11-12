@@ -19,6 +19,7 @@ import (
 	orgapi "go.idp.xyz/idp-cargo/internal/contexts/org/api"
 	ratemodule "go.idp.xyz/idp-cargo/internal/contexts/rate"
 	"go.idp.xyz/idp-cargo/internal/contexts/rate/api"
+	rate "go.idp.xyz/idp-cargo/internal/contexts/rate/internal/domain"
 	scope "go.idp.xyz/idp-cargo/internal/foundation/bento"
 	refapi "go.idp.xyz/idp-cargo/internal/reference/api"
 )
@@ -249,6 +250,11 @@ func TestRateCardsOnPostgres(t *testing.T) {
 	c.must(c.module.CreateRateCard(c.ctx, c.create("T-AIR", api.SideSell, api.ScopeTariff, "", "pricing-1")))
 	_, err := c.module.CreateRateCard(c.ctx, c.create("S-X", api.SideBuy, api.ScopeSupplier, "acme", "pricing-1"))
 	c.rejected("a customer as supplier", err, api.ErrRejected, "RATE_PARTY_ROLE")
+	// an actor without rights learns nothing of ORG's roles: refused before ORG is asked
+	_, err = c.module.CreateRateCard(c.ctx, c.create("S-Y", api.SideBuy, api.ScopeSupplier, "acme", "intruder"))
+	if !errors.Is(err, api.ErrUnauthorized) || strings.Contains(err.Error(), "acme") {
+		t.Fatalf("an intruder: %v", err)
+	}
 	r := c.must(c.module.CreateRateCard(c.ctx, c.create("S-A", api.SideBuy, api.ScopeSupplier, "coloader-a", "buyer-1")))
 	if r.SubjectID != "S-A" || r.NewRevision != 1 || c.card("S-A").PartyRevision != 3 {
 		t.Fatalf("supplier card: %+v %+v", r, c.card("S-A"))
@@ -263,7 +269,8 @@ func TestRateCardsOnPostgres(t *testing.T) {
 	via.Via = "AEDXB"
 	sea := api.RateEntry{Mode: api.ModeSea, ContainerMode: api.ContainerLCL, Origin: "CNSHA", Destination: "DEHAM", ServiceLevel: "ECONOMY",
 		Commodity: api.CommodityGeneral, Lines: []api.RateLine{{ChargeCode: "OCEAN_FREIGHT", Currency: "USD", Calculator: api.CalcPerUnit,
-			Unit: api.UnitFreightTonne, Rate: 4500}}}
+			Unit: api.UnitFreightTonne, Rate: 4500}, {ChargeCode: "THC", Currency: "CNY", Calculator: api.CalcPerUnit, Unit: api.UnitKgChargeable, Rate: 100}}}
+	via.ValidFrom = c.h(24 * 20) // an entry valid from day 20 on, within version 1 and the version 2 copying it
 	set := c.set("T-AIR", 1, "pricing-1", air(freight(3000), api.RateLine{ChargeCode: "DOC_FEE", Currency: "CNY", Calculator: api.CalcFlat, Rate: 15_000}),
 		via, sea)
 	unknown := set
@@ -275,7 +282,8 @@ func TestRateCardsOnPostgres(t *testing.T) {
 	v, err := c.module.GetRateCardVersion(c.ctx, api.GetRateCardVersion{TenantID: c.tenant, RateCardID: "T-AIR", Version: 1})
 	if err != nil || len(v.Entries) != 3 || v.Entries[2].Origin != "CNSHG" || v.Entries[2].Edition != edition || v.Entries[2].Lines[0].MinQuantity != 1000 ||
 		v.Entries[2].Lines[0].VolumeFactor != 1_000_000 || v.Entries[0].Lines[0].Step != 500 || v.Entries[0].Lines[0].VolumeFactor != 6000 ||
-		len(v.Entries[0].Lines[0].Breaks) != 2 || v.Status != api.VersionDraft || v.PreparedBy != "pricing-1" {
+		len(v.Entries[0].Lines[0].Breaks) != 2 || v.Status != api.VersionDraft || len(v.Preparers) != 1 || v.Preparers[0] != "pricing-1" ||
+		v.Entries[2].Lines[1].VolumeFactor != 1000 || v.Entries[2].Lines[1].Step != 1 || !v.Entries[1].ValidUntil.IsZero() || !v.Entries[1].ValidFrom.Equal(c.h(24*20)) {
 		t.Fatalf("version 1 as set (CNSHA resolved to the port CNSHG; OD-8 defaults): %+v %v", v, err)
 	}
 	// publication: the pricing manager approves the tariff; the one who prepared it only as the pricing lead (flagged)
@@ -295,6 +303,10 @@ func TestRateCardsOnPostgres(t *testing.T) {
 	_, err = c.module.SetRateCardEntries(c.ctx, c.set("T-AIR", 1, "pricing-1", air(freight(1))))
 	c.rejected("a published version changed", err, api.ErrRejected, "new version")
 
+	nowhere := c.draft("T-AIR", c.h(24*14), time.Time{}, 7, "pricing-lead")
+	nowhere.CommandID = "draft-from-nowhere"
+	_, err = c.module.DraftRateCardVersion(c.ctx, nowhere)
+	c.rejected("copying a version that does not exist", err, api.ErrRejected, "no version 7")
 	// version 2 copies version 1 and starts in two weeks: it overlaps until version 1 is withdrawn
 	c.must(c.module.DraftRateCardVersion(c.ctx, c.draft("T-AIR", c.h(24*14), time.Time{}, 1, "pricing-lead")))
 	_, err = c.module.PublishRateCardVersion(c.ctx, c.publish("T-AIR", 2, "pricing-lead"))
@@ -327,8 +339,8 @@ func TestRateCardsOnPostgres(t *testing.T) {
 		t.Fatalf("outbox: %v", counts)
 	}
 
-	draftVersion := `INSERT INTO cargo_rate.rate_card_version (tenant_id,rate_card_id,version_no,status,valid_from,currency,prepared_by,prepared_at)
-        VALUES ($1,'S-A',9,'DRAFT',now(),'CNY','x',now())`
+	draftVersion := `INSERT INTO cargo_rate.rate_card_version (tenant_id,rate_card_id,version_no,status,valid_from,currency,preparers,prepared_at)
+        VALUES ($1,'S-A',9,'DRAFT',now(),'CNY','{x}',now())`
 	for name, tc := range map[string]struct{ sql, state, constraint string }{
 		"a published version's validity changed": {`UPDATE cargo_rate.rate_card_version SET valid_until=now() WHERE tenant_id=$1 AND rate_card_id='T-AIR'
             AND version_no=2`, "42501|23001", ""},
@@ -340,21 +352,83 @@ func TestRateCardsOnPostgres(t *testing.T) {
 		"a customer version published past RATE": {`UPDATE cargo_rate.rate_card_version SET status='PUBLISHED',published_by='x',published_at=now()
             WHERE tenant_id=$1 AND rate_card_id='C-ACME' AND version_no=1`, "23514", "rate_version_publishable"},
 		"a second draft": {strings.Replace(draftVersion, "9,", "2,", 1) + `;
-INSERT INTO cargo_rate.rate_card_version (tenant_id,rate_card_id,version_no,status,valid_from,currency,prepared_by,prepared_at)
-        VALUES ($1,'S-A',3,'DRAFT',now(),'CNY','x',now())`, "23505", "rate_card_one_draft"},
+INSERT INTO cargo_rate.rate_card_version (tenant_id,rate_card_id,version_no,status,valid_from,currency,preparers,prepared_at)
+        VALUES ($1,'S-A',3,'DRAFT',now(),'CNY','{x}',now())`, "23505", "rate_card_one_draft"},
 		"an empty version published past RATE": {`INSERT INTO cargo_rate.rate_card (tenant_id,rate_card_id,side,scope,legal_entity_id,party_id,
             party_revision,name,created_by,created_at) VALUES ($1,'S-EMPTY','BUY','SUPPLIER','LE','coloader-b',3,'x','x',now());
-INSERT INTO cargo_rate.rate_card_version (tenant_id,rate_card_id,version_no,status,valid_from,currency,prepared_by,prepared_at)
-        VALUES ($1,'S-EMPTY',1,'DRAFT',now(),'CNY','x',now());
+INSERT INTO cargo_rate.rate_card_version (tenant_id,rate_card_id,version_no,status,valid_from,currency,preparers,prepared_at)
+        VALUES ($1,'S-EMPTY',1,'DRAFT',now(),'CNY','{x}',now());
 UPDATE cargo_rate.rate_card_version SET status='PUBLISHED',published_by='x',published_at=now() WHERE tenant_id=$1 AND rate_card_id='S-EMPTY'`,
 			"23514", "rate_version_publishable"},
-		"a card renamed": {`UPDATE cargo_rate.rate_card SET name='x',revision=revision+1 WHERE tenant_id=$1 AND rate_card_id='T-AIR'`, "42501|23001", ""},
+		"a card renamed":            {`UPDATE cargo_rate.rate_card SET name='x',revision=revision+1 WHERE tenant_id=$1 AND rate_card_id='T-AIR'`, "42501|23001", ""},
+		"a version out of sequence": {strings.Replace(draftVersion, "9,", "5,", 1), "23514", "rate_card_version_sequence"},
+		"preparers rewritten on publication": {`UPDATE cargo_rate.rate_card_version SET status='PUBLISHED',published_by='pricing-1',published_at=now(),
+            preparers='{ghost}',approved_by='pricing-1',self_approved=false WHERE tenant_id=$1 AND rate_card_id='C-ACME'`, "23001", ""},
+		"approved by another than the publisher": {`UPDATE cargo_rate.rate_card SET revision=revision+1 WHERE tenant_id=$1 AND rate_card_id='S-A';
+UPDATE cargo_rate.rate_card_version SET status='PUBLISHED',published_by='clerk',published_at=now(),approved_by='pricing-manager',self_approved=false
+            WHERE tenant_id=$1 AND rate_card_id='S-A'`, "23514", "rate_card_version_state"},
 	} {
 		err := c.statements(tc.sql)
 		var pgErr *pgconn.PgError
 		if !errors.As(err, &pgErr) || !strings.Contains(tc.state, pgErr.Code) || (tc.constraint != "" && pgErr.ConstraintName != tc.constraint) {
 			t.Errorf("%s: %v", name, err)
 		}
+	}
+}
+
+// Review findings of RATE V0.5 part 1 on PostgreSQL: a self-approval is not laundered by another preparer; the
+// database's starter list equals the application's.
+func TestTariffApprovalAndStarterListOnPostgres(t *testing.T) {
+	c := newCards(t)
+	c.must(c.module.CreateRateCard(c.ctx, c.create("T-AIR", api.SideSell, api.ScopeTariff, "", "pricing-manager")))
+	c.must(c.module.DraftRateCardVersion(c.ctx, c.draft("T-AIR", c.h(0), time.Time{}, 0, "pricing-manager")))
+	c.must(c.module.SetRateCardEntries(c.ctx, c.set("T-AIR", 1, "pricing-1", air(freight(3000)))))
+	_, err := c.module.PublishRateCardVersion(c.ctx, c.publish("T-AIR", 1, "pricing-manager"))
+	if !errors.Is(err, api.ErrUnauthorized) {
+		t.Fatalf("the manager who drafted it, after a colleague set the entries: %v", err)
+	}
+	c.must(c.module.PublishRateCardVersion(c.ctx, c.publish("T-AIR", 1, "pricing-lead")))
+	if v := c.card("T-AIR").Versions[0]; v.SelfApproved || v.ApprovedBy != "pricing-lead" || len(v.Preparers) != 2 {
+		t.Fatalf("published: %+v", v)
+	}
+	type starter struct{ code, row string }
+	var stored []starter
+	err = (scope.TenantTransactor{DB: c.db, Tenant: c.tenant}).WithinTransaction(c.ctx, func(txCtx context.Context) error {
+		q, err := c.db.ReadExecutor(txCtx)
+		if err != nil {
+			return err
+		}
+		rows, err := q.Query(txCtx, `SELECT code, concat_ws('|',name_zh,name_en,charge_group,calculator,coalesce(rate_unit,''),array_to_string(modes,','))
+          FROM cargo_rate.charge_code_starter ORDER BY code`)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var x starter
+			if err = rows.Scan(&x.code, &x.row); err != nil {
+				return err
+			}
+			stored = append(stored, x)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, x := range stored {
+		v, ok := rate.StarterChargeCodes[rate.ChargeCode(x.code)]
+		modes := make([]string, len(v.Modes))
+		for i, m := range v.Modes {
+			modes[i] = string(m)
+		}
+		want := strings.Join([]string{v.NameZH, v.NameEN, string(v.Group), string(v.Calculator), string(v.Unit), strings.Join(modes, ",")}, "|")
+		if !ok || x.row != want {
+			t.Errorf("starter %s: database %q, application %q", x.code, x.row, want)
+		}
+	}
+	if len(stored) != len(rate.StarterChargeCodes) {
+		t.Errorf("%d starter codes in the database, %d in the application", len(stored), len(rate.StarterChargeCodes))
 	}
 }
 
@@ -432,6 +506,15 @@ func TestEvaluateRatesOnPostgres(t *testing.T) {
 		!s.At.Equal(c.h(4)) {
 		t.Errorf("snapshot: %+v", s)
 	}
+	// a withdrawal ends the tariff when recorded: business times before then still rate on it
+	c.must(c.module.WithdrawRateCardVersion(c.ctx, api.WithdrawRateCardVersion{CommandID: "withdraw-tariff", TenantID: c.tenant, ActorID: "pricing-manager",
+		RateCardID: "T-AIR", ExpectedRevision: c.card("T-AIR").Revision, Version: 1, Reason: "replaced", OccurredAt: c.h(6)}))
+	before := evaluate
+	before.CommandID, before.SnapshotID, before.Sides, before.OccurredAt = "evaluate-before", "RS-B", []string{api.SideSell}, c.h(5)
+	c.must(c.module.EvaluateRates(c.ctx, before))
+	if sb, _ := c.module.GetRateSnapshot(c.ctx, api.GetRateSnapshot{TenantID: c.tenant, SnapshotID: "RS-B"}); len(sb.Lines) != 4 || sb.Lines[0].RateCardID != "T-AIR" {
+		t.Errorf("rated before the withdrawal: %+v", sb.Lines)
+	}
 	// the consolidation's carrier is given: only its card
 	given := evaluate
 	given.CommandID, given.SnapshotID, given.Sides, given.Carrier, given.CustomerPartyID = "evaluate-2", "RS-2", []string{api.SideBuy}, "coloader-a", ""
@@ -456,12 +539,17 @@ func TestEvaluateRatesOnPostgres(t *testing.T) {
 	estimate.CommandID, estimate.SnapshotID, estimate.Purpose = "evaluate-5", "RS-5", api.PurposeShipmentEstimate
 	_, err = c.module.EvaluateRates(c.ctx, estimate)
 	c.rejected("a shipment estimate before PricingBasis", err, api.ErrRejected, "quote lines")
-	if counts := c.outboxTypes(t); strings.Count(strings.Join(counts, ","), api.RatesEvaluated) != 3 {
+	if counts := c.outboxTypes(t); strings.Count(strings.Join(counts, ","), api.RatesEvaluated) != 4 {
 		t.Errorf("outbox: %v", counts)
 	}
 	for name, tc := range map[string]struct{ sql, state, constraint string }{
 		"a snapshot line changed": {`UPDATE cargo_rate.rate_snapshot_line SET amount_minor=1 WHERE tenant_id=$1`, "42501|23001", ""},
-		"a snapshot deleted":      {`DELETE FROM cargo_rate.rate_snapshot_line WHERE tenant_id=$1`, "42501|23001", ""},
+		"a recorded snapshot extended": {`INSERT INTO cargo_rate.rate_snapshot_line (tenant_id,snapshot_id,line_no,side,charge_code,rate_card_id,version_no,entry_no,
+            rate_line_no,calculator,quantity,charged,band_from,rate_minor,rate_scale,percent_bp,base_amount,minimum_applied,maximum_applied,currency,amount_minor)
+            VALUES ($1,'RS-1',99,'BUY','AIR_FREIGHT','S-FAKE',1,1,1,'FLAT',0,0,0,1,0,0,0,false,false,'CNY',1)`, "23514", "rate_snapshot_written_once"},
+		"a candidate added later": {`INSERT INTO cargo_rate.rate_snapshot_candidate (tenant_id,snapshot_id,candidate_no,side,rate_card_id,version_no,entry_no,taken,reason)
+            VALUES ($1,'RS-B',99,'BUY','S-FAKE',1,1,true,'LOWEST_TOTAL')`, "23514", "rate_snapshot_written_once"},
+		"a snapshot deleted": {`DELETE FROM cargo_rate.rate_snapshot_line WHERE tenant_id=$1`, "42501|23001", ""},
 		"a gap priced at zero": {`INSERT INTO cargo_rate.rate_snapshot_line (tenant_id,snapshot_id,line_no,side,quantity,charged,band_from,rate_minor,rate_scale,
             percent_bp,base_amount,minimum_applied,maximum_applied,amount_minor,gap) VALUES ($1,'RS-3',9,'SELL',0,0,0,0,0,0,0,false,false,0,NULL)`, "23514", ""},
 		"a row committed once the transaction moved to another tenant": {`INSERT INTO cargo_rate.rate_card (tenant_id,rate_card_id,side,scope,legal_entity_id,name,

@@ -255,3 +255,81 @@ func TestStarterCodesAreValid(t *testing.T) {
 		}
 	}
 }
+
+// Review findings of RATE V0.5 part 1, in the domain.
+func TestReviewFindingsInTheDomain(t *testing.T) {
+	// a preparer stays a preparer: the manager who drafted it approves it only as a self-approval, whoever set it last
+	c := tariffCard(t)
+	c.DraftVersion(VersionInput{Validity: VersionValidity{From: t0, Until: t0.AddDate(0, 1, 0)}, Currency: "CNY"}, []RateEntry{airEntry(1, airFreight(1))}, "pm", t0)
+	if err := c.SetEntries(1, []RateEntry{airEntry(1, airFreight(1))}, "clerk", t0); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.State().Versions[0].Preparers; len(got) != 2 || got[0] != "pm" || got[1] != "clerk" {
+		t.Fatalf("preparers: %v", got)
+	}
+	if err := c.Publish(1, catalogue{}, Publication{By: "pm", At: t0, ApprovedBy: "pm"}); !errors.Is(err, ErrNotPublishable) {
+		t.Fatalf("laundered self-approval: %v", err)
+	}
+	if err := c.Publish(1, catalogue{}, Publication{By: "clerk", At: t0, ApprovedBy: "pm"}); !errors.Is(err, ErrNotPublishable) {
+		t.Fatalf("approved by another than the publisher: %v", err)
+	}
+	// a discount is a quote line, never a rate
+	discount := airEntry(1, flat(1, "DISCOUNT", "CNY", 100))
+	c.SetEntries(1, []RateEntry{discount}, "pm", t0)
+	if err := c.Publish(1, catalogue{}, Publication{By: "boss", At: t0, ApprovedBy: "boss"}); !errors.Is(err, ErrNotPublishable) {
+		t.Fatalf("a discount rate: %v", err)
+	}
+	c.SetEntries(1, []RateEntry{airEntry(1, airFreight(1))}, "pm", t0)
+	if err := c.Publish(1, catalogue{}, Publication{By: "boss", At: t0, ApprovedBy: "boss"}); err != nil {
+		t.Fatal(err)
+	}
+	// a withdrawal ends the version when recorded: a successor may start then, not before
+	c.Withdraw(1, "new fuel index", "boss", t0.AddDate(0, 0, 10))
+	if eff, ok := c.State().Versions[0].Effective(); !ok || !eff.Until.Equal(t0.AddDate(0, 0, 10)) {
+		t.Fatalf("effective: %+v %v", eff, ok)
+	}
+	c.DraftVersion(VersionInput{Validity: VersionValidity{From: t0.AddDate(0, 0, 5)}, Currency: "CNY"}, []RateEntry{airEntry(1, airFreight(1))}, "pm", t0)
+	if err := c.Publish(2, catalogue{}, Publication{By: "boss", At: t0, ApprovedBy: "boss"}); !errors.Is(err, ErrVersionOverlap) {
+		t.Fatalf("a successor before the withdrawal: %v", err)
+	}
+	// an entry valid from a day on, open-ended, within an open version
+	open := airEntry(1, airFreight(1))
+	open.Validity.From = t0.AddDate(0, 0, 12)
+	if err := c.SetEntries(2, []RateEntry{open}, "pm", t0); err != nil {
+		t.Fatalf("an open-ended entry: %v", err)
+	}
+	// bounds keep quantity arithmetic from overflowing
+	huge := airFreight(1)
+	huge.Step = MaxStep + 1
+	if err := huge.check(); !errors.Is(err, ErrInvalidRateCard) {
+		t.Fatalf("a huge step: %v", err)
+	}
+	in := input(SideSell)
+	in.Cargo.GrossGrams = MaxQuantity + 1
+	if _, _, err := Evaluate(in, nil); !errors.Is(err, ErrInvalidEvaluation) {
+		t.Fatalf("a huge weight: %v", err)
+	}
+	in = input(SideSell)
+	in.Sides = []Side{SideBuy, "CAT", SideSell}
+	if _, _, err := Evaluate(in, nil); !errors.Is(err, ErrInvalidEvaluation) {
+		t.Fatalf("a side of another kind: %v", err)
+	}
+	// cargo not stated is a gap for the lines that need it, not a price
+	tariff := version("T1", ScopeTariff, "", airEntry(1, airFreight(1), flat(2, "DOC_FEE", "CNY", 15_000),
+		RateLine{No: 3, ChargeCode: "FUEL_SURCHARGE", Currency: "CNY", Calculator: CalcPercentOf, PercentBP: 1000, BaseCode: "AIR_FREIGHT"}))
+	in = input(SideSell)
+	in.Cargo = Cargo{}
+	_, lines, err := Evaluate(in, []PublishedVersion{tariff})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l := line(t, lines, SideSell, "AIR_FREIGHT"); l.Gap != GapNoQuantity || l.Amount.Minor != 0 {
+		t.Errorf("freight without cargo: %+v", l)
+	}
+	if l := line(t, lines, SideSell, "FUEL_SURCHARGE"); l.Gap != GapBaseMissing {
+		t.Errorf("fuel without freight: %+v", l)
+	}
+	if l := line(t, lines, SideSell, "DOC_FEE"); l.Gap != GapNone || l.Amount != cny(15_000) {
+		t.Errorf("a flat fee needs no cargo: %+v", l)
+	}
+}

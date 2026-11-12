@@ -20,10 +20,11 @@ var (
 	ErrValidFromTooEarly = errors.New("rate application: a version may not start before the record window")
 )
 
-// Supplier and customer roles a card's party is confirmed in.
+// Supplier roles a SUPPLIER card's party is confirmed in, and the recipient roles a quote goes to (R7), in which a
+// CUSTOMER card's party and an evaluation's customer are confirmed.
 var (
 	SupplierRoles = []string{"CARRIER", "CO_LOADER", "OVERSEAS_AGENT"}
-	CustomerRoles = []string{"CUSTOMER"}
+	CustomerRoles = []string{"CUSTOMER", "OVERSEAS_AGENT", "SHIPPER", "CONSIGNEE"}
 )
 
 // Parties confirms with ORG that a party holds one of the roles for the legal entity at an instant, and answers
@@ -63,7 +64,15 @@ type RateCardStore interface {
 	Insert(ctx context.Context, c *rate.RateCard) (int64, error)
 	Save(ctx context.Context, c *rate.RateCard, expected int64) (int64, error)
 	List(ctx context.Context, tenant rate.TenantID, f CardFilter) ([]rate.RateCardState, []int64, error)
-	Published(ctx context.Context, tenant rate.TenantID, entity rate.LegalEntityID, at time.Time) ([]rate.PublishedVersion, error)
+	Published(ctx context.Context, tenant rate.TenantID, entity rate.LegalEntityID, at time.Time, lane Lane) ([]rate.PublishedVersion, error)
+}
+
+// Lane selects the entries an evaluation can use: mode, container mode, origin and destination.
+type Lane struct {
+	Mode          rate.Mode
+	ContainerMode rate.ContainerMode
+	Origin        string
+	Destination   string
 }
 
 // SnapshotStore writes and reads rate snapshots.
@@ -230,6 +239,9 @@ func (d CardDeps) CreateRateCard(ctx context.Context, c CreateRateCardCommand) (
 	}
 	draft := c.Card
 	draft.TenantID, draft.PartyRevision = c.Scope.TenantID, 0
+	if err = d.allow(ctx, c.Scope, maintain(draft.Side), string(draft.RateCardID)); err != nil {
+		return Receipt{}, err
+	}
 	switch draft.Scope {
 	case rate.ScopeCustomer:
 		draft.PartyRevision, err = d.Parties.ConfirmRole(ctx, c.Scope.TenantID, draft.PartyID, draft.LegalEntityID, CustomerRoles, c.OccurredAt)
@@ -263,13 +275,15 @@ func (d CardDeps) changeCard(ctx context.Context, s Scope, commandID string, occ
 	if err != nil || replayed {
 		return stored, err
 	}
-	var seen rate.RateCardState
+	card, _, err := d.readCard(ctx, s.TenantID, id)
+	if err != nil {
+		return Receipt{}, err
+	}
+	seen := card.State()
+	if err = d.allow(ctx, s, maintain(seen.Side), string(id)); err != nil {
+		return Receipt{}, err
+	}
 	if prepare != nil {
-		card, _, err := d.readCard(ctx, s.TenantID, id)
-		if err != nil {
-			return Receipt{}, err
-		}
-		seen = card.State()
 		if err = prepare(ctx, seen); err != nil {
 			return Receipt{}, err
 		}
@@ -283,7 +297,7 @@ func (d CardDeps) changeCard(ctx context.Context, s Scope, commandID string, occ
 			return "", 0, nil, rate.ErrConflict
 		}
 		st := card.State()
-		if prepare != nil && (st.PartyID != seen.PartyID || st.PartyRevision != seen.PartyRevision) {
+		if st.PartyID != seen.PartyID || st.PartyRevision != seen.PartyRevision {
 			return "", 0, nil, rate.ErrConflict
 		}
 		if err = d.allow(txCtx, s, maintain(st.Side), string(id)); err != nil {
@@ -323,6 +337,9 @@ func (d CardDeps) DraftRateCardVersion(ctx context.Context, c DraftVersionComman
 		func(txCtx context.Context, card *rate.RateCard, at time.Time) error {
 			var copied []rate.RateEntry
 			if c.CopyFrom != 0 {
+				if !slices.ContainsFunc(card.State().Versions, func(v rate.RateCardVersion) bool { return v.No == c.CopyFrom }) {
+					return fmt.Errorf("%w: card %s has no version %d to copy", rate.ErrInvalidRateCard, c.RateCardID, c.CopyFrom)
+				}
 				var err error
 				if copied, err = d.Cards.Entries(txCtx, c.Scope.TenantID, c.RateCardID, c.CopyFrom); err != nil {
 					return err
@@ -416,7 +433,7 @@ func (d CardDeps) PublishRateCardVersion(ctx context.Context, c PublishVersionCo
 					if err := d.allow(txCtx, c.Scope, ActionApproveTariff, string(c.RateCardID)); err != nil {
 						return err
 					}
-					p.ApprovedBy, p.SelfApprove = c.Scope.ActorID, v.PreparedBy == c.Scope.ActorID
+					p.ApprovedBy, p.SelfApprove = c.Scope.ActorID, slices.Contains(v.Preparers, c.Scope.ActorID)
 					if p.SelfApprove {
 						if err := d.allow(txCtx, c.Scope, ActionApproveOwnTariff, string(c.RateCardID)); err != nil {
 							return err
@@ -484,6 +501,9 @@ func (d CardDeps) EvaluateRates(ctx context.Context, c EvaluateRatesCommand) (Re
 	if err != nil || replayed {
 		return stored, err
 	}
+	if err = d.allow(ctx, c.Scope, ActionEvaluateRates, c.SnapshotID); err != nil {
+		return Receipt{}, err
+	}
 	in := c.Input
 	in.At = c.OccurredAt
 	edition := ""
@@ -507,7 +527,8 @@ func (d CardDeps) EvaluateRates(ctx context.Context, c EvaluateRatesCommand) (Re
 		if err := d.allow(txCtx, c.Scope, ActionEvaluateRates, c.SnapshotID); err != nil {
 			return "", 0, nil, err
 		}
-		versions, err := d.Cards.Published(txCtx, c.Scope.TenantID, in.LegalEntityID, in.At)
+		versions, err := d.Cards.Published(txCtx, c.Scope.TenantID, in.LegalEntityID, in.At,
+			Lane{Mode: in.Mode, ContainerMode: in.ContainerMode, Origin: in.Origin, Destination: in.Destination})
 		if err != nil {
 			return "", 0, nil, err
 		}

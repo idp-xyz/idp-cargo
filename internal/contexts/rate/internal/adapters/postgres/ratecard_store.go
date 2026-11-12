@@ -186,7 +186,7 @@ func (s RateCardStore) read(ctx context.Context, tenant rate.TenantID, id rate.R
 }
 
 func versions(ctx context.Context, q bentopg.Querier, tenant rate.TenantID, id rate.RateCardID) ([]rate.RateCardVersion, error) {
-	rows, err := q.Query(ctx, `SELECT version_no,status,valid_from,valid_until,currency,source_ref,filing_ref,prepared_by,prepared_at,published_by,
+	rows, err := q.Query(ctx, `SELECT version_no,status,valid_from,valid_until,currency,source_ref,filing_ref,preparers,prepared_at,published_by,
         published_at,approved_by,self_approved,withdrawn_by,withdrawn_at,withdraw_reason
       FROM cargo_rate.rate_card_version WHERE tenant_id=$1 AND rate_card_id=$2 ORDER BY version_no`, string(tenant), string(id))
 	if err != nil {
@@ -200,7 +200,7 @@ func versions(ctx context.Context, q bentopg.Querier, tenant rate.TenantID, id r
 		var until, publishedAt, withdrawnAt *time.Time
 		var source, filing, publishedBy, approvedBy, withdrawnBy, reason *string
 		var self *bool
-		if err = rows.Scan(&v.No, &status, &v.Validity.From, &until, &currency, &source, &filing, &v.PreparedBy, &v.PreparedAt, &publishedBy,
+		if err = rows.Scan(&v.No, &status, &v.Validity.From, &until, &currency, &source, &filing, &v.Preparers, &v.PreparedAt, &publishedBy,
 			&publishedAt, &approvedBy, &self, &withdrawnBy, &withdrawnAt, &reason); err != nil {
 			return nil, err
 		}
@@ -392,8 +392,8 @@ func (s RateCardStore) writeVersions(ctx context.Context, q bentopg.Executor, c 
 		}
 		if i >= c.Stored() {
 			if _, err := q.Exec(ctx, `INSERT INTO cargo_rate.rate_card_version (tenant_id,rate_card_id,version_no,status,valid_from,valid_until,currency,
-                source_ref,filing_ref,prepared_by,prepared_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, t, id, v.No, string(v.Status),
-				v.Validity.From, timeOrNull(v.Validity.Until), string(v.Currency), orNull(v.SourceRef), orNull(v.FilingRef), v.PreparedBy, v.PreparedAt); err != nil {
+                source_ref,filing_ref,preparers,prepared_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, t, id, v.No, string(v.Status),
+				v.Validity.From, timeOrNull(v.Validity.Until), string(v.Currency), orNull(v.SourceRef), orNull(v.FilingRef), v.Preparers, v.PreparedAt); err != nil {
 				var pgErr *pgconn.PgError
 				if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 					return fmt.Errorf("%w: card %s has a draft already", rate.ErrConflict, id)
@@ -413,9 +413,9 @@ func (s RateCardStore) writeVersions(ctx context.Context, q bentopg.Executor, c 
 				return err
 			}
 		}
-		if _, err := q.Exec(ctx, `UPDATE cargo_rate.rate_card_version SET status=$4,prepared_by=$5,prepared_at=$6,published_by=$7,published_at=$8,
+		if _, err := q.Exec(ctx, `UPDATE cargo_rate.rate_card_version SET status=$4,preparers=$5,prepared_at=$6,published_by=$7,published_at=$8,
             approved_by=$9,self_approved=$10,withdrawn_by=$11,withdrawn_at=$12,withdraw_reason=$13
-          WHERE tenant_id=$1 AND rate_card_id=$2 AND version_no=$3`, t, id, v.No, string(v.Status), v.PreparedBy, v.PreparedAt, orNull(v.PublishedBy),
+          WHERE tenant_id=$1 AND rate_card_id=$2 AND version_no=$3`, t, id, v.No, string(v.Status), v.Preparers, v.PreparedAt, orNull(v.PublishedBy),
 			timeOrNull(v.PublishedAt), orNull(v.ApprovedBy), self, orNull(v.WithdrawnBy), timeOrNull(v.WithdrawnAt), orNull(v.WithdrawReason)); err != nil {
 			return err
 		}
@@ -425,10 +425,7 @@ func (s RateCardStore) writeVersions(ctx context.Context, q bentopg.Executor, c 
 
 func insertEntries(ctx context.Context, q bentopg.Executor, t, id string, no int, es []rate.RateEntry) error {
 	for _, e := range es {
-		var from, until any
-		if !e.Validity.From.IsZero() {
-			from, until = e.Validity.From, e.Validity.Until
-		}
+		from, until := timeOrNull(e.Validity.From), timeOrNull(e.Validity.Until)
 		if _, err := q.Exec(ctx, `INSERT INTO cargo_rate.rate_entry (tenant_id,rate_card_id,version_no,entry_no,mode,container_mode,origin,destination,via,
             edition,carrier_party_id,service_level,commodity,transit_days,frequency,valid_from,valid_until)
           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`, t, id, no, e.No, string(e.Mode), string(e.ContainerMode), e.Origin,
@@ -471,7 +468,7 @@ func (s RateCardStore) List(ctx context.Context, tenant rate.TenantID, f app.Car
 	rows, err := q.Query(ctx, `SELECT `+cardColumns+` FROM cargo_rate.rate_card c WHERE c.tenant_id=$1 AND ($2='' OR c.side=$2) AND ($3='' OR c.scope=$3)
         AND ($4='' OR c.legal_entity_id=$4) AND ($5='' OR c.party_id=$5)
         AND ($6::timestamptz IS NULL OR EXISTS (SELECT 1 FROM cargo_rate.rate_card_version v WHERE v.tenant_id=c.tenant_id AND v.rate_card_id=c.rate_card_id
-          AND v.status='PUBLISHED' AND tstzrange(v.valid_from, v.valid_until) @> $6::timestamptz))
+          AND v.status IN ('PUBLISHED','WITHDRAWN') AND `+effective+` @> $6::timestamptz))
       ORDER BY c.rate_card_id`, string(tenant), string(f.Side), string(f.Scope), string(f.LegalEntityID), f.PartyID, at)
 	if err != nil {
 		return nil, nil, err
@@ -498,15 +495,21 @@ func (s RateCardStore) List(ctx context.Context, tenant rate.TenantID, f app.Car
 	return out, revisions, nil
 }
 
-// Published answers the versions of a legal entity's cards PUBLISHED and valid at the instant, with their entries.
-func (s RateCardStore) Published(ctx context.Context, tenant rate.TenantID, entity rate.LegalEntityID, at time.Time) ([]rate.PublishedVersion, error) {
+// effective is the SQL range a version rates in: a PUBLISHED one its validity, a WITHDRAWN one its validity up to the
+// withdrawal (rate.RateCardVersion.Effective).
+const effective = `tstzrange(v.valid_from, CASE WHEN v.status = 'WITHDRAWN' THEN greatest(v.valid_from, least(v.valid_until, v.withdrawn_at))
+  ELSE v.valid_until END)`
+
+// Published answers the versions of a legal entity's cards that rate at the instant (PUBLISHED, or WITHDRAWN after it),
+// with their validity as they rate and the entries of the lane.
+func (s RateCardStore) Published(ctx context.Context, tenant rate.TenantID, entity rate.LegalEntityID, at time.Time, lane app.Lane) ([]rate.PublishedVersion, error) {
 	q, err := s.DB.ReadExecutor(ctx)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := q.Query(ctx, `SELECT c.rate_card_id,c.side,c.scope,c.party_id,v.version_no,v.valid_from,v.valid_until
+	rows, err := q.Query(ctx, `SELECT c.rate_card_id,c.side,c.scope,c.party_id,v.version_no,lower(`+effective+`),upper(`+effective+`)
       FROM cargo_rate.rate_card c JOIN cargo_rate.rate_card_version v ON v.tenant_id=c.tenant_id AND v.rate_card_id=c.rate_card_id
-      WHERE c.tenant_id=$1 AND c.legal_entity_id=$2 AND v.status='PUBLISHED' AND tstzrange(v.valid_from, v.valid_until) @> $3::timestamptz
+      WHERE c.tenant_id=$1 AND c.legal_entity_id=$2 AND v.status IN ('PUBLISHED','WITHDRAWN') AND `+effective+` @> $3::timestamptz
       ORDER BY c.rate_card_id, v.version_no`, string(tenant), string(entity), at)
 	if err != nil {
 		return nil, err
@@ -533,7 +536,9 @@ func (s RateCardStore) Published(ctx context.Context, tenant rate.TenantID, enti
 	for i, p := range out {
 		ids[i], nos[i] = string(p.RateCardID), int32(p.No)
 	}
-	byVersion, err := content(ctx, q, tenant, `(e.rate_card_id, e.version_no) IN (SELECT * FROM unnest($2::text[], $3::int[]))`, ids, nos)
+	byVersion, err := content(ctx, q, tenant, `(e.rate_card_id, e.version_no) IN (SELECT * FROM unnest($2::text[], $3::int[]))
+        AND e.mode=$4 AND e.container_mode=$5 AND e.origin=$6 AND e.destination=$7`, ids, nos, string(lane.Mode), string(lane.ContainerMode), lane.Origin,
+		lane.Destination)
 	if err != nil {
 		return nil, err
 	}
@@ -694,4 +699,18 @@ func (s SnapshotStore) Read(ctx context.Context, tenant rate.TenantID, id string
 		return nil, err
 	}
 	return rate.RestoreSnapshot(st), nil
+}
+
+// Conflict reports whether err is one of RATE's commit checks refusing what another transaction made inconsistent
+// meanwhile, such as content of a version deleted past RATE while it was published: the command may be retried.
+func Conflict(err error) bool {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "23514" {
+		return false
+	}
+	switch pgErr.ConstraintName {
+	case "rate_version_overlap", "rate_version_publishable", "rate_snapshot_written_once", "charge_code_version_sequence", "rate_card_version_sequence":
+		return true
+	}
+	return false
 }
