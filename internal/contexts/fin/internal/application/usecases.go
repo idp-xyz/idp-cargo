@@ -432,6 +432,9 @@ func (d Deps) change(ctx context.Context, c Command, ask func(context.Context, *
 		if revision != c.ExpectedRevision {
 			return Receipt{}, nil, fin.ErrConflict
 		}
+		if err = d.matched(txCtx, c.Scope.TenantID, fin.TargetJobCost, c.Subject, j.Matched); err != nil {
+			return Receipt{}, nil, err
+		}
 		p, err := d.policy(txCtx, c.Scope.TenantID, j.State().LegalEntityID)
 		if err != nil {
 			return Receipt{}, nil, err

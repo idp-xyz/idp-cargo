@@ -164,8 +164,8 @@ func (w *world) GetLegalEntity(_ context.Context, q orgapi.GetLegalEntity) (orga
 
 type allow struct{}
 
-func (allow) AuthorizeFinAction(_ context.Context, _, actor, _, _ string) error {
-	if actor == "intruder" {
+func (allow) AuthorizeFinAction(_ context.Context, _, actor, action, _ string) error {
+	if actor == "intruder" || (action == api.ActionApproveOwnCostVariance && actor != "controller") {
 		return errors.New("forbidden")
 	}
 	return nil

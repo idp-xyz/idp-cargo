@@ -253,6 +253,28 @@ type PoolStore interface {
 	SharesOfJob(ctx context.Context, tenant fin.TenantID, job string) ([]PoolShare, error)
 }
 
+// CreditorInvoiceStore loads and writes creditor invoices (Load locks the invoice row; a second invoice not cancelled
+// with a supplier number of the creditor and legal entity is fin.ErrInvoiceNumber) and reads the accruals they match.
+type CreditorInvoiceStore interface {
+	Load(ctx context.Context, tenant fin.TenantID, invoice string) (*fin.CreditorInvoice, int64, error)
+	Read(ctx context.Context, tenant fin.TenantID, invoice string) (*fin.CreditorInvoice, int64, error)
+	Insert(context.Context, *fin.CreditorInvoice) (int64, error)
+	Save(context.Context, *fin.CreditorInvoice, int64) (int64, error)
+	// List lists a legal entity's invoices, of one creditor when creditor is not empty, in the order dated.
+	List(ctx context.Context, tenant fin.TenantID, legalEntity, creditor string) ([]*fin.CreditorInvoice, []int64, error)
+	// Targets locks the pools, then the jobs, of the accruals named, each in id order (FOR NO KEY UPDATE), until the
+	// transaction ends, then reads what a match needs of each; accruals FIN does not know are left out.
+	Targets(ctx context.Context, tenant fin.TenantID, keys []fin.TargetKey) ([]fin.AccrualTarget, error)
+	// Consumed reads what live matches consume of a job's cost sides or a pool's cost lines (kind TargetJobCost or
+	// TargetPoolCost), by line.
+	Consumed(ctx context.Context, tenant fin.TenantID, kind, id string) (map[int]fin.Consumption, error)
+	// OpenAccruals lists the accruals of a legal entity's open jobs and pools still expecting an invoice, naming the
+	// creditor or none when creditor is not empty.
+	OpenAccruals(ctx context.Context, tenant fin.TenantID, legalEntity, creditor string) ([]fin.AccrualTarget, error)
+	// LatestMatch answers when an invoice of the legal entity was last matched (zero when none was).
+	LatestMatch(ctx context.Context, tenant fin.TenantID, legalEntity string) (time.Time, error)
+}
+
 // Deps are the ports every FIN command uses.
 type Deps struct {
 	Tx        TxRunner
@@ -275,6 +297,9 @@ type Deps struct {
 	// Pools holds consol cost pools; Physical answers PHY's PhysicalCostBasis v1. Pool commands check them.
 	Pools    PoolStore
 	Physical Physical
+	// Creditors holds creditor invoices and answers what they consume of accruals; job and pool commands read it under
+	// their lock.
+	Creditors CreditorInvoiceStore
 }
 
 // Command is what every FIN command carries: Subject is the legal entity, the job, <legal entity>/<debtor> or the

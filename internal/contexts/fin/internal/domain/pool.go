@@ -11,11 +11,16 @@ import (
 
 // FIN V0.4 (FB3): the consol cost pool of a consolidation under one legal entity. Carrier and co-loader costs of the
 // whole consolidation are recorded on the pool and apportioned to the house jobs: by chargeable weight (air, OD-6 A),
-// by W/M freight tonnes (LCL), by volume, by pieces, or by hand with a reason. Matching creditor invoices to pool
-// lines and closing the pool come with FB4.
+// by W/M freight tonnes (LCL), by volume, by pieces, or by hand with a reason. FIN V0.5 (FB4): creditor invoices match
+// the pool's lines; an apportionment divides each line's current cost (what is matched plus what is still accrued), a
+// person releases what no invoice will consume, and the pool closes once every line is matched final or released and
+// apportioned on the loaded basis at its final cost; it reopens with a reason.
 
-// Pool states; CLOSED comes with creditor invoice matching (FB4).
-const PoolOpen = "OPEN"
+// Pool states.
+const (
+	PoolOpen   = "OPEN"
+	PoolClosed = "CLOSED"
+)
 
 // Pool modes, from the PHY consolidation kind.
 const (
@@ -96,7 +101,7 @@ type PoolCostVersion struct {
 	Amount           kernel.Money
 	Local            int64
 	FX               *FxSnapshot
-	Status           string // ACCRUED; matching comes with FB4
+	Status           string // ACCRUED, or RELEASED (amount zero) once a person released what no invoice will consume
 	Reason           string
 	By               string
 	At               time.Time
@@ -129,12 +134,16 @@ type Share struct {
 	Local      int64
 }
 
-// LineApportionment is one line's shares under an apportionment, at the line version it divided.
+// LineApportionment is one line's shares under an apportionment, at the line version it divided: the line's cost then
+// (Amount in its currency, Local in the functional currency: what creditor invoices matched plus what was still
+// accrued; the version's own figures before FIN V0.5), and its shares.
 type LineApportionment struct {
 	LineNo      int
 	LineVersion int
 	Method      string
 	Reason      string // the MANUAL reason
+	Amount      int64
+	Local       int64
 	Shares      []Share
 }
 
@@ -165,6 +174,19 @@ type PoolState struct {
 	EnteredAt          time.Time
 	Lines              []PoolCostLine
 	Apportionments     []Apportionment
+	Closures           []PoolClosure
+}
+
+// PoolClosure is one closing of the pool, reopened at most once with a reason.
+type PoolClosure struct {
+	No              int
+	By              string
+	At              time.Time
+	EnteredAt       time.Time
+	ReopenedBy      string
+	ReopenReason    string
+	ReopenedAt      time.Time
+	ReopenEnteredAt time.Time
 }
 
 // ConsolCostPool is the aggregate root of a consolidation's shared costs under one legal entity (UL-08; one pool per
@@ -172,12 +194,14 @@ type PoolState struct {
 type ConsolCostPool struct {
 	state      PoolState
 	storedPool storedPool
+	consumed   map[int]Consumption // what creditor invoices consume of each line, set under the pool's lock
 	pending    []Event
 }
 
 type storedPool struct {
-	lines, apportionments int
-	versions              map[int]int
+	lines, apportionments, closures int
+	versions                        map[int]int
+	reopened                        []int
 }
 
 const (
@@ -185,6 +209,9 @@ const (
 	eventPoolCostRecorded = "ConsolCostRecorded.v1"
 	eventPoolCostRevised  = "ConsolCostRevised.v1"
 	eventPoolApportioned  = "ConsolCostsApportioned.v1"
+	eventAccrualReleased  = "AccrualReleased.v1"
+	eventPoolClosed       = "ConsolCostPoolClosed.v1"
+	eventPoolReopened     = "ConsolCostPoolReopened.v1"
 )
 
 // OpenPool opens the pool of a consolidation under the legal entity's policy. PHY must know the consolidation, its
@@ -210,7 +237,7 @@ func OpenPool(st PoolState, policy *FinancePolicy, basis CostBasis, by string, a
 		return nil, fmt.Errorf("%w: consolidation %s is operated by %s", ErrCrossLegalEntity, st.ConsolidationID, basis.OperatingLegalEntityID)
 	}
 	st.Mode, st.FunctionalCurrency, st.BookCode, st.State, st.OpenedBy, st.OpenedAt = mode, p.FunctionalCurrency, p.BookCode, PoolOpen, by, at.UTC()
-	st.Lines, st.Apportionments = nil, nil
+	st.Lines, st.Apportionments, st.Closures = nil, nil, nil
 	pool := &ConsolCostPool{state: st, storedPool: storedPool{versions: map[int]int{}}}
 	pool.record(eventPoolOpened, at, 0)
 	return pool, nil
@@ -239,7 +266,31 @@ func (p *ConsolCostPool) lastChange() time.Time {
 	for _, a := range p.state.Apportionments {
 		last = later(last, a.At)
 	}
+	for _, c := range p.state.Closures {
+		last = later(later(last, c.At), c.ReopenedAt)
+	}
 	return last
+}
+
+// Matched sets what the live matches of creditor invoices consume of the pool's lines, read under the pool's lock
+// (lines without matches consume nothing).
+func (p *ConsolCostPool) Matched(consumed map[int]Consumption) { p.consumed = consumed }
+
+// Consumed is what creditor invoices consume of a line, as set.
+func (p *ConsolCostPool) Consumed(lineNo int) Consumption { return p.consumed[lineNo] }
+
+// LineStatus is a line's accrual status: ACCRUED, PARTLY_MATCHED, MATCHED or RELEASED.
+func (p *ConsolCostPool) LineStatus(lineNo int) string {
+	versions := p.state.Lines[lineNo-1].Versions
+	return AccrualStatus(versions[len(versions)-1].Status, p.consumed[lineNo])
+}
+
+// LineCost is a line's current cost in its currency and in the functional currency: what is matched plus what is
+// still accrued; once matched final or released, what is matched.
+func (p *ConsolCostPool) LineCost(lineNo int) (int64, int64) {
+	versions := p.state.Lines[lineNo-1].Versions
+	v := versions[len(versions)-1]
+	return CurrentCost(v.Amount.Minor, v.Local, v.Status, p.consumed[lineNo])
 }
 
 func (p *ConsolCostPool) costVersion(no int, in SideInput, reason string, conv Converter, by string, at time.Time) (PoolCostVersion, error) {
@@ -284,7 +335,8 @@ func (p *ConsolCostPool) RecordCost(code, description, supplierRef, method strin
 	return nil
 }
 
-// ReviseCost writes the next version of a cost line with a reason, while its latest version is an open accrual.
+// ReviseCost writes the next version of a cost line with a reason, while it is neither matched final nor released;
+// once creditor invoices consume part of it, the new version stays in their currency and not below what they consume.
 func (p *ConsolCostPool) ReviseCost(lineNo, expected int, in SideInput, reason string, conv Converter, by string, at time.Time) error {
 	if err := p.open(by, at); err != nil {
 		return err
@@ -296,8 +348,13 @@ func (p *ConsolCostPool) ReviseCost(lineNo, expected int, in SideInput, reason s
 	if expected != len(line.Versions) {
 		return fmt.Errorf("%w: cost line %d is at version %d", ErrCostVersion, lineNo, len(line.Versions))
 	}
-	if line.Versions[len(line.Versions)-1].Status != StatusAccrued {
-		return fmt.Errorf("%w: cost line %d is %s", ErrInvalidTransition, lineNo, line.Versions[len(line.Versions)-1].Status)
+	c := p.consumed[lineNo]
+	switch status := p.LineStatus(lineNo); {
+	case status == StatusMatched || status == StatusReleased:
+		return fmt.Errorf("%w: cost line %d is %s", ErrAccrualClosed, lineNo, status)
+	case c.Amount > 0 && (in.Amount.Currency != line.Versions[len(line.Versions)-1].Amount.Currency || in.Amount.Minor < c.Amount || !c.names(in.PartyID)):
+		return fmt.Errorf("%w: creditor invoices of %v consume %d %s of cost line %d", ErrAccrualMatched, c.Creditors, c.Amount,
+			line.Versions[len(line.Versions)-1].Amount.Currency, lineNo)
 	}
 	v, err := p.costVersion(expected+1, in, reason, conv, by, at)
 	if err != nil {
@@ -305,6 +362,32 @@ func (p *ConsolCostPool) ReviseCost(lineNo, expected int, in SideInput, reason s
 	}
 	line.Versions = append(line.Versions, v)
 	p.record(eventPoolCostRevised, at, lineNo)
+	return nil
+}
+
+// ReleaseCost releases what no creditor invoice will consume of a cost line, with a reason (an approved act: the
+// command is authorized on its own): the next version is RELEASED with amount zero in the line's currency, and the
+// line's cost is what invoices matched. A line matched final or released already is refused.
+func (p *ConsolCostPool) ReleaseCost(lineNo, expected int, reason string, by string, at time.Time) error {
+	if err := p.open(by, at); err != nil {
+		return err
+	}
+	if lineNo < 1 || lineNo > len(p.state.Lines) || !text(reason) {
+		return fmt.Errorf("%w: a release names a cost line of the pool and a reason", ErrInvalid)
+	}
+	line := &p.state.Lines[lineNo-1]
+	if expected != len(line.Versions) {
+		return fmt.Errorf("%w: cost line %d is at version %d", ErrCostVersion, lineNo, len(line.Versions))
+	}
+	if status := p.LineStatus(lineNo); status == StatusMatched || status == StatusReleased {
+		return fmt.Errorf("%w: cost line %d is %s", ErrAccrualClosed, lineNo, status)
+	}
+	last := line.Versions[len(line.Versions)-1]
+	v := PoolCostVersion{No: expected + 1, CreditorPartyID: last.CreditorPartyID, CreditorRevision: last.CreditorRevision,
+		Amount: kernel.Money{Currency: last.Amount.Currency}, Status: StatusReleased, Reason: reason, By: by, At: at.UTC()}
+	line.Versions = append(line.Versions, v)
+	p.pending = append(p.pending, Event{Type: eventAccrualReleased, At: at.UTC(), TenantID: p.state.TenantID, SubjectID: p.state.PoolID,
+		LegalEntityID: p.state.LegalEntityID, Version: v.No, ShipmentID: p.state.ConsolidationID, LineNo: lineNo})
 	return nil
 }
 
@@ -365,14 +448,12 @@ func (p *ConsolCostPool) Apportion(in ApportionInput, basis CostBasis, by string
 	for _, no := range lineNos {
 		line := p.state.Lines[no-1]
 		v := line.Versions[len(line.Versions)-1]
-		if v.Status != StatusAccrued {
-			return fmt.Errorf("%w: cost line %d is %s", ErrInvalidTransition, no, v.Status)
-		}
+		cost, local := p.LineCost(no)
 		method := line.Method
 		if in.Method != "" {
 			method = in.Method
 		}
-		la := LineApportionment{LineNo: no, LineVersion: v.No, Method: method}
+		la := LineApportionment{LineNo: no, LineVersion: v.No, Method: method, Amount: cost, Local: local}
 		var quantities []int64
 		var unit string
 		var err error
@@ -381,7 +462,7 @@ func (p *ConsolCostPool) Apportion(in ApportionInput, basis CostBasis, by string
 				return fmt.Errorf("%w: a manual apportionment divides one line with a reason", ErrInvalid)
 			}
 			la.Reason = in.Reason
-			if quantities, err = manualQuantities(houses, in.Manual, v.Amount.Minor); err != nil {
+			if quantities, err = manualQuantities(houses, in.Manual, cost); err != nil {
 				return err
 			}
 			unit = ""
@@ -390,11 +471,11 @@ func (p *ConsolCostPool) Apportion(in ApportionInput, basis CostBasis, by string
 				return err
 			}
 		}
-		amounts, err := split(v.Amount.Minor, quantities)
+		amounts, err := split(cost, quantities)
 		if err != nil {
 			return err
 		}
-		locals, err := split(v.Local, quantities)
+		locals, err := split(local, quantities)
 		if err != nil {
 			return err
 		}
@@ -591,6 +672,89 @@ func split(amount int64, quantities []int64) ([]int64, error) {
 	return out, nil
 }
 
+// Close closes the pool once its costs are final: every line matched with a final match or released, by creditor
+// invoices neither disputed nor awaiting a variance approval; and every line's latest apportionment divided its final
+// cost on PHY's current basis with every house loaded (ACTUAL), naming exactly the live houses and, for a weighed
+// method, their current quantities. A line whose final cost is zero needs no apportionment (or one of zero). Once PHY
+// cancelled the consolidation or no house is left on it, there is no basis to compare: the latest apportionments at
+// the final costs stand. The pool then takes no change until reopened.
+func (p *ConsolCostPool) Close(basis CostBasis, by string, at time.Time) error {
+	if err := p.open(by, at); err != nil {
+		return err
+	}
+	houses := slices.Clone(basis.Houses)
+	slices.SortFunc(houses, func(a, b HouseFacts) int { return cmpString(a.ShipmentID, b.ShipmentID) })
+	if basis.ConsolidationID != p.state.ConsolidationID {
+		return fmt.Errorf("%w: PHY answered consolidation %s for %s", ErrInvalid, basis.ConsolidationID, p.state.ConsolidationID)
+	}
+	gone := basis.State == "CANCELLED" || len(houses) == 0
+	loaded := !gone
+	for _, h := range houses {
+		loaded = loaded && h.LoadedPacks > 0
+	}
+	for _, l := range p.state.Lines {
+		c := p.consumed[l.No]
+		status := p.LineStatus(l.No)
+		switch {
+		case status != StatusMatched && status != StatusReleased:
+			return fmt.Errorf("%w: cost line %d is %s", ErrPoolNotClosable, l.No, status)
+		case c.Held:
+			return fmt.Errorf("%w: a creditor invoice matched to cost line %d is disputed or awaits a variance approval", ErrPoolNotClosable, l.No)
+		}
+		cost, local := p.LineCost(l.No)
+		a, la, ok := p.SharesOfLine(l.No)
+		switch {
+		case !ok && (cost != 0 || local != 0):
+			return fmt.Errorf("%w: cost line %d is not apportioned", ErrPoolNotClosable, l.No)
+		case !ok:
+			continue
+		case la.Amount != cost || la.Local != local:
+			return fmt.Errorf("%w: cost line %d was apportioned at %d (%d local); its final cost is %d (%d local)", ErrPoolNotClosable, l.No, la.Amount,
+				la.Local, cost, local)
+		case cost == 0 && local == 0, gone:
+			continue // every share is zero, or no basis is left to compare
+		case a.Stage != BasisActual || !loaded || len(la.Shares) != len(houses):
+			return fmt.Errorf("%w: cost line %d is not apportioned on the current loaded basis", ErrPoolNotClosable, l.No)
+		}
+		var quantities []int64
+		var unit string
+		if la.Method != MethodManual {
+			var err error
+			if quantities, unit, err = methodQuantities(la.Method, p.state.Mode, BasisActual, houses); err != nil {
+				return fmt.Errorf("%w: cost line %d: %w", ErrPoolNotClosable, l.No, err)
+			}
+		}
+		for i, h := range houses {
+			s := la.Shares[i]
+			if s.ShipmentID != h.ShipmentID || (quantities != nil && (s.Quantity != quantities[i] || s.Unit != unit)) {
+				return fmt.Errorf("%w: cost line %d is not apportioned on the current loaded basis (house %s)", ErrPoolNotClosable, l.No, h.ShipmentID)
+			}
+		}
+	}
+	c := PoolClosure{No: len(p.state.Closures) + 1, By: by, At: at.UTC()}
+	p.state.Closures, p.state.State = append(p.state.Closures, c), PoolClosed
+	p.record(eventPoolClosed, at, c.No)
+	return nil
+}
+
+// Reopen reopens a CLOSED pool with a reason, such as a creditor invoice arriving late (OD-10 A).
+func (p *ConsolCostPool) Reopen(reason, by string, at time.Time) error {
+	switch {
+	case p.state.State != PoolClosed:
+		return fmt.Errorf("%w: the pool is %s", ErrInvalidTransition, p.state.State)
+	case !text(reason) || blank(by) || at.IsZero() || at.Before(p.lastChange()):
+		return fmt.Errorf("%w: a reopening names its reason, author and a time not before the pool's last change", ErrInvalid)
+	}
+	c := &p.state.Closures[len(p.state.Closures)-1]
+	c.ReopenedBy, c.ReopenReason, c.ReopenedAt = by, reason, at.UTC()
+	if c.No <= p.storedPool.closures {
+		p.storedPool.reopened = append(p.storedPool.reopened, c.No)
+	}
+	p.state.State = PoolOpen
+	p.record(eventPoolReopened, at, c.No)
+	return nil
+}
+
 // SharesOfLine is the latest apportionment's shares of a cost line, with the apportionment they come from; ok is
 // false while the line is not apportioned.
 func (p *ConsolCostPool) SharesOfLine(lineNo int) (Apportionment, LineApportionment, bool) {
@@ -631,13 +795,32 @@ func (p *ConsolCostPool) Stamp(entered time.Time) {
 			st.Apportionments[i].EnteredAt = e
 		}
 	}
+	for i := range st.Closures {
+		c := &st.Closures[i]
+		if c.EnteredAt.IsZero() {
+			c.EnteredAt = e
+		}
+		if !c.ReopenedAt.IsZero() && c.ReopenEnteredAt.IsZero() {
+			c.ReopenEnteredAt = e
+		}
+	}
 }
 
 // RestorePool rebuilds a stored pool.
 func RestorePool(st PoolState) (*ConsolCostPool, error) {
 	st.Lines = slices.Clone(st.Lines)
 	st.Apportionments = slices.Clone(st.Apportionments)
-	s := storedPool{lines: len(st.Lines), apportionments: len(st.Apportionments), versions: map[int]int{}}
+	st.Closures = slices.Clone(st.Closures)
+	s := storedPool{lines: len(st.Lines), apportionments: len(st.Apportionments), closures: len(st.Closures), versions: map[int]int{}}
+	for i, c := range st.Closures {
+		if c.No != i+1 || (i < len(st.Closures)-1 && c.ReopenedAt.IsZero()) {
+			return nil, fmt.Errorf("%w: closure %d of pool %s", ErrInvalid, i+1, st.PoolID)
+		}
+	}
+	if closed := len(st.Closures) > 0 && st.Closures[len(st.Closures)-1].ReopenedAt.IsZero(); closed != (st.State == PoolClosed) ||
+		(st.State != PoolOpen && st.State != PoolClosed) {
+		return nil, fmt.Errorf("%w: pool %s is %s", ErrInvalid, st.PoolID, st.State)
+	}
 	for i := range st.Lines {
 		l := &st.Lines[i]
 		l.Versions = append([]PoolCostVersion(nil), l.Versions...)
@@ -681,6 +864,7 @@ func (p *ConsolCostPool) State() PoolState {
 			st.Apportionments[i].Lines[k].Shares = append([]Share(nil), st.Apportionments[i].Lines[k].Shares...)
 		}
 	}
+	st.Closures = slices.Clone(st.Closures)
 	return st
 }
 
@@ -697,12 +881,21 @@ func (p *ConsolCostPool) Added() (lines []PoolCostLine, versions []PoolCostVersi
 	return lines, versions, lineOf, st.Apportionments[p.storedPool.apportionments:]
 }
 
+// AddedClosures returns the closures written since the pool was loaded and the stored ones reopened since.
+func (p *ConsolCostPool) AddedClosures() (closures, reopened []PoolClosure) {
+	st := p.State()
+	for _, no := range p.storedPool.reopened {
+		reopened = append(reopened, st.Closures[no-1])
+	}
+	return st.Closures[p.storedPool.closures:], reopened
+}
+
 func (p *ConsolCostPool) Pending() []Event { return append([]Event(nil), p.pending...) }
 
 // Acknowledge is permitted only after the transaction holding the pool and its Outbox events commits.
 func (p *ConsolCostPool) Acknowledge() {
 	p.pending = nil
-	p.storedPool = storedPool{lines: len(p.state.Lines), apportionments: len(p.state.Apportionments), versions: map[int]int{}}
+	p.storedPool = storedPool{lines: len(p.state.Lines), apportionments: len(p.state.Apportionments), closures: len(p.state.Closures), versions: map[int]int{}}
 	for _, l := range p.state.Lines {
 		p.storedPool.versions[l.No] = len(l.Versions)
 	}

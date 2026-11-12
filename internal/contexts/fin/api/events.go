@@ -39,6 +39,23 @@ const (
 	ConsolCostRecorded     = "ConsolCostRecorded.v1"
 	ConsolCostRevised      = "ConsolCostRevised.v1"
 	ConsolCostsApportioned = "ConsolCostsApportioned.v1"
+	ConsolCostPoolClosed   = "ConsolCostPoolClosed.v1"   // Version: the closure
+	ConsolCostPoolReopened = "ConsolCostPoolReopened.v1" // Version: the closure reopened
+
+	// AccrualReleased has the job (LineNo, Side COST, Version the side's RELEASED version) or the pool (LineNo,
+	// Version the line's RELEASED version) as subject.
+	AccrualReleased = "AccrualReleased.v1"
+
+	// Creditor invoice events have the invoice as subject and its creditor; CreditorInvoiceMatched's Version is the
+	// number of matches, the dispute events' the dispute. SettlementDisputed of FinanceEvent v1 is
+	// CreditorInvoiceDisputed.
+	CostVarianceThresholdSet       = "CostVarianceThresholdSet.v1" // subject the legal entity; Version the threshold
+	CreditorInvoiceRecorded        = "CreditorInvoiceRecorded.v1"
+	CreditorInvoiceMatched         = "CreditorInvoiceMatched.v1"
+	CostVarianceApproved           = "CostVarianceApproved.v1"
+	CreditorInvoiceDisputed        = "CreditorInvoiceDisputed.v1"
+	CreditorInvoiceDisputeResolved = "CreditorInvoiceDisputeResolved.v1"
+	CreditorInvoiceCancelled       = "CreditorInvoiceCancelled.v1"
 )
 
 // EventPayload is the JSON payload of every FIN event: identifiers and versions only, never amounts, names or tax
@@ -54,4 +71,6 @@ type EventPayload struct {
 	Side          string `json:"side,omitempty"`       // ChargeSideRevised: SELL or COST
 	JobID         string `json:"job_id,omitempty"`     // DebtorInvoiceIssued, DebtorInvoiceCancelled and CreditNoteIssued: the note's job
 	InvoiceID     string `json:"invoice_id,omitempty"` // DebtorReceiptAllocated and DebtorReceiptAllocationReversed: the debit note
+	// CreditorPartyID is the creditor of a creditor invoice's events.
+	CreditorPartyID string `json:"creditor_party_id,omitempty"`
 }

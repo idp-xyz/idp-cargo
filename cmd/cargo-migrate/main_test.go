@@ -77,7 +77,7 @@ func TestRepositoryManifestLoads(t *testing.T) {
 		"000001_ful_shipments", "000002_ful_shipment_parts", "000003_ful_location_resolution", "000004_ful_consol_attachment", "000005_ful_load_evidence",
 		"000006_ful_goods_and_screening", "000007_ful_cost_driver", "000001_phy_consolidation_membership", "000002_phy_cargo_lots_tender", "000001_book_carrier_bookings",
 		"cargo_air:platform_numbering_0001_numbering_sequence", "000001_air_movement_waybills", "000002_air_measured_facts", "000003_air_doc_facts",
-		"000004_air_hawb_numbering", "000001_doc_transport_documents", "000002_doc_rendering_dispatch", "000003_doc_credit_decision", "cargo_fin:platform_numbering_0001_numbering_sequence", "000001_fin_jobs_credit", "000002_fin_billing", "000003_fin_numbering", "000004_fin_returned_estimates", "000005_fin_settlement", "000006_fin_consol_pool"}
+		"000004_air_hawb_numbering", "000001_doc_transport_documents", "000002_doc_rendering_dispatch", "000003_doc_credit_decision", "cargo_fin:platform_numbering_0001_numbering_sequence", "000001_fin_jobs_credit", "000002_fin_billing", "000003_fin_numbering", "000004_fin_returned_estimates", "000005_fin_settlement", "000006_fin_consol_pool", "000007_fin_creditor_invoices"}
 	if strings.Join(ids, " ") != strings.Join(want, " ") {
 		t.Fatalf("migration order = %v, want %v", ids, want)
 	}

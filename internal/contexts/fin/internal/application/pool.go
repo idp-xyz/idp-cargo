@@ -48,6 +48,14 @@ func (d Deps) OpenCostPool(ctx context.Context, c Command, consolidation string)
 // pool under its legal entity's policy (held FOR SHARE).
 func (d Deps) changePool(ctx context.Context, c Command, ask func(context.Context, *fin.ConsolCostPool) error,
 	apply func(context.Context, *fin.ConsolCostPool, *fin.FinancePolicy) (Receipt, error)) (Receipt, error) {
+	return d.changePoolLocking(ctx, c, ask, nil, apply)
+}
+
+// changePoolLocking is changePool with lock run on the locked pool before the policy is taken: every FIN command
+// takes the policy last (after its invoice, pools and jobs), so that a rate or threshold change waiting for the
+// policy never sits between two commands that wait for each other's rows.
+func (d Deps) changePoolLocking(ctx context.Context, c Command, ask func(context.Context, *fin.ConsolCostPool) error,
+	lock func(context.Context, *fin.ConsolCostPool) error, apply func(context.Context, *fin.ConsolCostPool, *fin.FinancePolicy) (Receipt, error)) (Receipt, error) {
 	if d.Pools == nil {
 		return Receipt{}, ErrMissingDependency
 	}
@@ -78,6 +86,14 @@ func (d Deps) changePool(ctx context.Context, c Command, ask func(context.Contex
 		}
 		if revision != c.ExpectedRevision {
 			return Receipt{}, nil, fin.ErrConflict
+		}
+		if err = d.matched(txCtx, c.Scope.TenantID, fin.TargetPoolCost, c.Subject, pool.Matched); err != nil {
+			return Receipt{}, nil, err
+		}
+		if lock != nil {
+			if err = lock(txCtx, pool); err != nil {
+				return Receipt{}, nil, err
+			}
 		}
 		p, err := d.policy(txCtx, c.Scope.TenantID, pool.State().LegalEntityID)
 		if err != nil {
@@ -166,14 +182,15 @@ type ApportionAsk struct {
 }
 
 // ApportionPoolCosts divides pool cost lines over the house jobs: PHY answers the consolidation's basis first (T3);
-// in the transaction FIN locks the houses' jobs in job id order and requires an OPEN job of the pool's legal entity
-// for every live house.
+// in the transaction FIN locks the houses' jobs in job id order, before the policy, and requires an OPEN job of the
+// pool's legal entity for every live house.
 func (d Deps) ApportionPoolCosts(ctx context.Context, c Command, in ApportionAsk) (Receipt, error) {
 	if d.Physical == nil {
 		return Receipt{}, ErrMissingDependency
 	}
 	var basis fin.CostBasis
-	return d.changePool(ctx, c, func(ctx context.Context, pool *fin.ConsolCostPool) (err error) {
+	var jobs map[string]string
+	return d.changePoolLocking(ctx, c, func(ctx context.Context, pool *fin.ConsolCostPool) (err error) {
 		st := pool.State()
 		basis, err = d.Physical.CostBasis(ctx, c.Scope.TenantID, st.ConsolidationID)
 		if err != nil {
@@ -183,18 +200,16 @@ func (d Deps) ApportionPoolCosts(ctx context.Context, c Command, in ApportionAsk
 			return fmt.Errorf("%w: PHY reports consolidation %s %s", fin.ErrPoolNoBasis, st.ConsolidationID, basis.State)
 		}
 		return nil
-	}, func(txCtx context.Context, pool *fin.ConsolCostPool, _ *fin.FinancePolicy) (Receipt, error) {
-		st := pool.State()
+	}, func(txCtx context.Context, pool *fin.ConsolCostPool) (err error) {
 		shipments := make([]string, 0, len(basis.Houses))
 		for _, h := range basis.Houses {
 			shipments = append(shipments, h.ShipmentID)
 		}
-		jobs, err := d.Jobs.OpenJobsFor(txCtx, c.Scope.TenantID, st.LegalEntityID, shipments)
-		if err != nil {
-			return Receipt{}, err
-		}
+		jobs, err = d.Jobs.OpenJobsFor(txCtx, c.Scope.TenantID, pool.State().LegalEntityID, shipments)
+		return err
+	}, func(_ context.Context, pool *fin.ConsolCostPool, _ *fin.FinancePolicy) (Receipt, error) {
 		input := fin.ApportionInput{LineNos: in.LineNos, Method: in.Method, Manual: in.Manual, Reason: in.Reason, Jobs: jobs}
-		if err = pool.Apportion(input, basis, c.Scope.ActorID, c.OccurredAt); err != nil {
+		if err := pool.Apportion(input, basis, c.Scope.ActorID, c.OccurredAt); err != nil {
 			return Receipt{}, err
 		}
 		return Receipt{Version: len(pool.State().Apportionments)}, nil

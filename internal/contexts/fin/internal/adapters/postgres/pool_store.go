@@ -67,6 +67,18 @@ type (
 		LineVersion     int     `json:"line_version"`
 		Method          string  `json:"method"`
 		Reason          *string `json:"reason"`
+		Amount          *int64  `json:"amount_minor"` // NULL on lines of FIN V0.4: they divided their version's figures
+		Local           *int64  `json:"local_minor"`
+	}
+	closureRow struct {
+		No              int        `json:"closure_no"`
+		By              string     `json:"closed_by"`
+		At              time.Time  `json:"closed_at"`
+		EnteredAt       time.Time  `json:"entered_at"`
+		ReopenedBy      *string    `json:"reopened_by"`
+		ReopenReason    *string    `json:"reopen_reason"`
+		ReopenedAt      *time.Time `json:"reopened_at"`
+		ReopenEnteredAt *time.Time `json:"reopen_entered_at"`
 	}
 	shareRow struct {
 		ApportionmentNo int    `json:"apportionment_no"`
@@ -88,16 +100,17 @@ func poolChildren() string {
 	key := "c.tenant_id=p.tenant_id AND c.pool_id=p.pool_id"
 	return children("pool_cost_line", key, "c.line_no") + `,` + children("pool_cost_version", key, "c.line_no, c.version_no") + `,` +
 		children("pool_apportionment", key, "c.apportionment_no") + `,` + children("pool_apportionment_line", key, "c.apportionment_no, c.line_no") + `,` +
-		children("pool_apportionment_share", key, "c.apportionment_no, c.line_no, c.share_no")
+		children("pool_apportionment_share", key, "c.apportionment_no, c.line_no, c.share_no") + `,` +
+		children("consol_cost_pool_closure", key, "c.closure_no")
 }
 
 func scanPool(row pgx.Row, tenant fin.TenantID) (*fin.ConsolCostPool, int64, error) {
 	st := fin.PoolState{TenantID: tenant}
 	var currency string
 	var revision int64
-	var lines, versions, apportionments, apportionedLines, shares []byte
+	var lines, versions, apportionments, apportionedLines, shares, closures []byte
 	err := row.Scan(&st.PoolID, &st.ConsolidationID, &st.LegalEntityID, &st.Mode, &currency, &st.BookCode, &st.State, &st.OpenedBy, &st.OpenedAt,
-		&st.EnteredAt, &revision, &lines, &versions, &apportionments, &apportionedLines, &shares)
+		&st.EnteredAt, &revision, &lines, &versions, &apportionments, &apportionedLines, &shares, &closures)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -106,9 +119,14 @@ func scanPool(row pgx.Row, tenant fin.TenantID) (*fin.ConsolCostPool, int64, err
 	var ar []apportionmentRow
 	var alr []apportionedLineRow
 	var sr []shareRow
+	var cr []closureRow
 	if err = errors.Join(json.Unmarshal(lines, &lr), json.Unmarshal(versions, &vr), json.Unmarshal(apportionments, &ar),
-		json.Unmarshal(apportionedLines, &alr), json.Unmarshal(shares, &sr)); err != nil {
+		json.Unmarshal(apportionedLines, &alr), json.Unmarshal(shares, &sr), json.Unmarshal(closures, &cr)); err != nil {
 		return nil, 0, err
+	}
+	for _, c := range cr {
+		st.Closures = append(st.Closures, fin.PoolClosure{No: c.No, By: c.By, At: utc(c.At), EnteredAt: utc(c.EnteredAt), ReopenedBy: deref(c.ReopenedBy),
+			ReopenReason: deref(c.ReopenReason), ReopenedAt: utc(deref(c.ReopenedAt)), ReopenEnteredAt: utc(deref(c.ReopenEnteredAt))})
 	}
 	st.FunctionalCurrency, st.OpenedAt, st.EnteredAt = kernel.CurrencyCode(currency), st.OpenedAt.UTC(), st.EnteredAt.UTC()
 	for _, l := range lr {
@@ -133,7 +151,16 @@ func scanPool(row pgx.Row, tenant fin.TenantID) (*fin.ConsolCostPool, int64, err
 			return nil, 0, fmt.Errorf("%w: line of apportionment %d", fin.ErrInvalid, l.ApportionmentNo)
 		}
 		a := &st.Apportionments[l.ApportionmentNo-1]
-		a.Lines = append(a.Lines, fin.LineApportionment{LineNo: l.LineNo, LineVersion: l.LineVersion, Method: l.Method, Reason: deref(l.Reason)})
+		if l.LineNo < 1 || l.LineNo > len(st.Lines) || l.LineVersion < 1 || l.LineVersion > len(st.Lines[l.LineNo-1].Versions) {
+			return nil, 0, fmt.Errorf("%w: apportionment %d of line %d version %d", fin.ErrInvalid, l.ApportionmentNo, l.LineNo, l.LineVersion)
+		}
+		amount, local := l.Amount, l.Local
+		if amount == nil || local == nil {
+			v := st.Lines[l.LineNo-1].Versions[l.LineVersion-1]
+			amount, local = &v.Amount.Minor, &v.Local
+		}
+		a.Lines = append(a.Lines, fin.LineApportionment{LineNo: l.LineNo, LineVersion: l.LineVersion, Method: l.Method, Reason: deref(l.Reason),
+			Amount: *amount, Local: *local})
 	}
 	for _, s := range sr {
 		if s.ApportionmentNo < 1 || s.ApportionmentNo > len(st.Apportionments) {
@@ -288,8 +315,9 @@ func writePool(ctx context.Context, q bentopg.Executor, p *fin.ConsolCostPool) e
 			return err
 		}
 		for _, la := range a.Lines {
-			if err := exec(`INSERT INTO cargo_fin.pool_apportionment_line (tenant_id,pool_id,apportionment_no,line_no,line_version,method,reason)
-                VALUES ($1,$2,$3,$4,$5,$6,$7)`, a.No, la.LineNo, la.LineVersion, la.Method, orNull(la.Reason)); err != nil {
+			if err := exec(`INSERT INTO cargo_fin.pool_apportionment_line (tenant_id,pool_id,apportionment_no,line_no,line_version,method,reason,
+                amount_minor,local_minor) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, a.No, la.LineNo, la.LineVersion, la.Method, orNull(la.Reason), la.Amount,
+				la.Local); err != nil {
 				return err
 			}
 			for _, sh := range la.Shares {
@@ -299,6 +327,20 @@ func writePool(ctx context.Context, q bentopg.Executor, p *fin.ConsolCostPool) e
 					return err
 				}
 			}
+		}
+	}
+	closures, reopened := p.AddedClosures()
+	for _, c := range closures {
+		if err := exec(`INSERT INTO cargo_fin.consol_cost_pool_closure (tenant_id,pool_id,closure_no,closed_by,closed_at,entered_at,reopened_by,reopen_reason,
+            reopened_at,reopen_entered_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, c.No, c.By, c.At, c.EnteredAt, orNull(c.ReopenedBy), orNull(c.ReopenReason),
+			orNull(c.ReopenedAt), orNull(c.ReopenEnteredAt)); err != nil {
+			return err
+		}
+	}
+	for _, c := range reopened {
+		if err := exec(`UPDATE cargo_fin.consol_cost_pool_closure SET reopened_by=$4,reopen_reason=$5,reopened_at=$6,reopen_entered_at=$7
+            WHERE tenant_id=$1 AND pool_id=$2 AND closure_no=$3`, c.No, c.ReopenedBy, c.ReopenReason, c.ReopenedAt, c.ReopenEnteredAt); err != nil {
+			return err
 		}
 	}
 	return nil

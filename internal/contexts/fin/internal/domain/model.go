@@ -93,6 +93,8 @@ type Event struct {
 	Side          string // SELL or COST, for side events
 	JobID         string // the job of a debit or credit note, for note events
 	InvoiceID     string // the debit note of an allocation, for allocation events
+	// CreditorPartyID is the creditor of a creditor invoice, for its events.
+	CreditorPartyID string
 }
 
 // MaxAmount bounds every amount and local amount in minor units (10^15, ten trillion units of a two-digit

@@ -52,9 +52,17 @@ func poolView(p *domain.ConsolCostPool, revision int64) api.ConsolCostPool {
 	out := api.ConsolCostPool{TenantID: string(st.TenantID), PoolID: st.PoolID, Revision: revision, ConsolidationID: st.ConsolidationID,
 		LegalEntityID: st.LegalEntityID, Mode: st.Mode, FunctionalCurrency: st.FunctionalCurrency, BookCode: st.BookCode, State: st.State,
 		OpenedBy: st.OpenedBy, OpenedAt: st.OpenedAt}
+	for _, c := range st.Closures {
+		out.Closures = append(out.Closures, api.PoolClosure{ClosureNo: c.No, ClosedBy: c.By, ClosedAt: c.At, ReopenedBy: c.ReopenedBy,
+			ReopenReason: c.ReopenReason, ReopenedAt: c.ReopenedAt})
+	}
 	for _, l := range st.Lines {
+		currency := l.Versions[len(l.Versions)-1].Amount.Currency
+		c := p.Consumed(l.No)
+		cost, costLocal := p.LineCost(l.No)
 		line := api.PoolCostLine{LineNo: l.No, ChargeCode: l.ChargeCode, Description: l.Description, SupplierRef: l.SupplierRef, Method: l.Method,
-			RecordedAt: l.At, EnteredAt: l.EnteredAt}
+			RecordedAt: l.At, EnteredAt: l.EnteredAt, Status: p.LineStatus(l.No), Matched: kernel.Money{Currency: currency, Minor: c.Amount},
+			MatchedLocal: local(c.Local), Cost: kernel.Money{Currency: currency, Minor: cost}, CostLocal: local(costLocal)}
 		for _, v := range l.Versions {
 			line.Versions = append(line.Versions, api.PoolCostVersion{Version: v.No, CreditorPartyID: v.CreditorPartyID,
 				CreditorRevision: v.CreditorRevision, Amount: v.Amount, Local: local(v.Local), Status: v.Status, Reason: v.Reason, RecordedAt: v.At,
@@ -65,8 +73,9 @@ func poolView(p *domain.ConsolCostPool, revision int64) api.ConsolCostPool {
 	for _, a := range st.Apportionments {
 		av := api.PoolApportionment{ApportionmentNo: a.No, BasisRevision: a.BasisRevision, Stage: a.Stage, By: a.By, At: a.At, EnteredAt: a.EnteredAt}
 		for _, la := range a.Lines {
-			lv := api.ApportionedLine{LineNo: la.LineNo, LineVersion: la.LineVersion, Method: la.Method, Reason: la.Reason}
 			currency := st.Lines[la.LineNo-1].Versions[la.LineVersion-1].Amount.Currency
+			lv := api.ApportionedLine{LineNo: la.LineNo, LineVersion: la.LineVersion, Method: la.Method, Reason: la.Reason,
+				Amount: kernel.Money{Currency: currency, Minor: la.Amount}, Local: local(la.Local)}
 			for _, s := range la.Shares {
 				lv.Shares = append(lv.Shares, api.PoolShare{ShareNo: s.No, ShipmentID: s.ShipmentID, JobID: s.JobID, Quantity: s.Quantity, Unit: s.Unit,
 					Amount: kernel.Money{Currency: currency, Minor: s.Amount}, Local: local(s.Local)})
@@ -83,7 +92,7 @@ func (m *Module) GetConsolCostPool(ctx context.Context, q api.GetConsolCostPool)
 	var p *domain.ConsolCostPool
 	var revision int64
 	err := d.Reader(ctx, func(txCtx context.Context) (err error) {
-		p, revision, err = d.Pools.Read(txCtx, domain.TenantID(q.TenantID), q.PoolID)
+		p, revision, err = readPool(txCtx, d, q.TenantID, q.PoolID)
 		return err
 	})
 	if err != nil {
@@ -92,9 +101,9 @@ func (m *Module) GetConsolCostPool(ctx context.Context, q api.GetConsolCostPool)
 	return poolView(p, revision), nil
 }
 
-// GetConsolProfit reads a consolidation's economics through its pool: the pooled cost at the latest versions, the
-// part the latest apportionments cover, and the house jobs of those apportionments with their own economics and their
-// pool shares.
+// GetConsolProfit reads a consolidation's economics through its pool: the pooled cost, its lines' current costs (what
+// creditor invoices matched plus what is still accrued), the part the latest apportionments cover, and the house jobs
+// of those apportionments with their own economics and their pool shares.
 func (m *Module) GetConsolProfit(ctx context.Context, q api.GetConsolProfit) (api.ConsolProfit, error) {
 	d := m.deps(q.TenantID, "")
 	var out api.ConsolProfit
@@ -107,16 +116,23 @@ func (m *Module) GetConsolProfit(ctx context.Context, q api.GetConsolProfit) (ap
 			return fmt.Errorf("%w: consolidation %s has no cost pool", bentorepo.ErrNotFound, q.ConsolidationID)
 		}
 		st := pools[0].State()
+		consumed, err := d.Creditors.Consumed(txCtx, domain.TenantID(q.TenantID), domain.TargetPoolCost, st.PoolID)
+		if err != nil {
+			return err
+		}
+		pools[0].Matched(consumed)
 		local := func(n int64) kernel.Money { return kernel.Money{Currency: st.FunctionalCurrency, Minor: n} }
-		out = api.ConsolProfit{ConsolidationID: q.ConsolidationID, PoolID: st.PoolID, LegalEntityID: st.LegalEntityID}
-		var pooled, apportioned int64
+		out = api.ConsolProfit{ConsolidationID: q.ConsolidationID, PoolID: st.PoolID, LegalEntityID: st.LegalEntityID, State: st.State}
+		var pooled, matched, apportioned int64
 		type house struct {
 			jobID string
 			pool  int64
 		}
 		byShipment := map[string]*house{}
 		for _, l := range st.Lines {
-			pooled += l.Versions[len(l.Versions)-1].Local
+			_, cost := pools[0].LineCost(l.No)
+			pooled += cost
+			matched += pools[0].Consumed(l.No).Local
 			_, la, ok := pools[0].SharesOfLine(l.No)
 			if !ok {
 				continue
@@ -129,7 +145,7 @@ func (m *Module) GetConsolProfit(ctx context.Context, q api.GetConsolProfit) (ap
 				byShipment[s.ShipmentID].pool += s.Local
 			}
 		}
-		out.Pooled, out.Apportioned, out.Unapportioned = local(pooled), local(apportioned), local(pooled-apportioned)
+		out.Pooled, out.Matched, out.Apportioned, out.Unapportioned = local(pooled), local(matched), local(apportioned), local(pooled-apportioned)
 		shipments := make([]string, 0, len(byShipment))
 		for s := range byShipment {
 			shipments = append(shipments, s)
@@ -137,7 +153,7 @@ func (m *Module) GetConsolProfit(ctx context.Context, q api.GetConsolProfit) (ap
 		slices.Sort(shipments)
 		for _, shipment := range shipments {
 			h := byShipment[shipment]
-			j, _, err := d.Jobs.Read(txCtx, domain.TenantID(q.TenantID), h.jobID)
+			j, _, err := readJob(txCtx, d, q.TenantID, h.jobID)
 			if err != nil {
 				return err
 			}
