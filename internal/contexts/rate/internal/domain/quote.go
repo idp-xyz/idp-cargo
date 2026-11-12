@@ -122,6 +122,7 @@ type Event struct {
 	At        time.Time
 	TenantID  TenantID
 	SubjectID string
+	Version   int // the charge code's or rate card's version; 0 for quote events
 }
 
 // QuoteDraft is what a new quote is priced from. Currency is the currency the quote totals in; lines in

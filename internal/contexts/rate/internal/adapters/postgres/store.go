@@ -214,16 +214,17 @@ func (s CommandReceipts) Find(ctx context.Context, tenant rate.TenantID, id stri
 		return app.Receipt{}, false, err
 	}
 	r := app.Receipt{CommandID: id}
-	var quote string
-	err = q.QueryRow(ctx, `SELECT request_sha256,result_id,result_revision FROM cargo_rate.command_receipt
-      WHERE tenant_id=$1 AND command_id=$2`, string(tenant), id).Scan(&r.RequestHash, &quote, &r.NewRevision)
+	err = q.QueryRow(ctx, `SELECT request_sha256,result_type,result_id,result_revision FROM cargo_rate.command_receipt
+      WHERE tenant_id=$1 AND command_id=$2`, string(tenant), id).Scan(&r.RequestHash, &r.Kind, &r.SubjectID, &r.NewRevision)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return app.Receipt{}, false, nil
 	}
 	if err != nil {
 		return app.Receipt{}, false, err
 	}
-	r.QuoteID = rate.QuoteID(quote)
+	if r.Kind == "Quote" {
+		r.QuoteID = rate.QuoteID(r.SubjectID)
+	}
 	return r, true, nil
 }
 
@@ -232,7 +233,11 @@ func (s CommandReceipts) Save(ctx context.Context, tenant rate.TenantID, r app.R
 	if err != nil {
 		return err
 	}
+	kind, subject := r.Kind, r.SubjectID
+	if kind == "" {
+		kind, subject = "Quote", string(r.QuoteID)
+	}
 	_, err = q.Exec(ctx, `INSERT INTO cargo_rate.command_receipt (tenant_id,command_id,request_sha256,result_type,result_id,result_revision)
-      VALUES ($1,$2,$3,'Quote',$4,$5)`, string(tenant), r.CommandID, r.RequestHash, string(r.QuoteID), r.NewRevision)
+      VALUES ($1,$2,$3,$4,$5,$6)`, string(tenant), r.CommandID, r.RequestHash, kind, subject, r.NewRevision)
 	return err
 }

@@ -78,6 +78,11 @@ jobs:
           GRANT UPDATE (released_by,released_at,release_entered_at) ON cargo_org.contact_transfer_reservation TO cargo_app;
           GRANT SELECT,INSERT,UPDATE ON cargo_rate.quote TO cargo_app;
           GRANT SELECT,INSERT ON cargo_rate.quote_line,cargo_rate.quote_exchange_rate,cargo_rate.command_receipt TO cargo_app;
+          GRANT SELECT ON cargo_rate.charge_code_starter TO cargo_app;
+          GRANT SELECT,INSERT ON cargo_rate.charge_code_version,cargo_rate.rate_card,cargo_rate.rate_card_version,cargo_rate.rate_snapshot,cargo_rate.rate_snapshot_candidate,cargo_rate.rate_snapshot_line TO cargo_app;
+          GRANT UPDATE (revision,updated_at) ON cargo_rate.rate_card TO cargo_app;
+          GRANT UPDATE (status,preparers,prepared_at,published_by,published_at,approved_by,self_approved,withdrawn_by,withdrawn_at,withdraw_reason) ON cargo_rate.rate_card_version TO cargo_app;
+          GRANT SELECT,INSERT,DELETE ON cargo_rate.rate_entry,cargo_rate.rate_line,cargo_rate.rate_break TO cargo_app;
           GRANT SELECT,INSERT,UPDATE ON cargo_com.customer_order TO cargo_app;
           GRANT SELECT,INSERT ON cargo_com.order_line,cargo_com.order_line_amendment,cargo_com.order_policy,cargo_com.fulfillment_obligation,cargo_com.command_receipt TO cargo_app;
           GRANT SELECT,INSERT ON cargo_com.obligation_reservation TO cargo_app;

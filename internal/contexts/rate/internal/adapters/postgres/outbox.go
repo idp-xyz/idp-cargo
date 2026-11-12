@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"strconv"
 	"time"
 
 	"go.idp.xyz/idp-bento-go/eventing"
@@ -29,8 +30,12 @@ func (o Outbox) EnqueueRATEEvent(ctx context.Context, e rate.Event) error {
 // RATEEnvelope maps a RATE domain event to its Bento envelope. The event ID is derived from the
 // command, so a retried command yields the same event ID.
 func RATEEnvelope(commandID string, e rate.Event, recordedAt time.Time) (eventing.Envelope, error) {
-	digest := sha256.Sum256([]byte(commandID + "\x00" + e.Type + "\x00" + string(e.TenantID) + "\x00" + e.SubjectID))
-	payload, err := json.Marshal(api.EventPayload{TenantID: string(e.TenantID), SubjectID: e.SubjectID})
+	key := commandID + "\x00" + e.Type + "\x00" + string(e.TenantID) + "\x00" + e.SubjectID
+	if e.Version != 0 {
+		key += "\x00" + strconv.Itoa(e.Version)
+	}
+	digest := sha256.Sum256([]byte(key))
+	payload, err := json.Marshal(api.EventPayload{TenantID: string(e.TenantID), SubjectID: e.SubjectID, Version: e.Version})
 	if err != nil {
 		return eventing.Envelope{}, err
 	}
