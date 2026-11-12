@@ -7,7 +7,8 @@
 //
 // FIN asks before its own transaction (T3): FUL's CostDriver v1 for the shipment, RATE's PricingBasis v1 for the
 // quote, DOC's TransportDocumentSnapshot v1 for a debit note, ORG's legal entity, party roles and party identity. It
-// never writes to them. Settlement, consol cost pools, creditor invoices, fapiao, postings and recognition come later.
+// never writes to them. V0.3 adds settlement: debtor receipts recorded from bank or ERP evidence and allocated to
+// debit notes, and debtor statements. Consol cost pools, creditor invoices, fapiao, postings and recognition come later.
 package api
 
 import (
@@ -344,12 +345,94 @@ type ReleaseCreditHold struct {
 	OccurredAt       time.Time
 }
 
+// Evidence sources of a debtor receipt and the reasons to cancel one.
+const (
+	EvidenceBank = "BANK"
+	EvidenceERP  = "ERP"
+
+	ReceiptEnteredInError = "ENTERED_IN_ERROR"
+	ReceiptReturned       = "PAYMENT_RETURNED"
+)
+
+// RecordDebtorReceipt records money received from a debtor of a legal entity, from bank or ERP evidence (OD-2 B: FIN
+// keeps the settlement status of debit notes; the cash book, bank reconciliation and exchange differences stay in the
+// ERP). Amount is what the bank account was credited with; BankCharges, in the same currency and not above the amount,
+// is what banks deducted on the way and the legal entity bears: the debtor is credited with both. ReceivedOn is the
+// civil date received (YYYY-MM-DD), not after the day of the command and not more than 366 days before it.
+// EvidenceRef is a reference (a bank statement line, an ERP voucher), never free text; a legal entity records a piece
+// of evidence once (FIN_EVIDENCE_USED) until that receipt is cancelled. The debtor must hold the CUSTOMER or
+// OVERSEAS_AGENT role for the legal entity in ORG. A payment in another currency than the notes it pays is entered at
+// the amount it settles in the notes' currency.
+type RecordDebtorReceipt struct {
+	CommandID      string
+	TenantID       string
+	ActorID        string
+	ReceiptID      string
+	LegalEntityID  string
+	DebtorPartyID  string
+	Amount         kernel.Money
+	BankCharges    kernel.Money
+	ReceivedOn     string
+	EvidenceSource string
+	EvidenceRef    string
+	OccurredAt     time.Time
+}
+
+// ReceiptAllocation is an amount of a receipt for a debit note.
+type ReceiptAllocation struct {
+	InvoiceID string
+	Amount    kernel.Money
+}
+
+// AllocateDebtorReceipt settles debit notes from a receipt: each an ISSUED debit note of the receipt's legal entity,
+// debtor and currency (FIN_NOT_ALLOCATABLE), named once, with a positive amount within what the receipt has
+// unallocated and the note has open (FIN_OVER_ALLOCATED). Date is the civil date of the command, not before the date
+// received or a note's invoice date. What stays unallocated is on account.
+type AllocateDebtorReceipt struct {
+	CommandID        string
+	TenantID         string
+	ActorID          string
+	ReceiptID        string
+	ExpectedRevision int64
+	Allocations      []ReceiptAllocation
+	Date             string
+	OccurredAt       time.Time
+}
+
+// ReverseDebtorReceiptAllocation reverses one allocation of a receipt with a reason, once: its debit note is open
+// again for the amount, which is back on account. Date is the civil date of the command, on or after the allocation's.
+type ReverseDebtorReceiptAllocation struct {
+	CommandID        string
+	TenantID         string
+	ActorID          string
+	ReceiptID        string
+	ExpectedRevision int64
+	AllocationNo     int
+	Reason           string
+	Date             string
+	OccurredAt       time.Time
+}
+
+// CancelDebtorReceipt cancels a receipt that settles nothing (its allocations reversed first), entered in error or
+// returned by the bank. Date is the civil date of the command.
+type CancelDebtorReceipt struct {
+	CommandID        string
+	TenantID         string
+	ActorID          string
+	ReceiptID        string
+	ExpectedRevision int64
+	Reason           string // ReceiptEnteredInError or ReceiptReturned
+	Date             string
+	OccurredAt       time.Time
+}
+
 // Receipt confirms a committed command; replaying the command returns it again. SubjectID is the legal entity
-// (policy), the job (job and note commands), the debtor (billing profile) or <legal entity>/<debtor> (credit account);
-// Version is the rate entry recorded or ended, the tax treatment set, the series registered, the pricing basis
-// applied, the charge line recorded, the side version written, the billing profile version, the terms version set or
-// the hold placed or released (0 for opening a policy or job, cancelling a job and issuing a note); Number is the
-// number of a note issued. For a billing profile NewRevision is its version.
+// (policy), the job (job and note commands), the debtor (billing profile), <legal entity>/<debtor> (credit account) or
+// the debtor receipt; Version is the rate entry recorded or ended, the tax treatment set, the series registered, the
+// pricing basis applied, the charge line recorded, the side version written, the billing profile version, the terms
+// version set, the hold placed or released, or the last allocation written or the one reversed (0 for opening a policy
+// or job, cancelling a job, issuing a note, and recording or cancelling a debtor receipt); Number is the number of a
+// note issued. For a billing profile NewRevision is its version.
 type Receipt struct {
 	CommandID   string
 	SubjectID   string
@@ -376,6 +459,10 @@ type Commands interface {
 	SetBillingProfile(ctx context.Context, cmd SetBillingProfile) (Receipt, error)
 	IssueDebitNote(ctx context.Context, cmd IssueDebitNote) (Receipt, error)
 	IssueCreditNote(ctx context.Context, cmd IssueCreditNote) (Receipt, error)
+	RecordDebtorReceipt(ctx context.Context, cmd RecordDebtorReceipt) (Receipt, error)
+	AllocateDebtorReceipt(ctx context.Context, cmd AllocateDebtorReceipt) (Receipt, error)
+	ReverseDebtorReceiptAllocation(ctx context.Context, cmd ReverseDebtorReceiptAllocation) (Receipt, error)
+	CancelDebtorReceipt(ctx context.Context, cmd CancelDebtorReceipt) (Receipt, error)
 }
 
 // Actions an Authorizer decides on: the command names.
@@ -397,6 +484,11 @@ const (
 	ActionSetBillingProfile     = "SetBillingProfile"
 	ActionIssueDebitNote        = "IssueDebitNote"
 	ActionIssueCreditNote       = "IssueCreditNote"
+
+	ActionRecordDebtorReceipt            = "RecordDebtorReceipt"
+	ActionAllocateDebtorReceipt          = "AllocateDebtorReceipt"
+	ActionReverseDebtorReceiptAllocation = "ReverseDebtorReceiptAllocation"
+	ActionCancelDebtorReceipt            = "CancelDebtorReceipt"
 )
 
 // Authorizer decides whether a verified actor may perform an action on a subject.

@@ -79,6 +79,7 @@ type Note struct {
 	By             string
 	At             time.Time
 	EnteredAt      time.Time
+	Settled        int64 // a debit note: what live receipt allocations settle of it, as read with the job; never written with it
 }
 
 const (
@@ -341,6 +342,8 @@ func (j *FreightJob) IssueCreditNote(in CreditNoteInput, p *FinancePolicy, draw 
 		return fmt.Errorf("%w: a credit note reduces what the debtor owes; reverse a discount line with the lines it discounts", ErrInvalid)
 	case len(credited) < len(d.Lines) && remaining <= 0:
 		return fmt.Errorf("%w: the lines left on debit note %s would total %d; reverse its discount lines with them", ErrInvalid, d.Number, remaining)
+	case remaining < d.Settled:
+		return fmt.Errorf("%w: debit note %s would keep %d, of which receipts settle %d", ErrSettled, d.Number, remaining, d.Settled)
 	}
 	if n.Number, n.Seq, n.Period, err = draw(KindCreditNote, n.InvoiceDate); err != nil {
 		return err
@@ -371,6 +374,17 @@ func (j *FreightJob) IssueCreditNote(in CreditNoteInput, p *FinancePolicy, draw 
 func (j *FreightJob) recordNote(kind string, at time.Time, n Note) {
 	j.pending = append(j.pending, Event{Type: kind, At: at.UTC(), TenantID: j.state.TenantID, SubjectID: n.ID, LegalEntityID: j.state.LegalEntityID,
 		ShipmentID: j.state.ShipmentID, DebtorPartyID: n.DebtorPartyID, JobID: j.state.JobID})
+}
+
+// Remaining is what a debit note of the job still bills after its credit notes, in the note's and the functional
+// currency: the totals of its unreversed lines.
+func (j *FreightJob) Remaining(debitNoteID string) (amount, local int64) {
+	for _, n := range j.state.Notes {
+		if n.ID == debitNoteID || n.CreditsID == debitNoteID {
+			amount, local = amount+n.Total, local+n.LocalTotal
+		}
+	}
+	return amount, local
 }
 
 // Credits returns the credit notes of a debit note of the job.

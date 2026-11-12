@@ -504,4 +504,35 @@ func TestTransportDocumentsWithEveryContext(t *testing.T) {
 	if err != nil || account.Billed.Minor != 720_000 || account.Unbilled.Minor != 0 {
 		t.Fatalf("exposure after the credit note: %+v %v", account, err)
 	}
+
+	// The customer pays: FIN records the receipt from the bank evidence (ORG confirms the debtor's role) and settles the
+	// debit note; nothing stays open, exposure is gone and the statement balances.
+	_, err = finModule.RecordDebtorReceipt(ctx, finapi.RecordDebtorReceipt{CommandID: "fin-receipt", TenantID: tenant, ActorID: "cash-1", ReceiptID: "REC-A",
+		LegalEntityID: "LE", DebtorPartyID: "stranger", Amount: kernel.Money{Currency: "CNY", Minor: 720_000}, ReceivedOn: invoiceDate,
+		EvidenceSource: finapi.EvidenceBank, EvidenceRef: "BOC-20261112-0001", OccurredAt: hours(28)})
+	if !errors.Is(err, finapi.ErrRejected) {
+		t.Fatalf("a receipt from a party ORG does not know as a debtor: %v", err)
+	}
+	r, err = finModule.RecordDebtorReceipt(ctx, finapi.RecordDebtorReceipt{CommandID: "fin-receipt", TenantID: tenant, ActorID: "cash-1", ReceiptID: "REC-A",
+		LegalEntityID: "LE", DebtorPartyID: "party-a", Amount: kernel.Money{Currency: "CNY", Minor: 720_000}, ReceivedOn: invoiceDate,
+		EvidenceSource: finapi.EvidenceBank, EvidenceRef: "BOC-20261112-0001", OccurredAt: hours(28)})
+	must("receipt", err)
+	_, err = finModule.AllocateDebtorReceipt(ctx, finapi.AllocateDebtorReceipt{CommandID: "fin-allocate", TenantID: tenant, ActorID: "cash-1",
+		ReceiptID: "REC-A", ExpectedRevision: r.NewRevision, Date: invoiceDate, OccurredAt: hours(28),
+		Allocations: []finapi.ReceiptAllocation{{InvoiceID: "DN-A", Amount: kernel.Money{Currency: "CNY", Minor: 720_000}}}})
+	must("allocation", err)
+	if note, err = finModule.GetDebtorInvoice(ctx, finapi.GetDebtorInvoice{TenantID: tenant, InvoiceID: "DN-A"}); err != nil || note.Open.Minor != 0 ||
+		note.Settled.Minor != 720_000 || len(note.Settlements) != 1 || note.Settlements[0].ReceiptID != "REC-A" {
+		t.Fatalf("the debit note settled: %+v %v", note, err)
+	}
+	if account, err = finModule.GetCreditAccount(ctx, finapi.GetCreditAccount{TenantID: tenant, LegalEntityID: "LE", DebtorPartyID: "party-a"}); err != nil ||
+		account.Exposure.Minor != 0 || len(account.OnAccount) != 0 {
+		t.Fatalf("exposure once paid: %+v %v", account, err)
+	}
+	statement, err := finModule.GetDebtorStatement(ctx, finapi.GetDebtorStatement{TenantID: tenant, LegalEntityID: "LE", DebtorPartyID: "party-a",
+		From: invoiceDate, To: invoiceDate})
+	if err != nil || len(statement.Currencies) != 1 || len(statement.Currencies[0].Entries) != 3 || statement.Currencies[0].Closing.Minor != 0 ||
+		len(statement.Currencies[0].OpenItems) != 0 {
+		t.Fatalf("statement: %+v %v", statement, err)
+	}
 }

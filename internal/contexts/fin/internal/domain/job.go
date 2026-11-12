@@ -408,19 +408,21 @@ func (j *FreightJob) Profit() Profit {
 }
 
 // Exposure is a debtor's exposure on the job in the functional currency while the job is open: the sell not yet
-// billed (ESTIMATED sides, WIP) and the sell billed on debit notes not reversed (INVOICED sides; settlement comes
-// later, so every issued debit note stays open).
+// billed (ESTIMATED sides, WIP) and what is open of its debit notes, their unreversed lines' local amount in
+// proportion to what receipts have not settled.
 func (j *FreightJob) Exposure(debtor string) (unbilled, billed int64) {
 	if j.state.State != JobOpen {
 		return 0, 0
 	}
 	for _, l := range j.state.Lines {
-		if n := len(l.Sell); n > 0 && l.Sell[n-1].PartyID == debtor {
-			if l.Sell[n-1].Status == StatusInvoiced {
-				billed += l.Sell[n-1].Local
-			} else {
-				unbilled += l.Sell[n-1].Local
-			}
+		if n := len(l.Sell); n > 0 && l.Sell[n-1].PartyID == debtor && l.Sell[n-1].Status != StatusInvoiced {
+			unbilled += l.Sell[n-1].Local
+		}
+	}
+	for _, n := range j.state.Notes {
+		if n.Kind == KindDebitNote && n.State == NoteIssued && n.DebtorPartyID == debtor {
+			amount, local := j.Remaining(n.ID)
+			billed += proportion(local, amount-n.Settled, amount)
 		}
 	}
 	return unbilled, billed

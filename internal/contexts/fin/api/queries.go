@@ -220,8 +220,10 @@ type CreditAccount struct {
 	Holds         []CreditHold
 	Exposure      kernel.Money
 	Unbilled      kernel.Money
-	Billed        kernel.Money
+	Billed        kernel.Money // what is open of the debtor's debit notes on open jobs, in the functional currency
 	OverLimit     bool
+	// OnAccount is what the debtor's receipts have unallocated, per currency. It does not lower the exposure.
+	OnAccount []kernel.Money
 }
 
 // BillingProfileVersion is a version of a debtor's billing profile.
@@ -307,12 +309,142 @@ type DebtorInvoice struct {
 	State            string
 	Total            kernel.Money
 	LocalTotal       kernel.Money
-	Open             kernel.Money
+	Settled          kernel.Money // a debit note: what receipts settle of it
+	Open             kernel.Money // a debit note: its total less its credit notes and what is settled
 	TaxTotals        []TaxTotal
 	Lines            []DebtorInvoiceLine
 	CreditNotes      []string
+	Settlements      []InvoiceSettlement // GetDebtorInvoice: the allocations that settle a debit note
 	IssuedBy         string
 	IssuedAt         time.Time
+}
+
+// InvoiceSettlement is an allocation of a receipt that settles part of a debit note.
+type InvoiceSettlement struct {
+	ReceiptID    string
+	AllocationNo int
+	Amount       kernel.Money
+	Date         string
+}
+
+// Debtor receipt states.
+const (
+	ReceiptRecorded  = "RECORDED"
+	ReceiptCancelled = "CANCELLED"
+)
+
+// DebtorReceiptAllocation is an allocation of a receipt to a debit note; a reversed one names who reversed it and why.
+type DebtorReceiptAllocation struct {
+	AllocationNo  int
+	InvoiceID     string
+	Amount        kernel.Money
+	Date          string
+	AllocatedBy   string
+	AllocatedAt   time.Time
+	ReversedBy    string
+	ReverseReason string
+	ReversedOn    string
+	ReversedAt    time.Time
+}
+
+// DebtorReceipt is money received from a debtor: the debtor is credited with Amount and BankCharges, of which
+// Unallocated is on account.
+type DebtorReceipt struct {
+	TenantID       string
+	ReceiptID      string
+	Revision       int64
+	LegalEntityID  string
+	DebtorPartyID  string
+	DebtorRevision int64
+	Amount         kernel.Money
+	BankCharges    kernel.Money
+	Unallocated    kernel.Money
+	ReceivedOn     string
+	EvidenceSource string
+	EvidenceRef    string
+	State          string
+	RecordedBy     string
+	RecordedAt     time.Time
+	CancelReason   string
+	CancelledBy    string
+	CancelledOn    string
+	CancelledAt    time.Time
+	Allocations    []DebtorReceiptAllocation
+}
+
+// Statement entry kinds.
+const (
+	EntryDebitNote        = "DEBIT_NOTE"
+	EntryCreditNote       = "CREDIT_NOTE"
+	EntryReceipt          = "RECEIPT"
+	EntryReceiptCancelled = "RECEIPT_CANCELLED"
+)
+
+// StatementEntry is a line of a statement: a debit note adds to what the debtor owes; a credit note and a receipt (its
+// amount and bank charges) take off; a cancelled receipt adds back. Number is a note's number or a receipt's evidence;
+// Balance is the balance after the entry.
+type StatementEntry struct {
+	Date           string
+	Kind           string
+	ID             string
+	Number         string
+	DocumentNumber string
+	Amount         kernel.Money
+	Balance        kernel.Money
+}
+
+// StatementItem is a debit note open at the end of a statement.
+type StatementItem struct {
+	InvoiceID      string
+	Number         string
+	DocumentNumber string
+	InvoiceDate    string
+	DueDate        string
+	Total          kernel.Money
+	Credited       kernel.Money
+	Settled        kernel.Money
+	Open           kernel.Money
+	DaysOverdue    int
+}
+
+// StatementReceipt is a receipt with money on account at the end of a statement.
+type StatementReceipt struct {
+	ReceiptID      string
+	ReceivedOn     string
+	EvidenceSource string
+	EvidenceRef    string
+	Credited       kernel.Money
+	Unallocated    kernel.Money
+}
+
+// StatementAgeing sums the open items by days past due at the end of a statement.
+type StatementAgeing struct {
+	NotDue     kernel.Money
+	Days1To30  kernel.Money
+	Days31To60 kernel.Money
+	Days61To90 kernel.Money
+	Over90     kernel.Money
+}
+
+// CurrencyStatement is a debtor's statement in one currency. Closing is Opening and the entries, and also the open
+// items less the money on account.
+type CurrencyStatement struct {
+	Currency  kernel.CurrencyCode
+	Opening   kernel.Money
+	Entries   []StatementEntry
+	Closing   kernel.Money
+	OpenItems []StatementItem
+	OnAccount []StatementReceipt
+	Ageing    StatementAgeing
+}
+
+// DebtorStatement is a debtor's account with a legal entity over a period, per currency.
+type DebtorStatement struct {
+	LegalEntityID string
+	DebtorPartyID string
+	From          string
+	To            string
+	Currencies    []CurrencyStatement
 }
 
 // Queries.
@@ -327,9 +459,18 @@ type (
 	ListCreditExposure struct{ TenantID, LegalEntityID string }
 	GetBillingProfile  struct{ TenantID, DebtorPartyID string }
 	GetDebtorInvoice   struct{ TenantID, InvoiceID string }
-	// ListOpenDebtorItems lists a debtor's open debit notes with a legal entity (not every line reversed), the oldest
-	// due first.
+	// ListOpenDebtorItems lists a debtor's open debit notes with a legal entity (issued, with an amount neither reversed
+	// nor settled), the oldest due first.
 	ListOpenDebtorItems struct{ TenantID, LegalEntityID, DebtorPartyID string }
+	GetDebtorReceipt    struct{ TenantID, ReceiptID string }
+	// ListDebtorReceipts lists a debtor's receipts with a legal entity, in the order received.
+	ListDebtorReceipts struct{ TenantID, LegalEntityID, DebtorPartyID string }
+	// GetDebtorStatement states a debtor's account with a legal entity from From to To (civil dates, YYYY-MM-DD, at
+	// most 366 days apart), per currency and by business dates: notes count from their invoice date, receipts from the
+	// date received until the date cancelled, allocations from their date until the date reversed. It gives the opening
+	// balance, the entries of the period, the closing balance and, as of To, the open items with their days overdue,
+	// the money on account and the ageing.
+	GetDebtorStatement struct{ TenantID, LegalEntityID, DebtorPartyID, From, To string }
 	// ListDebitNotesOnChangedDocuments lists a legal entity's open debit notes whose house document changed after
 	// billing, for a person to decide (a credit note, a corrected bill): FIN asks DOC when asked, as it consumes no DOC
 	// event yet.
@@ -368,4 +509,7 @@ type Queries interface {
 	GetDebtorInvoice(ctx context.Context, q GetDebtorInvoice) (DebtorInvoice, error)
 	ListOpenDebtorItems(ctx context.Context, q ListOpenDebtorItems) ([]DebtorInvoice, error)
 	ListDebitNotesOnChangedDocuments(ctx context.Context, q ListDebitNotesOnChangedDocuments) ([]DocumentChange, error)
+	GetDebtorReceipt(ctx context.Context, q GetDebtorReceipt) (DebtorReceipt, error)
+	ListDebtorReceipts(ctx context.Context, q ListDebtorReceipts) ([]DebtorReceipt, error)
+	GetDebtorStatement(ctx context.Context, q GetDebtorStatement) (DebtorStatement, error)
 }

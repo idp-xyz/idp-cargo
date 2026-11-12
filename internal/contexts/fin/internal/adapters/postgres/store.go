@@ -430,7 +430,10 @@ func jobChildren() string {
 	key := "c.tenant_id=j.tenant_id AND c.job_id=j.job_id"
 	return children("job_basis", key, "c.basis_no") + `,` + children("charge_line", key, "c.line_no") + `,` +
 		children("charge_side_version", key, "c.line_no, c.side DESC, c.version_no") + `,` +
-		children("debtor_invoice", key, "c.issued_at, c.entered_at, c.invoice_id") + `,` + children("debtor_invoice_line", key, "c.invoice_id, c.line_no")
+		children("debtor_invoice", key, "c.issued_at, c.entered_at, c.invoice_id") + `,` + children("debtor_invoice_line", key, "c.invoice_id, c.line_no") +
+		`,(SELECT coalesce(json_agg(s), '[]') FROM (SELECT a.invoice_id, sum(a.amount_minor)::bigint AS settled FROM cargo_fin.debtor_receipt_allocation a
+            JOIN cargo_fin.debtor_invoice n ON n.tenant_id=a.tenant_id AND n.invoice_id=a.invoice_id
+            WHERE n.tenant_id=j.tenant_id AND n.job_id=j.job_id AND a.reversed_at IS NULL GROUP BY a.invoice_id) s)`
 }
 
 func scanJob(row pgx.Row, tenant fin.TenantID) (*fin.FreightJob, int64, error) {
@@ -439,10 +442,10 @@ func scanJob(row pgx.Row, tenant fin.TenantID) (*fin.FreightJob, int64, error) {
 	var cancelReason, cancelledBy *string
 	var cancelledAt, cancelEntered *time.Time
 	var revision int64
-	var bases, lines, sides, notes, noteLines []byte
+	var bases, lines, sides, notes, noteLines, settled []byte
 	err := row.Scan(&st.JobID, &st.LegalEntityID, &st.ShipmentID, &st.Kind, &currency, &st.BookCode, &st.CustomerPartyID, &st.PlanVersion, &st.State,
 		&st.OpenedBy, &st.OpenedAt, &st.EnteredAt, &cancelReason, &cancelledBy, &cancelledAt, &cancelEntered, &revision, &bases, &lines, &sides, &notes,
-		&noteLines)
+		&noteLines, &settled)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -451,12 +454,23 @@ func scanJob(row pgx.Row, tenant fin.TenantID) (*fin.FreightJob, int64, error) {
 	var sr []sideRow
 	var nr []noteRow
 	var nlr []noteLineRow
+	var sett []struct {
+		InvoiceID string `json:"invoice_id"`
+		Settled   int64  `json:"settled"`
+	}
 	if err = errors.Join(json.Unmarshal(bases, &br), json.Unmarshal(lines, &lr), json.Unmarshal(sides, &sr), json.Unmarshal(notes, &nr),
-		json.Unmarshal(noteLines, &nlr)); err != nil {
+		json.Unmarshal(noteLines, &nlr), json.Unmarshal(settled, &sett)); err != nil {
 		return nil, 0, err
 	}
 	if st.Notes, err = notesOf(nr, nlr); err != nil {
 		return nil, 0, err
+	}
+	for _, s := range sett {
+		for i := range st.Notes {
+			if st.Notes[i].ID == s.InvoiceID {
+				st.Notes[i].Settled = s.Settled
+			}
+		}
 	}
 	st.FunctionalCurrency, st.OpenedAt, st.EnteredAt = kernel.CurrencyCode(currency), st.OpenedAt.UTC(), st.EnteredAt.UTC()
 	st.CancelReason, st.CancelledBy, st.CancelledAt, st.CancelEnteredAt = deref(cancelReason), deref(cancelledBy), utc(deref(cancelledAt)), utc(deref(cancelEntered))
@@ -995,6 +1009,295 @@ func writeAccount(ctx context.Context, q bentopg.Executor, a *fin.CreditAccount)
 	return nil
 }
 
+// ReceiptStore loads and writes debtor receipts and reads what they settle.
+type ReceiptStore struct{ DB *bentopg.DB }
+
+var _ app.DebtorReceiptStore = ReceiptStore{}
+
+type allocationRow struct {
+	No               int        `json:"allocation_no"`
+	InvoiceID        string     `json:"invoice_id"`
+	Amount           int64      `json:"amount_minor"`
+	Date             string     `json:"allocated_on"`
+	By               string     `json:"allocated_by"`
+	At               time.Time  `json:"allocated_at"`
+	EnteredAt        time.Time  `json:"entered_at"`
+	ReversedBy       *string    `json:"reversed_by"`
+	ReverseReason    *string    `json:"reverse_reason"`
+	ReversedOn       *string    `json:"reversed_on"`
+	ReversedAt       *time.Time `json:"reversed_at"`
+	ReverseEnteredAt *time.Time `json:"reverse_entered_at"`
+}
+
+func receiptSelect(where string) string {
+	return `SELECT r.receipt_id,r.legal_entity_id,r.debtor_party_id,r.debtor_revision,r.currency,r.amount_minor,r.bank_charges_minor,r.received_on::text,
+      r.evidence_source,r.evidence_ref,r.state,r.recorded_by,r.recorded_at,r.entered_at,r.cancel_reason,r.cancelled_by,r.cancelled_on::text,r.cancelled_at,
+      r.cancel_entered_at,r.revision,` + children("debtor_receipt_allocation", "c.tenant_id=r.tenant_id AND c.receipt_id=r.receipt_id", "c.allocation_no") +
+		` FROM cargo_fin.debtor_receipt r WHERE r.tenant_id=$1 AND ` + where
+}
+
+func scanReceipt(row pgx.Row, tenant fin.TenantID) (*fin.DebtorReceipt, int64, error) {
+	st := fin.ReceiptState{TenantID: tenant}
+	var currency, received string
+	var cancelReason, cancelledBy, cancelledOn *string
+	var cancelledAt, cancelEntered *time.Time
+	var revision int64
+	var allocations []byte
+	err := row.Scan(&st.ReceiptID, &st.LegalEntityID, &st.DebtorPartyID, &st.DebtorRevision, &currency, &st.Amount, &st.BankCharges, &received,
+		&st.EvidenceSource, &st.EvidenceRef, &st.State, &st.RecordedBy, &st.RecordedAt, &st.EnteredAt, &cancelReason, &cancelledBy, &cancelledOn, &cancelledAt,
+		&cancelEntered, &revision, &allocations)
+	if err != nil {
+		return nil, 0, err
+	}
+	var ar []allocationRow
+	if err = json.Unmarshal(allocations, &ar); err != nil {
+		return nil, 0, err
+	}
+	if st.ReceivedOn, err = fin.ParseDate(received); err != nil {
+		return nil, 0, err
+	}
+	if st.CancelledOn, err = optionalDate(cancelledOn); err != nil {
+		return nil, 0, err
+	}
+	st.Currency, st.RecordedAt, st.EnteredAt = kernel.CurrencyCode(currency), st.RecordedAt.UTC(), st.EnteredAt.UTC()
+	st.CancelReason, st.CancelledBy, st.CancelledAt, st.CancelEnteredAt = deref(cancelReason), deref(cancelledBy), utc(deref(cancelledAt)), utc(deref(cancelEntered))
+	for _, a := range ar {
+		on, err := fin.ParseDate(a.Date)
+		if err != nil {
+			return nil, 0, err
+		}
+		reversedOn, err := optionalDate(a.ReversedOn)
+		if err != nil {
+			return nil, 0, err
+		}
+		st.Allocations = append(st.Allocations, fin.Allocation{No: a.No, InvoiceID: a.InvoiceID, Amount: a.Amount, Date: on, By: a.By, At: utc(a.At),
+			EnteredAt: utc(a.EnteredAt), ReversedBy: deref(a.ReversedBy), ReverseReason: deref(a.ReverseReason), ReversedOn: reversedOn,
+			ReversedAt: utc(deref(a.ReversedAt)), ReverseEnteredAt: utc(deref(a.ReverseEnteredAt))})
+	}
+	r, err := fin.RestoreReceipt(st)
+	return r, revision, err
+}
+
+// Load locks the receipt row and reads the receipt.
+func (s ReceiptStore) Load(ctx context.Context, tenant fin.TenantID, id string) (*fin.DebtorReceipt, int64, error) {
+	q, err := s.DB.RequireExecutor(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+	var one int
+	err = q.QueryRow(ctx, `SELECT 1 FROM cargo_fin.debtor_receipt WHERE tenant_id=$1 AND receipt_id=$2 FOR NO KEY UPDATE`, string(tenant), id).Scan(&one)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, 0, fmt.Errorf("%w: debtor receipt %s", bentorepo.ErrNotFound, id)
+	}
+	if err != nil {
+		return nil, 0, err
+	}
+	return scanReceipt(q.QueryRow(ctx, receiptSelect(`r.receipt_id=$2`), string(tenant), id), tenant)
+}
+
+func (s ReceiptStore) Read(ctx context.Context, tenant fin.TenantID, id string) (*fin.DebtorReceipt, int64, error) {
+	q, err := s.DB.ReadExecutor(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+	r, revision, err := scanReceipt(q.QueryRow(ctx, receiptSelect(`r.receipt_id=$2`), string(tenant), id), tenant)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, 0, fmt.Errorf("%w: debtor receipt %s", bentorepo.ErrNotFound, id)
+	}
+	return r, revision, err
+}
+
+// OfDebtor lists a debtor's receipts with a legal entity, in the order received.
+func (s ReceiptStore) OfDebtor(ctx context.Context, tenant fin.TenantID, le, debtor string) ([]*fin.DebtorReceipt, []int64, error) {
+	q, err := s.DB.ReadExecutor(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	rows, err := q.Query(ctx, receiptSelect(`r.legal_entity_id=$2 AND r.debtor_party_id=$3`)+` ORDER BY r.received_on, r.recorded_at, r.receipt_id`,
+		string(tenant), le, debtor)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	var out []*fin.DebtorReceipt
+	var revisions []int64
+	for rows.Next() {
+		r, revision, err := scanReceipt(rows, tenant)
+		if err != nil {
+			return nil, nil, err
+		}
+		out, revisions = append(out, r), append(revisions, revision)
+	}
+	return out, revisions, rows.Err()
+}
+
+// OnAccount sums what the recorded receipts of a legal entity have unallocated, per debtor and currency (of one debtor
+// when debtor is not empty).
+func (s ReceiptStore) OnAccount(ctx context.Context, tenant fin.TenantID, le, debtor string) ([]app.OnAccount, error) {
+	q, err := s.DB.ReadExecutor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := q.Query(ctx, `SELECT u.debtor_party_id, u.currency, sum(u.left)::bigint FROM (SELECT r.debtor_party_id, r.currency,
+        r.amount_minor + r.bank_charges_minor - coalesce((SELECT sum(a.amount_minor) FROM cargo_fin.debtor_receipt_allocation a
+          WHERE a.tenant_id=r.tenant_id AND a.receipt_id=r.receipt_id AND a.reversed_at IS NULL), 0) AS left
+      FROM cargo_fin.debtor_receipt r WHERE r.tenant_id=$1 AND r.legal_entity_id=$2 AND r.state='RECORDED' AND ($3='' OR r.debtor_party_id=$3)) u
+      GROUP BY u.debtor_party_id, u.currency HAVING sum(u.left) <> 0 ORDER BY u.debtor_party_id, u.currency`, string(tenant), le, debtor)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []app.OnAccount
+	for rows.Next() {
+		var o app.OnAccount
+		var currency string
+		if err = rows.Scan(&o.DebtorPartyID, &currency, &o.Amount.Minor); err != nil {
+			return nil, err
+		}
+		o.Amount.Currency = kernel.CurrencyCode(currency)
+		out = append(out, o)
+	}
+	return out, rows.Err()
+}
+
+// SettlementNotes locks the jobs of the notes in order of job id, as a job command does, then reads what an allocation
+// needs of each note: job commands (a credit note among them) and allocations to the job's notes take turns.
+func (s ReceiptStore) SettlementNotes(ctx context.Context, tenant fin.TenantID, invoiceIDs []string) ([]fin.SettlementNote, error) {
+	q, err := s.DB.RequireExecutor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	locked, err := q.Query(ctx, `SELECT j.job_id FROM cargo_fin.freight_job j WHERE j.tenant_id=$1 AND j.job_id IN (SELECT n.job_id
+      FROM cargo_fin.debtor_invoice n WHERE n.tenant_id=$1 AND n.invoice_id = ANY($2)) ORDER BY j.job_id FOR NO KEY UPDATE`, string(tenant), invoiceIDs)
+	if err != nil {
+		return nil, err
+	}
+	locked.Close()
+	if err = locked.Err(); err != nil {
+		return nil, err
+	}
+	return readSettlementNotes(ctx, q, tenant, invoiceIDs)
+}
+
+func readSettlementNotes(ctx context.Context, q bentopg.Querier, tenant fin.TenantID, invoiceIDs []string) ([]fin.SettlementNote, error) {
+	rows, err := q.Query(ctx, `SELECT n.invoice_id, n.kind, n.state, n.number, n.legal_entity_id, n.debtor_party_id, n.currency, n.invoice_date::text,
+      n.total_minor + coalesce((SELECT sum(c.total_minor) FROM cargo_fin.debtor_invoice c WHERE c.tenant_id=n.tenant_id AND c.credits_invoice_id=n.invoice_id), 0)::bigint,
+      coalesce((SELECT sum(a.amount_minor) FROM cargo_fin.debtor_receipt_allocation a WHERE a.tenant_id=n.tenant_id AND a.invoice_id=n.invoice_id
+        AND a.reversed_at IS NULL), 0)::bigint
+      FROM cargo_fin.debtor_invoice n WHERE n.tenant_id=$1 AND n.invoice_id = ANY($2) ORDER BY n.invoice_id`, string(tenant), invoiceIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []fin.SettlementNote
+	for rows.Next() {
+		var n fin.SettlementNote
+		var currency, invoiced string
+		if err = rows.Scan(&n.InvoiceID, &n.Kind, &n.State, &n.Number, &n.LegalEntityID, &n.DebtorPartyID, &currency, &invoiced, &n.Remaining, &n.Settled); err != nil {
+			return nil, err
+		}
+		if n.InvoiceDate, err = fin.ParseDate(invoiced); err != nil {
+			return nil, err
+		}
+		n.Currency = kernel.CurrencyCode(currency)
+		out = append(out, n)
+	}
+	return out, rows.Err()
+}
+
+// Settlements lists the live allocations to a debit note, in the order of their dates.
+func (s ReceiptStore) Settlements(ctx context.Context, tenant fin.TenantID, invoiceID string) ([]app.Settlement, error) {
+	q, err := s.DB.ReadExecutor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := q.Query(ctx, `SELECT a.receipt_id, a.allocation_no, a.amount_minor, a.allocated_on::text FROM cargo_fin.debtor_receipt_allocation a
+      WHERE a.tenant_id=$1 AND a.invoice_id=$2 AND a.reversed_at IS NULL ORDER BY a.allocated_on, a.allocated_at, a.receipt_id, a.allocation_no`,
+		string(tenant), invoiceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []app.Settlement
+	for rows.Next() {
+		var x app.Settlement
+		var on string
+		if err = rows.Scan(&x.ReceiptID, &x.AllocationNo, &x.Amount, &on); err != nil {
+			return nil, err
+		}
+		if x.Date, err = fin.ParseDate(on); err != nil {
+			return nil, err
+		}
+		out = append(out, x)
+	}
+	return out, rows.Err()
+}
+
+func (s ReceiptStore) Insert(ctx context.Context, r *fin.DebtorReceipt) (int64, error) {
+	q, err := s.DB.RequireExecutor(ctx)
+	if err != nil {
+		return 0, err
+	}
+	st := r.State()
+	var revision int64
+	err = q.QueryRow(ctx, `INSERT INTO cargo_fin.debtor_receipt (tenant_id,receipt_id,legal_entity_id,debtor_party_id,debtor_revision,currency,amount_minor,
+      bank_charges_minor,received_on,evidence_source,evidence_ref,state,recorded_by,recorded_at,entered_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,
+      $14,$15) RETURNING revision`, string(st.TenantID), st.ReceiptID, st.LegalEntityID, st.DebtorPartyID, st.DebtorRevision, string(st.Currency), st.Amount,
+		st.BankCharges, st.ReceivedOn.Format(time.DateOnly), st.EvidenceSource, st.EvidenceRef, st.State, st.RecordedBy, st.RecordedAt, st.EnteredAt).Scan(&revision)
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		if pgErr.ConstraintName == "debtor_receipt_evidence_once" {
+			return 0, fmt.Errorf("%w: %s %s", fin.ErrEvidenceUsed, st.EvidenceSource, st.EvidenceRef)
+		}
+		return 0, fmt.Errorf("%w: debtor receipt %s", bentorepo.ErrAlreadyExists, st.ReceiptID)
+	}
+	if err != nil {
+		return 0, err
+	}
+	return revision, writeAllocations(ctx, q, r)
+}
+
+func (s ReceiptStore) Save(ctx context.Context, r *fin.DebtorReceipt, expected int64) (int64, error) {
+	q, err := s.DB.RequireExecutor(ctx)
+	if err != nil {
+		return 0, err
+	}
+	st := r.State()
+	var revision int64
+	err = q.QueryRow(ctx, `UPDATE cargo_fin.debtor_receipt SET state=$3,cancel_reason=$4,cancelled_by=$5,cancelled_on=$6,cancelled_at=$7,cancel_entered_at=$8,
+      revision=revision+1,updated_at=now() WHERE tenant_id=$1 AND receipt_id=$2 AND revision=$9 RETURNING revision`, string(st.TenantID), st.ReceiptID,
+		st.State, orNull(st.CancelReason), orNull(st.CancelledBy), dateOrNull(st.CancelledOn), orNull(st.CancelledAt), orNull(st.CancelEnteredAt),
+		expected).Scan(&revision)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, fmt.Errorf("%w: debtor receipt %s", bentorepo.ErrConflict, st.ReceiptID)
+	}
+	if err != nil {
+		return 0, err
+	}
+	return revision, writeAllocations(ctx, q, r)
+}
+
+func writeAllocations(ctx context.Context, q bentopg.Executor, r *fin.DebtorReceipt) error {
+	st := r.State()
+	added, reversed := r.Added()
+	for _, a := range reversed {
+		if _, err := q.Exec(ctx, `UPDATE cargo_fin.debtor_receipt_allocation SET reversed_by=$4,reverse_reason=$5,reversed_on=$6,reversed_at=$7,
+            reverse_entered_at=$8 WHERE tenant_id=$1 AND receipt_id=$2 AND allocation_no=$3`, string(st.TenantID), st.ReceiptID, a.No, a.ReversedBy,
+			a.ReverseReason, a.ReversedOn.Format(time.DateOnly), a.ReversedAt, a.ReverseEnteredAt); err != nil {
+			return err
+		}
+	}
+	for _, a := range added {
+		if _, err := q.Exec(ctx, `INSERT INTO cargo_fin.debtor_receipt_allocation (tenant_id,receipt_id,allocation_no,invoice_id,amount_minor,allocated_on,
+            allocated_by,allocated_at,entered_at,reversed_by,reverse_reason,reversed_on,reversed_at,reverse_entered_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
+            $11,$12,$13,$14)`, string(st.TenantID), st.ReceiptID, a.No, a.InvoiceID, a.Amount, a.Date.Format(time.DateOnly), a.By, a.At, a.EnteredAt,
+			orNull(a.ReversedBy), orNull(a.ReverseReason), dateOrNull(a.ReversedOn), orNull(a.ReversedAt), orNull(a.ReverseEnteredAt)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // CommandReceipts stores the result of every committed FIN command for replays.
 type CommandReceipts struct{ DB *bentopg.DB }
 
@@ -1050,7 +1353,7 @@ func FINEnvelope(commandID string, e fin.Event, recordedAt time.Time) (eventing.
 	digest := sha256.Sum256([]byte(commandID + "\x00" + e.Type + "\x00" + string(e.TenantID) + "\x00" + e.SubjectID + "\x00" + strconv.Itoa(e.LineNo) + "\x00" +
 		e.Side + "\x00" + strconv.Itoa(e.Version)))
 	payload, err := json.Marshal(api.EventPayload{TenantID: string(e.TenantID), SubjectID: e.SubjectID, LegalEntityID: e.LegalEntityID, Version: e.Version,
-		ShipmentID: e.ShipmentID, DebtorPartyID: e.DebtorPartyID, LineNo: e.LineNo, Side: e.Side, JobID: e.JobID})
+		ShipmentID: e.ShipmentID, DebtorPartyID: e.DebtorPartyID, LineNo: e.LineNo, Side: e.Side, JobID: e.JobID, InvoiceID: e.InvoiceID})
 	if err != nil {
 		return eventing.Envelope{}, err
 	}
@@ -1070,7 +1373,7 @@ func Conflict(err error) bool {
 	}
 	switch pgErr.ConstraintName {
 	case "finance_policy_consistent", "freight_job_consistent", "credit_account_consistent", "fin_records_with_parent", "freight_job_invoices_consistent",
-		"invoice_series_consistent", "billing_profile_consistent":
+		"invoice_series_consistent", "billing_profile_consistent", "debtor_receipt_consistent", "debtor_invoice_settlement_consistent":
 		return true
 	}
 	return false
