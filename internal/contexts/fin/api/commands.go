@@ -9,7 +9,7 @@
 // quote, DOC's TransportDocumentSnapshot v1 for a debit note, ORG's legal entity, party roles and party identity. It
 // never writes to them. V0.3 adds settlement: debtor receipts recorded from bank or ERP evidence and allocated to
 // debit notes, and debtor statements. V0.4 adds consol cost pools; V0.5 creditor invoices matched to accruals, cost
-// variance approval, the release of accruals and the closing of pools. Creditor payments, fapiao, postings and
+// variance approval, the release of accruals and the closing of pools; V0.6 creditor payments. Fapiao, postings and
 // recognition come later.
 package api
 
@@ -525,13 +525,14 @@ type ApportionConsolCosts struct {
 
 // Receipt confirms a committed command; replaying the command returns it again. SubjectID is the legal entity
 // (policy), the job (job and note commands), the debtor (billing profile), <legal entity>/<debtor> (credit account),
-// the debtor receipt, the pool (pool commands) or the creditor invoice; Version is the rate entry recorded or ended,
+// the debtor receipt, the pool (pool commands), the creditor invoice or the creditor payment; Version is the rate entry recorded or ended,
 // the tax treatment set, the series registered, the variance threshold set, the pricing basis applied, the charge line
 // recorded, the side version written (a release's too), the billing profile version, the terms version set, the hold
 // placed or released, the last allocation written or the one reversed, the pool cost line recorded, the cost version
 // written, the apportionment made, the closure made or reopened, the matches of an invoice, or its dispute opened or
-// resolved (0 for opening a policy, job or pool, cancelling a job, issuing a note, recording or cancelling a debtor
-// receipt or a creditor invoice, and approving a variance); Number is the number of a note issued. For a billing
+// resolved, the last allocation of a creditor payment written or the one reversed (0 for opening a policy, job or pool,
+// cancelling a job, issuing a note, recording or cancelling a debtor receipt, a creditor invoice or a creditor payment,
+// and approving a variance); Number is the number of a note issued. For a billing
 // profile NewRevision is its version.
 type Receipt struct {
 	CommandID   string
@@ -578,6 +579,10 @@ type Commands interface {
 	ReleasePoolAccrual(ctx context.Context, cmd ReleasePoolAccrual) (Receipt, error)
 	CloseConsolCostPool(ctx context.Context, cmd CloseConsolCostPool) (Receipt, error)
 	ReopenConsolCostPool(ctx context.Context, cmd ReopenConsolCostPool) (Receipt, error)
+	RecordCreditorPayment(ctx context.Context, cmd RecordCreditorPayment) (Receipt, error)
+	AllocateCreditorPayment(ctx context.Context, cmd AllocateCreditorPayment) (Receipt, error)
+	ReverseCreditorPaymentAllocation(ctx context.Context, cmd ReverseCreditorPaymentAllocation) (Receipt, error)
+	CancelCreditorPayment(ctx context.Context, cmd CancelCreditorPayment) (Receipt, error)
 }
 
 // Actions an Authorizer decides on: the command names.
@@ -622,6 +627,11 @@ const (
 	ActionReleasePoolAccrual            = "ReleasePoolAccrual"
 	ActionCloseConsolCostPool           = "CloseConsolCostPool"
 	ActionReopenConsolCostPool          = "ReopenConsolCostPool"
+
+	ActionRecordCreditorPayment            = "RecordCreditorPayment"
+	ActionAllocateCreditorPayment          = "AllocateCreditorPayment"
+	ActionReverseCreditorPaymentAllocation = "ReverseCreditorPaymentAllocation"
+	ActionCancelCreditorPayment            = "CancelCreditorPayment"
 )
 
 // Authorizer decides whether a verified actor may perform an action on a subject.

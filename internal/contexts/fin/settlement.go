@@ -104,9 +104,8 @@ func (m *Module) ListDebtorReceipts(ctx context.Context, q api.ListDebtorReceipt
 	return out, nil
 }
 
-// GetDebtorStatement reads the debtor's notes and receipts in one READ COMMITTED transaction and states the account
-// from them. The two reads are two statements, so a debit note issued and settled between them can make the closing
-// balance and the open items disagree for that call; the window is a read of milliseconds, and the next call heals.
+// GetDebtorStatement reads the debtor's notes and receipts in one snapshot (since FIN V0.5 queries read REPEATABLE READ,
+// READ ONLY) and states the account from them.
 func (m *Module) GetDebtorStatement(ctx context.Context, q api.GetDebtorStatement) (api.DebtorStatement, error) {
 	from, err := domain.ParseDate(q.From)
 	if err != nil {

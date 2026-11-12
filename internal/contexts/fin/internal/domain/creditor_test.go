@@ -300,6 +300,10 @@ func TestApprovalDisputeAndCancel(t *testing.T) {
 	if _, disputes, resolved := restored.Added(); len(disputes) != 0 || len(resolved) != 1 || resolved[0].No != 2 {
 		t.Fatalf("a stored dispute resolved: %+v %+v", disputes, resolved)
 	}
+	if err = c.Cancel("the carrier withdrew the invoice", []AccrualTarget{pool}, "ap-1", hour(9)); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("cancelled while what is paid of it is not known: %v", err)
+	}
+	c.SetPaid(0)
 	if err = c.Cancel("the carrier withdrew the invoice", withClosed([]AccrualTarget{pool}, 0), "ap-1", hour(9)); !errors.Is(err, ErrTargetClosed) {
 		t.Fatalf("cancelled while the pool is closed: %v", err)
 	}
@@ -567,6 +571,7 @@ func TestCancelBehindAFinalMatch(t *testing.T) {
 	if err := c.Dispute("the trucker withdrew it", []AccrualTarget{job}, "ap-1", hour(6)); err != nil {
 		t.Fatal(err)
 	}
+	c.SetPaid(0)
 	behind := job
 	behind.Consumed = Consumption{Amount: 95_000, Local: 684_000, Final: true}
 	if err := c.Cancel("withdrawn", []AccrualTarget{behind}, "ap-1", hour(7)); !errors.Is(err, ErrFinalBehind) {

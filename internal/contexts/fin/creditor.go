@@ -97,7 +97,7 @@ func accrualRef(k domain.TargetKey) api.AccrualRef {
 	return api.AccrualRef{Kind: k.Kind, ID: k.ID, LineNo: k.LineNo}
 }
 
-func creditorView(c *domain.CreditorInvoice, revision int64, functional kernel.CurrencyCode) api.CreditorInvoice {
+func creditorView(c *domain.CreditorInvoice, revision int64, functional kernel.CurrencyCode, paid []application.PaidAllocation) api.CreditorInvoice {
 	st := c.State()
 	money := func(n int64) kernel.Money { return kernel.Money{Currency: st.Currency, Minor: n} }
 	local := func(n int64) kernel.Money { return kernel.Money{Currency: functional, Minor: n} }
@@ -121,6 +121,16 @@ func creditorView(c *domain.CreditorInvoice, revision int64, functional kernel.C
 		out.Disputes = append(out.Disputes, api.CreditorInvoiceDispute{DisputeNo: d.No, FromState: d.FromState, Reason: d.Reason, By: d.By, At: d.At,
 			ResolvedBy: d.ResolvedBy, ResolveReason: d.ResolveReason, ResolvedAt: d.ResolvedAt})
 	}
+	var total int64
+	for _, a := range paid {
+		out.Payments = append(out.Payments, api.CreditorInvoicePayment{PaymentID: a.PaymentID, AllocationNo: a.AllocationNo, Amount: money(a.Amount),
+			Date: dateView(a.Date)})
+		total += a.Amount
+	}
+	out.Paid, out.Open = money(total), money(st.Total()-total)
+	if st.State == domain.CreditorCancelled {
+		out.Open = money(0)
+	}
 	return out
 }
 
@@ -142,7 +152,11 @@ func (m *Module) GetCreditorInvoice(ctx context.Context, q api.GetCreditorInvoic
 			return err
 		}
 		functional, err := m.functional(txCtx, d, q.TenantID, c.State().LegalEntityID)
-		out = creditorView(c, revision, functional)
+		if err != nil {
+			return err
+		}
+		paid, err := paidOf(txCtx, d, q.TenantID, q.InvoiceID)
+		out = creditorView(c, revision, functional, paid)
 		return err
 	})
 	if err != nil {
@@ -165,7 +179,11 @@ func (m *Module) ListCreditorInvoices(ctx context.Context, q api.ListCreditorInv
 		}
 		for i, c := range invoices {
 			if !q.AwaitingApproval || c.State().AwaitingApproval() {
-				out = append(out, creditorView(c, revisions[i], functional))
+				paid, err := paidOf(txCtx, d, q.TenantID, c.State().InvoiceID)
+				if err != nil {
+					return err
+				}
+				out = append(out, creditorView(c, revisions[i], functional, paid))
 			}
 		}
 		return nil

@@ -36,9 +36,9 @@ var (
 	ErrNoSeries          = errors.New("fin: FIN_NO_SERIES: the legal entity has no number series of the kind; register one first")
 	ErrSeriesExhausted   = errors.New("fin: FIN_SERIES_EXHAUSTED: the number series has no number left")
 	ErrSettled           = errors.New("fin: FIN_SETTLED: receipts settle more of the debit note than the credit note would leave on it; reverse the allocation first")
-	ErrOverAllocated     = errors.New("fin: FIN_OVER_ALLOCATED: the amount is more than the receipt has unallocated or the debit note has open")
+	ErrOverAllocated     = errors.New("fin: FIN_OVER_ALLOCATED: the amount is more than the receipt or payment has unallocated or the note or invoice has open")
 	ErrNotAllocatable    = errors.New("fin: FIN_NOT_ALLOCATABLE: not an issued debit note of the receipt's legal entity, debtor and currency")
-	ErrEvidenceUsed      = errors.New("fin: FIN_EVIDENCE_USED: a recorded receipt of the legal entity has this evidence reference already")
+	ErrEvidenceUsed      = errors.New("fin: FIN_EVIDENCE_USED: a recorded receipt or payment of the legal entity has this evidence reference already")
 )
 
 const maxText = 500

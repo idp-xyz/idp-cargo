@@ -196,9 +196,22 @@ func (d Deps) ResolveCreditorInvoiceDispute(ctx context.Context, c Command, reas
 	})
 }
 
-// CancelCreditorInvoice cancels an invoice; the pools and jobs of its matches are locked and must be open.
+// CancelCreditorInvoice cancels an invoice that nothing pays (read under its lock, which allocations take too); the
+// pools and jobs of its matches are locked and must be open.
 func (d Deps) CancelCreditorInvoice(ctx context.Context, c Command, reason string) (Receipt, error) {
+	if d.Payments == nil {
+		return Receipt{}, ErrMissingDependency
+	}
 	return d.changeCreditor(ctx, c, nil, func(txCtx context.Context, inv *fin.CreditorInvoice) (int, error) {
+		paid, err := d.Payments.Paid(txCtx, c.Scope.TenantID, c.Subject)
+		if err != nil {
+			return 0, err
+		}
+		var total int64
+		for _, a := range paid {
+			total += a.Amount
+		}
+		inv.SetPaid(total)
 		targets, err := d.Creditors.Targets(txCtx, c.Scope.TenantID, inv.Targets())
 		if err != nil {
 			return 0, err

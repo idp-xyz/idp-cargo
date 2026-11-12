@@ -128,6 +128,8 @@ jobs:
           GRANT UPDATE (state,matched_by,matched_at,match_entered_at,approval_required,threshold_no,approved_by,approval_reason,self_approved,approved_at,approval_entered_at,cancel_reason,cancelled_by,cancelled_at,cancel_entered_at,revision,updated_at) ON cargo_fin.creditor_invoice TO cargo_app;
           GRANT UPDATE (resolved_by,resolve_reason,resolved_at,resolve_entered_at) ON cargo_fin.creditor_invoice_dispute TO cargo_app;
           GRANT UPDATE (reopened_by,reopen_reason,reopened_at,reopen_entered_at) ON cargo_fin.consol_cost_pool_closure TO cargo_app;
+          GRANT UPDATE (state,cancel_reason,cancelled_by,cancelled_on,cancelled_at,cancel_entered_at,revision,updated_at) ON cargo_fin.creditor_payment TO cargo_app;
+          GRANT UPDATE (reversed_by,reverse_reason,reversed_on,reversed_at,reverse_entered_at) ON cargo_fin.creditor_payment_allocation TO cargo_app;
           GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA bento TO cargo_app;
           GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA bento TO cargo_app;
           SQL

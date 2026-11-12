@@ -56,6 +56,13 @@ const (
 	CreditorInvoiceDisputed        = "CreditorInvoiceDisputed.v1"
 	CreditorInvoiceDisputeResolved = "CreditorInvoiceDisputeResolved.v1"
 	CreditorInvoiceCancelled       = "CreditorInvoiceCancelled.v1"
+
+	// Creditor payment events have the payment as subject and its creditor; allocation events carry the allocation's
+	// number as Version and the creditor invoice as InvoiceID.
+	CreditorPaymentRecorded           = "CreditorPaymentRecorded.v1"
+	CreditorPaymentAllocated          = "CreditorPaymentAllocated.v1"
+	CreditorPaymentAllocationReversed = "CreditorPaymentAllocationReversed.v1"
+	CreditorPaymentCancelled          = "CreditorPaymentCancelled.v1"
 )
 
 // EventPayload is the JSON payload of every FIN event: identifiers and versions only, never amounts, names or tax
@@ -70,7 +77,7 @@ type EventPayload struct {
 	LineNo        int    `json:"line_no,omitempty"`    // ChargeLineRecorded and ChargeSideRevised: the line; Version is the side's version
 	Side          string `json:"side,omitempty"`       // ChargeSideRevised: SELL or COST
 	JobID         string `json:"job_id,omitempty"`     // DebtorInvoiceIssued, DebtorInvoiceCancelled and CreditNoteIssued: the note's job
-	InvoiceID     string `json:"invoice_id,omitempty"` // DebtorReceiptAllocated and DebtorReceiptAllocationReversed: the debit note
-	// CreditorPartyID is the creditor of a creditor invoice's events.
+	InvoiceID     string `json:"invoice_id,omitempty"` // receipt and payment allocation events: the debit note or creditor invoice
+	// CreditorPartyID is the creditor of a creditor invoice's or a creditor payment's events.
 	CreditorPartyID string `json:"creditor_party_id,omitempty"`
 }
