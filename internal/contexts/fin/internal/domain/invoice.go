@@ -312,6 +312,9 @@ func (j *FreightJob) IssueCreditNote(in CreditNoteInput, p *FinancePolicy, draw 
 				return err
 			}
 		} else {
+			if len(sell) < 2 {
+				return fmt.Errorf("%w: the sell side of line %d was not billed from an estimate", ErrInvalid, dl.JobLineNo)
+			}
 			before := sell[len(sell)-2] // the estimate the debit note billed (INVOICED follows an ESTIMATED version)
 			if before.Status != StatusEstimated || before.Amount != v.Amount {
 				return fmt.Errorf("%w: the sell side of line %d was not billed from an estimate of its amount", ErrInvalid, dl.JobLineNo)

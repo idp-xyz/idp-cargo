@@ -3,7 +3,8 @@
 -- conversion, instead of converting again at the ESTIMATE rate in force: such a version keeps when its rate was applied
 -- (converted_at). The job's checks recompute its local amount at the entry in force at that time, an exchange rate ended
 -- earlier counts that time as its use, and the version must copy the estimate it returns to (or be zero for a
--- write-off).
+-- write-off). The returns FIN V0.2 and V0.2.1 wrote, converted again when they were recorded, stay as they are and stay
+-- valid; from here on no return is written that way.
 
 ALTER TABLE cargo_fin.charge_side_version ADD COLUMN converted_at timestamptz,
   ADD CONSTRAINT charge_side_converted CHECK (converted_at IS NULL OR (rate IS NOT NULL AND status = 'ESTIMATED' AND converted_at <= recorded_at));
@@ -80,7 +81,9 @@ END $fn$;
 -- (h) the version after an INVOICED one exists exactly when a credit note reverses its debit note line, and is the
 -- ESTIMATED version that credit note wrote for the same debtor: the estimate billed (the version before the INVOICED
 -- one) with its amount, local amount and conversion, converted when that estimate was, or zero when the credit note
--- writes the charges off.
+-- writes the charges off. A return with a conversion but no conversion time was written before this migration (the
+-- trigger charge_side_return_converted refuses new ones): it has the billed amount, converted when it was recorded,
+-- which check_job_at_commit recomputes.
 CREATE OR REPLACE FUNCTION cargo_fin.check_job_invoices_at_commit() RETURNS trigger LANGUAGE plpgsql AS $fn$
 DECLARE
   j cargo_fin.freight_job;
@@ -171,6 +174,7 @@ BEGIN
          WHERE c.tenant_id = v.tenant_id AND c.credits_invoice_id = v.invoice_id AND c.credits_line_no = v.invoice_line_no AND w.status = 'ESTIMATED'
            AND w.recorded_at = cn.issued_at AND w.party_id = v.party_id AND w.currency = v.currency
            AND CASE WHEN cn.write_off THEN w.amount_minor = 0 AND w.local_minor = 0 AND w.rate IS NULL AND w.converted_at IS NULL
+             WHEN w.rate IS NOT NULL AND w.converted_at IS NULL THEN w.amount_minor = v.amount_minor
              ELSE EXISTS (SELECT 1 FROM cargo_fin.charge_side_version p WHERE p.tenant_id = v.tenant_id AND p.job_id = v.job_id AND p.line_no = v.line_no
                AND p.side = 'SELL' AND p.version_no = v.version_no - 1 AND p.status = 'ESTIMATED' AND w.amount_minor = p.amount_minor
                AND w.local_minor = p.local_minor AND w.rate_entry_no IS NOT DISTINCT FROM p.rate_entry_no AND w.rate_type IS NOT DISTINCT FROM p.rate_type
@@ -184,3 +188,18 @@ BEGIN
   END IF;
   RETURN NULL;
 END $fn$;
+
+-- From here on a return with a conversion keeps when it was converted: at commit, a version inserted after an INVOICED
+-- one with a rate has its conversion time. Rows written before this migration are not checked again.
+CREATE FUNCTION cargo_fin.check_return_converted() RETURNS trigger LANGUAGE plpgsql AS $fn$
+BEGIN
+  IF EXISTS (SELECT 1 FROM cargo_fin.charge_side_version p WHERE p.tenant_id = NEW.tenant_id AND p.job_id = NEW.job_id AND p.line_no = NEW.line_no
+       AND p.side = NEW.side AND p.version_no = NEW.version_no - 1 AND p.status = 'INVOICED') THEN
+    RAISE EXCEPTION 'cargo_fin: version % of the % side of line % of job %/% returns a billed side without its conversion time', NEW.version_no,
+      NEW.side, NEW.line_no, NEW.tenant_id, NEW.job_id USING ERRCODE = 'check_violation', CONSTRAINT = 'charge_side_return_converted';
+  END IF;
+  RETURN NULL;
+END $fn$;
+CREATE CONSTRAINT TRIGGER charge_side_return_converted AFTER INSERT ON cargo_fin.charge_side_version DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW WHEN (NEW.rate IS NOT NULL AND NEW.converted_at IS NULL AND NEW.version_no > 1)
+  EXECUTE FUNCTION cargo_fin.check_return_converted();

@@ -279,7 +279,7 @@ func (m *Module) GetHouseDocumentSnapshot(ctx context.Context, q api.GetHouseDoc
 	}
 	c := v.Doc
 	return api.TransportDocumentSnapshot{DocumentID: string(st.DocumentID), Kind: string(st.Kind), Version: v.No, VersionStatus: d.Status(v.No),
-		SHA256: v.SHA256, Number: c.Number, MasterNumber: c.MAWB, ShipmentID: st.ShipmentID, ConsolidationID: st.ConsolidationID,
+		SHA256: v.SHA256, Number: c.Number, MasterNumber: c.MAWB, ShipmentID: st.ShipmentID, ConsolidationID: c.ConsolidationID,
 		LegalEntityID: st.LegalEntityID, IssuedAt: v.Issue.At, Origin: c.Origin.Code, Destination: c.Destination.Code, Pieces: c.Cargo.Pieces,
 		GrossGrams: c.Cargo.GrossGrams, ChargeableGrams: c.Cargo.ChargeableGrams}, nil
 }

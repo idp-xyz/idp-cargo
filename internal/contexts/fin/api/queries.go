@@ -105,7 +105,7 @@ type SideVersion struct {
 	Reason        string
 	InvoiceID     string
 	InvoiceLineNo int
-	ConvertedAt   time.Time // when FX was applied, if before RecordedAt: an estimate a credit note returned
+	ConvertedAt   time.Time // when FX was applied, for an estimate a credit note returned at its earlier conversion; zero otherwise
 	RecordedBy    string
 	RecordedAt    time.Time
 }

@@ -77,7 +77,7 @@ type JobStore interface {
 	BilledTo(ctx context.Context, tenant fin.TenantID, legalEntity, debtor string) ([]*fin.FreightJob, error)
 	// OfNote reads the job of a note.
 	OfNote(ctx context.Context, tenant fin.TenantID, invoiceID string) (*fin.FreightJob, int64, error)
-	// WithOpenDebitNotes lists the jobs of a legal entity with a debit note not every line of which is reversed.
+	// WithOpenDebitNotes lists the jobs of a legal entity with an ISSUED debit note (one with a line not reversed).
 	WithOpenDebitNotes(ctx context.Context, tenant fin.TenantID, legalEntity string) ([]*fin.FreightJob, error)
 }
 

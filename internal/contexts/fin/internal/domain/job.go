@@ -52,7 +52,7 @@ type SideVersion struct {
 	Reason        string
 	InvoiceID     string
 	InvoiceLineNo int
-	ConvertedAt   time.Time // when its rate was applied, if before At: an estimate a credit note returned
+	ConvertedAt   time.Time // when its rate was applied, for an estimate a credit note returned at its earlier conversion; zero otherwise
 	By            string
 	At            time.Time
 	EnteredAt     time.Time
