@@ -187,6 +187,7 @@ type ConsolMembershipQueries interface {
 // ErrNotFound.
 type Queries interface {
 	ConsolMembershipQueries
+	PhysicalCostBasisQueries
 	GetConsolidation(ctx context.Context, q GetConsolidation) (Consolidation, error)
 	ListOpenConsolidations(ctx context.Context, q ListOpenConsolidations) ([]ConsolidationSummary, error)
 	PhysicalQueries

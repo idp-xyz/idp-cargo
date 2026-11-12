@@ -79,6 +79,9 @@ type JobStore interface {
 	OfNote(ctx context.Context, tenant fin.TenantID, invoiceID string) (*fin.FreightJob, int64, error)
 	// WithOpenDebitNotes lists the jobs of a legal entity with an ISSUED debit note (one with a line not reversed).
 	WithOpenDebitNotes(ctx context.Context, tenant fin.TenantID, legalEntity string) ([]*fin.FreightJob, error)
+	// OpenJobsFor locks the legal entity's jobs of the shipments, in job id order (FOR NO KEY UPDATE), until the
+	// transaction ends, then answers each shipment's OPEN job id: job commands and pool apportionments take turns.
+	OpenJobsFor(ctx context.Context, tenant fin.TenantID, legalEntity string, shipments []string) (map[string]string, error)
 }
 
 // Numbers is the platform's sequence of a tenant's document type (idp-platform-go, MD-28), in FIN's schema: Next takes
@@ -217,6 +220,39 @@ type Documents interface {
 	HouseDocument(ctx context.Context, tenant fin.TenantID, shipment string, at time.Time) (HouseDocument, error)
 }
 
+// Physical reads PHY's PhysicalCostBasis v1 (PHY -> FIN), outside FIN's transactions: the consolidation and its live
+// houses' attach scope and loaded facts.
+type Physical interface {
+	CostBasis(ctx context.Context, tenant fin.TenantID, consolidation string) (fin.CostBasis, error)
+}
+
+// PoolShare is a job's share of a pool cost line under the latest apportionment that covers the line.
+type PoolShare struct {
+	PoolID      string
+	LineNo      int
+	LineVersion int
+	ChargeCode  string
+	Method      string
+	Stage       string
+	Quantity    int64
+	Unit        string
+	Amount      kernel.Money
+	Local       int64
+}
+
+// PoolStore loads and writes consol cost pools; Load locks the pool row. A second pool of a consolidation and legal
+// entity is a conflict.
+type PoolStore interface {
+	Load(ctx context.Context, tenant fin.TenantID, pool string) (*fin.ConsolCostPool, int64, error)
+	Read(ctx context.Context, tenant fin.TenantID, pool string) (*fin.ConsolCostPool, int64, error)
+	Insert(context.Context, *fin.ConsolCostPool) (int64, error)
+	Save(context.Context, *fin.ConsolCostPool, int64) (int64, error)
+	// ForConsolidation lists a consolidation's pools in the order opened.
+	ForConsolidation(ctx context.Context, tenant fin.TenantID, consolidation string) ([]*fin.ConsolCostPool, []int64, error)
+	// SharesOfJob lists a job's shares under each pool line's latest apportionment, by pool and line.
+	SharesOfJob(ctx context.Context, tenant fin.TenantID, job string) ([]PoolShare, error)
+}
+
 // Deps are the ports every FIN command uses.
 type Deps struct {
 	Tx        TxRunner
@@ -236,6 +272,9 @@ type Deps struct {
 	Profiles  ProfileStore
 	// DebtorReceipts holds the money received from debtors; Receipts above are the command receipts.
 	DebtorReceipts DebtorReceiptStore
+	// Pools holds consol cost pools; Physical answers PHY's PhysicalCostBasis v1. Pool commands check them.
+	Pools    PoolStore
+	Physical Physical
 }
 
 // Command is what every FIN command carries: Subject is the legal entity, the job, <legal entity>/<debtor> or the

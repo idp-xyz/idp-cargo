@@ -581,6 +581,32 @@ func (s JobStore) WithOpenDebitNotes(ctx context.Context, tenant fin.TenantID, l
 	return out, err
 }
 
+// OpenJobsFor locks the legal entity's jobs of the shipments, in job id order (FOR NO KEY UPDATE), until the
+// transaction ends, then answers each shipment's OPEN job id: job commands and pool apportionments take turns.
+func (s JobStore) OpenJobsFor(ctx context.Context, tenant fin.TenantID, legalEntity string, shipments []string) (map[string]string, error) {
+	q, err := s.DB.RequireExecutor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := q.Query(ctx, `SELECT job_id, shipment_id, state FROM cargo_fin.freight_job
+      WHERE tenant_id=$1 AND legal_entity_id=$2 AND shipment_id = ANY($3) ORDER BY job_id FOR NO KEY UPDATE`, string(tenant), legalEntity, shipments)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var job, shipment, state string
+		if err := rows.Scan(&job, &shipment, &state); err != nil {
+			return nil, err
+		}
+		if state == fin.JobOpen {
+			out[shipment] = job
+		}
+	}
+	return out, rows.Err()
+}
+
 // OfNote reads the job of a note.
 func (s JobStore) OfNote(ctx context.Context, tenant fin.TenantID, invoiceID string) (*fin.FreightJob, int64, error) {
 	out, revisions, err := s.list(ctx, tenant, `EXISTS (SELECT 1 FROM cargo_fin.debtor_invoice n WHERE n.tenant_id=j.tenant_id AND n.job_id=j.job_id

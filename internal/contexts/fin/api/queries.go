@@ -173,16 +173,34 @@ type ChargeCodeProfit struct {
 	Profit     kernel.Money
 }
 
+// JobPoolShare is the job's share of a consol cost pool line, under the line's latest apportionment: the basis
+// quantity it was weighted by and the share in the line's currency and in the functional currency.
+type JobPoolShare struct {
+	PoolID      string
+	LineNo      int
+	LineVersion int
+	ChargeCode  string
+	Method      string
+	Stage       string
+	Quantity    int64
+	Unit        string
+	Amount      kernel.Money
+	Local       kernel.Money
+}
+
 // JobProfit is a job's economics in the functional currency: revenue from the latest sell sides, billed ones at their
-// debit note's local amount (Invoiced is that part), cost from the cost estimates (not yet matched).
+// debit note's local amount (Invoiced is that part), cost from the cost estimates (not yet matched), and PoolCost from
+// the job's shares of consol cost pools (FIN V0.4). Profit is Revenue - Cost - PoolCost.
 type JobProfit struct {
-	JobID    string
-	Revision int64
-	ByCode   []ChargeCodeProfit
-	Revenue  kernel.Money
-	Invoiced kernel.Money
-	Cost     kernel.Money
-	Profit   kernel.Money
+	JobID      string
+	Revision   int64
+	ByCode     []ChargeCodeProfit
+	Revenue    kernel.Money
+	Invoiced   kernel.Money
+	Cost       kernel.Money
+	PoolCost   kernel.Money
+	Profit     kernel.Money
+	PoolShares []JobPoolShare
 }
 
 // CreditTerms is a version of a debtor's terms.
@@ -497,6 +515,116 @@ type DocumentChange struct {
 	Current       *DocumentRef
 }
 
+// PoolCostVersion is one immutable version of a pool cost line: the creditor (empty while not known), the amount in
+// its currency and in the functional currency at the ESTIMATE rate, and, from the second version on, the reason.
+type PoolCostVersion struct {
+	Version          int
+	CreditorPartyID  string
+	CreditorRevision int64
+	Amount           kernel.Money
+	Local            kernel.Money
+	Status           string // ACCRUED; matching comes with FB4
+	Reason           string
+	RecordedAt       time.Time
+	EnteredAt        time.Time
+}
+
+// PoolCostLine is one cost of the whole consolidation: a charge code, the supplier's reference (the MAWB, the
+// co-loader or CFS booking) and its versions; Method is its default apportionment method.
+type PoolCostLine struct {
+	LineNo      int
+	ChargeCode  string
+	Description string
+	SupplierRef string
+	Method      string
+	RecordedAt  time.Time
+	EnteredAt   time.Time
+	Versions    []PoolCostVersion
+}
+
+// PoolShare is one house job's share of a pool cost line under an apportionment: the basis quantity it was weighted
+// by (chargeable grams, cubic centimetres, pieces or milli freight tonnes) and the share in the line's currency and
+// in the functional currency, each conserved exactly.
+type PoolShare struct {
+	ShareNo    int
+	ShipmentID string
+	JobID      string
+	Quantity   int64
+	Unit       string
+	Amount     kernel.Money
+	Local      kernel.Money
+}
+
+// ApportionedLine is one line's shares under an apportionment, at the line version it divided.
+type ApportionedLine struct {
+	LineNo      int
+	LineVersion int
+	Method      string
+	Reason      string // the MANUAL reason
+	Shares      []PoolShare
+}
+
+// PoolApportionment is one immutable division of pool cost lines over the house jobs: the PhysicalCostBasis v1
+// revision and stage it used, and its lines. A line's current shares are those of the latest apportionment covering it.
+type PoolApportionment struct {
+	ApportionmentNo int
+	BasisRevision   int64
+	Stage           string // ACTUAL or PLANNED
+	By              string
+	At              time.Time
+	EnteredAt       time.Time
+	Lines           []ApportionedLine
+}
+
+// ConsolCostPool is a consolidation's cost pool under one legal entity (FIN V0.4, FB3).
+type ConsolCostPool struct {
+	TenantID           string
+	PoolID             string
+	Revision           int64
+	ConsolidationID    string
+	LegalEntityID      string
+	Mode               string // AIR or SEA_LCL
+	FunctionalCurrency kernel.CurrencyCode
+	BookCode           string
+	State              string
+	OpenedBy           string
+	OpenedAt           time.Time
+	Lines              []PoolCostLine
+	Apportionments     []PoolApportionment
+}
+
+// HouseProfit is one house job's economics within a consolidation, in the functional currency: the job's own revenue,
+// invoiced part and cost, its share of the pool, and Profit = Revenue - Cost - PoolCost.
+type HouseProfit struct {
+	ShipmentID string
+	JobID      string
+	Revenue    kernel.Money
+	Invoiced   kernel.Money
+	Cost       kernel.Money
+	PoolCost   kernel.Money
+	Profit     kernel.Money
+}
+
+// ConsolProfit is a consolidation's economics under its pool's legal entity, in the functional currency: the pooled
+// cost at the latest versions, the part the latest apportionments cover, and the houses of those apportionments with
+// their job economics. Houses is empty while nothing is apportioned.
+type ConsolProfit struct {
+	ConsolidationID string
+	PoolID          string
+	LegalEntityID   string
+	Pooled          kernel.Money
+	Apportioned     kernel.Money
+	Unapportioned   kernel.Money
+	Houses          []HouseProfit
+}
+
+// GetConsolCostPool asks for a pool; GetConsolProfit for a consolidation's economics through its pool (ErrNotFound
+// while the consolidation has no pool).
+type (
+	GetConsolCostPool struct{ TenantID, PoolID string }
+	GetConsolProfit   struct{ TenantID, ConsolidationID string }
+)
+
 // Queries is FIN's read side. Unknown policies, jobs, accounts, profiles and notes yield ErrNotFound.
 type Queries interface {
 	GetFinancePolicy(ctx context.Context, q GetFinancePolicy) (FinancePolicy, error)
@@ -512,4 +640,6 @@ type Queries interface {
 	GetDebtorReceipt(ctx context.Context, q GetDebtorReceipt) (DebtorReceipt, error)
 	ListDebtorReceipts(ctx context.Context, q ListDebtorReceipts) ([]DebtorReceipt, error)
 	GetDebtorStatement(ctx context.Context, q GetDebtorStatement) (DebtorStatement, error)
+	GetConsolCostPool(ctx context.Context, q GetConsolCostPool) (ConsolCostPool, error)
+	GetConsolProfit(ctx context.Context, q GetConsolProfit) (ConsolProfit, error)
 }
