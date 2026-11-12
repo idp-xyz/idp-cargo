@@ -20,17 +20,19 @@ import (
 	"go.idp.xyz/idp-cargo/internal/contexts/rate/internal/domain"
 	"go.idp.xyz/idp-cargo/internal/foundation/bento"
 	"go.idp.xyz/idp-cargo/internal/kernel"
+	refapi "go.idp.xyz/idp-cargo/internal/reference/api"
 )
 
 // Module wires RATE's use cases to PostgreSQL through IDP-Bento-Go and to ORG's query side.
 type Module struct {
-	db      *bentopg.DB
-	outbox  *bentooutbox.Store
-	org     orgapi.Queries
-	auth    api.Authorizer
-	margins api.MarginPolicy
-	clock   bento.SystemClock
-	window  kernel.RecordWindow
+	db        *bentopg.DB
+	outbox    *bentooutbox.Store
+	org       orgapi.Queries
+	auth      api.Authorizer
+	margins   api.MarginPolicy
+	clock     bento.SystemClock
+	window    kernel.RecordWindow
+	locations refapi.Locations
 }
 
 // Option configures a module.
@@ -270,7 +272,7 @@ func toReceipt(r application.Receipt, err error) (api.Receipt, error) {
 	if err != nil {
 		return api.Receipt{}, classify(err)
 	}
-	return api.Receipt{CommandID: r.CommandID, QuoteID: string(r.QuoteID), NewRevision: r.NewRevision}, nil
+	return api.Receipt{CommandID: r.CommandID, QuoteID: string(r.QuoteID), SubjectID: string(r.QuoteID), NewRevision: r.NewRevision}, nil
 }
 
 type authorizer struct{ api.Authorizer }
@@ -303,7 +305,10 @@ func classify(err error) error {
 	case errors.Is(err, domain.ErrInvalidQuote), errors.Is(err, domain.ErrInvalidTransition), errors.Is(err, domain.ErrSelfApproval),
 		errors.Is(err, domain.ErrOutsideValidity), errors.Is(err, application.ErrCustomerNotConfirmed),
 		errors.Is(err, application.ErrQuoteNotAccepted), errors.Is(err, kernel.ErrCurrencyMismatch), errors.Is(err, kernel.ErrAmountOverflow),
-		errors.Is(err, kernel.ErrOutsideRecordWindow):
+		errors.Is(err, kernel.ErrOutsideRecordWindow), errors.Is(err, domain.ErrInvalidChargeCode), errors.Is(err, domain.ErrChargeCodeUnknown),
+		errors.Is(err, domain.ErrChargeCodeExists), errors.Is(err, domain.ErrInvalidRateCard), errors.Is(err, domain.ErrVersionOverlap),
+		errors.Is(err, domain.ErrNotPublishable), errors.Is(err, domain.ErrInvalidEvaluation), errors.Is(err, application.ErrPartyNotConfirmed),
+		errors.Is(err, application.ErrLocationRefused), errors.Is(err, application.ErrValidFromTooEarly):
 		kind = api.ErrRejected
 	default:
 		return err

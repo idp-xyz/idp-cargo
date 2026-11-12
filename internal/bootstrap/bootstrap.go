@@ -92,7 +92,11 @@ func (p *Platform) RATE(org orgapi.Queries, auth rateapi.Authorizer, margins rat
 	if err != nil {
 		return nil, err
 	}
-	return rate.New(db, org, auth, margins)
+	locations, err := p.Locations()
+	if err != nil {
+		return nil, err
+	}
+	return rate.New(db, org, auth, margins, rate.WithLocations(locations))
 }
 
 // ORGForCOM is what COM asks ORG: role confirmations, party identity and address books (C9).

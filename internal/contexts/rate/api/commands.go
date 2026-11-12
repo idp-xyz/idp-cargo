@@ -116,10 +116,13 @@ type ExpireQuote struct {
 	OccurredAt       time.Time
 }
 
-// Receipt confirms a committed command. Replaying the same command returns the same receipt.
+// Receipt confirms a committed command. Replaying the same command returns the same receipt. SubjectID is what the
+// command changed: the quote (QuoteID too), the charge code, the rate card or the snapshot; NewRevision is the quote's
+// or card's revision, the code's version, or 1 for a snapshot.
 type Receipt struct {
 	CommandID   string
 	QuoteID     string
+	SubjectID   string
 	NewRevision int64
 }
 
@@ -140,8 +143,8 @@ const (
 	ActionExpireQuote          = "ExpireQuote"
 )
 
-// Authorizer decides whether a verified actor may perform a quote action. The identity and policy layer
-// supplies it.
+// Authorizer decides whether a verified actor may perform a RATE action: a quote action on the quote, or a catalogue,
+// card or rating action on the code, card or snapshot passed as quoteID. The identity and policy layer supplies it.
 type Authorizer interface {
 	AuthorizeQuoteAction(ctx context.Context, tenantID, actorID, action, quoteID string) error
 }

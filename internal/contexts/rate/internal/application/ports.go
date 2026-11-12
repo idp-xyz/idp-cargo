@@ -40,9 +40,13 @@ const (
 	ActionExpireQuote          QuoteAction = "ExpireQuote"
 )
 
+// Receipt is a committed command's result. Kind is what it changed (Quote unless set) and SubjectID its id; a
+// quote command's receipt carries QuoteID too.
 type Receipt struct {
 	CommandID   string
 	QuoteID     rate.QuoteID
+	Kind        string
+	SubjectID   string
 	NewRevision int64
 	RequestHash string
 }
@@ -69,6 +73,17 @@ type IntegrationOutbox interface {
 type Authorization interface {
 	RequireQuoteAction(context.Context, Scope, QuoteAction, rate.QuoteID) error
 }
+
+// Actions on the charge-code catalogue, rate cards and rating (RATE V0.5). The subject is the code, the card or
+// the snapshot.
+const (
+	ActionMaintainChargeCodes QuoteAction = "MaintainChargeCodes"
+	ActionMaintainSellRates   QuoteAction = "MaintainSellRates"
+	ActionMaintainBuyRates    QuoteAction = "MaintainBuyRates"
+	ActionApproveTariff       QuoteAction = "ApproveTariff"    // the pricing manager publishing a SELL tariff (R1)
+	ActionApproveOwnTariff    QuoteAction = "ApproveOwnTariff" // held only by roles designated to approve what they prepared (R3)
+	ActionEvaluateRates       QuoteAction = "EvaluateRates"
+)
 
 // Customers confirms with ORG that a party holds a recipient role (R7) for a legal entity at an instant. It
 // is called outside RATE's transactions.
