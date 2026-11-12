@@ -22,7 +22,8 @@ const (
 )
 
 // Sides, sources and side statuses: a sell side is an estimate not yet invoiced (ESTIMATED, WIP) or on an issued
-// debit note (INVOICED); a cost side is an estimate not yet matched (ACCRUED, accrual).
+// debit note (INVOICED); a cost side version is an estimate (ACCRUED, accrual) or its release (RELEASED, amount zero,
+// FIN V0.5). What creditor invoices matched of a cost side is read from their live matches (Matched).
 const (
 	SideSell = "SELL"
 	SideCost = "COST"
@@ -125,7 +126,8 @@ type JobState struct {
 type FreightJob struct {
 	state     JobState
 	stored    stored
-	cancelled []string // stored debit notes cancelled by a credit note since the job was loaded
+	cancelled []string            // stored debit notes cancelled by a credit note since the job was loaded
+	consumed  map[int]Consumption // what creditor invoices consume of each line's cost side, set under the job's lock
 	pending   []Event
 }
 
@@ -175,6 +177,22 @@ func (j *FreightJob) open(by string, at time.Time) error {
 		return fmt.Errorf("%w: business time %s before the job's last change", ErrInvalid, at.UTC().Format(time.RFC3339))
 	}
 	return nil
+}
+
+// Matched sets what the live matches of creditor invoices consume of the job's cost sides, by line, read under the
+// job's lock (lines without matches consume nothing).
+func (j *FreightJob) Matched(consumed map[int]Consumption) { j.consumed = consumed }
+
+// Consumed is what creditor invoices consume of a line's cost side, as set.
+func (j *FreightJob) Consumed(lineNo int) Consumption { return j.consumed[lineNo] }
+
+// CostStatus is the accrual status of a line's cost side; empty when the line has none.
+func (j *FreightJob) CostStatus(lineNo int) string {
+	cost := j.state.Lines[lineNo-1].Cost
+	if len(cost) == 0 {
+		return ""
+	}
+	return AccrualStatus(cost[len(cost)-1].Status, j.consumed[lineNo])
 }
 
 func (j *FreightJob) lastChange() time.Time {
@@ -323,6 +341,16 @@ func (j *FreightJob) ReviseSide(lineNo int, side string, expected int, in SideIn
 	if n := len(*versions); n > 0 && (*versions)[n-1].Status == StatusInvoiced {
 		return fmt.Errorf("%w: line %d, debit note %s", ErrInvoiced, lineNo, (*versions)[n-1].InvoiceID)
 	}
+	if side == SideCost {
+		c := j.consumed[lineNo]
+		switch status := j.CostStatus(lineNo); {
+		case status == StatusMatched || status == StatusReleased:
+			return fmt.Errorf("%w: the cost side of line %d is %s", ErrAccrualClosed, lineNo, status)
+		case c.Amount > 0 && (in.Amount.Currency != (*versions)[len(*versions)-1].Amount.Currency || in.Amount.Minor < c.Amount || !c.names(in.PartyID)):
+			return fmt.Errorf("%w: creditor invoices of %v consume %d %s of the cost side of line %d", ErrAccrualMatched, c.Creditors, c.Amount,
+				(*versions)[len(*versions)-1].Amount.Currency, lineNo)
+		}
+	}
 	discountLine := line.Source == SourceQuote && len(line.Sell) > 0 && line.Sell[0].Amount.Minor < 0
 	switch {
 	case side == SideCost && discountLine:
@@ -339,8 +367,34 @@ func (j *FreightJob) ReviseSide(lineNo int, side string, expected int, in SideIn
 	return nil
 }
 
-// Cancel cancels an OPEN job with a reason when none of its sell sides is invoiced (credit notes return them first);
-// its applied quotes are free for another job.
+// ReleaseCost releases what no creditor invoice will consume of a line's cost side, with a reason (an approved act:
+// the command is authorized on its own): the next version is RELEASED with amount zero in the side's currency, and the
+// side's cost is what invoices matched. A side matched final or released already is refused.
+func (j *FreightJob) ReleaseCost(lineNo, expected int, reason string, by string, at time.Time) error {
+	if err := j.open(by, at); err != nil {
+		return err
+	}
+	if lineNo < 1 || lineNo > len(j.state.Lines) || len(j.state.Lines[lineNo-1].Cost) == 0 || !text(reason) {
+		return fmt.Errorf("%w: a release names a line of the job with a cost side and a reason", ErrInvalid)
+	}
+	line := &j.state.Lines[lineNo-1]
+	if expected != len(line.Cost) {
+		return fmt.Errorf("%w: COST side of line %d is at version %d", ErrSideVersion, lineNo, len(line.Cost))
+	}
+	if status := j.CostStatus(lineNo); status == StatusMatched || status == StatusReleased {
+		return fmt.Errorf("%w: the cost side of line %d is %s", ErrAccrualClosed, lineNo, status)
+	}
+	last := line.Cost[len(line.Cost)-1]
+	v := SideVersion{Side: SideCost, No: expected + 1, PartyID: last.PartyID, PartyRevision: last.PartyRevision,
+		Amount: kernel.Money{Currency: last.Amount.Currency}, Status: StatusReleased, Reason: reason, By: by, At: at.UTC()}
+	line.Cost = append(line.Cost, v)
+	j.recordLine(eventAccrualReleased, at, lineNo, SideCost, v.No)
+	return nil
+}
+
+// Cancel cancels an OPEN job with a reason when none of its sell sides is invoiced (credit notes return them first)
+// and no creditor invoice matched, nor a person released, any of its cost sides; its applied quotes are free for
+// another job.
 func (j *FreightJob) Cancel(reason, by string, at time.Time) error {
 	if err := j.open(by, at); err != nil {
 		return err
@@ -352,6 +406,9 @@ func (j *FreightJob) Cancel(reason, by string, at time.Time) error {
 		if n := len(l.Sell); n > 0 && l.Sell[n-1].Status == StatusInvoiced {
 			return fmt.Errorf("%w: line %d, debit note %s", ErrInvoiced, l.No, l.Sell[n-1].InvoiceID)
 		}
+		if status := j.CostStatus(l.No); status != "" && status != StatusAccrued {
+			return fmt.Errorf("%w: the cost side of line %d is %s", ErrAccrualMatched, l.No, status)
+		}
 	}
 	j.state.State, j.state.CancelReason, j.state.CancelledBy, j.state.CancelledAt = JobCancelled, reason, by, at.UTC()
 	j.record(eventJobCancelled, at, 0)
@@ -359,13 +416,17 @@ func (j *FreightJob) Cancel(reason, by string, at time.Time) error {
 }
 
 // Profit is a job's economics in the functional currency, per charge code and in total: revenue from the latest sell
-// sides (invoiced ones at their debit note's local amount; Invoiced is that part), cost from the cost estimates.
+// sides (invoiced ones at their debit note's local amount; Invoiced is that part), cost from the cost sides: what
+// creditor invoices matched, at their ACCOUNTING rates (Matched), plus what is still accrued of the latest versions
+// (Accrued).
 type Profit struct {
 	Currency kernel.CurrencyCode
 	Lines    []CodeProfit
 	Revenue  int64
 	Invoiced int64
 	Cost     int64
+	Matched  int64
+	Accrued  int64
 	Profit   int64
 }
 
@@ -395,7 +456,11 @@ func (j *FreightJob) Profit() Profit {
 			}
 		}
 		if n := len(l.Cost); n > 0 {
-			out.Lines[i].Cost += l.Cost[n-1].Local
+			v, c := l.Cost[n-1], j.consumed[l.No]
+			_, local := CurrentCost(v.Amount.Minor, v.Local, v.Status, c)
+			out.Lines[i].Cost += local
+			out.Matched += c.Local
+			out.Accrued += local - c.Local
 		}
 	}
 	for i := range out.Lines {

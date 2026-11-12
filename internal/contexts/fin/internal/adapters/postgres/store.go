@@ -86,6 +86,15 @@ type taxRow struct {
 	EnteredAt     time.Time `json:"entered_at"`
 }
 
+type thresholdRow struct {
+	No        int       `json:"threshold_no"`
+	Amount    int64     `json:"amount_minor"`
+	RateBP    int       `json:"rate_bp"`
+	By        string    `json:"set_by"`
+	At        time.Time `json:"set_at"`
+	EnteredAt time.Time `json:"entered_at"`
+}
+
 type seriesRow struct {
 	Kind        string    `json:"kind"`
 	Prefix      string    `json:"prefix"`
@@ -111,13 +120,13 @@ func readPolicy(ctx context.Context, q bentopg.Querier, tenant fin.TenantID, le,
 	st := fin.PolicyState{TenantID: tenant, LegalEntityID: le}
 	var currency string
 	var revision int64
-	var rates, taxes, series []byte
+	var rates, taxes, series, thresholds []byte
 	key := "c.tenant_id=p.tenant_id AND c.legal_entity_id=p.legal_entity_id"
 	err := q.QueryRow(ctx, `SELECT p.functional_currency,p.book_code,p.opened_by,p.opened_at,p.entered_at,p.revision,`+
 		children("exchange_rate_entry", key, "c.entry_no")+`,`+children("charge_tax_treatment", key, "c.version_no")+`,`+
-		children("invoice_series", key, "c.kind")+`
+		children("invoice_series", key, "c.kind")+`,`+children("cost_variance_threshold", key, "c.threshold_no")+`
       FROM cargo_fin.finance_policy p WHERE p.tenant_id=$1 AND p.legal_entity_id=$2`, string(tenant), le).Scan(&currency, &st.BookCode, &st.OpenedBy,
-		&st.OpenedAt, &st.EnteredAt, &revision, &rates, &taxes, &series)
+		&st.OpenedAt, &st.EnteredAt, &revision, &rates, &taxes, &series, &thresholds)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, 0, fmt.Errorf("%w: finance policy %s", bentorepo.ErrNotFound, le)
 	}
@@ -127,8 +136,13 @@ func readPolicy(ctx context.Context, q bentopg.Querier, tenant fin.TenantID, le,
 	var rr []rateRow
 	var tr []taxRow
 	var sr []seriesRow
-	if err = errors.Join(json.Unmarshal(rates, &rr), json.Unmarshal(taxes, &tr), json.Unmarshal(series, &sr)); err != nil {
+	var hr []thresholdRow
+	if err = errors.Join(json.Unmarshal(rates, &rr), json.Unmarshal(taxes, &tr), json.Unmarshal(series, &sr), json.Unmarshal(thresholds, &hr)); err != nil {
 		return nil, 0, err
+	}
+	for _, h := range hr {
+		st.Thresholds = append(st.Thresholds, fin.VarianceThreshold{No: h.No, Amount: h.Amount, RateBP: h.RateBP, By: h.By, At: utc(h.At),
+			EnteredAt: utc(h.EnteredAt)})
 	}
 	for _, t := range tr {
 		from, err := fin.ParseDate(t.EffectiveFrom)
@@ -248,6 +262,12 @@ func writeRates(ctx context.Context, q bentopg.Executor, p *fin.FinancePolicy) e
 		if _, err := q.Exec(ctx, `INSERT INTO cargo_fin.charge_tax_treatment (tenant_id,legal_entity_id,version_no,charge_code,treatment,rate_bp,effective_from,
             set_by,set_at,entered_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, string(st.TenantID), st.LegalEntityID, t.No, t.ChargeCode, t.Treatment,
 			orNull(t.RateBP), t.EffectiveFrom.Format(time.DateOnly), t.By, t.At, t.EnteredAt); err != nil {
+			return err
+		}
+	}
+	for _, t := range p.AddedThresholds() {
+		if _, err := q.Exec(ctx, `INSERT INTO cargo_fin.cost_variance_threshold (tenant_id,legal_entity_id,threshold_no,amount_minor,rate_bp,set_by,set_at,
+            entered_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, string(st.TenantID), st.LegalEntityID, t.No, t.Amount, t.RateBP, t.By, t.At, t.EnteredAt); err != nil {
 			return err
 		}
 	}
@@ -1379,7 +1399,8 @@ func FINEnvelope(commandID string, e fin.Event, recordedAt time.Time) (eventing.
 	digest := sha256.Sum256([]byte(commandID + "\x00" + e.Type + "\x00" + string(e.TenantID) + "\x00" + e.SubjectID + "\x00" + strconv.Itoa(e.LineNo) + "\x00" +
 		e.Side + "\x00" + strconv.Itoa(e.Version)))
 	payload, err := json.Marshal(api.EventPayload{TenantID: string(e.TenantID), SubjectID: e.SubjectID, LegalEntityID: e.LegalEntityID, Version: e.Version,
-		ShipmentID: e.ShipmentID, DebtorPartyID: e.DebtorPartyID, LineNo: e.LineNo, Side: e.Side, JobID: e.JobID, InvoiceID: e.InvoiceID})
+		ShipmentID: e.ShipmentID, DebtorPartyID: e.DebtorPartyID, LineNo: e.LineNo, Side: e.Side, JobID: e.JobID, InvoiceID: e.InvoiceID,
+		CreditorPartyID: e.CreditorPartyID})
 	if err != nil {
 		return eventing.Envelope{}, err
 	}
@@ -1399,7 +1420,9 @@ func Conflict(err error) bool {
 	}
 	switch pgErr.ConstraintName {
 	case "finance_policy_consistent", "freight_job_consistent", "credit_account_consistent", "fin_records_with_parent", "freight_job_invoices_consistent",
-		"invoice_series_consistent", "billing_profile_consistent", "debtor_receipt_consistent", "debtor_invoice_settlement_consistent":
+		"invoice_series_consistent", "billing_profile_consistent", "debtor_receipt_consistent", "debtor_invoice_settlement_consistent",
+		"creditor_invoice_consistent", "creditor_match_consistent", "accrual_consumption_consistent", "creditor_invoice_targets_open",
+		"consol_cost_pool_closable", "consol_cost_pool_open", "pool_apportionment_cost":
 		return true
 	}
 	return false

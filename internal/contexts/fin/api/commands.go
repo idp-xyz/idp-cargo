@@ -8,7 +8,9 @@
 // FIN asks before its own transaction (T3): FUL's CostDriver v1 for the shipment, RATE's PricingBasis v1 for the
 // quote, DOC's TransportDocumentSnapshot v1 for a debit note, ORG's legal entity, party roles and party identity. It
 // never writes to them. V0.3 adds settlement: debtor receipts recorded from bank or ERP evidence and allocated to
-// debit notes, and debtor statements. Consol cost pools, creditor invoices, fapiao, postings and recognition come later.
+// debit notes, and debtor statements. V0.4 adds consol cost pools; V0.5 creditor invoices matched to accruals, cost
+// variance approval, the release of accruals and the closing of pools. Creditor payments, fapiao, postings and
+// recognition come later.
 package api
 
 import (
@@ -434,6 +436,10 @@ const (
 	MethodVolume     = "VOLUME"
 	MethodPieces     = "PIECES"
 	MethodManual     = "MANUAL"
+	// MethodRetained keeps lines' costs on the consolidation (FIN V0.5), with a reason, once PHY reports it cancelled
+	// or without a house left: the consolidation's own cost, such as dead freight, as CargoWise leaves a consol charge
+	// on the consol when it is not apportioned.
+	MethodRetained = "RETAINED"
 
 	BasisActual  = "ACTUAL"
 	BasisPlanned = "PLANNED"
@@ -501,7 +507,9 @@ type ManualShare struct {
 // by packs (FIN_POOL_UNIT, FIN_POOL_NO_BASIS); MANUAL divides one line by Manual shares, naming every house once and
 // summing to the line's amount (FIN_MANUAL_SHARES), with a reason. Shares conserve the line's amount and its local
 // amount exactly (largest remainder, ties to the first shipment). A new apportionment supersedes earlier ones line by
-// line.
+// line. Since FIN V0.5 each line's current cost is divided (what creditor invoices matched plus what is still
+// accrued); RETAINED keeps the lines' costs on the consolidation with a reason, and only once PHY reports it cancelled
+// or without houses.
 type ApportionConsolCosts struct {
 	CommandID        string
 	TenantID         string
@@ -517,12 +525,14 @@ type ApportionConsolCosts struct {
 
 // Receipt confirms a committed command; replaying the command returns it again. SubjectID is the legal entity
 // (policy), the job (job and note commands), the debtor (billing profile), <legal entity>/<debtor> (credit account),
-// the debtor receipt or the pool (pool commands); Version is the rate entry recorded or ended, the tax treatment set,
-// the series registered, the pricing basis applied, the charge line recorded, the side version written, the billing
-// profile version, the terms version set, the hold placed or released, the last allocation written or the one
-// reversed, the pool cost line recorded, the cost version written or the apportionment made (0 for opening a policy,
-// job or pool, cancelling a job, issuing a note, and recording or cancelling a debtor receipt); Number is the number
-// of a note issued. For a billing profile NewRevision is its version.
+// the debtor receipt, the pool (pool commands) or the creditor invoice; Version is the rate entry recorded or ended,
+// the tax treatment set, the series registered, the variance threshold set, the pricing basis applied, the charge line
+// recorded, the side version written (a release's too), the billing profile version, the terms version set, the hold
+// placed or released, the last allocation written or the one reversed, the pool cost line recorded, the cost version
+// written, the apportionment made, the closure made or reopened, the matches of an invoice, or its dispute opened or
+// resolved (0 for opening a policy, job or pool, cancelling a job, issuing a note, recording or cancelling a debtor
+// receipt or a creditor invoice, and approving a variance); Number is the number of a note issued. For a billing
+// profile NewRevision is its version.
 type Receipt struct {
 	CommandID   string
 	SubjectID   string
@@ -557,6 +567,17 @@ type Commands interface {
 	RecordConsolCost(ctx context.Context, cmd RecordConsolCost) (Receipt, error)
 	ReviseConsolCost(ctx context.Context, cmd ReviseConsolCost) (Receipt, error)
 	ApportionConsolCosts(ctx context.Context, cmd ApportionConsolCosts) (Receipt, error)
+	SetCostVarianceThreshold(ctx context.Context, cmd SetCostVarianceThreshold) (Receipt, error)
+	RecordCreditorInvoice(ctx context.Context, cmd RecordCreditorInvoice) (Receipt, error)
+	MatchCreditorInvoice(ctx context.Context, cmd MatchCreditorInvoice) (Receipt, error)
+	ApproveCostVariance(ctx context.Context, cmd ApproveCostVariance) (Receipt, error)
+	DisputeCreditorInvoice(ctx context.Context, cmd DisputeCreditorInvoice) (Receipt, error)
+	ResolveCreditorInvoiceDispute(ctx context.Context, cmd ResolveCreditorInvoiceDispute) (Receipt, error)
+	CancelCreditorInvoice(ctx context.Context, cmd CancelCreditorInvoice) (Receipt, error)
+	ReleaseJobAccrual(ctx context.Context, cmd ReleaseJobAccrual) (Receipt, error)
+	ReleasePoolAccrual(ctx context.Context, cmd ReleasePoolAccrual) (Receipt, error)
+	CloseConsolCostPool(ctx context.Context, cmd CloseConsolCostPool) (Receipt, error)
+	ReopenConsolCostPool(ctx context.Context, cmd ReopenConsolCostPool) (Receipt, error)
 }
 
 // Actions an Authorizer decides on: the command names.
@@ -588,6 +609,19 @@ const (
 	ActionRecordConsolCost     = "RecordConsolCost"
 	ActionReviseConsolCost     = "ReviseConsolCost"
 	ActionApportionConsolCosts = "ApportionConsolCosts"
+
+	ActionSetCostVarianceThreshold      = "SetCostVarianceThreshold"
+	ActionRecordCreditorInvoice         = "RecordCreditorInvoice"
+	ActionMatchCreditorInvoice          = "MatchCreditorInvoice"
+	ActionApproveCostVariance           = "ApproveCostVariance"
+	ActionApproveOwnCostVariance        = "ApproveOwnCostVariance" // asked besides ApproveCostVariance when the approver matched the invoice
+	ActionDisputeCreditorInvoice        = "DisputeCreditorInvoice"
+	ActionResolveCreditorInvoiceDispute = "ResolveCreditorInvoiceDispute"
+	ActionCancelCreditorInvoice         = "CancelCreditorInvoice"
+	ActionReleaseJobAccrual             = "ReleaseJobAccrual"
+	ActionReleasePoolAccrual            = "ReleasePoolAccrual"
+	ActionCloseConsolCostPool           = "CloseConsolCostPool"
+	ActionReopenConsolCostPool          = "ReopenConsolCostPool"
 )
 
 // Authorizer decides whether a verified actor may perform an action on a subject.

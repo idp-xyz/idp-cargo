@@ -61,6 +61,7 @@ type FinancePolicy struct {
 	Rates              []ExchangeRateEntry
 	TaxTreatments      []ChargeTaxTreatment
 	Series             []InvoiceSeries
+	VarianceThresholds []VarianceThreshold
 }
 
 // Job kinds and states.
@@ -72,7 +73,8 @@ const (
 	JobCancelled = "CANCELLED"
 )
 
-// Sources and statuses of sides: a sell side ESTIMATED (WIP) or INVOICED (on a debit note), a cost side ACCRUED.
+// Sources and statuses of sides: a sell side ESTIMATED (WIP) or INVOICED (on a debit note), a cost side version
+// ACCRUED or RELEASED (amount zero; StatusReleased).
 const (
 	SourceQuote  = "QUOTE"
 	SourceManual = "MANUAL"
@@ -110,17 +112,22 @@ type SideVersion struct {
 	RecordedAt    time.Time
 }
 
-// ChargeLine is a charge of a job with its side versions, the latest last.
+// ChargeLine is a charge of a job with its side versions, the latest last. A line with a cost side has its accrual
+// status (ACCRUED, PARTLY_MATCHED, MATCHED or RELEASED) and what creditor invoices' live matches consume of it, in its
+// currency and in the functional currency (FIN V0.5).
 type ChargeLine struct {
-	LineNo      int
-	ChargeCode  string
-	Description string
-	Source      string
-	BasisNo     int
-	QuoteLineNo int
-	Reason      string
-	Sell        []SideVersion
-	Cost        []SideVersion
+	LineNo           int
+	ChargeCode       string
+	Description      string
+	Source           string
+	BasisNo          int
+	QuoteLineNo      int
+	Reason           string
+	Sell             []SideVersion
+	Cost             []SideVersion
+	CostStatus       string
+	CostMatched      kernel.Money
+	CostMatchedLocal kernel.Money
 }
 
 // AppliedBasis is a quote applied to the job for an order.
@@ -189,18 +196,21 @@ type JobPoolShare struct {
 }
 
 // JobProfit is a job's economics in the functional currency: revenue from the latest sell sides, billed ones at their
-// debit note's local amount (Invoiced is that part), cost from the cost estimates (not yet matched), and PoolCost from
-// the job's shares of consol cost pools (FIN V0.4). Profit is Revenue - Cost - PoolCost.
+// debit note's local amount (Invoiced is that part); cost from the cost sides, what creditor invoices matched at their
+// ACCOUNTING rates (CostMatched) plus what is still accrued at the estimates' rates (CostAccrued; FIN V0.5); and
+// PoolCost from the job's shares of consol cost pools (FIN V0.4). Profit is Revenue - Cost - PoolCost.
 type JobProfit struct {
-	JobID      string
-	Revision   int64
-	ByCode     []ChargeCodeProfit
-	Revenue    kernel.Money
-	Invoiced   kernel.Money
-	Cost       kernel.Money
-	PoolCost   kernel.Money
-	Profit     kernel.Money
-	PoolShares []JobPoolShare
+	JobID       string
+	Revision    int64
+	ByCode      []ChargeCodeProfit
+	Revenue     kernel.Money
+	Invoiced    kernel.Money
+	Cost        kernel.Money
+	CostMatched kernel.Money
+	CostAccrued kernel.Money
+	PoolCost    kernel.Money
+	Profit      kernel.Money
+	PoolShares  []JobPoolShare
 }
 
 // CreditTerms is a version of a debtor's terms.
@@ -523,23 +533,30 @@ type PoolCostVersion struct {
 	CreditorRevision int64
 	Amount           kernel.Money
 	Local            kernel.Money
-	Status           string // ACCRUED; matching comes with FB4
+	Status           string // ACCRUED, or RELEASED (amount zero)
 	Reason           string
 	RecordedAt       time.Time
 	EnteredAt        time.Time
 }
 
 // PoolCostLine is one cost of the whole consolidation: a charge code, the supplier's reference (the MAWB, the
-// co-loader or CFS booking) and its versions; Method is its default apportionment method.
+// co-loader or CFS booking) and its versions; Method is its default apportionment method. Status is its accrual status;
+// Matched what creditor invoices' live matches consume of it; Cost its current cost, what is matched plus what is still
+// accrued (once matched final or released, what is matched), in its currency and in the functional currency.
 type PoolCostLine struct {
-	LineNo      int
-	ChargeCode  string
-	Description string
-	SupplierRef string
-	Method      string
-	RecordedAt  time.Time
-	EnteredAt   time.Time
-	Versions    []PoolCostVersion
+	LineNo       int
+	ChargeCode   string
+	Description  string
+	SupplierRef  string
+	Method       string
+	RecordedAt   time.Time
+	EnteredAt    time.Time
+	Versions     []PoolCostVersion
+	Status       string
+	Matched      kernel.Money
+	MatchedLocal kernel.Money
+	Cost         kernel.Money
+	CostLocal    kernel.Money
 }
 
 // PoolShare is one house job's share of a pool cost line under an apportionment: the basis quantity it was weighted
@@ -555,12 +572,15 @@ type PoolShare struct {
 	Local      kernel.Money
 }
 
-// ApportionedLine is one line's shares under an apportionment, at the line version it divided.
+// ApportionedLine is one line's shares under an apportionment, at the line version it divided, and the line's cost it
+// divided (Amount, Local: the version's figures before FIN V0.5).
 type ApportionedLine struct {
 	LineNo      int
 	LineVersion int
 	Method      string
 	Reason      string // the MANUAL reason
+	Amount      kernel.Money
+	Local       kernel.Money
 	Shares      []PoolShare
 }
 
@@ -591,6 +611,7 @@ type ConsolCostPool struct {
 	OpenedAt           time.Time
 	Lines              []PoolCostLine
 	Apportionments     []PoolApportionment
+	Closures           []PoolClosure
 }
 
 // HouseProfit is one house job's economics within a consolidation, in the functional currency: the job's own revenue,
@@ -606,14 +627,18 @@ type HouseProfit struct {
 }
 
 // ConsolProfit is a consolidation's economics under its pool's legal entity, in the functional currency: the pooled
-// cost at the latest versions, the part the latest apportionments cover, and the houses of those apportionments with
-// their job economics. Houses is empty while nothing is apportioned.
+// cost, its lines' current costs (Matched is what creditor invoices matched of it), the part the latest apportionments
+// cover, and the houses of those apportionments with their job economics. Houses is empty while nothing is
+// apportioned.
 type ConsolProfit struct {
 	ConsolidationID string
 	PoolID          string
 	LegalEntityID   string
+	State           string
 	Pooled          kernel.Money
+	Matched         kernel.Money
 	Apportioned     kernel.Money
+	Retained        kernel.Money // kept on the consolidation (RETAINED): the consolidation's own cost
 	Unapportioned   kernel.Money
 	Houses          []HouseProfit
 }
@@ -642,4 +667,7 @@ type Queries interface {
 	GetDebtorStatement(ctx context.Context, q GetDebtorStatement) (DebtorStatement, error)
 	GetConsolCostPool(ctx context.Context, q GetConsolCostPool) (ConsolCostPool, error)
 	GetConsolProfit(ctx context.Context, q GetConsolProfit) (ConsolProfit, error)
+	GetCreditorInvoice(ctx context.Context, q GetCreditorInvoice) (CreditorInvoice, error)
+	ListCreditorInvoices(ctx context.Context, q ListCreditorInvoices) ([]CreditorInvoice, error)
+	ListOpenAccruals(ctx context.Context, q ListOpenAccruals) ([]OpenAccrual, error)
 }

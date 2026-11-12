@@ -1,7 +1,8 @@
-// Package fin assembles the FIN (Freight Job Economics) bounded context, V0.3: finance policies with tax treatments
-// and number series, freight jobs with estimated charges and the debit and credit notes billing them, billing
-// profiles, debtor receipts settling debit notes and debtor statements, and credit accounts with CreditStatus v1 for
-// DOC. Code outside FIN uses it through package api;
+// Package fin assembles the FIN (Freight Job Economics) bounded context, V0.5: finance policies with tax treatments,
+// number series and cost variance thresholds, freight jobs with estimated charges and the debit and credit notes
+// billing them, billing profiles, debtor receipts settling debit notes and debtor statements, credit accounts with
+// CreditStatus v1 for DOC, consol cost pools apportioned to house jobs, and creditor invoices matched to the jobs' and
+// pools' accruals. Code outside FIN uses it through package api;
 // everything under internal/ is private to FIN.
 package fin
 
@@ -274,14 +275,19 @@ func (m *Module) GetFinancePolicy(ctx context.Context, q api.GetFinancePolicy) (
 		slices.SortFunc(series.Last, func(a, b api.NumberPeriod) int { return strings.Compare(a.Period, b.Period) })
 		out.Series = append(out.Series, series)
 	}
+	for _, t := range st.Thresholds {
+		out.VarianceThresholds = append(out.VarianceThresholds, api.VarianceThreshold{Version: t.No,
+			Amount: kernel.Money{Currency: st.FunctionalCurrency, Minor: t.Amount}, RateBP: t.RateBP, SetBy: t.By, SetAt: t.At})
+	}
 	return out, nil
 }
 
 func (m *Module) job(ctx context.Context, tenant, id string) (*domain.FreightJob, int64, error) {
 	var j *domain.FreightJob
 	var revision int64
-	err := m.deps(tenant, "").Reader(ctx, func(txCtx context.Context) (err error) {
-		j, revision, err = postgres.JobStore{DB: m.db}.Read(txCtx, domain.TenantID(tenant), id)
+	d := m.deps(tenant, "")
+	err := d.Reader(ctx, func(txCtx context.Context) (err error) {
+		j, revision, err = readJob(txCtx, d, tenant, id)
 		return err
 	})
 	return j, revision, err
@@ -323,8 +329,15 @@ func jobView(j *domain.FreightJob, revision int64) api.FreightJob {
 			AppliedBy: b.By, AppliedAt: b.At})
 	}
 	for _, l := range st.Lines {
-		out.Lines = append(out.Lines, api.ChargeLine{LineNo: l.No, ChargeCode: l.ChargeCode, Description: l.Description, Source: l.Source, BasisNo: l.BasisNo,
-			QuoteLineNo: l.QuoteLineNo, Reason: l.Reason, Sell: sideViews(l.Sell, st.FunctionalCurrency), Cost: sideViews(l.Cost, st.FunctionalCurrency)})
+		line := api.ChargeLine{LineNo: l.No, ChargeCode: l.ChargeCode, Description: l.Description, Source: l.Source, BasisNo: l.BasisNo,
+			QuoteLineNo: l.QuoteLineNo, Reason: l.Reason, Sell: sideViews(l.Sell, st.FunctionalCurrency), Cost: sideViews(l.Cost, st.FunctionalCurrency)}
+		if n := len(l.Cost); n > 0 {
+			c := j.Consumed(l.No)
+			line.CostStatus = j.CostStatus(l.No)
+			line.CostMatched = kernel.Money{Currency: l.Cost[n-1].Amount.Currency, Minor: c.Amount}
+			line.CostMatchedLocal = kernel.Money{Currency: st.FunctionalCurrency, Minor: c.Local}
+		}
+		out.Lines = append(out.Lines, line)
 	}
 	for _, n := range st.Notes {
 		out.Notes = append(out.Notes, api.NoteSummary{InvoiceID: n.ID, Kind: n.Kind, Number: n.Number, DebtorPartyID: n.DebtorPartyID, State: n.State,
@@ -339,7 +352,7 @@ func (m *Module) GetJobProfit(ctx context.Context, q api.GetJobProfit) (api.JobP
 	var revision int64
 	var shares []application.PoolShare
 	err := d.Reader(ctx, func(txCtx context.Context) (err error) {
-		if j, revision, err = d.Jobs.Read(txCtx, domain.TenantID(q.TenantID), q.JobID); err != nil {
+		if j, revision, err = readJob(txCtx, d, q.TenantID, q.JobID); err != nil {
 			return err
 		}
 		shares, err = d.Pools.SharesOfJob(txCtx, domain.TenantID(q.TenantID), q.JobID)
@@ -352,7 +365,7 @@ func (m *Module) GetJobProfit(ctx context.Context, q api.GetJobProfit) (api.JobP
 	money := func(n int64) kernel.Money { return kernel.Money{Currency: p.Currency, Minor: n} }
 	poolShares, pool := poolShareViews(shares, p.Currency)
 	out := api.JobProfit{JobID: q.JobID, Revision: revision, Revenue: money(p.Revenue), Invoiced: money(p.Invoiced), Cost: money(p.Cost),
-		PoolCost: money(pool), Profit: money(p.Profit - pool), PoolShares: poolShares}
+		CostMatched: money(p.Matched), CostAccrued: money(p.Accrued), PoolCost: money(pool), Profit: money(p.Profit - pool), PoolShares: poolShares}
 	for _, c := range p.Lines {
 		out.ByCode = append(out.ByCode, api.ChargeCodeProfit{ChargeCode: c.ChargeCode, Revenue: money(c.Revenue), Cost: money(c.Cost), Profit: money(c.Profit)})
 	}
@@ -362,9 +375,12 @@ func (m *Module) GetJobProfit(ctx context.Context, q api.GetJobProfit) (api.JobP
 func (m *Module) ListJobsForShipment(ctx context.Context, q api.ListJobsForShipment) ([]api.FreightJob, error) {
 	var jobs []*domain.FreightJob
 	var revisions []int64
-	err := m.deps(q.TenantID, "").Reader(ctx, func(txCtx context.Context) (err error) {
-		jobs, revisions, err = postgres.JobStore{DB: m.db}.ForShipment(txCtx, domain.TenantID(q.TenantID), q.ShipmentID)
-		return err
+	d := m.deps(q.TenantID, "")
+	err := d.Reader(ctx, func(txCtx context.Context) (err error) {
+		if jobs, revisions, err = d.Jobs.ForShipment(txCtx, domain.TenantID(q.TenantID), q.ShipmentID); err != nil {
+			return err
+		}
+		return withMatched(txCtx, d, q.TenantID, jobs)
 	})
 	if err != nil {
 		return nil, classify(err)
@@ -712,6 +728,7 @@ func (m *Module) GetCreditStatus(ctx context.Context, q api.GetCreditStatus) (ap
 func (m *Module) deps(tenant, commandID string) application.Deps {
 	return application.Deps{
 		Tx:        bento.TenantTransactor{DB: m.db, Tenant: tenant},
+		Snapshot:  bento.TenantTransactor{DB: m.db, Tenant: tenant, Snapshot: true},
 		Policies:  postgres.PolicyStore{DB: m.db},
 		Jobs:      postgres.JobStore{DB: m.db},
 		Credit:    postgres.CreditStore{DB: m.db},
@@ -730,6 +747,7 @@ func (m *Module) deps(tenant, commandID string) application.Deps {
 		DebtorReceipts: postgres.ReceiptStore{DB: m.db},
 		Pools:          postgres.PoolStore{DB: m.db},
 		Physical:       m.physical,
+		Creditors:      postgres.CreditorStore{DB: m.db},
 	}
 }
 
@@ -770,7 +788,12 @@ func classify(err error) error {
 		errors.Is(err, domain.ErrSeriesExhausted), errors.Is(err, numbering.ErrSeeded), errors.Is(err, domain.ErrSettled),
 		errors.Is(err, domain.ErrOverAllocated), errors.Is(err, domain.ErrNotAllocatable), errors.Is(err, domain.ErrEvidenceUsed),
 		errors.Is(err, domain.ErrCrossLegalEntity), errors.Is(err, domain.ErrPoolJobMissing), errors.Is(err, domain.ErrPoolUnit),
-		errors.Is(err, domain.ErrPoolNoBasis), errors.Is(err, domain.ErrManualShares), errors.Is(err, domain.ErrCostVersion):
+		errors.Is(err, domain.ErrPoolNoBasis), errors.Is(err, domain.ErrManualShares), errors.Is(err, domain.ErrCostVersion),
+		errors.Is(err, domain.ErrMatchCurrency), errors.Is(err, domain.ErrMatchCreditor), errors.Is(err, domain.ErrMatchTarget),
+		errors.Is(err, domain.ErrAccrualClosed), errors.Is(err, domain.ErrMatchExceeds), errors.Is(err, domain.ErrMatchIncomplete),
+		errors.Is(err, domain.ErrMatchChargeCode), errors.Is(err, domain.ErrInvoiceNumber), errors.Is(err, domain.ErrVarianceApproval),
+		errors.Is(err, domain.ErrAccrualMatched), errors.Is(err, domain.ErrPoolNotClosable), errors.Is(err, domain.ErrTargetClosed),
+		errors.Is(err, domain.ErrFinalBehind):
 		kind = api.ErrRejected
 	default:
 		return err

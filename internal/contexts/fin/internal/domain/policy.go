@@ -122,6 +122,7 @@ type PolicyState struct {
 	Rates              []RateEntry
 	Taxes              []TaxTreatment
 	Series             []Series
+	Thresholds         []VarianceThreshold
 }
 
 // FinancePolicy is the aggregate root of a legal entity's finance settings: the functional currency and book,
@@ -132,6 +133,7 @@ type FinancePolicy struct {
 	stored  int
 	taxes   int   // tax treatments stored
 	series  int   // series stored
+	limits  int   // variance thresholds stored
 	ended   []int // entries ended since the policy was loaded
 	pending []Event
 }
@@ -142,6 +144,7 @@ const (
 	eventRateEnded        = "ExchangeRateEnded.v1"
 	eventTaxSet           = "ChargeTaxTreatmentSet.v1"
 	eventSeriesRegistered = "InvoiceSeriesRegistered.v1"
+	eventThresholdSet     = "CostVarianceThresholdSet.v1"
 )
 
 // OpenPolicy opens a legal entity's policy with its functional currency, whose minor digits the kernel must know,
@@ -276,6 +279,36 @@ func (p *FinancePolicy) SeriesOf(kind string) (Series, bool) {
 	return Series{}, false
 }
 
+// SetVarianceThreshold records the next version of the legal entity's cost variance threshold (OD-9 B): an amount in
+// the functional currency, from zero, and a rate of the accrual's local amount, from 0 to 10000 basis points. A final
+// match whose variance is beyond the greater of the two needs approval. A version is in force from its time until the
+// next one, which is not set earlier.
+func (p *FinancePolicy) SetVarianceThreshold(amount int64, rateBP int, by string, at time.Time) error {
+	switch {
+	case amount < 0 || amount > MaxAmount || rateBP < 0 || rateBP > 10_000 || blank(by) || at.IsZero():
+		return fmt.Errorf("%w: a threshold is an amount of 0 to %d minor units and a rate of 0 to 10000 basis points", ErrInvalid, MaxAmount)
+	case len(p.state.Thresholds) > 0 && at.Before(p.state.Thresholds[len(p.state.Thresholds)-1].At):
+		return fmt.Errorf("%w: a threshold is not set before the one in force", ErrInvalid)
+	}
+	t := VarianceThreshold{No: len(p.state.Thresholds) + 1, Amount: amount, RateBP: rateBP, By: by, At: at.UTC()}
+	p.state.Thresholds = append(p.state.Thresholds, t)
+	p.record(eventThresholdSet, at, t.No)
+	return nil
+}
+
+// ThresholdAt returns the cost variance threshold in force at an instant: the latest version set at or before it, or
+// nil when none was (then every variance needs approval).
+func (p *FinancePolicy) ThresholdAt(at time.Time) *VarianceThreshold {
+	var found *VarianceThreshold
+	for i := range p.state.Thresholds {
+		if !p.state.Thresholds[i].At.After(at) {
+			t := p.state.Thresholds[i]
+			found = &t
+		}
+	}
+	return found
+}
+
 // Local converts an amount into the functional currency at the rate of the type in force at an instant; an amount
 // in the functional currency needs none.
 func (p *FinancePolicy) Local(m kernel.Money, rateType string, at time.Time) (int64, *FxSnapshot, error) {
@@ -327,11 +360,22 @@ func (p *FinancePolicy) Stamp(entered time.Time) {
 			p.state.Series[i].EnteredAt = entered.UTC()
 		}
 	}
+	for i := range p.state.Thresholds {
+		if p.state.Thresholds[i].EnteredAt.IsZero() {
+			p.state.Thresholds[i].EnteredAt = entered.UTC()
+		}
+	}
 }
 
 // RestorePolicy rebuilds a stored policy.
 func RestorePolicy(st PolicyState) (*FinancePolicy, error) {
 	st.Rates, st.Taxes, st.Series = append([]RateEntry(nil), st.Rates...), append([]TaxTreatment(nil), st.Taxes...), append([]Series(nil), st.Series...)
+	st.Thresholds = append([]VarianceThreshold(nil), st.Thresholds...)
+	for i, t := range st.Thresholds {
+		if t.No != i+1 {
+			return nil, fmt.Errorf("%w: variance threshold %d", ErrInvalid, i+1)
+		}
+	}
 	for i, e := range st.Rates {
 		if e.No != i+1 {
 			return nil, fmt.Errorf("%w: rate entry %d", ErrInvalid, i+1)
@@ -342,13 +386,19 @@ func RestorePolicy(st PolicyState) (*FinancePolicy, error) {
 			return nil, fmt.Errorf("%w: tax treatment %d", ErrInvalid, i+1)
 		}
 	}
-	return &FinancePolicy{state: st, stored: len(st.Rates), taxes: len(st.Taxes), series: len(st.Series)}, nil
+	return &FinancePolicy{state: st, stored: len(st.Rates), taxes: len(st.Taxes), series: len(st.Series), limits: len(st.Thresholds)}, nil
 }
 
 func (p *FinancePolicy) State() PolicyState {
 	st := p.state
 	st.Rates, st.Taxes, st.Series = append([]RateEntry(nil), st.Rates...), append([]TaxTreatment(nil), st.Taxes...), append([]Series(nil), st.Series...)
+	st.Thresholds = append([]VarianceThreshold(nil), st.Thresholds...)
 	return st
+}
+
+// AddedThresholds returns the variance thresholds set since the policy was loaded.
+func (p *FinancePolicy) AddedThresholds() []VarianceThreshold {
+	return append([]VarianceThreshold(nil), p.state.Thresholds[p.limits:]...)
 }
 
 // AddedTaxes returns the tax treatments set since the policy was loaded.
@@ -381,4 +431,5 @@ func (p *FinancePolicy) EndedRates() []RateEntry {
 
 func (p *FinancePolicy) Acknowledge() {
 	p.pending, p.stored, p.ended, p.taxes, p.series = nil, len(p.state.Rates), nil, len(p.state.Taxes), len(p.state.Series)
+	p.limits = len(p.state.Thresholds)
 }
