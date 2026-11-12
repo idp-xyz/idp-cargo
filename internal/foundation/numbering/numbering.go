@@ -20,7 +20,7 @@ import (
 )
 
 var (
-	ErrInvalidTemplate = errors.New("numbering: a template is a literal prefix, then literals, {yyyy}, {yy}, {mm}, {q} and one {seq:N} with N from 4 to 10")
+	ErrInvalidTemplate = errors.New("numbering: a template is a literal prefix, then literals, {yyyy}, {yy}, {mm}, {q} (a month or quarter with its year) and one {seq:N} with N from 4 to 10")
 	ErrExhausted       = errors.New("numbering: the sequence of the period has no number left within its width")
 	ErrSeeded          = errors.New("numbering: the sequence is in use already")
 )
@@ -52,16 +52,18 @@ func Parse(raw string) (Template, error) {
 	}
 	out := Template{raw: raw, prefix: raw[:found[0][0]], t: t}
 	seqs := 0
+	present := map[string]bool{}
 	literal := token.ReplaceAllString(raw, "")
 	for _, m := range found {
 		name := raw[m[2]:m[3]]
+		present[name] = true
 		if !allowed[name] {
 			return Template{}, fmt.Errorf("%w: token {%s}", ErrInvalidTemplate, name)
 		}
 		if name == "seq" {
 			seqs++
-			if m[4] < 0 {
-				return Template{}, fmt.Errorf("%w: {seq} needs its width", ErrInvalidTemplate)
+			if m[4] < 0 || raw[m[4]] == '0' {
+				return Template{}, fmt.Errorf("%w: {seq} needs its width, without a leading zero", ErrInvalidTemplate)
 			}
 			out.width, _ = strconv.Atoi(raw[m[4]:m[5]])
 		} else if m[4] >= 0 {
@@ -73,9 +75,15 @@ func Parse(raw string) (Template, error) {
 		return Template{}, fmt.Errorf("%w: %q needs one {seq:N} with N from 4 to 10", ErrInvalidTemplate, raw)
 	case strings.ContainsAny(literal, "{}"):
 		return Template{}, fmt.Errorf("%w: braces outside tokens in %q", ErrInvalidTemplate, raw)
+	case (present["mm"] || present["q"]) && !present["yyyy"] && !present["yy"]:
+		// the sequence restarts every month or quarter; without the year the numbers of a period recur a year later
+		return Template{}, fmt.Errorf("%w: %q has a month or quarter without its year", ErrInvalidTemplate, raw)
 	}
 	return out, nil
 }
+
+// Resets reports whether the sequence restarts in each period (a template with a date token).
+func (t Template) Resets() bool { return t.t.Granularity() != platform.Continuous }
 
 // Raw returns the template as written; Prefix its literal prefix; Width the sequence's digits.
 func (t Template) Raw() string    { return t.raw }

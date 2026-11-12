@@ -192,9 +192,16 @@ func (m *Module) SetChargeTaxTreatment(ctx context.Context, cmd api.SetChargeTax
 }
 
 func (m *Module) RegisterInvoiceSeries(ctx context.Context, cmd api.RegisterInvoiceSeries) (api.Receipt, error) {
+	var date time.Time
+	if cmd.FirstPeriodDate != "" {
+		var err error
+		if date, err = domain.ParseDate(cmd.FirstPeriodDate); err != nil {
+			return api.Receipt{}, classify(err)
+		}
+	}
 	r, err := m.deps(cmd.TenantID, cmd.CommandID).RegisterSeries(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, api.ActionRegisterInvoiceSeries,
 		cmd.LegalEntityID, cmd.ExpectedRevision, cmd.OccurredAt, cmd), application.SeriesAsk{Kind: cmd.Kind, Template: cmd.Template,
-		FirstNumber: cmd.FirstNumber})
+		FirstNumber: cmd.FirstNumber, FirstPeriodDate: date})
 	return receipt(r, err)
 }
 

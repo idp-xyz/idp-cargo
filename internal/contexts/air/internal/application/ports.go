@@ -360,8 +360,9 @@ func (d Deps) HAWB(ctx context.Context, tenant air.TenantID, legalEntity, shipme
 const DocTypeHAWB = "HAWB"
 
 // RegisterSeries gives a legal entity its HAWB numbering: a template of the platform's language in Cargo's subset
-// whose numbers are HAWB numbers (capital letters and digits, twelve at most), and its first number, which seeds the
-// sequence of the registration's period.
+// whose numbers are HAWB numbers (capital letters and digits, twelve at most) and which does not reset (AIR does not
+// know the issuing office's time zone, so a year or month in the number could follow UTC instead), and its first
+// number, which seeds the sequence.
 func (d Deps) RegisterSeries(ctx context.Context, c Command, legalEntity, template string, first int64) (Receipt, error) {
 	hash, entered, stored, replayed, err := d.begin(ctx, c)
 	if err != nil || replayed {
@@ -370,6 +371,10 @@ func (d Deps) RegisterSeries(ctx context.Context, c Command, legalEntity, templa
 	tmpl, err := numbering.Parse(template)
 	if err != nil {
 		return Receipt{}, fmt.Errorf("%w: %v", air.ErrInvalidSeries, err)
+	}
+	if tmpl.Resets() {
+		return Receipt{}, fmt.Errorf("%w: %s restarts by date; a HAWB template does not reset yet (the issuing office's time zone is not known)",
+			air.ErrInvalidSeries, template)
 	}
 	longest, err := tmpl.Longest()
 	if err != nil || !air.ValidHAWB(longest) {

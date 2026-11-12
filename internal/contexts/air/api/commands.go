@@ -45,10 +45,9 @@ type LinkCarrierBooking struct {
 }
 
 // RegisterHawbSeries gives a legal entity its HAWB numbering, once (N1-HAWB; numbers from idp-platform-go, MD-28): a
-// template of capital letters and digits with date parts and one sequence, such as SHA{seq:7} or SHA{yy}{seq:6}
-// (tokens {yyyy}, {yy}, {mm}, {q} and one {seq:N} with N from 4 to 10; the sequence resets by the finest date part),
-// whose numbers are HAWB numbers (twelve characters at most), and the first number, from which the sequence of the
-// registration's period starts.
+// template of capital letters and digits around one sequence {seq:N} (N from 4 to 10), such as SHA{seq:7}, whose
+// numbers are HAWB numbers (twelve characters at most), and the first number. HAWB templates do not reset yet: AIR does
+// not know the issuing office's time zone, so a year or month in the number could follow UTC.
 type RegisterHawbSeries struct {
 	CommandID     string
 	TenantID      string

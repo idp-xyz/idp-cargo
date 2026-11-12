@@ -183,7 +183,7 @@ func TestDebitAndCreditNotesOnPostgres(t *testing.T) {
 	_, err = b.module.IssueDebitNote(ctx, dn1)
 	rejected("no series", err, "FIN_NO_SERIES")
 	for template, why := range map[string]string{"DN{rand:4}{seq:6}": "a random token", "dn{seq:6}": "lower case", "DN{seq:3}": "a narrow sequence",
-		"DNDNDNDNDN{yyyy}{mm}{seq:10}": "over twenty characters"} {
+		"DNDNDNDNDN{yyyy}{mm}{seq:10}": "over twenty characters", "DN{mm}{seq:5}": "a month without its year"} {
 		_, err = b.series("series-bad", api.KindDebitNote, template, 1)
 		rejected(why, err, "")
 	}
@@ -366,17 +366,25 @@ func TestDebitAndCreditNotesOnPostgres(t *testing.T) {
 	}
 
 	for name, sql := range map[string]string{
-		"renumber a note":          `UPDATE cargo_fin.debtor_invoice SET number='DN999999' WHERE invoice_id='DN-3'`,
-		"reissue a cancelled note": `UPDATE cargo_fin.debtor_invoice SET state='ISSUED' WHERE invoice_id='DN-1'`,
-		"delete a note line":       `DELETE FROM cargo_fin.debtor_invoice_line WHERE invoice_id='DN-3'`,
-		"wind a sequence back":     `UPDATE cargo_fin.numbering_sequence SET next_val=next_val-1 WHERE doc_type='DEBIT_NOTE/LE'`,
-		"delete a sequence":        `DELETE FROM cargo_fin.numbering_sequence WHERE doc_type='DEBIT_NOTE/LE'`,
-		"change a series":          `UPDATE cargo_fin.invoice_series SET first_number=2 WHERE kind='DEBIT_NOTE'`,
-		"change a profile":         `UPDATE cargo_fin.billing_profile_version SET title='x' WHERE debtor_party_id='party-a'`,
-		"change a tax treatment":   `UPDATE cargo_fin.charge_tax_treatment SET rate_bp=1300 WHERE charge_code='DOC_FEE'`,
+		"renumber a note":           `UPDATE cargo_fin.debtor_invoice SET number='DN999999' WHERE invoice_id='DN-3'`,
+		"reissue a cancelled note":  `UPDATE cargo_fin.debtor_invoice SET state='ISSUED' WHERE invoice_id='DN-1'`,
+		"delete a note line":        `DELETE FROM cargo_fin.debtor_invoice_line WHERE invoice_id='DN-3'`,
+		"wind a sequence back":      `UPDATE cargo_fin.numbering_sequence SET next_val=next_val-1 WHERE doc_type='DEBIT_NOTE/LE'`,
+		"delete a sequence":         `DELETE FROM cargo_fin.numbering_sequence WHERE doc_type='DEBIT_NOTE/LE'`,
+		"change a series":           `UPDATE cargo_fin.invoice_series SET first_number=2 WHERE kind='DEBIT_NOTE'`,
+		"jump a sequence":           `UPDATE cargo_fin.numbering_sequence SET next_val=next_val+2 WHERE doc_type='DEBIT_NOTE/LE'`,
+		"start a stray sequence":    `INSERT INTO cargo_fin.numbering_sequence (scope,doc_type,period,next_val) VALUES ($1,'DEBIT_NOTE/LE-9','',1)`,
+		"start past the seed":       `INSERT INTO cargo_fin.numbering_sequence (scope,doc_type,period,next_val) VALUES ($1,'DEBIT_NOTE/LE','2099',7)`,
+		"another tenant's sequence": `INSERT INTO cargo_fin.numbering_sequence (scope,doc_type,period,next_val) VALUES ('another-tenant','DEBIT_NOTE/LE','',1)`,
+		"change a profile":          `UPDATE cargo_fin.billing_profile_version SET title='x' WHERE debtor_party_id='party-a'`,
+		"change a tax treatment":    `UPDATE cargo_fin.charge_tax_treatment SET rate_bp=1300 WHERE charge_code='DOC_FEE'`,
 	} {
 		err := b.within(t, func(ctx context.Context, e bentopg.Executor) error {
-			_, err := e.Exec(ctx, sql)
+			var args []any
+			if strings.Contains(sql, "$1") {
+				args = append(args, b.tenant)
+			}
+			_, err := e.Exec(ctx, sql, args...)
 			return err
 		})
 		if code, _ := sqlState(err); code == "" {
@@ -420,6 +428,33 @@ func TestDebitAndCreditNotesOnPostgres(t *testing.T) {
 		t.Fatal("a forged debit note committed")
 	} else if _, constraint := sqlState(err); constraint != "freight_job_invoices_consistent" {
 		t.Fatalf("a forged debit note: %v", err)
+	}
+	// a copy of DN-3 billing nothing new but numbered off its template, with the sequence value drawn: the number is
+	// not the template's rendering of it
+	if err = b.within(t, func(ctx context.Context, e bentopg.Executor) error {
+		_, err := e.Exec(ctx, `WITH q AS (UPDATE cargo_fin.numbering_sequence SET next_val=next_val+1 WHERE doc_type='DEBIT_NOTE/LE' AND period=''
+              RETURNING next_val AS seq)
+            INSERT INTO cargo_fin.debtor_invoice (tenant_id,invoice_id,kind,job_id,legal_entity_id,number,number_seq,debtor_party_id,debtor_revision,
+              profile_version,currency,invoice_date,due_date,payment_days,payment_basis,terms_version,document_id,document_version,document_number,
+              master_number,document_issued_at,total_minor,local_total_minor,state,issued_by,issued_at,entered_at)
+            SELECT n.tenant_id,'DN-OFF-TEMPLATE',n.kind,n.job_id,n.legal_entity_id,'DN-NOT-A-TEMPLATE',q.seq,n.debtor_party_id,n.debtor_revision,
+              n.profile_version,n.currency,n.invoice_date,n.due_date,n.payment_days,n.payment_basis,n.terms_version,n.document_id,n.document_version,
+              n.document_number,n.master_number,n.document_issued_at,n.total_minor,n.local_total_minor,n.state,n.issued_by,n.issued_at,n.entered_at
+            FROM cargo_fin.debtor_invoice n, q WHERE n.invoice_id='DN-3'`)
+		if err != nil {
+			return err
+		}
+		if _, err = e.Exec(ctx, `INSERT INTO cargo_fin.debtor_invoice_line (tenant_id,invoice_id,line_no,job_id,job_line_no,side_version,charge_code,currency,
+              amount_minor,invoice_minor,local_minor,tax_version,treatment,rate_bp) SELECT tenant_id,'DN-OFF-TEMPLATE',line_no,job_id,job_line_no,side_version+7,
+              charge_code,currency,amount_minor,invoice_minor,local_minor,tax_version,treatment,rate_bp FROM cargo_fin.debtor_invoice_line WHERE invoice_id='DN-3'`); err != nil {
+			return err
+		}
+		_, err = e.Exec(ctx, `UPDATE cargo_fin.freight_job SET revision=revision+1 WHERE job_id='JOB-A'`)
+		return err
+	}); err == nil {
+		t.Fatal("a note numbered off its template committed")
+	} else if _, constraint := sqlState(err); constraint != "freight_job_invoices_consistent" {
+		t.Fatalf("a note numbered off its template: %v", err)
 	}
 }
 
@@ -655,8 +690,14 @@ func TestNumbersFollowTheInvoiceDatePeriod(t *testing.T) {
 	b.policyChange(t)(m.SetChargeTaxTreatment(ctx, api.SetChargeTaxTreatment{CommandID: "tax", TenantID: f.tenant, ActorID: "tax-1", LegalEntityID: "LE",
 		ExpectedRevision: b.policy, ChargeCode: "TRUCKING", Treatment: api.TaxTaxable, RateBP: 900, EffectiveFrom: may.AddDate(0, 0, -5).Format(time.DateOnly),
 		OccurredAt: at(may, -6)}))
-	b.policyChange(t)(m.RegisterInvoiceSeries(ctx, api.RegisterInvoiceSeries{CommandID: "series", TenantID: f.tenant, ActorID: "acct-1", LegalEntityID: "LE",
-		ExpectedRevision: b.policy, Kind: api.KindDebitNote, Template: "DN{yyyy}{mm}-{seq:4}", FirstNumber: 1, OccurredAt: at(may, -6)}))
+	series := api.RegisterInvoiceSeries{CommandID: "series", TenantID: f.tenant, ActorID: "acct-1", LegalEntityID: "LE", ExpectedRevision: b.policy,
+		Kind: api.KindDebitNote, Template: "DN{yyyy}{mm}-{seq:4}", FirstNumber: 5, OccurredAt: at(may, -6)}
+	if _, err = m.RegisterInvoiceSeries(ctx, series); !errors.Is(err, api.ErrRejected) || !strings.Contains(err.Error(), "names the date of its period") {
+		t.Fatalf("a first number above 1 without its period: %v", err)
+	}
+	// numbering moves from another system in May: May's notes continue from 5
+	series.CommandID, series.FirstPeriodDate = "series-may", may.Format(time.DateOnly)
+	b.policyChange(t)(m.RegisterInvoiceSeries(ctx, series))
 	if _, err = b.profile("profile-a", "party-a", api.BuyerCNEnterprise, 0); err != nil {
 		t.Fatal(err)
 	}
@@ -689,12 +730,12 @@ func TestNumbersFollowTheInvoiceDatePeriod(t *testing.T) {
 		}
 		numbers = append(numbers, r.Number)
 	}
-	want := []string{"DN" + may.Format("200601") + "-0001", "DN" + june.Format("200601") + "-0001", "DN" + june.Format("200601") + "-0002"}
+	want := []string{"DN" + may.Format("200601") + "-0005", "DN" + june.Format("200601") + "-0001", "DN" + june.Format("200601") + "-0002"}
 	if !slices.Equal(numbers, want) {
 		t.Fatalf("numbers %v, want %v", numbers, want)
 	}
 	policy, err := m.GetFinancePolicy(ctx, api.GetFinancePolicy{TenantID: f.tenant, LegalEntityID: "LE"})
-	if err != nil || len(policy.Series) != 1 || !slices.Equal(policy.Series[0].Last, []api.NumberPeriod{{Period: may.Format("200601"), Last: 1},
+	if err != nil || len(policy.Series) != 1 || !slices.Equal(policy.Series[0].Last, []api.NumberPeriod{{Period: may.Format("200601"), Last: 5},
 		{Period: june.Format("200601"), Last: 2}}) {
 		t.Fatalf("policy series: %+v %v", policy.Series, err)
 	}

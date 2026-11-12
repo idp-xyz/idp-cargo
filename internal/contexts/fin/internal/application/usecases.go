@@ -79,8 +79,10 @@ func (d Deps) RecordRate(ctx context.Context, c Command, e fin.RateEntry) (Recei
 	})
 }
 
-// changePolicy applies a change to the locked policy of the legal entity named by the command.
-func (d Deps) changePolicy(ctx context.Context, c Command, apply func(context.Context, *fin.FinancePolicy) (int, error)) (Receipt, error) {
+// changePolicy applies a change to the locked policy of the legal entity named by the command; after, when given, runs
+// in the same transaction once the policy is saved.
+func (d Deps) changePolicy(ctx context.Context, c Command, apply func(context.Context, *fin.FinancePolicy) (int, error),
+	after ...func(context.Context, *fin.FinancePolicy) error) (Receipt, error) {
 	hash, entered, stored, replayed, err := d.begin(ctx, c)
 	if err != nil || replayed {
 		return stored, err
@@ -101,6 +103,11 @@ func (d Deps) changePolicy(ctx context.Context, c Command, apply func(context.Co
 		if revision, err = d.Policies.Save(txCtx, p, revision); err != nil {
 			return Receipt{}, nil, err
 		}
+		for _, fn := range after {
+			if err = fn(txCtx, p); err != nil {
+				return Receipt{}, nil, err
+			}
+		}
 		return Receipt{SubjectID: c.Subject, NewRevision: revision, Version: version}, p, nil
 	})
 }
@@ -115,11 +122,13 @@ func (d Deps) SetTax(ctx context.Context, c Command, t fin.TaxTreatment) (Receip
 	})
 }
 
-// SeriesAsk is a numbering series as asked: the note kind, the template and the first number.
+// SeriesAsk is a numbering series as asked: the note kind, the template, the first number and, for a template that
+// resets, a date of the period the first number belongs to (needed when the first number is above 1).
 type SeriesAsk struct {
-	Kind        string
-	Template    string
-	FirstNumber int64
+	Kind            string
+	Template        string
+	FirstNumber     int64
+	FirstPeriodDate time.Time
 }
 
 // notePattern is what a note number may hold (debtor_invoice.number: five to twenty characters).
@@ -127,34 +136,43 @@ var notePattern = regexp.MustCompile(`^[0-9A-Z-]{5,20}$`)
 
 // RegisterSeries fixes the legal entity's numbering of a note kind: a template of the platform's language in Cargo's
 // subset whose numbers are capital letters, digits and hyphens, five to twenty characters, and the first number, which
-// seeds the platform's sequence of the registration's period in the same transaction.
+// seeds the platform's sequence in the same transaction: of the template's only sequence, or, for a template that
+// resets, of the period of the date given (notes take the period of their invoice dates, which FIN cannot derive from
+// a registration's instant without the legal entity's time zone).
 func (d Deps) RegisterSeries(ctx context.Context, c Command, in SeriesAsk) (Receipt, error) {
 	if d.Numbers == nil {
 		return Receipt{}, ErrMissingDependency
 	}
-	tmpl, err := numbering.Parse(in.Template)
-	if err != nil {
-		return Receipt{}, fmt.Errorf("%w: %v", fin.ErrInvalid, err)
-	}
-	longest, err := tmpl.Longest()
-	if err != nil || !notePattern.MatchString(longest) {
-		return Receipt{}, fmt.Errorf("%w: %s renders %q; a note number is 5 to 20 capital letters, digits and hyphens", fin.ErrInvalid, in.Template, longest)
-	}
-	first, err := tmpl.Render(in.FirstNumber, c.OccurredAt)
-	if err != nil || !notePattern.MatchString(first) {
-		return Receipt{}, fmt.Errorf("%w: first number %d of %s", fin.ErrInvalid, in.FirstNumber, in.Template)
-	}
-	period := tmpl.Period(c.OccurredAt)
-	s := fin.Series{Kind: in.Kind, Prefix: tmpl.Prefix(), Template: in.Template, FirstNumber: in.FirstNumber, SeedPeriod: period}
-	return d.changePolicy(ctx, c, func(txCtx context.Context, p *fin.FinancePolicy) (int, error) {
+	var seed string
+	return d.changePolicy(ctx, c, func(_ context.Context, p *fin.FinancePolicy) (int, error) {
+		tmpl, err := numbering.Parse(in.Template)
+		if err != nil {
+			return 0, fmt.Errorf("%w: %v", fin.ErrInvalid, err)
+		}
+		longest, err := tmpl.Longest()
+		if err != nil || !notePattern.MatchString(longest) {
+			return 0, fmt.Errorf("%w: %s renders %q; a note number is 5 to 20 capital letters, digits and hyphens", fin.ErrInvalid, in.Template, longest)
+		}
+		period := ""
+		switch {
+		case !tmpl.Resets():
+		case !in.FirstPeriodDate.IsZero():
+			period = tmpl.Period(in.FirstPeriodDate)
+		case in.FirstNumber > 1:
+			return 0, fmt.Errorf("%w: %s restarts by date; a first number above 1 names the date of its period", fin.ErrInvalid, in.Template)
+		}
+		if _, err = tmpl.Render(in.FirstNumber, c.OccurredAt); err != nil {
+			return 0, fmt.Errorf("%w: first number %d of %s: %v", fin.ErrInvalid, in.FirstNumber, in.Template, err)
+		}
+		s := fin.Series{Kind: in.Kind, Prefix: tmpl.Prefix(), Template: in.Template, FirstNumber: in.FirstNumber, SeedPeriod: period}
 		if err := p.RegisterSeries(s, c.Scope.ActorID, c.OccurredAt); err != nil {
 			return 0, err
 		}
-		docType := numbering.DocType(in.Kind, p.State().LegalEntityID)
-		if err := d.Numbers.Seed(txCtx, string(c.Scope.TenantID), docType, period, in.FirstNumber-1); err != nil {
-			return 0, err
-		}
+		seed = period
 		return len(p.State().Series), nil
+	}, func(txCtx context.Context, p *fin.FinancePolicy) error {
+		// the sequence's seed needs its series saved (the sequence table admits rows of registered series only)
+		return d.Numbers.Seed(txCtx, string(c.Scope.TenantID), numbering.DocType(in.Kind, p.State().LegalEntityID), seed, in.FirstNumber-1)
 	})
 }
 

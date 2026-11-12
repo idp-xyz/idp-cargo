@@ -202,8 +202,9 @@ const (
 // digits or hyphens, then literals, the date tokens {yyyy}, {yy}, {mm}, {q} and one {seq:N} with N from 4 to 10 —
 // whose numbers are 5 to 20 capital letters, digits and hyphens. The sequence resets by the finest date token (year,
 // quarter, month, or never) and a note takes the period of its invoice date; numbers are drawn at issue without gaps
-// within a period. FirstNumber starts the sequence of the registration's period. The debit and credit note prefixes
-// never start one another.
+// within a period. FirstNumber starts the sequence: of a template that never resets, or, for one that resets, of the
+// period of FirstPeriodDate (YYYY-MM-DD; needed when FirstNumber is above 1, as FIN keeps no time zone of the legal
+// entity to place the registration's instant). The debit and credit note prefixes never start one another.
 type RegisterInvoiceSeries struct {
 	CommandID        string
 	TenantID         string
@@ -213,6 +214,7 @@ type RegisterInvoiceSeries struct {
 	Kind             string
 	Template         string
 	FirstNumber      int64
+	FirstPeriodDate  string
 	OccurredAt       time.Time
 }
 

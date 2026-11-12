@@ -61,9 +61,10 @@ func main() {
 func run() error {
 	manifest := flag.String("manifest", "", "file listing the contexts' migration directories in order, such as migrations/manifest/contexts.txt")
 	dir := flag.String("directory", "migrations/org", "one context's migration directory, used when -manifest is not set")
+	withNumbering := flag.Bool("numbering", false, "with -directory: the context uses idp-platform-go's numbering, applied in its schema first")
 	apply := flag.Bool("apply", false, "explicitly apply to PostgreSQL as dedicated migrator role")
 	flag.Parse()
-	entries := []entry{{Dir: *dir}}
+	entries := []entry{{Dir: *dir, Numbering: *withNumbering}}
 	if *manifest != "" {
 		var err error
 		if entries, err = readManifest(*manifest); err != nil {
@@ -147,7 +148,9 @@ func run() error {
 	return nil
 }
 
-// load reads the entries' migrations in order: a context's platform assets before its own migrations.
+// load reads the entries' migrations in order: a context's platform assets before its own migrations. Platform assets
+// are self-contained (they create their schema if missing), so on a fresh database they run first and on an upgraded
+// one when they are new; a Cargo migration that builds on a later platform asset must not run before it.
 func load(entries []entry) ([]migration, error) {
 	var items []migration
 	for _, e := range entries {

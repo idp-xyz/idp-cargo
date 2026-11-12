@@ -178,7 +178,7 @@ func (f *fixture) open(id, consolidation, booking string) (api.Receipt, error) {
 func (f *fixture) series(t *testing.T) {
 	t.Helper()
 	// templates whose numbers are no HAWB numbers, or of the platform's tokens Cargo does not take, are refused
-	for _, template := range []string{"SH-{seq:7}", "SHANGHAI{seq:6}", "SHA{rand:4}{seq:6}", "sha{seq:7}", "{seq:7}"} {
+	for _, template := range []string{"SH-{seq:7}", "SHANGHAI{seq:6}", "SHA{rand:4}{seq:6}", "sha{seq:7}", "{seq:7}", "SHA{yy}{seq:6}"} {
 		if _, err := f.module.RegisterHawbSeries(context.Background(), api.RegisterHawbSeries{CommandID: "series-" + template, TenantID: f.tenant,
 			ActorID: "ops-1", LegalEntityID: "LE", Template: template, FirstNumber: 1, OccurredAt: f.at}); !errors.Is(err, api.ErrRejected) {
 			t.Fatalf("template %s: %v", template, err)

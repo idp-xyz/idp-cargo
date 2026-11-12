@@ -3,10 +3,12 @@
 -- template, its literal prefix and its first number, fixed once; the platform's sequence table
 -- cargo_fin.numbering_sequence (created by cargo-migrate from the platform's asset just before FIN's migrations) draws
 -- the numbers in the issuing transaction, per period of the template (none, year, quarter or month). Cargo owns that
--- table's data and permissions: rows are scoped by tenant (row-level security), a sequence only moves forward and is
--- never deleted, and at commit it holds exactly the numbers of its notes. A note keeps its period. An existing series
--- becomes the continuous template <prefix>{seq:<width>} with its sequence after the last number drawn, so issued
--- numbers stay and new ones continue.
+-- table's data and permissions: rows are scoped by tenant (row-level security); a sequence starts at 1 or at its
+-- series' seed, only for a registered series, moves one number at a time, is never deleted, and at commit holds exactly
+-- the numbers of its notes. A note keeps its period, and its number is its template rendered at its sequence value and
+-- invoice date (the database renders Cargo's template subset itself). An existing series becomes the continuous template
+-- <prefix>{seq:<width>} with its sequence's last value the last number drawn, so issued numbers stay and new ones
+-- continue.
 
 INSERT INTO cargo_fin.numbering_sequence (scope, doc_type, period, next_val)
   SELECT tenant_id, kind || '/' || legal_entity_id, '', next_seq - 1 FROM cargo_fin.invoice_series WHERE next_seq > 1;
@@ -16,14 +18,33 @@ ALTER TABLE cargo_fin.numbering_sequence FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON cargo_fin.numbering_sequence USING (scope = current_setting('app.tenant_id', true))
   WITH CHECK (scope = current_setting('app.tenant_id', true));
 CREATE FUNCTION cargo_fin.numbering_forward_only() RETURNS trigger LANGUAGE plpgsql AS $fn$
+DECLARE
+  s cargo_fin.invoice_series;
 BEGIN
-  IF TG_OP = 'DELETE' OR NEW.scope <> OLD.scope OR NEW.doc_type <> OLD.doc_type OR NEW.period <> OLD.period OR NEW.next_val <= OLD.next_val THEN
-    RAISE EXCEPTION 'cargo_fin: a numbering sequence only moves forward' USING ERRCODE = 'restrict_violation';
+  IF TG_OP = 'INSERT' THEN
+    SELECT * INTO s FROM cargo_fin.invoice_series x WHERE x.tenant_id = NEW.scope AND x.kind || '/' || x.legal_entity_id = NEW.doc_type;
+    IF s.tenant_id IS NULL OR NOT (NEW.next_val = 1 OR (NEW.period = s.seed_period AND NEW.next_val = s.first_number - 1)) THEN
+      RAISE EXCEPTION 'cargo_fin: a numbering sequence starts at 1 or at its series'' seed' USING ERRCODE = 'restrict_violation';
+    END IF;
+    RETURN NEW;
+  END IF;
+  IF TG_OP = 'DELETE' OR NEW.scope <> OLD.scope OR NEW.doc_type <> OLD.doc_type OR NEW.period <> OLD.period OR NEW.next_val <> OLD.next_val + 1 THEN
+    RAISE EXCEPTION 'cargo_fin: a numbering sequence moves one number at a time' USING ERRCODE = 'restrict_violation';
   END IF;
   RETURN NEW;
 END $fn$;
-CREATE TRIGGER numbering_sequence_forward BEFORE UPDATE OR DELETE ON cargo_fin.numbering_sequence
-  FOR EACH ROW EXECUTE FUNCTION cargo_fin.numbering_forward_only();
+
+-- Cargo's template subset rendered as the platform renders it: {yyyy} {yy} {mm} {q} from the date, {seq:N} zero-padded;
+-- the period is that of the finest date token (month, quarter, year, or none).
+CREATE FUNCTION cargo_fin.render_number(template text, seq bigint, d date) RETURNS text LANGUAGE sql IMMUTABLE AS $fn$
+  SELECT regexp_replace(replace(replace(replace(replace(template, '{yyyy}', to_char(d, 'YYYY')), '{yy}', to_char(d, 'YY')), '{mm}', to_char(d, 'MM')),
+      '{q}', extract(quarter FROM d)::int::text), '\{seq:[0-9]+\}', lpad(seq::text, substring(template FROM '\{seq:([0-9]+)\}')::int, '0'))
+$fn$;
+CREATE FUNCTION cargo_fin.number_period(template text, d date) RETURNS text LANGUAGE sql IMMUTABLE AS $fn$
+  SELECT CASE WHEN strpos(template, '{mm}') > 0 THEN to_char(d, 'YYYYMM')
+    WHEN strpos(template, '{q}') > 0 THEN to_char(d, 'YYYY') || 'Q' || extract(quarter FROM d)::int
+    WHEN strpos(template, '{yyyy}') > 0 OR strpos(template, '{yy}') > 0 THEN to_char(d, 'YYYY') ELSE '' END
+$fn$;
 
 DROP TRIGGER invoice_series_rules ON cargo_fin.invoice_series;
 DROP TRIGGER invoice_series_consistent ON cargo_fin.invoice_series;
@@ -33,8 +54,12 @@ UPDATE cargo_fin.invoice_series SET template = prefix || '{seq:' || width || '}'
 ALTER TABLE cargo_fin.invoice_series DROP CONSTRAINT invoice_series_range, DROP COLUMN width, DROP COLUMN start_seq, DROP COLUMN next_seq;
 ALTER TABLE cargo_fin.invoice_series ALTER COLUMN template SET NOT NULL, ALTER COLUMN first_number SET NOT NULL,
   ADD CONSTRAINT invoice_series_template CHECK (starts_with(template, prefix) AND substr(template, length(prefix) + 1, 1) = '{' AND length(template) <= 60
-    AND first_number >= 1 AND length(seed_period) <= 8);
+    AND template ~ '^[0-9A-Z][0-9A-Z-]*(\{(yyyy|yy|mm|q)\}|[0-9A-Z-])*\{seq:([4-9]|10)\}(\{(yyyy|yy|mm|q)\}|[0-9A-Z-])*$'
+    AND (template !~ '\{(mm|q)\}' OR template ~ '\{(yyyy|yy)\}') AND first_number >= 1 AND length(seed_period) <= 8);
 CREATE TRIGGER invoice_series_immutable BEFORE UPDATE OR DELETE ON cargo_fin.invoice_series FOR EACH ROW EXECUTE FUNCTION cargo_fin.reject_row_change();
+-- Rows inserted from here on start at 1 or at their series' seed, and move one number at a time.
+CREATE TRIGGER numbering_sequence_rules BEFORE INSERT OR UPDATE OR DELETE ON cargo_fin.numbering_sequence
+  FOR EACH ROW EXECUTE FUNCTION cargo_fin.numbering_forward_only();
 
 ALTER TABLE cargo_fin.debtor_invoice ADD COLUMN number_period text NOT NULL DEFAULT '' CHECK (length(number_period) <= 8);
 CREATE UNIQUE INDEX debtor_invoice_number_seq ON cargo_fin.debtor_invoice (tenant_id, legal_entity_id, kind, number_period, number_seq);
@@ -47,12 +72,14 @@ DECLARE
   v_kind text := split_part(NEW.doc_type, '/', 1);
   v_le text := substr(NEW.doc_type, length(split_part(NEW.doc_type, '/', 1)) + 2);
   v_seed bigint := 0;
+  v_last bigint;
 BEGIN
   SELECT * INTO s FROM cargo_fin.invoice_series x WHERE x.tenant_id = NEW.scope AND x.legal_entity_id = v_le AND x.kind = v_kind;
   IF FOUND AND NEW.period = s.seed_period THEN
     v_seed := s.first_number - 1;
   END IF;
-  IF s.tenant_id IS NULL OR NEW.next_val - v_seed <> (SELECT count(*) FROM cargo_fin.debtor_invoice n WHERE n.tenant_id = NEW.scope
+  SELECT q.next_val INTO v_last FROM cargo_fin.numbering_sequence q WHERE q.scope = NEW.scope AND q.doc_type = NEW.doc_type AND q.period = NEW.period;
+  IF s.tenant_id IS NULL OR v_last - v_seed <> (SELECT count(*) FROM cargo_fin.debtor_invoice n WHERE n.tenant_id = NEW.scope
        AND n.legal_entity_id = v_le AND n.kind = v_kind AND n.number_period = NEW.period) THEN
     RAISE EXCEPTION 'cargo_fin: sequence %/%/% drew numbers no note holds', NEW.scope, NEW.doc_type, NEW.period
       USING ERRCODE = 'check_violation', CONSTRAINT = 'invoice_series_consistent';
@@ -64,8 +91,9 @@ CREATE CONSTRAINT TRIGGER invoice_series_consistent AFTER INSERT OR UPDATE ON ca
 
 -- At commit, a job's notes are consistent:
 -- (a) a note is of the job's legal entity, its lines are numbered from 1 without gaps and its totals are their sums;
--- (b) its number starts with its series' prefix and its sequence value is one the platform's sequence of its period
--- drew (after the seed of the registration period); (c) its invoice date is the issue's date in some time zone (UTC-12
+-- (b) its number is its series' template rendered at its sequence value and invoice date, its period the template's
+-- period of that date, and its sequence value one the platform's sequence of the period drew (after the first number's
+-- seed in the seed period); (c) its invoice date is the issue's date in some time zone (UTC-12
 -- to UTC+14);
 -- (d) a debit note's due date follows its payment terms, those of the debtor's credit account version it names or none
 -- (due on the invoice date), and it is CANCELLED_BY_CREDIT_NOTE exactly when every line is reversed; a cancelled job has
@@ -93,7 +121,9 @@ BEGIN
              FROM cargo_fin.debtor_invoice_line l WHERE l.tenant_id = n.tenant_id AND l.invoice_id = n.invoice_id)
          OR NOT EXISTS (SELECT 1 FROM cargo_fin.invoice_series s JOIN cargo_fin.numbering_sequence q ON q.scope = s.tenant_id
              AND q.doc_type = s.kind || '/' || s.legal_entity_id AND q.period = n.number_period
-           WHERE s.tenant_id = n.tenant_id AND s.legal_entity_id = n.legal_entity_id AND s.kind = n.kind AND starts_with(n.number, s.prefix)
+           WHERE s.tenant_id = n.tenant_id AND s.legal_entity_id = n.legal_entity_id AND s.kind = n.kind
+             AND n.number = cargo_fin.render_number(s.template, n.number_seq, n.invoice_date)
+             AND n.number_period = cargo_fin.number_period(s.template, n.invoice_date)
              AND n.number_seq > CASE WHEN n.number_period = s.seed_period THEN s.first_number - 1 ELSE 0 END AND n.number_seq <= q.next_val)
          OR n.issued_at < (n.invoice_date::timestamp AT TIME ZONE 'UTC') - interval '14 hours'
          OR n.issued_at >= (n.invoice_date::timestamp AT TIME ZONE 'UTC') + interval '36 hours'))

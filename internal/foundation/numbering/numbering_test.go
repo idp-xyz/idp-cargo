@@ -12,7 +12,7 @@ func day(y int, m time.Month, d int) time.Time { return time.Date(y, m, d, 0, 0,
 // period follows the finest date part; a sequence wider than its width is exhausted.
 func TestTemplates(t *testing.T) {
 	for _, raw := range []string{"{seq:6}", "DN{seq:3}", "DN{seq:11}", "DN{seq}", "DN{seq:6}{seq:6}", "DN{rand:4}{seq:6}", "DN{seqx:6}", "DN{dd}{seq:6}",
-		"DN{yyyy:2}{seq:6}", "DN{seq:6}}", "DN{unknown}{seq:6}", "DN-{hh}{seq:6}"} {
+		"DN{yyyy:2}{seq:6}", "DN{seq:6}}", "DN{unknown}{seq:6}", "DN-{hh}{seq:6}", "DN{mm}{seq:5}", "DNQ{q}-{seq:4}", "DN{seq:04}"} {
 		if _, err := Parse(raw); !errors.Is(err, ErrInvalidTemplate) {
 			t.Errorf("%q: %v", raw, err)
 		}
@@ -42,6 +42,9 @@ func TestTemplates(t *testing.T) {
 		t.Fatalf("quarterly %q", n)
 	}
 	continuous, _ := Parse("SHA{seq:7}")
+	if continuous.Resets() || !yearly.Resets() || !monthly.Resets() {
+		t.Fatal("resets")
+	}
 	if continuous.Period(day(2026, 11, 12)) != "" {
 		t.Fatal("a continuous sequence has no period")
 	}
