@@ -22,7 +22,8 @@ DECLARE
   s cargo_fin.invoice_series;
 BEGIN
   IF TG_OP = 'INSERT' THEN
-    SELECT * INTO s FROM cargo_fin.invoice_series x WHERE x.tenant_id = NEW.scope AND x.kind || '/' || x.legal_entity_id = NEW.doc_type;
+    SELECT * INTO s FROM cargo_fin.invoice_series x WHERE x.tenant_id = NEW.scope AND x.kind = split_part(NEW.doc_type, '/', 1)
+      AND x.legal_entity_id = substr(NEW.doc_type, length(split_part(NEW.doc_type, '/', 1)) + 2);
     IF s.tenant_id IS NULL OR NOT (NEW.next_val = 1 OR (NEW.period = s.seed_period AND NEW.next_val = s.first_number - 1)) THEN
       RAISE EXCEPTION 'cargo_fin: a numbering sequence starts at 1 or at its series'' seed' USING ERRCODE = 'restrict_violation';
     END IF;
@@ -35,10 +36,12 @@ BEGIN
 END $fn$;
 
 -- Cargo's template subset rendered as the platform renders it: {yyyy} {yy} {mm} {q} from the date, {seq:N} zero-padded;
--- the period is that of the finest date token (month, quarter, year, or none).
+-- NULL for a sequence value wider than N (which no draw commits). The period is that of the finest date token (month,
+-- quarter, year, or none).
 CREATE FUNCTION cargo_fin.render_number(template text, seq bigint, d date) RETURNS text LANGUAGE sql IMMUTABLE AS $fn$
-  SELECT regexp_replace(replace(replace(replace(replace(template, '{yyyy}', to_char(d, 'YYYY')), '{yy}', to_char(d, 'YY')), '{mm}', to_char(d, 'MM')),
-      '{q}', extract(quarter FROM d)::int::text), '\{seq:[0-9]+\}', lpad(seq::text, substring(template FROM '\{seq:([0-9]+)\}')::int, '0'))
+  SELECT CASE WHEN seq < 1 OR length(seq::text) > substring(template FROM '\{seq:([0-9]+)\}')::int THEN NULL
+    ELSE regexp_replace(replace(replace(replace(replace(template, '{yyyy}', to_char(d, 'YYYY')), '{yy}', to_char(d, 'YY')), '{mm}', to_char(d, 'MM')),
+      '{q}', extract(quarter FROM d)::int::text), '\{seq:[0-9]+\}', lpad(seq::text, substring(template FROM '\{seq:([0-9]+)\}')::int, '0')) END
 $fn$;
 CREATE FUNCTION cargo_fin.number_period(template text, d date) RETURNS text LANGUAGE sql IMMUTABLE AS $fn$
   SELECT CASE WHEN strpos(template, '{mm}') > 0 THEN to_char(d, 'YYYYMM')
@@ -55,7 +58,7 @@ ALTER TABLE cargo_fin.invoice_series DROP CONSTRAINT invoice_series_range, DROP 
 ALTER TABLE cargo_fin.invoice_series ALTER COLUMN template SET NOT NULL, ALTER COLUMN first_number SET NOT NULL,
   ADD CONSTRAINT invoice_series_template CHECK (starts_with(template, prefix) AND substr(template, length(prefix) + 1, 1) = '{' AND length(template) <= 60
     AND template ~ '^[0-9A-Z][0-9A-Z-]*(\{(yyyy|yy|mm|q)\}|[0-9A-Z-])*\{seq:([4-9]|10)\}(\{(yyyy|yy|mm|q)\}|[0-9A-Z-])*$'
-    AND (template !~ '\{(mm|q)\}' OR template ~ '\{(yyyy|yy)\}') AND first_number >= 1 AND length(seed_period) <= 8);
+    AND (template !~ '\{(mm|q)\}' OR template ~ '\{(yyyy|yy)\}') AND first_number >= 1 AND seed_period ~ '^([0-9]{4}([0-9]{2}|Q[1-4])?)?$');
 CREATE TRIGGER invoice_series_immutable BEFORE UPDATE OR DELETE ON cargo_fin.invoice_series FOR EACH ROW EXECUTE FUNCTION cargo_fin.reject_row_change();
 -- Rows inserted from here on start at 1 or at their series' seed, and move one number at a time.
 CREATE TRIGGER numbering_sequence_rules BEFORE INSERT OR UPDATE OR DELETE ON cargo_fin.numbering_sequence

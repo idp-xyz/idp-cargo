@@ -155,6 +155,8 @@ func (d Deps) RegisterSeries(ctx context.Context, c Command, in SeriesAsk) (Rece
 		}
 		period := ""
 		switch {
+		case !tmpl.Resets() && !in.FirstPeriodDate.IsZero():
+			return 0, fmt.Errorf("%w: %s never resets; a first period date is for a template that does", fin.ErrInvalid, in.Template)
 		case !tmpl.Resets():
 		case !in.FirstPeriodDate.IsZero():
 			period = tmpl.Period(in.FirstPeriodDate)

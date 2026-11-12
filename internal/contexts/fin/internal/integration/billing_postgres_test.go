@@ -17,6 +17,7 @@ import (
 	finmodule "go.idp.xyz/idp-cargo/internal/contexts/fin"
 	"go.idp.xyz/idp-cargo/internal/contexts/fin/api"
 	fulapi "go.idp.xyz/idp-cargo/internal/contexts/ful/api"
+	"go.idp.xyz/idp-cargo/internal/foundation/numbering"
 	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
@@ -429,8 +430,8 @@ func TestDebitAndCreditNotesOnPostgres(t *testing.T) {
 	} else if _, constraint := sqlState(err); constraint != "freight_job_invoices_consistent" {
 		t.Fatalf("a forged debit note: %v", err)
 	}
-	// a copy of DN-3 billing nothing new but numbered off its template, with the sequence value drawn: the number is
-	// not the template's rendering of it
+	// a copy of DN-3 numbered off its template, with the sequence value drawn, is refused at commit (the number check
+	// itself is TestDatabaseRendersNumbersAsThePlatform's)
 	if err = b.within(t, func(ctx context.Context, e bentopg.Executor) error {
 		_, err := e.Exec(ctx, `WITH q AS (UPDATE cargo_fin.numbering_sequence SET next_val=next_val+1 WHERE doc_type='DEBIT_NOTE/LE' AND period=''
               RETURNING next_val AS seq)
@@ -742,5 +743,51 @@ func TestNumbersFollowTheInvoiceDatePeriod(t *testing.T) {
 	note, err := m.GetDebtorInvoice(ctx, api.GetDebtorInvoice{TenantID: f.tenant, InvoiceID: "DN-JOB-2"})
 	if err != nil || note.Number != want[2] {
 		t.Fatalf("note %+v %v", note, err)
+	}
+}
+
+// The database renders Cargo's template subset as the platform does: for templates of every date token and dates at
+// the edges of months, quarters and years, render_number and number_period agree with the Go renderer, and a sequence
+// value wider than its template renders nothing.
+func TestDatabaseRendersNumbersAsThePlatform(t *testing.T) {
+	f := newFixture(t)
+	templates := []string{"DN{seq:6}", "DN{yy}{seq:5}", "DN-{yyyy}-{seq:4}", "DN{yyyy}{mm}-{seq:4}", "CN{yy}Q{q}{seq:4}", "D{seq:4}-X", "INV{yy}{mm}{seq:6}A"}
+	dates := []time.Time{time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 3, 31, 0, 0, 0, 0, time.UTC), time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC),
+		time.Date(2028, 2, 29, 0, 0, 0, 0, time.UTC), time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC), time.Date(2099, 10, 1, 0, 0, 0, 0, time.UTC)}
+	compared := 0
+	if err := f.within(t, func(ctx context.Context, e bentopg.Executor) error {
+		for _, raw := range templates {
+			tmpl, err := numbering.Parse(raw)
+			if err != nil {
+				return err
+			}
+			for _, d := range dates {
+				for _, seq := range []int64{1, 42, 9_999} {
+					want, err := tmpl.Render(seq, d)
+					if err != nil {
+						return err
+					}
+					var number, period string
+					if err = e.QueryRow(ctx, `SELECT cargo_fin.render_number($1, $2, $3::date), cargo_fin.number_period($1, $3::date)`, raw, seq,
+						d.Format(time.DateOnly)).Scan(&number, &period); err != nil {
+						return err
+					}
+					if number != want || period != tmpl.Period(d) {
+						t.Errorf("%s %d %s: database %q %q, Go %q %q", raw, seq, d.Format(time.DateOnly), number, period, want, tmpl.Period(d))
+					}
+					compared++
+				}
+			}
+		}
+		var wide *string
+		if err := e.QueryRow(ctx, `SELECT cargo_fin.render_number('DN{seq:4}', 12345, date '2026-11-12')`).Scan(&wide); err != nil || wide != nil {
+			t.Errorf("a sequence wider than its template: %v %v", wide, err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if compared != len(templates)*len(dates)*3 {
+		t.Fatalf("compared %d", compared)
 	}
 }

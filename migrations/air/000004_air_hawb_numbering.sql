@@ -20,7 +20,8 @@ DECLARE
   s cargo_air.hawb_series;
 BEGIN
   IF TG_OP = 'INSERT' THEN
-    SELECT * INTO s FROM cargo_air.hawb_series x WHERE x.tenant_id = NEW.scope AND 'HAWB/' || x.legal_entity_id = NEW.doc_type;
+    SELECT * INTO s FROM cargo_air.hawb_series x WHERE x.tenant_id = NEW.scope AND starts_with(NEW.doc_type, 'HAWB/')
+      AND x.legal_entity_id = substr(NEW.doc_type, 6);
     IF s.tenant_id IS NULL OR NOT (NEW.next_val = 1 OR (NEW.period = s.seed_period AND NEW.next_val = s.first_number - 1)) THEN
       RAISE EXCEPTION 'cargo_air: a numbering sequence starts at 1 or at its series'' seed' USING ERRCODE = 'restrict_violation';
     END IF;
