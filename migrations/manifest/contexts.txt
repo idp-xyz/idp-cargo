@@ -1,5 +1,6 @@
 # Order in which cargo-migrate applies the bounded contexts' migrations (rule DB9).
 # Each line names a directory under migrations/; files inside are named NNNNNN_<context>_<topic>.sql.
+# "numbering" after a name applies idp-platform-go's numbering assets in the context's schema first (MD-28).
 ref
 org
 rate
@@ -7,6 +8,6 @@ com
 ful
 phy
 book
-air
+air numbering
 doc
-fin
+fin numbering

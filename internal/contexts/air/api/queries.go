@@ -230,13 +230,20 @@ type DocPart struct {
 	GoodsDescription  string
 }
 
-// HawbSeries is a legal entity's HAWB series.
+// HawbSeries is a legal entity's HAWB numbering: its template, first number and the last number taken per period
+// ("" for a template that never resets).
 type HawbSeries struct {
 	LegalEntityID string
-	Prefix        string
-	Width         int
-	Next          int64
+	Template      string
+	FirstNumber   int64
 	Revision      int64
+	Last          []NumberPeriod
+}
+
+// NumberPeriod is the last sequence value a period took.
+type NumberPeriod struct {
+	Period string
+	Last   int64
 }
 
 // Queries.

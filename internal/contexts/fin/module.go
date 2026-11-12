@@ -27,6 +27,7 @@ import (
 	fulapi "go.idp.xyz/idp-cargo/internal/contexts/ful/api"
 	rateapi "go.idp.xyz/idp-cargo/internal/contexts/rate/api"
 	"go.idp.xyz/idp-cargo/internal/foundation/bento"
+	"go.idp.xyz/idp-cargo/internal/foundation/numbering"
 	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
@@ -42,6 +43,7 @@ type Module struct {
 	auth      api.Authorizer
 	clock     bento.SystemClock
 	window    kernel.RecordWindow
+	numbers   *numbering.Sequences
 }
 
 // Option configures a Module.
@@ -69,6 +71,9 @@ func New(db *bentopg.DB, org orgacl.ORG, rate rateapi.PricingBasisQueries, ful f
 	}
 	m := &Module{db: db, outbox: outbox, shipments: fulacl.Shipments{FUL: ful}, pricing: rateacl.Pricing{RATE: rate}, directory: orgacl.Directory{ORG: org},
 		documents: docacl.Documents{DOC: doc}, auth: auth, window: kernel.DefaultRecordWindow}
+	if m.numbers, err = numbering.NewSequences(db, "cargo_fin"); err != nil {
+		return nil, err
+	}
 	for _, opt := range opts {
 		opt(m)
 	}
@@ -187,9 +192,16 @@ func (m *Module) SetChargeTaxTreatment(ctx context.Context, cmd api.SetChargeTax
 }
 
 func (m *Module) RegisterInvoiceSeries(ctx context.Context, cmd api.RegisterInvoiceSeries) (api.Receipt, error) {
+	var date time.Time
+	if cmd.FirstPeriodDate != "" {
+		var err error
+		if date, err = domain.ParseDate(cmd.FirstPeriodDate); err != nil {
+			return api.Receipt{}, classify(err)
+		}
+	}
 	r, err := m.deps(cmd.TenantID, cmd.CommandID).RegisterSeries(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, api.ActionRegisterInvoiceSeries,
-		cmd.LegalEntityID, cmd.ExpectedRevision, cmd.OccurredAt, cmd), domain.Series{Kind: cmd.Kind, Prefix: cmd.Prefix, Width: cmd.Width,
-		Start: cmd.FirstNumber})
+		cmd.LegalEntityID, cmd.ExpectedRevision, cmd.OccurredAt, cmd), application.SeriesAsk{Kind: cmd.Kind, Template: cmd.Template,
+		FirstNumber: cmd.FirstNumber, FirstPeriodDate: date})
 	return receipt(r, err)
 }
 
@@ -245,7 +257,18 @@ func (m *Module) GetFinancePolicy(ctx context.Context, q api.GetFinancePolicy) (
 			EffectiveFrom: t.EffectiveFrom.Format(time.DateOnly), SetBy: t.By, SetAt: t.At})
 	}
 	for _, x := range st.Series {
-		out.Series = append(out.Series, api.InvoiceSeries{Kind: x.Kind, Prefix: x.Prefix, Width: x.Width, FirstNumber: x.Start, NextNumber: x.Next})
+		series := api.InvoiceSeries{Kind: x.Kind, Template: x.Template, FirstNumber: x.FirstNumber}
+		if err = m.deps(q.TenantID, "").Reader(ctx, func(txCtx context.Context) error {
+			last, err := m.numbers.Last(txCtx, q.TenantID, numbering.DocType(x.Kind, st.LegalEntityID))
+			for period, n := range last {
+				series.Last = append(series.Last, api.NumberPeriod{Period: period, Last: n})
+			}
+			return err
+		}); err != nil {
+			return api.FinancePolicy{}, classify(err)
+		}
+		slices.SortFunc(series.Last, func(a, b api.NumberPeriod) int { return strings.Compare(a.Period, b.Period) })
+		out.Series = append(out.Series, series)
 	}
 	return out, nil
 }
@@ -599,7 +622,7 @@ func (m *Module) deps(tenant, commandID string) application.Deps {
 		Pricing:   m.pricing,
 		Directory: m.directory,
 		Documents: m.documents,
-		Series:    postgres.Series{DB: m.db},
+		Numbers:   m.numbers,
 		Profiles:  postgres.ProfileStore{DB: m.db},
 	}
 }
@@ -638,7 +661,7 @@ func classify(err error) error {
 		errors.Is(err, application.ErrNotVerified), errors.Is(err, kernel.ErrOutsideRecordWindow), errors.Is(err, kernel.ErrAmountOverflow),
 		errors.Is(err, domain.ErrInvoiced), errors.Is(err, domain.ErrNoIssuedDocument), errors.Is(err, domain.ErrNoBillingProfile),
 		errors.Is(err, domain.ErrProfileStale), errors.Is(err, domain.ErrTaxMissing), errors.Is(err, domain.ErrTaxInUse), errors.Is(err, domain.ErrNoSeries),
-		errors.Is(err, domain.ErrSeriesExhausted):
+		errors.Is(err, domain.ErrSeriesExhausted), errors.Is(err, numbering.ErrSeeded):
 		kind = api.ErrRejected
 	default:
 		return err

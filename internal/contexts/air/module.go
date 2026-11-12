@@ -7,6 +7,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 
 	bentopg "go.idp.xyz/idp-bento-go/postgres"
@@ -21,6 +23,7 @@ import (
 	bookapi "go.idp.xyz/idp-cargo/internal/contexts/book/api"
 	fulapi "go.idp.xyz/idp-cargo/internal/contexts/ful/api"
 	"go.idp.xyz/idp-cargo/internal/foundation/bento"
+	"go.idp.xyz/idp-cargo/internal/foundation/numbering"
 	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
@@ -34,6 +37,7 @@ type Module struct {
 	auth     api.Authorizer
 	clock    bento.SystemClock
 	window   kernel.RecordWindow
+	numbers  *numbering.Sequences
 }
 
 // Option configures a Module.
@@ -57,7 +61,12 @@ func New(db *bentopg.DB, book bookapi.Queries, ful fulapi.AirOperationPlanQuerie
 	if err != nil {
 		return nil, err
 	}
-	m := &Module{db: db, outbox: outbox, bookings: bookacl.Bookings{BOOK: book}, plans: fulacl.Plans{FUL: ful}, auth: auth, window: kernel.DefaultRecordWindow}
+	numbers, err := numbering.NewSequences(db, "cargo_air")
+	if err != nil {
+		return nil, err
+	}
+	m := &Module{db: db, outbox: outbox, bookings: bookacl.Bookings{BOOK: book}, plans: fulacl.Plans{FUL: ful}, auth: auth, window: kernel.DefaultRecordWindow,
+		numbers: numbers}
 	for _, opt := range opts {
 		opt(m)
 	}
@@ -94,7 +103,7 @@ func (m *Module) LinkCarrierBooking(ctx context.Context, cmd api.LinkCarrierBook
 
 func (m *Module) RegisterHawbSeries(ctx context.Context, cmd api.RegisterHawbSeries) (api.Receipt, error) {
 	r, err := m.deps(cmd.TenantID, cmd.CommandID).RegisterSeries(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, api.ActionRegisterHawbSeries,
-		cmd.LegalEntityID, 0, cmd.OccurredAt, cmd), cmd.LegalEntityID, cmd.Prefix, cmd.Width, cmd.Next)
+		cmd.LegalEntityID, 0, cmd.OccurredAt, cmd), cmd.LegalEntityID, cmd.Template, cmd.FirstNumber)
 	return receipt(r, err)
 }
 
@@ -292,7 +301,19 @@ func (m *Module) GetHawbSeries(ctx context.Context, q api.GetHawbSeries) (api.Ha
 		return api.HawbSeries{}, classify(err)
 	}
 	st := s.State()
-	return api.HawbSeries{LegalEntityID: st.LegalEntityID, Prefix: st.Prefix, Width: st.Width, Next: st.Next, Revision: revision}, nil
+	out := api.HawbSeries{LegalEntityID: st.LegalEntityID, Template: st.Template, FirstNumber: st.FirstNumber, Revision: revision}
+	var last map[string]int64
+	if err = (bento.TenantTransactor{DB: m.db, Tenant: q.TenantID}).WithinTransaction(ctx, func(txCtx context.Context) (err error) {
+		last, err = m.numbers.Last(txCtx, q.TenantID, numbering.DocType(application.DocTypeHAWB, q.LegalEntityID))
+		return err
+	}); err != nil {
+		return api.HawbSeries{}, classify(err)
+	}
+	for period, n := range last {
+		out.Last = append(out.Last, api.NumberPeriod{Period: period, Last: n})
+	}
+	slices.SortFunc(out.Last, func(a, b api.NumberPeriod) int { return strings.Compare(a.Period, b.Period) })
+	return out, nil
 }
 
 func view(mv *domain.Movement, revision int64) api.AirMovement {
@@ -339,7 +360,7 @@ func view(mv *domain.Movement, revision int64) api.AirMovement {
 
 func (m *Module) reads(tenant string) application.Reads {
 	return application.Reads{Tx: bento.TenantTransactor{DB: m.db, Tenant: tenant}, Movements: postgres.MovementStore{DB: m.db},
-		Series: postgres.SeriesStore{DB: m.db}, Register: postgres.Register{DB: m.db}}
+		Series: postgres.SeriesStore{DB: m.db}, Numbers: m.numbers, Register: postgres.Register{DB: m.db}}
 }
 
 func (m *Module) deps(tenant, commandID string) application.Deps {
@@ -347,6 +368,7 @@ func (m *Module) deps(tenant, commandID string) application.Deps {
 		Tx:        bento.TenantTransactor{DB: m.db, Tenant: tenant},
 		Movements: postgres.MovementStore{DB: m.db},
 		Series:    postgres.SeriesStore{DB: m.db},
+		Numbers:   m.numbers,
 		Register:  postgres.Register{DB: m.db},
 		Receipts:  postgres.CommandReceipts{DB: m.db},
 		Outbox:    postgres.Outbox{Writer: m.outbox, CommandID: commandID, RecordedAt: m.clock.Now()},

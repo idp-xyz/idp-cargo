@@ -79,10 +79,13 @@ type JobStore interface {
 	OfNote(ctx context.Context, tenant fin.TenantID, invoiceID string) (*fin.FreightJob, int64, error)
 }
 
-// SeriesStore draws the next sequence value of a legal entity's series of a note kind, holding the series until the
-// transaction ends (fin.ErrNoSeries without one, fin.ErrSeriesExhausted past its width).
-type SeriesStore interface {
-	Next(ctx context.Context, tenant fin.TenantID, legalEntity, kind string) (int64, error)
+// Numbers is the platform's sequence of a tenant's document type (idp-platform-go, MD-28), in FIN's schema: Next takes
+// the next value of a period in the command's transaction, Seed starts a sequence after a value, Last answers the last
+// value per period. Document types are <kind>/<legal entity>.
+type Numbers interface {
+	Next(ctx context.Context, tenant, docType, period string) (int64, error)
+	Seed(ctx context.Context, tenant, docType, period string, last int64) error
+	Last(ctx context.Context, tenant, docType string) (map[string]int64, error)
 }
 
 // ProfileStore loads and writes billing profiles and reports whether the debtor has one; a version written twice at
@@ -195,7 +198,7 @@ type Deps struct {
 	Pricing   Pricing
 	Directory Directory
 	Documents Documents
-	Series    SeriesStore
+	Numbers   Numbers
 	Profiles  ProfileStore
 }
 
@@ -214,7 +217,7 @@ func (d Deps) begin(ctx context.Context, c Command) (hash string, entered time.T
 	if err = ctx.Err(); err != nil {
 		return
 	}
-	if d.Tx == nil || d.Policies == nil || d.Jobs == nil || d.Credit == nil || d.Series == nil || d.Profiles == nil || d.Receipts == nil || d.Outbox == nil ||
+	if d.Tx == nil || d.Policies == nil || d.Jobs == nil || d.Credit == nil || d.Numbers == nil || d.Profiles == nil || d.Receipts == nil || d.Outbox == nil ||
 		d.Auth == nil || d.Clock == nil {
 		return "", time.Time{}, Receipt{}, false, ErrMissingDependency
 	}

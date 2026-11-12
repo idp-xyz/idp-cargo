@@ -58,6 +58,7 @@ type Note struct {
 	Kind           string
 	Number         string
 	Seq            int64
+	Period         string // the period of the numbering sequence the number was drawn from ("" when it never resets)
 	DebtorPartyID  string
 	DebtorRevision int64
 	ProfileVersion int
@@ -86,8 +87,9 @@ const (
 	eventCreditNoteIssued   = "CreditNoteIssued.v1"
 )
 
-// Draw takes the next number of the legal entity's series of a note kind, under the series' lock.
-type Draw func(kind string) (number string, seq int64, err error)
+// Draw takes the next number of the legal entity's series of a note kind for a note dated on a business date, from the
+// sequence of the date's period, in the note's transaction.
+type Draw func(kind string, date time.Time) (number string, seq int64, period string, err error)
 
 // DebitNoteInput is a debit note as asked, with what FIN read for it: the debtor's revision ORG confirmed in a debtor
 // role, its billing profile version, the terms of its credit account (nil without one) and the issued house
@@ -220,7 +222,7 @@ func (j *FreightJob) IssueDebitNote(in DebitNoteInput, p *FinancePolicy, draw Dr
 	if n.Total <= 0 {
 		return fmt.Errorf("%w: a debit note's total is positive; a reduction is a credit note", ErrInvalid)
 	}
-	if n.Number, n.Seq, err = draw(KindDebitNote); err != nil {
+	if n.Number, n.Seq, n.Period, err = draw(KindDebitNote, n.InvoiceDate); err != nil {
 		return err
 	}
 	st.Notes = append(st.Notes, n)
@@ -327,7 +329,7 @@ func (j *FreightJob) IssueCreditNote(in CreditNoteInput, p *FinancePolicy, draw 
 	case len(credited) < len(d.Lines) && remaining <= 0:
 		return fmt.Errorf("%w: the lines left on debit note %s would total %d; reverse its discount lines with them", ErrInvalid, d.Number, remaining)
 	}
-	if n.Number, n.Seq, err = draw(KindCreditNote); err != nil {
+	if n.Number, n.Seq, n.Period, err = draw(KindCreditNote, n.InvoiceDate); err != nil {
 		return err
 	}
 	cancelled := len(credited) == len(d.Lines)

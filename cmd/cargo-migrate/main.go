@@ -1,6 +1,7 @@
 // cargo-migrate is an OPERATOR-ONLY migration tool. Not linked into the API.
 // It validates source digests and applies Bento migration assets first, then the Cargo
 // contexts' migrations in manifest order, recording SHA256 in a history table. Never rewrite applied SQL.
+// A context the manifest marks "numbering" first gets idp-platform-go's numbering assets in its own schema (MD-28).
 package main
 
 import (
@@ -19,12 +20,35 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	bentopg "go.idp.xyz/idp-bento-go/postgres"
+	numberingpg "go.idp.xyz/idp-platform-go/numbering/postgres"
 )
 
 type migration struct {
 	ID       string
 	SQL      string
 	Checksum string
+	Ledger   string // the history id: cargo:<id> or platform:<schema>:<id>
+}
+
+// entry is a manifest line: a context's migration directory and the platform capabilities it uses.
+type entry struct {
+	Dir       string
+	Numbering bool
+}
+
+// platformNumbering renders idp-platform-go's numbering assets for a context's schema, cargo_<context>.
+func platformNumbering(context string) ([]migration, error) {
+	schema := "cargo_" + context
+	assets, err := numberingpg.Migrations(schema)
+	if err != nil {
+		return nil, err
+	}
+	var out []migration
+	for _, a := range assets {
+		id := schema + ":" + a.ID
+		out = append(out, migration{ID: id, SQL: a.SQL, Checksum: checksum(a.SQL), Ledger: "platform:" + id})
+	}
+	return out, nil
 }
 
 func checksum(s string) string { sum := sha256.Sum256([]byte(s)); return hex.EncodeToString(sum[:]) }
@@ -37,22 +61,19 @@ func main() {
 func run() error {
 	manifest := flag.String("manifest", "", "file listing the contexts' migration directories in order, such as migrations/manifest/contexts.txt")
 	dir := flag.String("directory", "migrations/org", "one context's migration directory, used when -manifest is not set")
+	withNumbering := flag.Bool("numbering", false, "with -directory: the context uses idp-platform-go's numbering, applied in its schema first")
 	apply := flag.Bool("apply", false, "explicitly apply to PostgreSQL as dedicated migrator role")
 	flag.Parse()
-	dirs := []string{*dir}
+	entries := []entry{{Dir: *dir, Numbering: *withNumbering}}
 	if *manifest != "" {
 		var err error
-		if dirs, err = readManifest(*manifest); err != nil {
+		if entries, err = readManifest(*manifest); err != nil {
 			return err
 		}
 	}
-	var items []migration
-	for _, d := range dirs {
-		loaded, err := loadDirectory(d)
-		if err != nil {
-			return err
-		}
-		items = append(items, loaded...)
+	items, err := load(entries)
+	if err != nil {
+		return err
 	}
 	framework := bentopg.Migrations()
 	for _, m := range framework {
@@ -62,7 +83,7 @@ func run() error {
 		fmt.Printf("FRAMEWORK %s %s\n", m.ID, m.Checksum)
 	}
 	for _, m := range items {
-		fmt.Printf("CARGO     %s sha256:%s\n", m.ID, m.Checksum)
+		fmt.Printf("%-9s %s sha256:%s\n", strings.ToUpper(strings.SplitN(m.Ledger, ":", 2)[0]), m.ID, m.Checksum)
 	}
 	if !*apply {
 		fmt.Println("DRY-RUN: no database connection or DDL executed")
@@ -112,7 +133,7 @@ func run() error {
 		}
 	}
 	for _, cm := range items {
-		if err = applyMigration(ctx, pool, "cargo:"+cm.ID, cm.SQL, cm.Checksum); err != nil {
+		if err = applyMigration(ctx, pool, cm.Ledger, cm.SQL, cm.Checksum); err != nil {
 			return err
 		}
 	}
@@ -127,31 +148,62 @@ func run() error {
 	return nil
 }
 
-// readManifest returns the migration directories a manifest lists, in order. Entries name directories
-// under the migrations root, which is the parent of the manifest's directory.
-func readManifest(path string) ([]string, error) {
+// load reads the entries' migrations in order: a context's platform assets before its own migrations. Platform assets
+// are self-contained (they create their schema if missing), so on a fresh database they run first and on an upgraded
+// one when they are new; a Cargo migration that builds on a later platform asset must not run before it.
+func load(entries []entry) ([]migration, error) {
+	var items []migration
+	for _, e := range entries {
+		if e.Numbering {
+			assets, err := platformNumbering(filepath.Base(e.Dir))
+			if err != nil {
+				return nil, err
+			}
+			items = append(items, assets...)
+		}
+		loaded, err := loadDirectory(e.Dir)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, loaded...)
+	}
+	return items, nil
+}
+
+// readManifest returns the migration directories a manifest lists, in order, with the platform capabilities each
+// uses ("numbering"). Entries name directories under the migrations root, which is the parent of the manifest's
+// directory.
+func readManifest(path string) ([]entry, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
 	root := filepath.Dir(filepath.Dir(path))
 	seen := map[string]bool{}
-	var dirs []string
+	var entries []entry
 	for _, line := range strings.Split(strings.ReplaceAll(string(raw), "\r\n", "\n"), "\n") {
-		name := strings.TrimSpace(line)
-		if name == "" || strings.HasPrefix(name, "#") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 || strings.HasPrefix(fields[0], "#") {
 			continue
 		}
+		name := fields[0]
 		if seen[name] || strings.ContainsAny(name, `/\.`) {
 			return nil, fmt.Errorf("manifest %s: invalid or repeated entry %q", path, name)
 		}
 		seen[name] = true
-		dirs = append(dirs, filepath.Join(root, name))
+		e := entry{Dir: filepath.Join(root, name)}
+		for _, capability := range fields[1:] {
+			if capability != "numbering" || e.Numbering {
+				return nil, fmt.Errorf("manifest %s: entry %q names an unknown or repeated capability %q", path, name, capability)
+			}
+			e.Numbering = true
+		}
+		entries = append(entries, e)
 	}
-	if len(dirs) == 0 {
+	if len(entries) == 0 {
 		return nil, fmt.Errorf("manifest %s lists no migration directories", path)
 	}
-	return dirs, nil
+	return entries, nil
 }
 
 // loadDirectory reads one context's migrations. Files are numbered from 000001 without gaps and named
@@ -183,7 +235,7 @@ func loadDirectory(dir string) ([]migration, error) {
 			return nil, fmt.Errorf("empty migration %s", id)
 		}
 		body := strings.ReplaceAll(string(raw), "\r\n", "\n")
-		items = append(items, migration{ID: id, SQL: body, Checksum: checksum(body)})
+		items = append(items, migration{ID: id, SQL: body, Checksum: checksum(body), Ledger: "cargo:" + id})
 	}
 	return items, nil
 }

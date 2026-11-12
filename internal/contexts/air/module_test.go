@@ -76,7 +76,7 @@ func TestTheModelEmitsThePublishedEventTypes(t *testing.T) {
 		m.Finalize([]domain.Plan{measured}, "ops", at), m.EndAssociation(plan(2, "C-2", "PLANNED"), "ops", at), m.Cancel("no cargo", "ops", at)); err != nil {
 		t.Fatal(err)
 	}
-	s, err := domain.RegisterSeries("T", "LE", "SHA", 7, 1, "ops", at)
+	s, err := domain.RegisterSeries("T", "LE", "SHA{seq:7}", 1, "", "ops", at)
 	if err != nil {
 		t.Fatal(err)
 	}

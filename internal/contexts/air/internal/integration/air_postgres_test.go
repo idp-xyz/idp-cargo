@@ -177,8 +177,15 @@ func (f *fixture) open(id, consolidation, booking string) (api.Receipt, error) {
 
 func (f *fixture) series(t *testing.T) {
 	t.Helper()
+	// templates whose numbers are no HAWB numbers, or of the platform's tokens Cargo does not take, are refused
+	for _, template := range []string{"SH-{seq:7}", "SHANGHAI{seq:6}", "SHA{rand:4}{seq:6}", "sha{seq:7}", "{seq:7}", "SHA{yy}{seq:6}"} {
+		if _, err := f.module.RegisterHawbSeries(context.Background(), api.RegisterHawbSeries{CommandID: "series-" + template, TenantID: f.tenant,
+			ActorID: "ops-1", LegalEntityID: "LE", Template: template, FirstNumber: 1, OccurredAt: f.at}); !errors.Is(err, api.ErrRejected) {
+			t.Fatalf("template %s: %v", template, err)
+		}
+	}
 	if _, err := f.module.RegisterHawbSeries(context.Background(), api.RegisterHawbSeries{CommandID: "series", TenantID: f.tenant, ActorID: "ops-1",
-		LegalEntityID: "LE", Prefix: "SHA", Width: 7, Next: 1, OccurredAt: f.at}); err != nil {
+		LegalEntityID: "LE", Template: "SHA{seq:7}", FirstNumber: 1, OccurredAt: f.at}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -347,7 +354,8 @@ func TestAirMovementOnPostgres(t *testing.T) {
 	if _, err = f.module.FindAirMovementByMAWB(ctx, api.FindAirMovementByMAWB{TenantID: f.tenant, MAWB: "781-12345675"}); !errors.Is(err, api.ErrNotFound) {
 		t.Fatalf("a voided MAWB: %v", err)
 	}
-	if s, err := f.module.GetHawbSeries(ctx, api.GetHawbSeries{TenantID: f.tenant, LegalEntityID: "LE"}); err != nil || s.Next != 2 {
+	if s, err := f.module.GetHawbSeries(ctx, api.GetHawbSeries{TenantID: f.tenant, LegalEntityID: "LE"}); err != nil || s.Template != "SHA{seq:7}" ||
+		len(s.Last) != 1 || s.Last[0] != (api.NumberPeriod{Period: "", Last: 1}) {
 		t.Fatalf("series: %+v %v", s, err)
 	}
 	want := []string{api.AirMovementOpened, api.MawbAssigned, api.FlightSegmentsLinked, api.HawbSeriesRegistered, api.HouseWaybillAssociated,
@@ -378,7 +386,9 @@ func TestDatabaseRules(t *testing.T) {
 		"segment immutable":  {`UPDATE cargo_air.flight_segment SET flight='MU588' WHERE tenant_id=$1`, "42501|23001"},
 		"register immutable": {`UPDATE cargo_air.hawb_number SET shipment_id='SH-9' WHERE tenant_id=$1`, "42501|23001"},
 		"house facts":        {`UPDATE cargo_air.house_waybill SET pieces=1 WHERE tenant_id=$1`, "42501|23001"},
-		"series backwards":   {`UPDATE cargo_air.hawb_series SET next_seq=1 WHERE tenant_id=$1`, "23001"},
+		"series fixed":       {`UPDATE cargo_air.hawb_series SET first_number=2 WHERE tenant_id=$1`, "42501|23001"},
+		"sequence backwards": {`UPDATE cargo_air.numbering_sequence SET next_val=0 WHERE scope=$1`, "23001"},
+		"sequence deleted":   {`DELETE FROM cargo_air.numbering_sequence WHERE scope=$1`, "42501|23001"},
 		"MAWB fixed":         {`UPDATE cargo_air.air_movement SET mawb_number='781-23456786' WHERE tenant_id=$1`, "42501|23001"},
 		"unregistered HAWB": {`INSERT INTO cargo_air.house_waybill (tenant_id,movement_id,entry_no,shipment_id,hawb,ful_revision,plan_version,window_from,pieces,
             gross_weight_unit,gross_weight,chargeable_grams,chargeable_rule,basis,start_kind,associated_by,associated_at,entered_at)
@@ -436,7 +446,8 @@ func TestHouseWaybillsDrawConcurrently(t *testing.T) {
 			t.Fatalf("numbers %v", hawbs)
 		}
 	}
-	if s, err := f.module.GetHawbSeries(context.Background(), api.GetHawbSeries{TenantID: f.tenant, LegalEntityID: "LE"}); err != nil || s.Next != workers+1 {
+	if s, err := f.module.GetHawbSeries(context.Background(), api.GetHawbSeries{TenantID: f.tenant, LegalEntityID: "LE"}); err != nil || len(s.Last) != 1 ||
+		s.Last[0].Last != workers {
 		t.Fatalf("series: %+v %v", s, err)
 	}
 }

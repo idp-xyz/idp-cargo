@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"time"
 
 	bentorepo "go.idp.xyz/idp-bento-go/repository"
 	fin "go.idp.xyz/idp-cargo/internal/contexts/fin/internal/domain"
+	"go.idp.xyz/idp-cargo/internal/foundation/numbering"
 	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
@@ -77,8 +79,10 @@ func (d Deps) RecordRate(ctx context.Context, c Command, e fin.RateEntry) (Recei
 	})
 }
 
-// changePolicy applies a change to the locked policy of the legal entity named by the command.
-func (d Deps) changePolicy(ctx context.Context, c Command, apply func(*fin.FinancePolicy) (int, error)) (Receipt, error) {
+// changePolicy applies a change to the locked policy of the legal entity named by the command; after, when given, runs
+// in the same transaction once the policy is saved.
+func (d Deps) changePolicy(ctx context.Context, c Command, apply func(context.Context, *fin.FinancePolicy) (int, error),
+	after ...func(context.Context, *fin.FinancePolicy) error) (Receipt, error) {
 	hash, entered, stored, replayed, err := d.begin(ctx, c)
 	if err != nil || replayed {
 		return stored, err
@@ -91,7 +95,7 @@ func (d Deps) changePolicy(ctx context.Context, c Command, apply func(*fin.Finan
 		if revision != c.ExpectedRevision {
 			return Receipt{}, nil, fin.ErrConflict
 		}
-		version, err := apply(p)
+		version, err := apply(txCtx, p)
 		if err != nil {
 			return Receipt{}, nil, err
 		}
@@ -99,13 +103,18 @@ func (d Deps) changePolicy(ctx context.Context, c Command, apply func(*fin.Finan
 		if revision, err = d.Policies.Save(txCtx, p, revision); err != nil {
 			return Receipt{}, nil, err
 		}
+		for _, fn := range after {
+			if err = fn(txCtx, p); err != nil {
+				return Receipt{}, nil, err
+			}
+		}
 		return Receipt{SubjectID: c.Subject, NewRevision: revision, Version: version}, p, nil
 	})
 }
 
 // SetTax records the next tax treatment version of a charge code in the legal entity's policy.
 func (d Deps) SetTax(ctx context.Context, c Command, t fin.TaxTreatment) (Receipt, error) {
-	return d.changePolicy(ctx, c, func(p *fin.FinancePolicy) (int, error) {
+	return d.changePolicy(ctx, c, func(_ context.Context, p *fin.FinancePolicy) (int, error) {
 		if err := p.SetTaxTreatment(t, c.Scope.ActorID, c.OccurredAt); err != nil {
 			return 0, err
 		}
@@ -113,13 +122,59 @@ func (d Deps) SetTax(ctx context.Context, c Command, t fin.TaxTreatment) (Receip
 	})
 }
 
-// RegisterSeries fixes the legal entity's number series of a note kind.
-func (d Deps) RegisterSeries(ctx context.Context, c Command, s fin.Series) (Receipt, error) {
-	return d.changePolicy(ctx, c, func(p *fin.FinancePolicy) (int, error) {
+// SeriesAsk is a numbering series as asked: the note kind, the template, the first number and, for a template that
+// resets, a date of the period the first number belongs to (needed when the first number is above 1).
+type SeriesAsk struct {
+	Kind            string
+	Template        string
+	FirstNumber     int64
+	FirstPeriodDate time.Time
+}
+
+// notePattern is what a note number may hold (debtor_invoice.number: five to twenty characters).
+var notePattern = regexp.MustCompile(`^[0-9A-Z-]{5,20}$`)
+
+// RegisterSeries fixes the legal entity's numbering of a note kind: a template of the platform's language in Cargo's
+// subset whose numbers are capital letters, digits and hyphens, five to twenty characters, and the first number, which
+// seeds the platform's sequence in the same transaction: of the template's only sequence, or, for a template that
+// resets, of the period of the date given (notes take the period of their invoice dates, which FIN cannot derive from
+// a registration's instant without the legal entity's time zone).
+func (d Deps) RegisterSeries(ctx context.Context, c Command, in SeriesAsk) (Receipt, error) {
+	if d.Numbers == nil {
+		return Receipt{}, ErrMissingDependency
+	}
+	var seed string
+	return d.changePolicy(ctx, c, func(_ context.Context, p *fin.FinancePolicy) (int, error) {
+		tmpl, err := numbering.Parse(in.Template)
+		if err != nil {
+			return 0, fmt.Errorf("%w: %v", fin.ErrInvalid, err)
+		}
+		longest, err := tmpl.Longest()
+		if err != nil || !notePattern.MatchString(longest) {
+			return 0, fmt.Errorf("%w: %s renders %q; a note number is 5 to 20 capital letters, digits and hyphens", fin.ErrInvalid, in.Template, longest)
+		}
+		period := ""
+		switch {
+		case !tmpl.Resets() && !in.FirstPeriodDate.IsZero():
+			return 0, fmt.Errorf("%w: %s never resets; a first period date is for a template that does", fin.ErrInvalid, in.Template)
+		case !tmpl.Resets():
+		case !in.FirstPeriodDate.IsZero():
+			period = tmpl.Period(in.FirstPeriodDate)
+		case in.FirstNumber > 1:
+			return 0, fmt.Errorf("%w: %s restarts by date; a first number above 1 names the date of its period", fin.ErrInvalid, in.Template)
+		}
+		if _, err = tmpl.Render(in.FirstNumber, c.OccurredAt); err != nil {
+			return 0, fmt.Errorf("%w: first number %d of %s: %v", fin.ErrInvalid, in.FirstNumber, in.Template, err)
+		}
+		s := fin.Series{Kind: in.Kind, Prefix: tmpl.Prefix(), Template: in.Template, FirstNumber: in.FirstNumber, SeedPeriod: period}
 		if err := p.RegisterSeries(s, c.Scope.ActorID, c.OccurredAt); err != nil {
 			return 0, err
 		}
+		seed = period
 		return len(p.State().Series), nil
+	}, func(txCtx context.Context, p *fin.FinancePolicy) error {
+		// the sequence's seed needs its series saved (the sequence table admits rows of registered series only)
+		return d.Numbers.Seed(txCtx, string(c.Scope.TenantID), numbering.DocType(in.Kind, p.State().LegalEntityID), seed, in.FirstNumber-1)
 	})
 }
 
@@ -162,19 +217,28 @@ func (d Deps) SetProfile(ctx context.Context, c Command, in fin.ProfileInput) (R
 	})
 }
 
-// draw takes numbers from the legal entity's series in the command's transaction: a failed command takes none.
+// draw takes numbers from the platform's sequence of the legal entity's series in the command's transaction, in the
+// period of the note's date: a failed command takes none.
 func (d Deps) draw(ctx context.Context, tenant fin.TenantID, p *fin.FinancePolicy) fin.Draw {
-	return func(kind string) (string, int64, error) {
+	return func(kind string, date time.Time) (string, int64, string, error) {
 		s, ok := p.SeriesOf(kind)
 		if !ok {
-			return "", 0, fmt.Errorf("%w: %s of %s", fin.ErrNoSeries, kind, p.State().LegalEntityID)
+			return "", 0, "", fmt.Errorf("%w: %s of %s", fin.ErrNoSeries, kind, p.State().LegalEntityID)
 		}
-		seq, err := d.Series.Next(ctx, tenant, p.State().LegalEntityID, kind)
+		tmpl, err := numbering.Parse(s.Template)
 		if err != nil {
-			return "", 0, err
+			return "", 0, "", fmt.Errorf("%w: stored template %s: %v", fin.ErrInvalid, s.Template, err)
 		}
-		number, err := s.Format(seq)
-		return number, seq, err
+		period := tmpl.Period(date)
+		seq, err := d.Numbers.Next(ctx, string(tenant), numbering.DocType(kind, p.State().LegalEntityID), period)
+		if err != nil {
+			return "", 0, "", err
+		}
+		number, err := tmpl.Render(seq, date)
+		if errors.Is(err, numbering.ErrExhausted) {
+			return "", 0, "", fmt.Errorf("%w: %v", fin.ErrSeriesExhausted, err)
+		}
+		return number, seq, period, err
 	}
 }
 

@@ -37,13 +37,19 @@ type ChargeTaxTreatment struct {
 	SetAt         time.Time
 }
 
-// InvoiceSeries is a number series of a note kind; NextNumber is the sequence value the next note takes.
+// InvoiceSeries is a note kind's numbering: its template, first number and the last sequence value per period ("" for
+// a template that never resets).
 type InvoiceSeries struct {
 	Kind        string
-	Prefix      string
-	Width       int
+	Template    string
 	FirstNumber int64
-	NextNumber  int64
+	Last        []NumberPeriod
+}
+
+// NumberPeriod is the last sequence value a period took.
+type NumberPeriod struct {
+	Period string
+	Last   int64
 }
 
 // FinancePolicy is a legal entity's policy.

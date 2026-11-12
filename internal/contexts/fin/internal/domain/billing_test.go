@@ -2,6 +2,7 @@ package domain
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -44,7 +45,8 @@ func billingPolicy(t *testing.T) *FinancePolicy {
 			t.Fatal(err)
 		}
 	}
-	for _, s := range []Series{{Kind: KindDebitNote, Prefix: "DN", Width: 6, Start: 1}, {Kind: KindCreditNote, Prefix: "CN", Width: 6, Start: 1}} {
+	for _, s := range []Series{{Kind: KindDebitNote, Prefix: "DN", Template: "DN{seq:6}", FirstNumber: 1},
+		{Kind: KindCreditNote, Prefix: "CN", Template: "CN{seq:6}", FirstNumber: 1}} {
 		if err := p.RegisterSeries(s, "acct-1", hour(0)); err != nil {
 			t.Fatal(err)
 		}
@@ -52,21 +54,19 @@ func billingPolicy(t *testing.T) *FinancePolicy {
 	return p
 }
 
-// counter stands in for the series rows: it draws in order from each series' start.
+// counter stands in for the platform's sequences of continuous <prefix>{seq:6} templates: it draws in order from each
+// series' first number.
 type counter map[string]int64
 
 func (c counter) draw(p *FinancePolicy) Draw {
-	return func(kind string) (string, int64, error) {
+	return func(kind string, _ time.Time) (string, int64, string, error) {
 		s, ok := p.SeriesOf(kind)
 		if !ok {
-			return "", 0, ErrNoSeries
+			return "", 0, "", ErrNoSeries
 		}
-		seq := s.Start + c[kind]
-		number, err := s.Format(seq)
-		if err == nil {
-			c[kind]++
-		}
-		return number, seq, err
+		seq := s.FirstNumber + c[kind]
+		c[kind]++
+		return fmt.Sprintf("%s%06d", s.Prefix, seq), seq, "", nil
 	}
 }
 
@@ -101,29 +101,27 @@ func TestTaxTreatmentsAndSeries(t *testing.T) {
 		t.Fatal("a treatment before its date")
 	}
 	for name, s := range map[string]Series{
-		"kind again":      {Kind: KindDebitNote, Prefix: "INV", Width: 6, Start: 1},
-		"prefix of other": {Kind: "DEBIT", Prefix: "D", Width: 6, Start: 1},
-		"lower case":      {Kind: KindDebitNote, Prefix: "dn", Width: 6, Start: 1},
-		"too wide":        {Kind: KindDebitNote, Prefix: "DNDNDNDNDN", Width: 11, Start: 1},
-		"start too big":   {Kind: KindDebitNote, Prefix: "X", Width: 4, Start: 10_000},
+		"kind again":       {Kind: KindDebitNote, Prefix: "INV", Template: "INV{seq:6}", FirstNumber: 1},
+		"another kind":     {Kind: "DEBIT", Prefix: "X", Template: "X{seq:6}", FirstNumber: 1},
+		"lower case":       {Kind: KindDebitNote, Prefix: "dn", Template: "dn{seq:6}", FirstNumber: 1},
+		"prefix not first": {Kind: KindDebitNote, Prefix: "DN", Template: "X{seq:6}", FirstNumber: 1},
+		"no first number":  {Kind: KindDebitNote, Prefix: "X", Template: "X{seq:6}"},
 	} {
 		if err := p.RegisterSeries(s, "acct-1", hour(1)); err == nil {
 			t.Errorf("%s registered", name)
 		}
 	}
 	q := policy(t)
-	if err := q.RegisterSeries(Series{Kind: KindDebitNote, Prefix: "D", Width: 4, Start: 9_999}, "acct-1", hour(1)); err != nil {
+	if err := q.RegisterSeries(Series{Kind: KindDebitNote, Prefix: "D", Template: "D{yy}{seq:4}", FirstNumber: 9_999, SeedPeriod: "2026"}, "acct-1",
+		hour(1)); err != nil {
 		t.Fatal(err)
 	}
-	if err := q.RegisterSeries(Series{Kind: KindCreditNote, Prefix: "D1", Width: 4, Start: 1}, "acct-1", hour(1)); !errors.Is(err, ErrInvalid) {
-		t.Fatalf("D and D1 start one another (D10001 twice): %v", err)
+	if err := q.RegisterSeries(Series{Kind: KindCreditNote, Prefix: "D1", Template: "D1{seq:4}", FirstNumber: 1}, "acct-1", hour(1)); !errors.Is(err,
+		ErrInvalid) {
+		t.Fatalf("D and D1 start one another: %v", err)
 	}
-	s, _ := q.SeriesOf(KindDebitNote)
-	if n, err := s.Format(9_999); err != nil || n != "D9999" {
-		t.Fatalf("last number: %s %v", n, err)
-	}
-	if _, err := s.Format(10_000); !errors.Is(err, ErrSeriesExhausted) {
-		t.Fatalf("past the width: %v", err)
+	if s, ok := q.SeriesOf(KindDebitNote); !ok || s.Template != "D{yy}{seq:4}" || s.FirstNumber != 9_999 || s.SeedPeriod != "2026" {
+		t.Fatalf("series: %+v", s)
 	}
 }
 
@@ -353,7 +351,7 @@ func TestDebitAndCreditNotes(t *testing.T) {
 	}
 
 	// a draw that fails leaves the job as it was
-	failing := func(string) (string, int64, error) { return "", 0, ErrSeriesExhausted }
+	failing := func(string, time.Time) (string, int64, string, error) { return "", 0, "", ErrSeriesExhausted }
 	before := len(j.State().Lines[0].Sell)
 	if err = j.IssueDebitNote(debitNote("DN-4", "party-a", "CNY", 1), p, failing, "bill-1", hour(8)); !errors.Is(err, ErrSeriesExhausted) ||
 		len(j.State().Notes) != 6 || len(j.State().Lines[0].Sell) != before {

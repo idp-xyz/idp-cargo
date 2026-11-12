@@ -3,7 +3,6 @@ package domain
 import (
 	"fmt"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -96,27 +95,19 @@ const (
 
 var seriesPrefix = regexp.MustCompile(`^[0-9A-Z][0-9A-Z-]{0,9}$`)
 
-// Series is a legal entity's number series of a note kind (MD-28: the numbering rule may come from the platform, the
-// numbers issued are FIN's): a prefix and a zero-padded sequence from Start, drawn in order as notes are issued and
-// never reused. The policy fixes the series; the next number lives with the series row the notes draw from.
+// Series is a legal entity's numbering of a note kind (MD-28: idp-platform-go owns the template language and the
+// sequence, the numbers issued are FIN's): a template with its literal prefix and the first number, which seeds the
+// sequence of the registration's period. The policy fixes the series once; the platform's sequence draws the numbers in
+// the issuing transaction, so they are never reused and have no gaps within a period.
 type Series struct {
-	Kind      string
-	Prefix    string
-	Width     int
-	Start     int64
-	Next      int64 // the next sequence value, as read; the series row keeps it
-	By        string
-	At        time.Time
-	EnteredAt time.Time
-}
-
-// Format writes the number of a sequence value of the series.
-func (s Series) Format(seq int64) (string, error) {
-	digits := strconv.FormatInt(seq, 10)
-	if seq < s.Start || len(digits) > s.Width {
-		return "", fmt.Errorf("%w: %s series %s at %d", ErrSeriesExhausted, s.Kind, s.Prefix, seq)
-	}
-	return s.Prefix + strings.Repeat("0", s.Width-len(digits)) + digits, nil
+	Kind        string
+	Prefix      string
+	Template    string
+	FirstNumber int64
+	SeedPeriod  string
+	By          string
+	At          time.Time
+	EnteredAt   time.Time
 }
 
 // PolicyState is a stored policy, for persistence.
@@ -249,15 +240,16 @@ func (p *FinancePolicy) TaxOn(code string, d time.Time) (TaxTreatment, bool) {
 	return found, ok
 }
 
-// RegisterSeries fixes the legal entity's number series of a note kind, once: a prefix of one to ten capital letters,
-// digits and hyphens (not starting with a hyphen), a width of four to ten digits, twenty characters at most, and the
-// first number. The two kinds' prefixes never start one another, so their numbers never meet.
+// RegisterSeries fixes the legal entity's numbering of a note kind, once: the template (FIN's application checked it
+// against the platform's language) starting with its literal prefix of one to ten capital letters, digits and hyphens
+// (not starting with a hyphen), and the first number. The two kinds' prefixes never start one another, so their
+// numbers never meet.
 func (p *FinancePolicy) RegisterSeries(s Series, by string, at time.Time) error {
 	switch {
-	case s.Kind != KindDebitNote && s.Kind != KindCreditNote, !seriesPrefix.MatchString(s.Prefix), s.Width < 4 || s.Width > 10,
-		len(s.Prefix)+s.Width > 20, s.Start < 1 || len(strconv.FormatInt(s.Start, 10)) > s.Width, blank(by), at.IsZero():
-		return fmt.Errorf("%w: a series names DEBIT_NOTE or CREDIT_NOTE, a prefix of capital letters, digits and hyphens, a width of 4 to 10 "+
-			"digits (20 characters in all) and a first number that fits", ErrInvalid)
+	case s.Kind != KindDebitNote && s.Kind != KindCreditNote, !seriesPrefix.MatchString(s.Prefix), !strings.HasPrefix(s.Template, s.Prefix+"{"),
+		len(s.Template) > 60, s.FirstNumber < 1, len(s.SeedPeriod) > 8, blank(by), at.IsZero():
+		return fmt.Errorf("%w: a series names DEBIT_NOTE or CREDIT_NOTE, a template starting with a prefix of capital letters, digits and hyphens, "+
+			"and a first number", ErrInvalid)
 	}
 	for _, o := range p.state.Series {
 		switch {
@@ -267,7 +259,7 @@ func (p *FinancePolicy) RegisterSeries(s Series, by string, at time.Time) error 
 			return fmt.Errorf("%w: prefix %s and the %s prefix %s start one another", ErrInvalid, s.Prefix, o.Kind, o.Prefix)
 		}
 	}
-	s.Next, s.By, s.At, s.EnteredAt = s.Start, by, at.UTC(), time.Time{}
+	s.By, s.At, s.EnteredAt = by, at.UTC(), time.Time{}
 	p.state.Series = append(p.state.Series, s)
 	p.pending = append(p.pending, Event{Type: eventSeriesRegistered, At: at.UTC(), TenantID: p.state.TenantID, SubjectID: p.state.LegalEntityID + "/" + s.Kind,
 		LegalEntityID: p.state.LegalEntityID})

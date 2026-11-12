@@ -469,9 +469,9 @@ func TestTransportDocumentsWithEveryContext(t *testing.T) {
 			ActorID: "tax-1", LegalEntityID: "LE", ExpectedRevision: policyRevision, ChargeCode: x.code, Treatment: x.treatment, RateBP: x.bp,
 			EffectiveFrom: taxFrom, OccurredAt: hours(28)}))
 	}
-	for _, x := range [][2]string{{finapi.KindDebitNote, "SHADN"}, {finapi.KindCreditNote, "SHACN"}} {
+	for _, x := range [][2]string{{finapi.KindDebitNote, "SHADN{seq:6}"}, {finapi.KindCreditNote, "SHACN{seq:6}"}} {
 		policyStep("series " + x[0])(finModule.RegisterInvoiceSeries(ctx, finapi.RegisterInvoiceSeries{CommandID: "fin-series-" + x[0], TenantID: tenant,
-			ActorID: "acct-1", LegalEntityID: "LE", ExpectedRevision: policyRevision, Kind: x[0], Prefix: x[1], Width: 6, FirstNumber: 1, OccurredAt: hours(28)}))
+			ActorID: "acct-1", LegalEntityID: "LE", ExpectedRevision: policyRevision, Kind: x[0], Template: x[1], FirstNumber: 1, OccurredAt: hours(28)}))
 	}
 	_, err = finModule.SetBillingProfile(ctx, finapi.SetBillingProfile{CommandID: "fin-profile", TenantID: tenant, ActorID: "bill-1", DebtorPartyID: "party-a",
 		BuyerKind: finapi.BuyerForeign, EvidenceRef: "account opening form AO-2026-118", OccurredAt: hours(28)})
