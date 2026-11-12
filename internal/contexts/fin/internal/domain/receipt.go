@@ -2,6 +2,7 @@ package domain
 
 import (
 	"fmt"
+	"regexp"
 	"slices"
 	"time"
 
@@ -22,6 +23,10 @@ const (
 )
 
 const maxReceiptAge = 366 * 24 * time.Hour // a date received further back is taken for a typing error
+
+// receiptEvidencePattern is evidencePattern without a trailing space: receipts are deduplicated by their evidence
+// reference, and "ABC " would pass as other evidence than "ABC".
+var receiptEvidencePattern = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9 ._:/#-]{0,198}[A-Za-z0-9._:/#-])?$`)
 
 // MaxAllocations is how many debit notes one command allocates a receipt to.
 const MaxAllocations = 200
@@ -135,9 +140,9 @@ func RecordReceipt(tenant TenantID, in ReceiptInput, by string, at time.Time) (*
 		return nil, fmt.Errorf("%w: bank charges are in the amount's currency and not more than the amount", ErrInvalid)
 	case !date(in.ReceivedOn) || at.Before(in.ReceivedOn.Add(-14*time.Hour)) || !at.Before(in.ReceivedOn.Add(maxReceiptAge+36*time.Hour)):
 		return nil, fmt.Errorf("%w: the date received is not after the day the receipt is recorded and not more than 366 days before", ErrInvalid)
-	case (in.EvidenceSource != EvidenceBank && in.EvidenceSource != EvidenceERP) || !evidencePattern.MatchString(in.EvidenceRef):
+	case (in.EvidenceSource != EvidenceBank && in.EvidenceSource != EvidenceERP) || !receiptEvidencePattern.MatchString(in.EvidenceRef):
 		return nil, fmt.Errorf("%w: a receipt has its evidence as the source BANK or ERP and a reference (letters, digits, space and . _ : / # -, "+
-			"200 characters)", ErrInvalid)
+			"200 characters, not ending with a space)", ErrInvalid)
 	}
 	r := &DebtorReceipt{state: ReceiptState{TenantID: tenant, ReceiptID: in.ID, LegalEntityID: in.LegalEntityID, DebtorPartyID: in.DebtorPartyID,
 		DebtorRevision: in.DebtorRevision, Currency: in.Amount.Currency, Amount: in.Amount.Minor, BankCharges: charges.Minor, ReceivedOn: in.ReceivedOn.UTC(),

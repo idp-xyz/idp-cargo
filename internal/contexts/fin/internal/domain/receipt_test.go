@@ -49,6 +49,7 @@ func TestDebtorReceipt(t *testing.T) {
 		"received long ago":        func(in *ReceiptInput) { in.ReceivedOn = day("2025-11-08") },
 		"an unknown source":        func(in *ReceiptInput) { in.EvidenceSource = "CASH" },
 		"free text as evidence":    func(in *ReceiptInput) { in.EvidenceRef = "paid by Mr. Wang, see the chat" },
+		"evidence ending in space": func(in *ReceiptInput) { in.EvidenceRef = "BOC 2026-11-10 #0042 " },
 	} {
 		in := receiptInput()
 		change(&in)

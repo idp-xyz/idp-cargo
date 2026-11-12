@@ -655,8 +655,8 @@ func (d Deps) Hold(ctx context.Context, c Command, legalEntity, debtor string, p
 	})
 }
 
-// Exposure is a debtor's sell on the open jobs of a legal entity: not yet billed, and billed on debit notes not
-// reversed.
+// Exposure is a debtor's sell on the open jobs of a legal entity: not yet billed, and what is open of its debit
+// notes, the unreversed lines' local amount in proportion to what receipts have not settled.
 func (d Deps) Exposure(ctx context.Context, tenant fin.TenantID, legalEntity, debtor string) (unbilled, billed int64, err error) {
 	jobs, err := d.Jobs.OpenOf(ctx, tenant, legalEntity, "")
 	if err != nil {

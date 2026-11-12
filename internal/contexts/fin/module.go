@@ -451,9 +451,14 @@ func (m *Module) ListCreditExposure(ctx context.Context, q api.ListCreditExposur
 			return err
 		}
 		currency := policy.State().FunctionalCurrency
+		for debtor := range money { // a debtor with only money on account is listed too, at no exposure
+			if _, exposed := unbilled[debtor]; !exposed {
+				debtors = append(debtors, debtor)
+			}
+		}
 		slices.Sort(debtors)
 		for _, d := range debtors {
-			if total := unbilled[d] + billed[d]; !held[d] && total != 0 {
+			if total := unbilled[d] + billed[d]; !held[d] && (total != 0 || len(money[d]) > 0) {
 				out = append(out, api.CreditAccount{LegalEntityID: q.LegalEntityID, DebtorPartyID: d, Status: api.CreditNoAccount,
 					Exposure: kernel.Money{Currency: currency, Minor: total}, Unbilled: kernel.Money{Currency: currency, Minor: unbilled[d]},
 					Billed: kernel.Money{Currency: currency, Minor: billed[d]}, OnAccount: money[d]})

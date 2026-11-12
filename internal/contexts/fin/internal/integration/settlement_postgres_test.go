@@ -418,6 +418,54 @@ func TestDebtorReceiptsSettleDebitNotes(t *testing.T) {
 	if err = errors.Join(check(jobWrite), check(touch+`'R-2'`)); err != nil {
 		t.Fatalf("put back: %v", err)
 	}
+	// a stored allocation dated before its receipt: the receipt's next commit refuses
+	b.rewrite(t, `UPDATE cargo_fin.debtor_receipt_allocation SET allocated_on=allocated_on-21, allocated_at=allocated_at-interval '21 days'
+        WHERE tenant_id=$1 AND receipt_id='R-2' AND allocation_no=2`)
+	if _, constraint := sqlState(check(touch + `'R-2'`)); constraint != "debtor_receipt_consistent" {
+		t.Fatalf("an allocation dated before its receipt: %v", check(touch+`'R-2'`))
+	}
+	b.rewrite(t, `UPDATE cargo_fin.debtor_receipt_allocation SET allocated_on=allocated_on+21, allocated_at=allocated_at+interval '21 days'
+        WHERE tenant_id=$1 AND receipt_id='R-2' AND allocation_no=2`)
+	if err = check(touch + `'R-2'`); err != nil {
+		t.Fatalf("put back: %v", err)
+	}
+}
+
+// A debtor whose roles have ended still pays what it owes: with a debit note open, a receipt is recorded at the
+// revision the latest open note billed; with nothing open, recording stays refused. A debtor with only money on
+// account is listed in ListCreditExposure at no exposure.
+func TestReceiptsAfterTheDebtorRoleEnds(t *testing.T) {
+	ctx := context.Background()
+	b := billedTwice(t) // DN-1 to party-a: CNY 8,940.00 open
+	b.w.mu.Lock()
+	saved := b.w.roles["party-a"]
+	b.w.roles["party-a"] = nil
+	b.w.mu.Unlock()
+	defer func() { b.w.mu.Lock(); b.w.roles["party-a"] = saved; b.w.mu.Unlock() }()
+	ra := b.received(t, b.receipt("R-ENDED", "party-a", 5, cny(894_000), kernel.Money{}, api.EvidenceBank, "BOC-ENDED"))
+	if _, err := b.module.AllocateDebtorReceipt(ctx, b.allocation("al-ended", "R-ENDED", ra, 5, to("DN-1", cny(894_000)))); err != nil {
+		t.Fatalf("allocating the ended debtor's receipt: %v", err)
+	}
+	_, err := b.module.RecordDebtorReceipt(ctx, b.receipt("R-ENDED-2", "party-a", 5, cny(1_000), kernel.Money{}, api.EvidenceBank, "BOC-ENDED-2"))
+	if !errors.Is(err, api.ErrRejected) || !strings.Contains(err.Error(), "FIN_PARTY_ROLE") {
+		t.Fatalf("recording with nothing open and no role: %v", err)
+	}
+	// a debtor with only money on account, no credit account and no exposure
+	b.w.mu.Lock()
+	b.w.roles["party-c"] = []string{"CUSTOMER"}
+	b.w.mu.Unlock()
+	b.received(t, b.receipt("R-ONLY", "party-c", 5, cny(88_800), kernel.Money{}, api.EvidenceBank, "BOC-ONLY"))
+	list, err := b.module.ListCreditExposure(ctx, api.ListCreditExposure{TenantID: b.tenant, LegalEntityID: "LE"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := slices.IndexFunc(list, func(a api.CreditAccount) bool { return a.DebtorPartyID == "party-c" })
+	if i < 0 || list[i].Status != api.CreditNoAccount || list[i].Exposure.Minor != 0 || len(list[i].OnAccount) != 1 || list[i].OnAccount[0].Minor != 88_800 {
+		t.Fatalf("money on account without an account or exposure: %+v", list)
+	}
+	if _, err = b.module.GetCreditAccount(ctx, api.GetCreditAccount{TenantID: b.tenant, LegalEntityID: "LE", DebtorPartyID: "party-c"}); !errors.Is(err, api.ErrNotFound) {
+		t.Fatalf("a credit account party-c never had: %v", err)
+	}
 }
 
 // Six receipts allocate the whole of one debit note at once: one settles it, the others find nothing open.
