@@ -101,13 +101,34 @@ func TestCreditorPaymentsOnPostgres(t *testing.T) {
 		t.Fatalf("CI-2 in part: %+v", c)
 	}
 
-	// the trucker's roles end: it is still paid what it is owed (CI-2's 200.00); a creditor owed nothing is not
+	// the trucker's roles end: it is still paid what it is owed, CI-2's 200.00 and CI-D's 300.00 (matched, then disputed),
+	// not CI-R's (never matched); in that currency, not beyond, and not while ORG reports it suspended. A creditor owed
+	// nothing is not paid.
 	a.w.mu.Lock()
 	roles := a.w.roles["trucker"]
 	delete(a.w.roles, "trucker")
 	delete(a.w.roles, "airline-mu")
 	a.w.mu.Unlock()
+	_, err = f.module.RecordCreditorPayment(ctx, a.pay("PAY-2X", "trucker", "V-87", 6, cny(50_001)))
+	a.rejected("a former creditor paid beyond what it is owed", err, "owed 50000 CNY")
+	usd := a.pay("PAY-2U", "trucker", "V-86", 6, cny(1))
+	usd.Amount.Currency = "USD"
+	_, err = f.module.RecordCreditorPayment(ctx, usd)
+	a.rejected("a former creditor paid in a currency it is not owed", err, "owed 0 USD")
+	a.w.mu.Lock()
+	suspended := a.w.identities["trucker"]
+	suspended.Status = "SUSPENDED"
+	a.w.identities["trucker"] = suspended
+	a.w.mu.Unlock()
+	_, err = f.module.RecordCreditorPayment(ctx, a.pay("PAY-2S", "trucker", "V-85", 6, cny(1)))
+	a.rejected("a former creditor ORG suspended", err, "ORG reports it SUSPENDED")
+	a.w.mu.Lock()
+	suspended.Status = "ACTIVE"
+	a.w.identities["trucker"] = suspended
+	a.w.mu.Unlock()
 	a.must(f.module.RecordCreditorPayment(ctx, a.pay("PAY-2", "trucker", "V-88", 6, cny(50_000))))
+	_, err = f.module.RecordCreditorPayment(ctx, a.pay("PAY-2Y", "trucker", "V-84", 6, cny(1)))
+	a.rejected("a former creditor paid again once on account", err, "owed 0 CNY")
 	_, err = f.module.RecordCreditorPayment(ctx, a.pay("PAY-MU", "airline-mu", "V-89", 6, cny(1)))
 	a.rejected("a former creditor owed nothing", err, "FIN_PARTY_ROLE")
 	a.w.mu.Lock()
@@ -118,14 +139,19 @@ func TestCreditorPaymentsOnPostgres(t *testing.T) {
 	}
 	a.must(f.module.AllocateCreditorPayment(ctx, a.allocate("PAY-2", 6, paying("CI-2", cny(20_000)))))
 
-	account, err := f.module.GetCreditorAccount(ctx, api.GetCreditorAccount{TenantID: f.tenant, LegalEntityID: "LE", CreditorPartyID: "trucker",
-		AsOf: a.day(24 * 10)})
-	if err != nil || len(account.OpenItems) != 2 || len(account.Open) != 1 || account.Open[0] != cny(40_000) || len(account.OnAccount) != 1 ||
+	_, err = f.module.GetCreditorAccount(ctx, api.GetCreditorAccount{TenantID: f.tenant, LegalEntityID: "LE"})
+	a.rejected("an account of no creditor", err, "invalid query")
+	_, err = f.module.ListCreditorPayments(ctx, api.ListCreditorPayments{TenantID: f.tenant, CreditorPartyID: "trucker"})
+	a.rejected("payments by no legal entity", err, "invalid query")
+	account, err := f.module.GetCreditorAccount(ctx, api.GetCreditorAccount{TenantID: f.tenant, LegalEntityID: "LE", CreditorPartyID: "trucker"})
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+	if err != nil || account.StatedOn != today.Format(time.DateOnly) || len(account.OpenItems) != 2 || len(account.Open) != 1 || account.Open[0] != cny(40_000) || len(account.OnAccount) != 1 ||
 		account.OnAccount[0] != cny(30_000) {
 		t.Fatalf("the trucker's account: %+v %v", account, err)
 	}
 	for _, it := range account.OpenItems {
-		if it.Payable || (it.InvoiceID != "CI-R" && it.InvoiceID != "CI-D") || it.DaysSinceInvoice < 9 {
+		dated, _ := time.Parse(time.DateOnly, it.InvoiceDate)
+		if it.Payable || (it.InvoiceID != "CI-R" && it.InvoiceID != "CI-D") || it.DaysSinceInvoice != int(today.Sub(dated).Hours()/24) {
 			t.Fatalf("open item: %+v", it)
 		}
 	}
@@ -198,11 +224,19 @@ UPDATE cargo_fin.creditor_invoice SET state='CANCELLED',cancel_reason='x',cancel
 		"a piece of evidence twice": {`INSERT INTO cargo_fin.creditor_payment (tenant_id,payment_id,legal_entity_id,creditor_party_id,creditor_revision,currency,
             amount_minor,paid_on,evidence_source,evidence_ref,state,recorded_by,recorded_at,entered_at) VALUES ($1,'PAY-9','LE','trucker',4,'CNY',1,current_date,
             'BANK','BOC-0001','RECORDED','x',now(),now())`, "23505", "creditor_payment_evidence_once"},
+		"a row committed once the transaction moved to another tenant": {`INSERT INTO cargo_fin.creditor_payment (tenant_id,payment_id,legal_entity_id,
+            creditor_party_id,creditor_revision,currency,amount_minor,paid_on,evidence_source,evidence_ref,state,recorded_by,recorded_at,entered_at)
+            VALUES ($1,'PAY-8','LE','trucker',4,'CNY',1,current_date,'BANK','SCOPE-1','RECORDED','x',now(),now());
+SELECT set_config('app.tenant_id', 'another-tenant', true)`, "23514", "fin_tenant_scope"},
 	} {
 		statements := strings.Split(tc.sql, ";\n")
 		err := f.within(t, func(ctx context.Context, e bentopg.Executor) error {
 			for _, s := range statements {
-				if _, err := e.Exec(ctx, s, f.tenant); err != nil {
+				var args []any
+				if strings.Contains(s, "$1") {
+					args = append(args, f.tenant)
+				}
+				if _, err := e.Exec(ctx, s, args...); err != nil {
 					return err
 				}
 			}

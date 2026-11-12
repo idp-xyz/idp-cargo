@@ -139,6 +139,8 @@ type PayableInvoice struct {
 	SupplierInvoiceNo string
 	LegalEntityID     string
 	CreditorPartyID   string
+	CreditorRevision  int64
+	Matched           bool // matched once, even if disputed since: owed
 	Currency          kernel.CurrencyCode
 	InvoiceDate       time.Time
 	State             string
@@ -176,9 +178,13 @@ func (p *CreditorPayment) Allocate(items []AllocationItem, invoices []PayableInv
 		seen[it.InvoiceID] = true
 		n := invoices[i]
 		switch {
-		case n.State != CreditorMatched || n.AwaitingApproval || n.LegalEntityID != st.LegalEntityID || n.CreditorPartyID != st.CreditorPartyID ||
-			n.Currency != st.Currency:
+		case n.State != CreditorMatched:
 			return fmt.Errorf("%w: creditor invoice %s (%s) is %s", ErrNotPayable, n.InvoiceID, n.SupplierInvoiceNo, n.State)
+		case n.AwaitingApproval:
+			return fmt.Errorf("%w: creditor invoice %s (%s) awaits a variance approval", ErrNotPayable, n.InvoiceID, n.SupplierInvoiceNo)
+		case n.LegalEntityID != st.LegalEntityID || n.CreditorPartyID != st.CreditorPartyID || n.Currency != st.Currency:
+			return fmt.Errorf("%w: creditor invoice %s (%s) is %s's to %s in %s", ErrNotPayable, n.InvoiceID, n.SupplierInvoiceNo, n.CreditorPartyID,
+				n.LegalEntityID, n.Currency)
 		case on.Before(n.InvoiceDate):
 			return fmt.Errorf("%w: creditor invoice %s is dated %s, after the allocation", ErrInvalid, n.SupplierInvoiceNo, n.InvoiceDate.Format(time.DateOnly))
 		case it.Amount.Minor > left:

@@ -80,10 +80,16 @@ type CancelCreditorPayment struct {
 	ActorID          string
 	PaymentID        string
 	ExpectedRevision int64
-	Reason           string // ReceiptEnteredInError or ReceiptReturned
+	Reason           string // PaymentEnteredInError or PaymentReturned
 	Date             string
 	OccurredAt       time.Time
 }
+
+// The reasons a payment is cancelled for: the same two a debtor receipt is cancelled for.
+const (
+	PaymentEnteredInError = ReceiptEnteredInError
+	PaymentReturned       = ReceiptReturned
+)
 
 // CreditorPaymentAllocation is an allocation of a payment, reversed at most once.
 type CreditorPaymentAllocation struct {
@@ -131,7 +137,7 @@ type CreditorInvoicePayment struct {
 }
 
 // CreditorOpenItem is a creditor invoice not cancelled with something open: Payable when it is matched, not disputed
-// and approved where needed; DaysSinceInvoice counts from its invoice date to AsOf.
+// and approved where needed; DaysSinceInvoice counts from its invoice date to the day the account is stated.
 type CreditorOpenItem struct {
 	InvoiceID         string
 	SupplierInvoiceNo string
@@ -146,20 +152,21 @@ type CreditorOpenItem struct {
 }
 
 // CreditorAccount is what a legal entity owes a creditor: the open items, what is open per currency, and what payments
-// have on account (paid in advance) per currency.
+// have on account (paid in advance) per currency, as they stand when asked: StatedOn is that day (UTC).
 type CreditorAccount struct {
 	LegalEntityID   string
 	CreditorPartyID string
-	AsOf            string
+	StatedOn        string
 	OpenItems       []CreditorOpenItem
 	Open            []kernel.Money
 	OnAccount       []kernel.Money
 }
 
 // GetCreditorPayment asks for a payment; ListCreditorPayments lists a creditor's payments by a legal entity in the
-// order paid; GetCreditorAccount states what the legal entity owes the creditor (AsOf YYYY-MM-DD, today when empty).
+// order paid; GetCreditorAccount states what the legal entity owes the creditor now. Each names a legal entity and a
+// creditor (FIN_INVALID_QUERY otherwise).
 type (
 	GetCreditorPayment   struct{ TenantID, PaymentID string }
 	ListCreditorPayments struct{ TenantID, LegalEntityID, CreditorPartyID string }
-	GetCreditorAccount   struct{ TenantID, LegalEntityID, CreditorPartyID, AsOf string }
+	GetCreditorAccount   struct{ TenantID, LegalEntityID, CreditorPartyID string }
 )

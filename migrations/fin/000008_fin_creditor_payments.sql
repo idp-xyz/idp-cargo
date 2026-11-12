@@ -5,7 +5,8 @@
 -- reference; its allocations pay the creditor's matched invoices, in part or across several, and what is not allocated
 -- stays on account (paid in advance). A payment changes only to be cancelled, once; an allocation only to be reversed,
 -- once; neither is deleted. A creditor invoice's state stays about the invoice: what is paid of it is the sum of its
--- live allocations, and an invoice that is paid is not cancelled.
+-- live allocations, and an invoice that is paid is not cancelled. Every FIN table's rows are committed only while the
+-- transaction is bound to their tenant, so that a check whose rows row-level security would hide cannot pass.
 
 CREATE TABLE cargo_fin.creditor_payment (
  tenant_id text NOT NULL CHECK (length(btrim(tenant_id)) BETWEEN 1 AND 128),
@@ -121,8 +122,8 @@ BEGIN
       AND coalesce(bool_and(a.allocated_at >= p.recorded_at AND a.allocated_on >= p.paid_on), true)
       AND (p.state = 'RECORDED' OR coalesce(bool_and(a.reversed_at IS NOT NULL AND a.reversed_on <= p.cancelled_on AND a.reversed_at <= p.cancelled_at), true))
     INTO ok FROM cargo_fin.creditor_payment_allocation a WHERE a.tenant_id = p.tenant_id AND a.payment_id = p.payment_id;
-  IF NOT ok THEN
-    RAISE EXCEPTION 'cargo_fin: creditor payment %/% is inconsistent at commit (state %)', p.tenant_id, p.payment_id, p.state
+  IF p.payment_id IS NULL OR ok IS DISTINCT FROM true THEN -- fail closed: a payment the check cannot see is not consistent
+    RAISE EXCEPTION 'cargo_fin: creditor payment %/% is inconsistent at commit (state %)', t, id, p.state
       USING ERRCODE = 'check_violation', CONSTRAINT = 'creditor_payment_consistent';
   END IF;
 END $fn$;
@@ -134,12 +135,13 @@ END $fn$;
 CREATE CONSTRAINT TRIGGER creditor_payment_consistent AFTER INSERT OR UPDATE ON cargo_fin.creditor_payment
   DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION cargo_fin.check_payment_at_commit();
 
--- At commit, an allocation: written by a transaction that writes its payment; its payment consistent; its invoice
--- locked as FIN's invoice commands lock it (a no-op for FIN's own allocations, which lock it before reading it: a
--- transaction past FIN that raced another allocation to the same invoice, or the invoice's cancellation, then waits and
--- the next statement reads what the other committed), of the payment's legal entity, creditor and currency, dated not
--- after the allocation; when written, MATCHED and not awaiting a variance approval (an invoice disputed or not yet
--- checked is held from payment); and the invoice has no more paid than it totals.
+-- At commit, an allocation (written, or reversed): written by a transaction that writes its payment; its payment
+-- consistent; its invoice locked as FIN's invoice commands lock it (FIN's allocations lock it before reading it, so for
+-- them this is a no-op; a reversal takes the lock here; a transaction past FIN that raced another allocation to the
+-- same invoice, or the invoice's cancellation, then waits and the next statement reads what the other committed), of
+-- the payment's legal entity, creditor and currency, dated not after the allocation; when written, MATCHED and not
+-- awaiting a variance approval (an invoice disputed or not yet checked is held from payment); and the invoice has no
+-- more paid than it totals.
 CREATE FUNCTION cargo_fin.check_payment_allocation_at_commit() RETURNS trigger LANGUAGE plpgsql AS $fn$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM cargo_fin.creditor_payment p WHERE p.tenant_id = NEW.tenant_id AND p.payment_id = NEW.payment_id
@@ -156,7 +158,7 @@ BEGIN
     RAISE EXCEPTION 'cargo_fin: allocation % of creditor payment %/% is not to a payable invoice of its legal entity, creditor and currency dated by then',
       NEW.allocation_no, NEW.tenant_id, NEW.payment_id USING ERRCODE = 'check_violation', CONSTRAINT = 'creditor_payment_consistent';
   END IF;
-  IF NOT cargo_fin.paid_within(NEW.tenant_id, NEW.invoice_id) THEN
+  IF cargo_fin.paid_within(NEW.tenant_id, NEW.invoice_id) IS NOT TRUE THEN
     RAISE EXCEPTION 'cargo_fin: creditor invoice %/% has more paid than it totals', NEW.tenant_id, NEW.invoice_id
       USING ERRCODE = 'check_violation', CONSTRAINT = 'creditor_invoice_paid_within';
   END IF;
@@ -179,6 +181,20 @@ END $fn$;
 CREATE CONSTRAINT TRIGGER creditor_invoice_unpaid_when_cancelled AFTER UPDATE ON cargo_fin.creditor_invoice
   DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (NEW.state = 'CANCELLED') EXECUTE FUNCTION cargo_fin.check_creditor_invoice_unpaid_at_commit();
 
+-- At commit, a row of any FIN table is of the tenant the transaction is bound to (app.tenant_id). FIN's commit checks
+-- read under row-level security with the binding in force at commit; a transaction that rebinds itself to another
+-- tenant before committing would make them read nothing and pass. A role that bypasses row-level security (the
+-- migrator) sees every row and is not bound.
+CREATE FUNCTION cargo_fin.tenant_scope_at_commit() RETURNS trigger LANGUAGE plpgsql AS $fn$
+BEGIN
+  IF current_setting('app.tenant_id', true) IS DISTINCT FROM NEW.tenant_id AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles r
+       WHERE r.rolname = current_user AND (r.rolsuper OR r.rolbypassrls)) THEN
+    RAISE EXCEPTION 'cargo_fin: a row of % of tenant % is committed while the transaction is bound to tenant %', TG_TABLE_NAME, NEW.tenant_id,
+      current_setting('app.tenant_id', true) USING ERRCODE = 'check_violation', CONSTRAINT = 'fin_tenant_scope';
+  END IF;
+  RETURN NULL;
+END $fn$;
+
 DO $tables$
 DECLARE tbl text;
 BEGIN
@@ -193,3 +209,14 @@ BEGIN
       tbl || '_read_committed', tbl);
   END LOOP;
 END $tables$;
+DO $scope$
+DECLARE tbl text;
+BEGIN
+  -- named to sort before every other trigger: of a row's deferred checks it runs first
+  FOR tbl IN SELECT c.relname FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'cargo_fin' AND c.relkind = 'r' AND EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid = c.oid
+        AND a.attname = 'tenant_id' AND NOT a.attisdropped) ORDER BY c.relname LOOP
+    EXECUTE format('CREATE CONSTRAINT TRIGGER %I AFTER INSERT OR UPDATE ON cargo_fin.%I DEFERRABLE INITIALLY DEFERRED FOR EACH ROW '
+      'EXECUTE FUNCTION cargo_fin.tenant_scope_at_commit()', '_tenant_scope', tbl);
+  END LOOP;
+END $scope$;

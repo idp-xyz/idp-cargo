@@ -299,6 +299,8 @@ type CreditorPaymentStore interface {
 	PayableInvoices(ctx context.Context, tenant fin.TenantID, invoiceIDs []string) ([]fin.PayableInvoice, error)
 	// Paid lists the live allocations to a creditor invoice, in the order of their dates.
 	Paid(ctx context.Context, tenant fin.TenantID, invoiceID string) ([]PaidAllocation, error)
+	// OpenItems reads a creditor's invoices by a legal entity, not cancelled, with something open, in the order dated.
+	OpenItems(ctx context.Context, tenant fin.TenantID, legalEntity, creditor string) ([]fin.PayableInvoice, error)
 }
 
 // Deps are the ports every FIN command uses.

@@ -78,6 +78,6 @@ type EventPayload struct {
 	Side          string `json:"side,omitempty"`       // ChargeSideRevised: SELL or COST
 	JobID         string `json:"job_id,omitempty"`     // DebtorInvoiceIssued, DebtorInvoiceCancelled and CreditNoteIssued: the note's job
 	InvoiceID     string `json:"invoice_id,omitempty"` // receipt and payment allocation events: the debit note or creditor invoice
-	// CreditorPartyID is the creditor of a creditor invoice's events.
+	// CreditorPartyID is the creditor of a creditor invoice's or a creditor payment's events.
 	CreditorPartyID string `json:"creditor_party_id,omitempty"`
 }

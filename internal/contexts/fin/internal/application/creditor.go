@@ -211,7 +211,7 @@ func (d Deps) CancelCreditorInvoice(ctx context.Context, c Command, reason strin
 		for _, a := range paid {
 			total += a.Amount
 		}
-		inv.Paid(total)
+		inv.SetPaid(total)
 		targets, err := d.Creditors.Targets(txCtx, c.Scope.TenantID, inv.Targets())
 		if err != nil {
 			return 0, err

@@ -3,6 +3,7 @@ package fin
 import (
 	"context"
 	"slices"
+	"strings"
 	"time"
 
 	"go.idp.xyz/idp-cargo/internal/contexts/fin/api"
@@ -93,6 +94,9 @@ func (m *Module) GetCreditorPayment(ctx context.Context, q api.GetCreditorPaymen
 }
 
 func (m *Module) ListCreditorPayments(ctx context.Context, q api.ListCreditorPayments) ([]api.CreditorPayment, error) {
+	if q.TenantID == "" || q.LegalEntityID == "" || q.CreditorPartyID == "" {
+		return nil, classify(application.ErrInvalidQuery)
+	}
 	d := m.deps(q.TenantID, "")
 	out := []api.CreditorPayment{}
 	err := d.Reader(ctx, func(txCtx context.Context) error {
@@ -113,60 +117,34 @@ func paidOf(ctx context.Context, d application.Deps, tenant, invoice string) ([]
 	return d.Payments.Paid(ctx, domain.TenantID(tenant), invoice)
 }
 
-// GetCreditorAccount states, in one snapshot, what a legal entity owes a creditor: its invoices not cancelled with
+// GetCreditorAccount states, in one snapshot, what a legal entity owes a creditor now: its invoices not cancelled with
 // something open, what is open per currency, and what payments have on account.
 func (m *Module) GetCreditorAccount(ctx context.Context, q api.GetCreditorAccount) (api.CreditorAccount, error) {
-	asOf := m.clock.Now().UTC().Truncate(24 * time.Hour)
-	if q.AsOf != "" {
-		var err error
-		if asOf, err = domain.ParseDate(q.AsOf); err != nil {
-			return api.CreditorAccount{}, classify(err)
-		}
+	if q.TenantID == "" || q.LegalEntityID == "" || q.CreditorPartyID == "" {
+		return api.CreditorAccount{}, classify(application.ErrInvalidQuery)
 	}
+	today := m.clock.Now().UTC().Truncate(24 * time.Hour)
 	d := m.deps(q.TenantID, "")
-	out := api.CreditorAccount{LegalEntityID: q.LegalEntityID, CreditorPartyID: q.CreditorPartyID, AsOf: dateView(asOf), OpenItems: []api.CreditorOpenItem{},
-		Open: []kernel.Money{}, OnAccount: []kernel.Money{}}
+	out := api.CreditorAccount{LegalEntityID: q.LegalEntityID, CreditorPartyID: q.CreditorPartyID, StatedOn: dateView(today),
+		OpenItems: []api.CreditorOpenItem{}, Open: []kernel.Money{}, OnAccount: []kernel.Money{}}
 	err := d.Reader(ctx, func(txCtx context.Context) error {
-		invoices, _, err := d.Creditors.List(txCtx, domain.TenantID(q.TenantID), q.LegalEntityID, q.CreditorPartyID)
+		items, err := d.Payments.OpenItems(txCtx, domain.TenantID(q.TenantID), q.LegalEntityID, q.CreditorPartyID)
 		if err != nil {
 			return err
 		}
 		open := map[kernel.CurrencyCode]int64{}
-		for _, inv := range invoices {
-			st := inv.State()
-			if st.State == domain.CreditorCancelled {
-				continue
-			}
-			paid, err := paidOf(txCtx, d, q.TenantID, st.InvoiceID)
-			if err != nil {
-				return err
-			}
-			var total int64
-			for _, a := range paid {
-				total += a.Amount
-			}
-			if st.Total()-total <= 0 {
-				continue
-			}
-			money := func(v int64) kernel.Money { return kernel.Money{Currency: st.Currency, Minor: v} }
-			out.OpenItems = append(out.OpenItems, api.CreditorOpenItem{InvoiceID: st.InvoiceID, SupplierInvoiceNo: st.SupplierInvoiceNo,
-				InvoiceDate: dateView(st.InvoiceDate), State: st.State, AwaitingApproval: st.AwaitingApproval(),
-				Payable: st.State == domain.CreditorMatched && !st.AwaitingApproval(), Total: money(st.Total()), Paid: money(total),
-				Open: money(st.Total() - total), DaysSinceInvoice: int(asOf.Sub(st.InvoiceDate).Hours() / 24)})
-			open[st.Currency] += st.Total() - total
+		for _, n := range items {
+			money := func(v int64) kernel.Money { return kernel.Money{Currency: n.Currency, Minor: v} }
+			out.OpenItems = append(out.OpenItems, api.CreditorOpenItem{InvoiceID: n.InvoiceID, SupplierInvoiceNo: n.SupplierInvoiceNo,
+				InvoiceDate: dateView(n.InvoiceDate), State: n.State, AwaitingApproval: n.AwaitingApproval,
+				Payable: n.State == domain.CreditorMatched && !n.AwaitingApproval, Total: money(n.Total), Paid: money(n.Paid), Open: money(n.Open()),
+				DaysSinceInvoice: int(today.Sub(n.InvoiceDate).Hours() / 24)})
+			open[n.Currency] += n.Open()
 		}
 		for currency, v := range open {
 			out.Open = append(out.Open, kernel.Money{Currency: currency, Minor: v})
 		}
-		slices.SortFunc(out.Open, func(a, b kernel.Money) int {
-			if a.Currency < b.Currency {
-				return -1
-			}
-			if a.Currency > b.Currency {
-				return 1
-			}
-			return 0
-		})
+		slices.SortFunc(out.Open, func(a, b kernel.Money) int { return strings.Compare(string(a.Currency), string(b.Currency)) })
 		onAccount, err := d.Payments.OnAccount(txCtx, domain.TenantID(q.TenantID), q.LegalEntityID, q.CreditorPartyID)
 		out.OnAccount = append(out.OnAccount, onAccount...)
 		return err

@@ -14,8 +14,10 @@ import (
 // disputes take turns.
 
 // RecordCreditorPayment records money paid to a creditor of a legal entity with a finance policy: ORG confirms the
-// creditor in a creditor role first (T3). A creditor whose roles have ended is still paid what it is owed: with a
-// matched invoice of the legal entity open, the payment is recorded at the revision the latest such invoice names.
+// creditor in a creditor role first (T3). A creditor whose roles have ended is still paid what it is owed, and only
+// that: ORG still knows the party as ACTIVE and the legal entity as VERIFIED, and in the payment's currency the
+// creditor's matched invoices (disputed or not) have open more than the payments on account; the payment is recorded at
+// the revision the latest such invoice names and is not more than what is owed less what is on account.
 func (d Deps) RecordCreditorPayment(ctx context.Context, c Command, in fin.PaymentInput) (Receipt, error) {
 	if d.Directory == nil || d.Payments == nil || d.Creditors == nil {
 		return Receipt{}, ErrMissingDependency
@@ -29,35 +31,39 @@ func (d Deps) RecordCreditorPayment(ctx context.Context, c Command, in fin.Payme
 		return Receipt{}, err
 	}
 	noRole := err
+	if noRole != nil {
+		if err = d.formerPartner(ctx, c.Scope.TenantID, in.CreditorPartyID, in.LegalEntityID, noRole); err != nil {
+			return Receipt{}, err
+		}
+	}
 	return d.write(ctx, c, hash, "CreditorPayment", func(txCtx context.Context) (Receipt, aggregate, error) {
 		if _, err := d.policy(txCtx, c.Scope.TenantID, in.LegalEntityID); err != nil {
 			return Receipt{}, nil, err
 		}
 		if noRole != nil {
-			invoices, _, err := d.Creditors.List(txCtx, c.Scope.TenantID, in.LegalEntityID, in.CreditorPartyID)
+			items, err := d.Payments.OpenItems(txCtx, c.Scope.TenantID, in.LegalEntityID, in.CreditorPartyID)
 			if err != nil {
 				return Receipt{}, nil, err
 			}
+			onAccount, err := d.Payments.OnAccount(txCtx, c.Scope.TenantID, in.LegalEntityID, in.CreditorPartyID)
+			if err != nil {
+				return Receipt{}, nil, err
+			}
+			var owed int64
 			in.CreditorRevision = 0
-			for _, inv := range invoices {
-				st := inv.State()
-				if st.State != fin.CreditorMatched || st.CreditorRevision <= in.CreditorRevision {
-					continue
-				}
-				paid, err := d.Payments.Paid(txCtx, c.Scope.TenantID, st.InvoiceID)
-				if err != nil {
-					return Receipt{}, nil, err
-				}
-				var total int64
-				for _, a := range paid {
-					total += a.Amount
-				}
-				if total < st.Total() {
-					in.CreditorRevision = st.CreditorRevision
+			for _, n := range items {
+				if n.Matched && n.Currency == in.Amount.Currency {
+					owed += n.Open()
+					in.CreditorRevision = max(in.CreditorRevision, n.CreditorRevision)
 				}
 			}
-			if in.CreditorRevision == 0 {
-				return Receipt{}, nil, noRole
+			for _, m := range onAccount {
+				if m.Currency == in.Amount.Currency {
+					owed -= m.Minor
+				}
+			}
+			if owed <= 0 || in.Amount.Minor > owed || in.CreditorRevision == 0 {
+				return Receipt{}, nil, fmt.Errorf("%w; it is owed %d %s beyond what is on account", noRole, max(owed, 0), in.Amount.Currency)
 			}
 		}
 		p, err := fin.RecordPayment(c.Scope.TenantID, in, c.Scope.ActorID, c.OccurredAt)
@@ -68,6 +74,22 @@ func (d Deps) RecordCreditorPayment(ctx context.Context, c Command, in fin.Payme
 		revision, err := d.Payments.Insert(txCtx, p)
 		return Receipt{SubjectID: in.ID, NewRevision: revision}, p, err
 	})
+}
+
+// formerPartner checks, for a party ORG no longer confirms in a role, that ORG still knows it as ACTIVE and the legal
+// entity as VERIFIED: a party suspended or unknown, or a legal entity not verified, takes nothing (refused).
+func (d Deps) formerPartner(ctx context.Context, tenant fin.TenantID, party, legalEntity string, noRole error) error {
+	id, err := d.Directory.PartyIdentity(ctx, tenant, party)
+	if errors.Is(err, ErrUnknownSource) {
+		return noRole
+	}
+	if err != nil {
+		return err
+	}
+	if id.Status != "ACTIVE" {
+		return fmt.Errorf("%w; ORG reports it %s", noRole, id.Status)
+	}
+	return d.verified(ctx, tenant, legalEntity)
 }
 
 // changePayment applies a change to the payment c.Subject names, read under its lock at the expected revision; apply

@@ -167,23 +167,46 @@ func (s PaymentStore) PayableInvoices(ctx context.Context, tenant fin.TenantID, 
 	if err = locked.Err(); err != nil {
 		return nil, err
 	}
-	rows, err := q.Query(ctx, `SELECT i.invoice_id, i.supplier_invoice_no, i.legal_entity_id, i.creditor_party_id, i.currency, i.invoice_date::text, i.state,
-        coalesce(i.approval_required AND i.approved_at IS NULL, false), i.total_minor,
-        coalesce((SELECT sum(a.amount_minor) FROM cargo_fin.creditor_payment_allocation a WHERE a.tenant_id=i.tenant_id AND a.invoice_id=i.invoice_id
-          AND a.reversed_at IS NULL), 0)::bigint
-      FROM cargo_fin.creditor_invoice i WHERE i.tenant_id=$1 AND i.invoice_id = ANY($2) ORDER BY i.invoice_id`, string(tenant), invoiceIDs)
+	rows, err := q.Query(ctx, payableSelect(`i.invoice_id = ANY($2)`)+` ORDER BY i.invoice_id`, string(tenant), invoiceIDs)
 	if err != nil {
 		return nil, err
 	}
+	return scanPayable(rows)
+}
+
+// OpenItems reads a creditor's invoices by a legal entity, not cancelled, with something open, in the order dated.
+func (s PaymentStore) OpenItems(ctx context.Context, tenant fin.TenantID, le, creditor string) ([]fin.PayableInvoice, error) {
+	q, err := s.DB.ReadExecutor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := q.Query(ctx, `SELECT * FROM (`+payableSelect(`i.legal_entity_id=$2 AND i.creditor_party_id=$3 AND i.state <> 'CANCELLED'`)+
+		`) x WHERE x.total_minor > x.paid ORDER BY x.invoice_date, x.invoice_id`, string(tenant), le, creditor)
+	if err != nil {
+		return nil, err
+	}
+	return scanPayable(rows)
+}
+
+func payableSelect(where string) string {
+	return `SELECT i.invoice_id, i.supplier_invoice_no, i.legal_entity_id, i.creditor_party_id, i.creditor_revision, i.matched_at IS NOT NULL AS matched,
+        i.currency, i.invoice_date::text AS invoice_date, i.state, coalesce(i.approval_required AND i.approved_at IS NULL, false) AS awaiting, i.total_minor,
+        coalesce((SELECT sum(a.amount_minor) FROM cargo_fin.creditor_payment_allocation a WHERE a.tenant_id=i.tenant_id AND a.invoice_id=i.invoice_id
+          AND a.reversed_at IS NULL), 0)::bigint AS paid
+      FROM cargo_fin.creditor_invoice i WHERE i.tenant_id=$1 AND ` + where
+}
+
+func scanPayable(rows pgx.Rows) ([]fin.PayableInvoice, error) {
 	defer rows.Close()
 	var out []fin.PayableInvoice
 	for rows.Next() {
 		var n fin.PayableInvoice
 		var currency, dated string
-		if err = rows.Scan(&n.InvoiceID, &n.SupplierInvoiceNo, &n.LegalEntityID, &n.CreditorPartyID, &currency, &dated, &n.State, &n.AwaitingApproval,
-			&n.Total, &n.Paid); err != nil {
+		if err := rows.Scan(&n.InvoiceID, &n.SupplierInvoiceNo, &n.LegalEntityID, &n.CreditorPartyID, &n.CreditorRevision, &n.Matched, &currency, &dated,
+			&n.State, &n.AwaitingApproval, &n.Total, &n.Paid); err != nil {
 			return nil, err
 		}
+		var err error
 		if n.InvoiceDate, err = fin.ParseDate(dated); err != nil {
 			return nil, err
 		}

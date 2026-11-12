@@ -187,7 +187,9 @@ func newFixture(t *testing.T) *fixture {
 		identities: map[string]orgapi.PartyIdentity{
 			"party-a": {PartyID: "party-a", Revision: 4, Status: "ACTIVE", LegalName: "上海甲贸易有限公司", EnglishName: "Shanghai Jia Trading Co., Ltd.",
 				CountryCode: "CN", Identifiers: []orgapi.PartyIdentifier{{Type: orgapi.IdentifierCNUSCC, Country: "CN", Value: "91310000MA1FL8TQ2X"}}},
-			"agent-ny": {PartyID: "agent-ny", Revision: 2, Status: "ACTIVE", LegalName: "NY Forwarding Inc.", CountryCode: "US"},
+			"agent-ny":   {PartyID: "agent-ny", Revision: 2, Status: "ACTIVE", LegalName: "NY Forwarding Inc.", CountryCode: "US"},
+			"airline-mu": {PartyID: "airline-mu", Revision: 4, Status: "ACTIVE", LegalName: "China Eastern Airlines Corporation Limited", CountryCode: "CN"},
+			"trucker":    {PartyID: "trucker", Revision: 4, Status: "ACTIVE", LegalName: "上海乙运输有限公司", CountryCode: "CN"},
 		},
 		documents: map[string]docapi.TransportDocumentSnapshot{}, earlier: map[string][]docapi.TransportDocumentSnapshot{},
 		costBases: map[string]phyapi.PhysicalCostBasis{}}

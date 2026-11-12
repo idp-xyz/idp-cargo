@@ -11,7 +11,8 @@ import (
 
 // RecordReceipt records money received from a debtor of a legal entity with a finance policy: ORG confirms the debtor
 // in a debtor role first (T3). A debtor whose roles have ended still pays what it owes: with a debit note of the
-// legal entity open, the receipt is recorded at the revision the latest open note billed.
+// legal entity open, the receipt is recorded at the revision the latest open note billed, while ORG still knows the
+// party as ACTIVE and the legal entity as VERIFIED (FIN V0.6).
 func (d Deps) RecordReceipt(ctx context.Context, c Command, in fin.ReceiptInput) (Receipt, error) {
 	if d.Directory == nil {
 		return Receipt{}, ErrMissingDependency
@@ -25,6 +26,11 @@ func (d Deps) RecordReceipt(ctx context.Context, c Command, in fin.ReceiptInput)
 		return Receipt{}, err
 	}
 	noRole := err
+	if noRole != nil {
+		if err = d.formerPartner(ctx, c.Scope.TenantID, in.DebtorPartyID, in.LegalEntityID, noRole); err != nil {
+			return Receipt{}, err
+		}
+	}
 	return d.write(ctx, c, hash, "DebtorReceipt", func(txCtx context.Context) (Receipt, aggregate, error) {
 		if _, err := d.policy(txCtx, c.Scope.TenantID, in.LegalEntityID); err != nil {
 			return Receipt{}, nil, err

@@ -145,15 +145,16 @@ func (s CreditorInvoiceState) AwaitingApproval() bool {
 // CreditorInvoice is the aggregate root of a supplier's invoice to a legal entity and its matches to accruals.
 type CreditorInvoice struct {
 	state    CreditorInvoiceState
-	matches  int   // matches stored
-	disputes int   // disputes stored
-	resolved []int // stored disputes resolved since the invoice was loaded
-	paid     int64 // what live allocations of creditor payments pay of it, set under the invoice's lock (FIN V0.6)
+	matches  int    // matches stored
+	disputes int    // disputes stored
+	resolved []int  // stored disputes resolved since the invoice was loaded
+	paid     *int64 // what live allocations of creditor payments pay of it, set under the invoice's lock (FIN V0.6)
 	pending  []Event
 }
 
-// Paid sets what the live allocations of creditor payments pay of the invoice, read under its lock.
-func (c *CreditorInvoice) Paid(amount int64) { c.paid = amount }
+// SetPaid sets what the live allocations of creditor payments pay of the invoice, read under its lock; Cancel refuses
+// while it is not set.
+func (c *CreditorInvoice) SetPaid(amount int64) { c.paid = &amount }
 
 const (
 	eventCreditorRecorded  = "CreditorInvoiceRecorded.v1"
@@ -435,8 +436,10 @@ func (c *CreditorInvoice) Cancel(reason string, targets []AccrualTarget, by stri
 		return fmt.Errorf("%w: creditor invoice %s is %s; a matched invoice is disputed before it is cancelled", ErrInvalidTransition, st.InvoiceID, st.State)
 	case !text(reason):
 		return fmt.Errorf("%w: a cancellation needs a reason", ErrInvalid)
-	case c.paid != 0:
-		return fmt.Errorf("%w: %d of creditor invoice %s is paid", ErrInvoicePaid, c.paid, st.InvoiceID)
+	case c.paid == nil:
+		return fmt.Errorf("%w: what is paid of creditor invoice %s is not known", ErrInvalid, st.InvoiceID)
+	case *c.paid != 0:
+		return fmt.Errorf("%w: %d of creditor invoice %s is paid", ErrInvoicePaid, *c.paid, st.InvoiceID)
 	}
 	if err := c.targetsOpen(targets); err != nil {
 		return err

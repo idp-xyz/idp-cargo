@@ -140,11 +140,11 @@ func TestPaidInvoiceIsNotCancelled(t *testing.T) {
 	if err := c.Dispute("rate disputed", []AccrualTarget{job}, "ap-1", hour(5)); err != nil {
 		t.Fatal(err)
 	}
-	c.Paid(10_000)
+	c.SetPaid(10_000)
 	if err := c.Cancel("withdrawn", []AccrualTarget{job}, "ap-1", hour(6)); !errors.Is(err, ErrInvoicePaid) {
 		t.Fatalf("a paid invoice cancelled: %v", err)
 	}
-	c.Paid(0)
+	c.SetPaid(0)
 	if err := c.Cancel("withdrawn", []AccrualTarget{job}, "ap-1", hour(6)); err != nil {
 		t.Fatal(err)
 	}

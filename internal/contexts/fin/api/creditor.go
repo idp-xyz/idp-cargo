@@ -136,7 +136,8 @@ type ApproveCostVariance struct {
 // DisputeCreditorInvoice disputes a RECORDED or MATCHED invoice with the supplier; while disputed, its matches keep
 // the pools they consume from closing. ResolveCreditorInvoiceDispute returns it to the state it was in.
 // CancelCreditorInvoice cancels a RECORDED or DISPUTED invoice (a matched one is disputed first): its matches consume
-// nothing any more. Disputing and cancelling need the jobs and pools of the matches open (FIN_TARGET_CLOSED).
+// nothing any more. Disputing and cancelling need the jobs and pools of the matches open (FIN_TARGET_CLOSED); an
+// invoice that payments pay is cancelled once their allocations are reversed (FIN_INVOICE_PAID).
 type DisputeCreditorInvoice struct {
 	CommandID        string
 	TenantID         string
