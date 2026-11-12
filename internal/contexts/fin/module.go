@@ -1,6 +1,7 @@
-// Package fin assembles the FIN (Freight Job Economics) bounded context, V0.2: finance policies with tax treatments
+// Package fin assembles the FIN (Freight Job Economics) bounded context, V0.3: finance policies with tax treatments
 // and number series, freight jobs with estimated charges and the debit and credit notes billing them, billing
-// profiles, and credit accounts with CreditStatus v1 for DOC. Code outside FIN uses it through package api;
+// profiles, debtor receipts settling debit notes and debtor statements, and credit accounts with CreditStatus v1 for
+// DOC. Code outside FIN uses it through package api;
 // everything under internal/ is private to FIN.
 package fin
 
@@ -361,12 +362,21 @@ func (m *Module) ListJobsForShipment(ctx context.Context, q api.ListJobsForShipm
 	return out, nil
 }
 
-func accountView(a *domain.CreditAccount, revision, unbilled, billed int64) api.CreditAccount {
+// onAccount groups what receipts have unallocated by debtor.
+func onAccount(rows []application.OnAccount) map[string][]kernel.Money {
+	out := map[string][]kernel.Money{}
+	for _, r := range rows {
+		out[r.DebtorPartyID] = append(out[r.DebtorPartyID], r.Amount)
+	}
+	return out
+}
+
+func accountView(a *domain.CreditAccount, revision, unbilled, billed int64, onAccount []kernel.Money) api.CreditAccount {
 	st := a.State()
 	exposure := unbilled + billed
 	out := api.CreditAccount{LegalEntityID: st.LegalEntityID, DebtorPartyID: st.DebtorPartyID, Revision: revision, Status: a.Status(),
 		Exposure: kernel.Money{Currency: st.Currency, Minor: exposure}, Unbilled: kernel.Money{Currency: st.Currency, Minor: unbilled},
-		Billed: kernel.Money{Currency: st.Currency, Minor: billed}}
+		Billed: kernel.Money{Currency: st.Currency, Minor: billed}, OnAccount: onAccount}
 	for _, t := range st.Terms {
 		out.Terms = append(out.Terms, api.CreditTerms{Version: t.No, Limit: t.Limit, PaymentDays: t.PaymentDays, PaymentBasis: t.PaymentBasis, SetBy: t.By,
 			SetAt: t.At})
@@ -385,17 +395,21 @@ func (m *Module) GetCreditAccount(ctx context.Context, q api.GetCreditAccount) (
 	d := m.deps(q.TenantID, "")
 	var a *domain.CreditAccount
 	var revision, unbilled, billed int64
+	var money []application.OnAccount
 	err := d.Reader(ctx, func(txCtx context.Context) (err error) {
 		if a, revision, err = d.Credit.Read(txCtx, domain.TenantID(q.TenantID), q.LegalEntityID, q.DebtorPartyID); err != nil {
 			return err
 		}
-		unbilled, billed, err = d.Exposure(txCtx, domain.TenantID(q.TenantID), q.LegalEntityID, q.DebtorPartyID)
+		if unbilled, billed, err = d.Exposure(txCtx, domain.TenantID(q.TenantID), q.LegalEntityID, q.DebtorPartyID); err != nil {
+			return err
+		}
+		money, err = d.DebtorReceipts.OnAccount(txCtx, domain.TenantID(q.TenantID), q.LegalEntityID, q.DebtorPartyID)
 		return err
 	})
 	if err != nil {
 		return api.CreditAccount{}, classify(err)
 	}
-	return accountView(a, revision, unbilled, billed), nil
+	return accountView(a, revision, unbilled, billed, onAccount(money)[q.DebtorPartyID]), nil
 }
 
 func (m *Module) ListCreditExposure(ctx context.Context, q api.ListCreditExposure) ([]api.CreditAccount, error) {
@@ -421,23 +435,33 @@ func (m *Module) ListCreditExposure(ctx context.Context, q api.ListCreditExposur
 				unbilled[d], billed[d] = unbilled[d]+u, billed[d]+b
 			}
 		}
+		rows, err := d.DebtorReceipts.OnAccount(txCtx, domain.TenantID(q.TenantID), q.LegalEntityID, "")
+		if err != nil {
+			return err
+		}
+		money := onAccount(rows)
 		held := map[string]bool{}
 		for i, a := range accounts {
 			debtor := a.State().DebtorPartyID
 			held[debtor] = true
-			out = append(out, accountView(a, revisions[i], unbilled[debtor], billed[debtor]))
+			out = append(out, accountView(a, revisions[i], unbilled[debtor], billed[debtor], money[debtor]))
 		}
 		policy, found, err := d.Policies.Find(txCtx, domain.TenantID(q.TenantID), q.LegalEntityID)
 		if err != nil || !found {
 			return err
 		}
 		currency := policy.State().FunctionalCurrency
+		for debtor := range money { // a debtor with only money on account is listed too, at no exposure
+			if _, exposed := unbilled[debtor]; !exposed {
+				debtors = append(debtors, debtor)
+			}
+		}
 		slices.Sort(debtors)
 		for _, d := range debtors {
-			if total := unbilled[d] + billed[d]; !held[d] && total != 0 {
+			if total := unbilled[d] + billed[d]; !held[d] && (total != 0 || len(money[d]) > 0) {
 				out = append(out, api.CreditAccount{LegalEntityID: q.LegalEntityID, DebtorPartyID: d, Status: api.CreditNoAccount,
 					Exposure: kernel.Money{Currency: currency, Minor: total}, Unbilled: kernel.Money{Currency: currency, Minor: unbilled[d]},
-					Billed: kernel.Money{Currency: currency, Minor: billed[d]}})
+					Billed: kernel.Money{Currency: currency, Minor: billed[d]}, OnAccount: money[d]})
 			}
 		}
 		return nil
@@ -518,12 +542,11 @@ func noteView(j *domain.FreightJob, n domain.Note, profile *domain.BillingProfil
 			Treatment: l.Tax.Treatment, RateBP: l.Tax.RateBP})
 	}
 	if n.Kind == domain.KindDebitNote {
-		open := n.Total
 		for _, c := range j.Credits(n.ID) {
 			out.CreditNotes = append(out.CreditNotes, c.ID)
-			open += c.Total
 		}
-		out.Open = money(open)
+		remaining, _ := j.Remaining(n.ID)
+		out.Settled, out.Open = money(n.Settled), money(remaining-n.Settled)
 	}
 	return out
 }
@@ -543,6 +566,17 @@ func (m *Module) GetDebtorInvoice(ctx context.Context, q api.GetDebtorInvoice) (
 					return err
 				}
 				out = noteView(j, n, profile)
+				if n.Kind != domain.KindDebitNote {
+					continue
+				}
+				settlements, err := d.DebtorReceipts.Settlements(txCtx, domain.TenantID(q.TenantID), n.ID)
+				if err != nil {
+					return err
+				}
+				for _, s := range settlements {
+					out.Settlements = append(out.Settlements, api.InvoiceSettlement{ReceiptID: s.ReceiptID, AllocationNo: s.AllocationNo,
+						Amount: kernel.Money{Currency: n.Currency, Minor: s.Amount}, Date: dateView(s.Date)})
+				}
 			}
 		}
 		return nil
@@ -568,7 +602,9 @@ func (m *Module) ListOpenDebtorItems(ctx context.Context, q api.ListOpenDebtorIt
 		for _, j := range jobs {
 			for _, n := range j.State().Notes {
 				if n.Kind == domain.KindDebitNote && n.State == domain.NoteIssued && n.DebtorPartyID == q.DebtorPartyID {
-					out = append(out, noteView(j, n, profile))
+					if v := noteView(j, n, profile); v.Open.Minor != 0 {
+						out = append(out, v)
+					}
 				}
 			}
 		}
@@ -676,6 +712,8 @@ func (m *Module) deps(tenant, commandID string) application.Deps {
 		Documents: m.documents,
 		Numbers:   m.numbers,
 		Profiles:  postgres.ProfileStore{DB: m.db},
+
+		DebtorReceipts: postgres.ReceiptStore{DB: m.db},
 	}
 }
 
@@ -713,7 +751,8 @@ func classify(err error) error {
 		errors.Is(err, application.ErrNotVerified), errors.Is(err, kernel.ErrOutsideRecordWindow), errors.Is(err, kernel.ErrAmountOverflow),
 		errors.Is(err, domain.ErrInvoiced), errors.Is(err, domain.ErrNoIssuedDocument), errors.Is(err, domain.ErrNoBillingProfile),
 		errors.Is(err, domain.ErrProfileStale), errors.Is(err, domain.ErrTaxMissing), errors.Is(err, domain.ErrTaxInUse), errors.Is(err, domain.ErrNoSeries),
-		errors.Is(err, domain.ErrSeriesExhausted), errors.Is(err, numbering.ErrSeeded):
+		errors.Is(err, domain.ErrSeriesExhausted), errors.Is(err, numbering.ErrSeeded), errors.Is(err, domain.ErrSettled),
+		errors.Is(err, domain.ErrOverAllocated), errors.Is(err, domain.ErrNotAllocatable), errors.Is(err, domain.ErrEvidenceUsed):
 		kind = api.ErrRejected
 	default:
 		return err

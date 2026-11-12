@@ -35,6 +35,10 @@ var (
 	ErrTaxInUse          = errors.New("fin: FIN_TAX_TREATMENT_IN_USE: a debit note of the legal entity bills the charge code at or after the date")
 	ErrNoSeries          = errors.New("fin: FIN_NO_SERIES: the legal entity has no number series of the kind; register one first")
 	ErrSeriesExhausted   = errors.New("fin: FIN_SERIES_EXHAUSTED: the number series has no number left")
+	ErrSettled           = errors.New("fin: FIN_SETTLED: receipts settle more of the debit note than the credit note would leave on it; reverse the allocation first")
+	ErrOverAllocated     = errors.New("fin: FIN_OVER_ALLOCATED: the amount is more than the receipt has unallocated or the debit note has open")
+	ErrNotAllocatable    = errors.New("fin: FIN_NOT_ALLOCATABLE: not an issued debit note of the receipt's legal entity, debtor and currency")
+	ErrEvidenceUsed      = errors.New("fin: FIN_EVIDENCE_USED: a recorded receipt of the legal entity has this evidence reference already")
 )
 
 const maxText = 500
@@ -88,6 +92,7 @@ type Event struct {
 	LineNo        int    // a charge line's number, for line and side events
 	Side          string // SELL or COST, for side events
 	JobID         string // the job of a debit or credit note, for note events
+	InvoiceID     string // the debit note of an allocation, for allocation events
 }
 
 // MaxAmount bounds every amount and local amount in minor units (10^15, ten trillion units of a two-digit

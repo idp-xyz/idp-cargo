@@ -6,7 +6,8 @@ const Source = "idp-cargo.fin"
 // Published event types (FinanceEvent v1 carries them to EVT as identifiers). Policy events have the legal entity as
 // subject (InvoiceSeriesRegistered <legal entity>/<kind>), job events the job (a note's billed and returned sides are
 // ChargeSideRevised too), note events the note (with its job), billing profile events the debtor, credit events
-// <legal entity>/<debtor>.
+// <legal entity>/<debtor>, receipt events the debtor receipt (allocation events with the allocation's number as Version
+// and the debit note).
 const (
 	FinancePolicyOpened  = "FinancePolicyOpened.v1"
 	ExchangeRateRecorded = "ExchangeRateRecorded.v1"
@@ -26,6 +27,11 @@ const (
 	DebtorInvoiceIssued     = "DebtorInvoiceIssued.v1"    // a debit note
 	DebtorInvoiceCancelled  = "DebtorInvoiceCancelled.v1" // a debit note whose every line a credit note reversed
 	CreditNoteIssued        = "CreditNoteIssued.v1"
+
+	DebtorReceiptRecorded           = "DebtorReceiptRecorded.v1"
+	DebtorReceiptAllocated          = "DebtorReceiptAllocated.v1"
+	DebtorReceiptAllocationReversed = "DebtorReceiptAllocationReversed.v1"
+	DebtorReceiptCancelled          = "DebtorReceiptCancelled.v1"
 )
 
 // EventPayload is the JSON payload of every FIN event: identifiers and versions only, never amounts, names or tax
@@ -37,7 +43,8 @@ type EventPayload struct {
 	Version       int    `json:"version,omitempty"`
 	ShipmentID    string `json:"shipment_id,omitempty"`
 	DebtorPartyID string `json:"debtor_party_id,omitempty"`
-	LineNo        int    `json:"line_no,omitempty"` // ChargeLineRecorded and ChargeSideRevised: the line; Version is the side's version
-	Side          string `json:"side,omitempty"`    // ChargeSideRevised: SELL or COST
-	JobID         string `json:"job_id,omitempty"`  // DebtorInvoiceIssued, DebtorInvoiceCancelled and CreditNoteIssued: the note's job
+	LineNo        int    `json:"line_no,omitempty"`    // ChargeLineRecorded and ChargeSideRevised: the line; Version is the side's version
+	Side          string `json:"side,omitempty"`       // ChargeSideRevised: SELL or COST
+	JobID         string `json:"job_id,omitempty"`     // DebtorInvoiceIssued, DebtorInvoiceCancelled and CreditNoteIssued: the note's job
+	InvoiceID     string `json:"invoice_id,omitempty"` // DebtorReceiptAllocated and DebtorReceiptAllocationReversed: the debit note
 }

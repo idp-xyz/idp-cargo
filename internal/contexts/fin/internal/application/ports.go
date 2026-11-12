@@ -107,6 +107,38 @@ type CreditStore interface {
 	List(ctx context.Context, tenant fin.TenantID, legalEntity string) ([]*fin.CreditAccount, []int64, error)
 }
 
+// OnAccount is what a debtor's recorded receipts have unallocated in a currency.
+type OnAccount struct {
+	DebtorPartyID string
+	Amount        kernel.Money
+}
+
+// Settlement is a live allocation of a receipt to a debit note, in the note's currency.
+type Settlement struct {
+	ReceiptID    string
+	AllocationNo int
+	Amount       int64
+	Date         time.Time
+}
+
+// DebtorReceiptStore loads and writes debtor receipts; Load locks the receipt row.
+type DebtorReceiptStore interface {
+	Load(ctx context.Context, tenant fin.TenantID, receipt string) (*fin.DebtorReceipt, int64, error)
+	Read(ctx context.Context, tenant fin.TenantID, receipt string) (*fin.DebtorReceipt, int64, error)
+	Insert(context.Context, *fin.DebtorReceipt) (int64, error)
+	Save(context.Context, *fin.DebtorReceipt, int64) (int64, error)
+	// OfDebtor lists a debtor's receipts with a legal entity, in the order received.
+	OfDebtor(ctx context.Context, tenant fin.TenantID, legalEntity, debtor string) ([]*fin.DebtorReceipt, []int64, error)
+	// OnAccount sums what the recorded receipts of a legal entity have unallocated, per debtor and currency (of one
+	// debtor when debtor is not empty).
+	OnAccount(ctx context.Context, tenant fin.TenantID, legalEntity, debtor string) ([]OnAccount, error)
+	// SettlementNotes locks the jobs of the notes, in order of job id, until the transaction ends, then reads what an
+	// allocation needs of each note: job commands and allocations to a job's notes take turns.
+	SettlementNotes(ctx context.Context, tenant fin.TenantID, invoiceIDs []string) ([]fin.SettlementNote, error)
+	// Settlements lists the live allocations to a debit note.
+	Settlements(ctx context.Context, tenant fin.TenantID, invoiceID string) ([]Settlement, error)
+}
+
 type Receipts interface {
 	Find(ctx context.Context, tenant fin.TenantID, commandID string) (Receipt, bool, error)
 	Save(ctx context.Context, tenant fin.TenantID, r Receipt, kind string) error
@@ -202,9 +234,12 @@ type Deps struct {
 	Documents Documents
 	Numbers   Numbers
 	Profiles  ProfileStore
+	// DebtorReceipts holds the money received from debtors; Receipts above are the command receipts.
+	DebtorReceipts DebtorReceiptStore
 }
 
-// Command is what every FIN command carries: Subject is the legal entity, the job or <legal entity>/<debtor>.
+// Command is what every FIN command carries: Subject is the legal entity, the job, <legal entity>/<debtor> or the
+// debtor receipt.
 type Command struct {
 	CommandID        string
 	Scope            Scope
@@ -220,7 +255,7 @@ func (d Deps) begin(ctx context.Context, c Command) (hash string, entered time.T
 		return
 	}
 	if d.Tx == nil || d.Policies == nil || d.Jobs == nil || d.Credit == nil || d.Numbers == nil || d.Profiles == nil || d.Receipts == nil || d.Outbox == nil ||
-		d.Auth == nil || d.Clock == nil {
+		d.Auth == nil || d.Clock == nil || d.DebtorReceipts == nil {
 		return "", time.Time{}, Receipt{}, false, ErrMissingDependency
 	}
 	if c.Scope.TenantID == "" || strings.TrimSpace(c.Scope.ActorID) == "" || c.CommandID == "" || c.OccurredAt.IsZero() {
