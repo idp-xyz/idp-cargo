@@ -670,4 +670,7 @@ type Queries interface {
 	GetCreditorInvoice(ctx context.Context, q GetCreditorInvoice) (CreditorInvoice, error)
 	ListCreditorInvoices(ctx context.Context, q ListCreditorInvoices) ([]CreditorInvoice, error)
 	ListOpenAccruals(ctx context.Context, q ListOpenAccruals) ([]OpenAccrual, error)
+	GetCreditorPayment(ctx context.Context, q GetCreditorPayment) (CreditorPayment, error)
+	ListCreditorPayments(ctx context.Context, q ListCreditorPayments) ([]CreditorPayment, error)
+	GetCreditorAccount(ctx context.Context, q GetCreditorAccount) (CreditorAccount, error)
 }

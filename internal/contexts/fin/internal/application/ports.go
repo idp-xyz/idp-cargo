@@ -275,6 +275,32 @@ type CreditorInvoiceStore interface {
 	LatestMatch(ctx context.Context, tenant fin.TenantID, legalEntity string) (time.Time, error)
 }
 
+// PaidAllocation is a live allocation of a creditor payment to an invoice, in the invoice's currency.
+type PaidAllocation struct {
+	PaymentID    string
+	AllocationNo int
+	Amount       int64
+	Date         time.Time
+}
+
+// CreditorPaymentStore loads and writes creditor payments (Load locks the payment row; a second live payment with a
+// piece of evidence of the legal entity is fin.ErrEvidenceUsed) and reads what they pay.
+type CreditorPaymentStore interface {
+	Load(ctx context.Context, tenant fin.TenantID, payment string) (*fin.CreditorPayment, int64, error)
+	Read(ctx context.Context, tenant fin.TenantID, payment string) (*fin.CreditorPayment, int64, error)
+	Insert(context.Context, *fin.CreditorPayment) (int64, error)
+	Save(context.Context, *fin.CreditorPayment, int64) (int64, error)
+	// OfCreditor lists a creditor's payments by a legal entity, in the order paid.
+	OfCreditor(ctx context.Context, tenant fin.TenantID, legalEntity, creditor string) ([]*fin.CreditorPayment, []int64, error)
+	// OnAccount sums what the recorded payments to a creditor have unallocated, per currency.
+	OnAccount(ctx context.Context, tenant fin.TenantID, legalEntity, creditor string) ([]kernel.Money, error)
+	// PayableInvoices locks the creditor invoices, in order of id, until the transaction ends (as invoice commands lock
+	// them), then reads what an allocation needs of each: invoice commands and allocations to an invoice take turns.
+	PayableInvoices(ctx context.Context, tenant fin.TenantID, invoiceIDs []string) ([]fin.PayableInvoice, error)
+	// Paid lists the live allocations to a creditor invoice, in the order of their dates.
+	Paid(ctx context.Context, tenant fin.TenantID, invoiceID string) ([]PaidAllocation, error)
+}
+
 // Deps are the ports every FIN command uses.
 type Deps struct {
 	Tx TxRunner
@@ -303,6 +329,8 @@ type Deps struct {
 	// Creditors holds creditor invoices and answers what they consume of accruals; job and pool commands read it under
 	// their lock.
 	Creditors CreditorInvoiceStore
+	// Payments holds creditor payments (FIN V0.6).
+	Payments CreditorPaymentStore
 }
 
 // Command is what every FIN command carries: Subject is the legal entity, the job, <legal entity>/<debtor> or the

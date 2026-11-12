@@ -148,8 +148,12 @@ type CreditorInvoice struct {
 	matches  int   // matches stored
 	disputes int   // disputes stored
 	resolved []int // stored disputes resolved since the invoice was loaded
+	paid     int64 // what live allocations of creditor payments pay of it, set under the invoice's lock (FIN V0.6)
 	pending  []Event
 }
+
+// Paid sets what the live allocations of creditor payments pay of the invoice, read under its lock.
+func (c *CreditorInvoice) Paid(amount int64) { c.paid = amount }
 
 const (
 	eventCreditorRecorded  = "CreditorInvoiceRecorded.v1"
@@ -419,7 +423,8 @@ func (c *CreditorInvoice) ResolveDispute(reason string, by string, at time.Time)
 // Cancel cancels a RECORDED or DISPUTED invoice with a reason (an invoice matched is disputed first): its matches stop
 // consuming their accruals, which are open again, so their jobs and pools must be open; and no other invoice may hold
 // a final match of an accrual this one matched in part, since that match's variance counted this one
-// (FIN_FINAL_MATCH_BEHIND). An accrual released since consumes less: its cost is what is still matched.
+// (FIN_FINAL_MATCH_BEHIND). An accrual released since consumes less: its cost is what is still matched. An invoice
+// that payments pay is not cancelled (FIN_INVOICE_PAID): their allocations are reversed first.
 func (c *CreditorInvoice) Cancel(reason string, targets []AccrualTarget, by string, at time.Time) error {
 	if err := c.change(by, at); err != nil {
 		return err
@@ -430,6 +435,8 @@ func (c *CreditorInvoice) Cancel(reason string, targets []AccrualTarget, by stri
 		return fmt.Errorf("%w: creditor invoice %s is %s; a matched invoice is disputed before it is cancelled", ErrInvalidTransition, st.InvoiceID, st.State)
 	case !text(reason):
 		return fmt.Errorf("%w: a cancellation needs a reason", ErrInvalid)
+	case c.paid != 0:
+		return fmt.Errorf("%w: %d of creditor invoice %s is paid", ErrInvoicePaid, c.paid, st.InvoiceID)
 	}
 	if err := c.targetsOpen(targets); err != nil {
 		return err

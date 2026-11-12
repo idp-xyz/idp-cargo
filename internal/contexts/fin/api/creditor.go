@@ -283,6 +283,10 @@ type CreditorInvoice struct {
 	CancelReason      string
 	CancelledBy       string
 	CancelledAt       time.Time
+	// Paid is what live allocations of creditor payments pay of it, Open the rest (FIN V0.6).
+	Paid     kernel.Money
+	Open     kernel.Money
+	Payments []CreditorInvoicePayment
 }
 
 // OpenAccrual is an accrual still expecting an invoice: its job (Reference the shipment) or pool (Reference the

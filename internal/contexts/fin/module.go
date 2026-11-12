@@ -1,8 +1,8 @@
-// Package fin assembles the FIN (Freight Job Economics) bounded context, V0.5: finance policies with tax treatments,
+// Package fin assembles the FIN (Freight Job Economics) bounded context, V0.6: finance policies with tax treatments,
 // number series and cost variance thresholds, freight jobs with estimated charges and the debit and credit notes
 // billing them, billing profiles, debtor receipts settling debit notes and debtor statements, credit accounts with
 // CreditStatus v1 for DOC, consol cost pools apportioned to house jobs, and creditor invoices matched to the jobs' and
-// pools' accruals. Code outside FIN uses it through package api;
+// pools' accruals and the creditor payments paying those invoices. Code outside FIN uses it through package api;
 // everything under internal/ is private to FIN.
 package fin
 
@@ -748,6 +748,7 @@ func (m *Module) deps(tenant, commandID string) application.Deps {
 		Pools:          postgres.PoolStore{DB: m.db},
 		Physical:       m.physical,
 		Creditors:      postgres.CreditorStore{DB: m.db},
+		Payments:       postgres.PaymentStore{DB: m.db},
 	}
 }
 
@@ -793,7 +794,7 @@ func classify(err error) error {
 		errors.Is(err, domain.ErrAccrualClosed), errors.Is(err, domain.ErrMatchExceeds), errors.Is(err, domain.ErrMatchIncomplete),
 		errors.Is(err, domain.ErrMatchChargeCode), errors.Is(err, domain.ErrInvoiceNumber), errors.Is(err, domain.ErrVarianceApproval),
 		errors.Is(err, domain.ErrAccrualMatched), errors.Is(err, domain.ErrPoolNotClosable), errors.Is(err, domain.ErrTargetClosed),
-		errors.Is(err, domain.ErrFinalBehind):
+		errors.Is(err, domain.ErrFinalBehind), errors.Is(err, domain.ErrNotPayable), errors.Is(err, domain.ErrInvoicePaid):
 		kind = api.ErrRejected
 	default:
 		return err
