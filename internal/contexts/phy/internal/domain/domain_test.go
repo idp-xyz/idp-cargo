@@ -87,13 +87,13 @@ func TestConsolidationLifecycle(t *testing.T) {
 	if err := c.Amend(pvgLAX, later, later.Add(-6*time.Hour), "", "ops-1", t0.Add(time.Hour), 0); !errors.Is(err, ErrInvalidChange) {
 		t.Fatalf("an amendment without a reason: %v", err)
 	}
-	if err := c.Close(0, time.Time{}, "ops-1", t0.Add(2*time.Hour)); !errors.Is(err, ErrNoHouses) {
+	if err := c.Close(scopes(0), time.Time{}, "", "ops-1", t0.Add(2*time.Hour)); !errors.Is(err, ErrNoHouses) {
 		t.Fatalf("close without houses: %v", err)
 	}
-	if err := c.Close(2, t0.Add(3*time.Hour), "ops-1", t0.Add(2*time.Hour)); !errors.Is(err, ErrInvalidChange) {
+	if err := c.Close(scopes(2), t0.Add(3*time.Hour), "", "ops-1", t0.Add(2*time.Hour)); !errors.Is(err, ErrInvalidChange) {
 		t.Fatalf("close before the last attach: %v", err)
 	}
-	if err := c.Close(2, t0.Add(time.Hour), "ops-1", t0.Add(2*time.Hour)); err != nil {
+	if err := c.Close(scopes(2), t0.Add(time.Hour), "", "ops-1", t0.Add(2*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	if err := c.Cancel("x", "ops-1", t0.Add(3*time.Hour), 0, 0); !errors.Is(err, ErrInvalidTransition) {
@@ -188,7 +188,7 @@ func TestAttachRules(t *testing.T) {
 	if err := m.Attach(airConsol(t, "C-2"), ok, "ops-1", t0.Add(time.Hour)); !errors.Is(err, ErrAlreadyAttached) {
 		t.Fatalf("a second consolidation for the main carriage: %v", err)
 	}
-	if err := c.Close(1, t0.Add(time.Hour), "ops-1", t0.Add(2*time.Hour)); err != nil {
+	if err := c.Close(scopes(1), t0.Add(time.Hour), "", "ops-1", t0.Add(2*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	other, _ := NewMembership("T", "SH-2")
@@ -290,3 +290,6 @@ func TestCloseConfirmsMembersWithFUL(t *testing.T) {
 		t.Fatalf("a plan that needs confirming again: %v", err)
 	}
 }
+
+// scopes returns n houses' planned scopes, empty: enough for closes that check no envelope.
+func scopes(n int) []CargoScope { return make([]CargoScope, n) }

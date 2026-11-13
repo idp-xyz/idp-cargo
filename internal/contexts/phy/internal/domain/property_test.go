@@ -40,7 +40,7 @@ func TestRandomMembershipKeepsItsInvariants(t *testing.T) {
 				_ = m.Refresh(c, intent(id, plans[h]), "ops", at)
 			case 5:
 				n := liveIn(houses, c.ID())
-				_ = c.Close(len(n), at, "ops", at)
+				_ = c.Close(scopes(len(n)), at, "", "ops", at)
 			case 6:
 				_ = c.Reopen("late cargo", "ops", at, 0, Stuffed{})
 			}

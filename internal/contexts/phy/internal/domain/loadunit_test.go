@@ -51,7 +51,7 @@ func TestPlanLoadUnitRules(t *testing.T) {
 		}, UnitContainer, unit22G1, "ops-1", at, ErrInvalidTransition},
 		"closed": {func(t *testing.T) *Consolidation {
 			c := seaConsol(t, "C-1", KindSeaLCLOwn)
-			if err := c.Close(1, t0, "ops-1", t0.Add(time.Minute)); err != nil {
+			if err := c.Close(scopes(1), t0, "", "ops-1", t0.Add(time.Minute)); err != nil {
 				t.Fatal(err)
 			}
 			return c
@@ -205,7 +205,7 @@ func TestNothingIsDatedBeforeALoadUnitChange(t *testing.T) {
 		"cancel": func(c *Consolidation, at time.Time) error {
 			return c.Cancel("vessel omitted the port", "ops-1", at, 0, 0)
 		},
-		"close": func(c *Consolidation, at time.Time) error { return c.Close(1, t0, "ops-1", at) },
+		"close": func(c *Consolidation, at time.Time) error { return c.Close(scopes(1), t0, "", "ops-1", at) },
 		"amend": func(c *Consolidation, at time.Time) error {
 			return c.Amend(Route{}, t0.Add(80*time.Hour), t0.Add(70*time.Hour), "vessel change", "ops-1", at, 0)
 		},

@@ -3,6 +3,8 @@ package domain
 import (
 	"fmt"
 	"time"
+
+	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
 // Change is what a consolidation version records.
@@ -141,19 +143,68 @@ func (c *Consolidation) Amend(route Route, departure, cutOff time.Time, reason, 
 }
 
 // Close is the house cut-off: it freezes the membership until the consolidation is reopened (OD-5). At least
-// one house must be attached, and none later than the business time. Whether FUL still reports every house as
-// PHY verified it is checked by the caller with FUL (Entry.Confirm).
-func (c *Consolidation) Close(liveHouses int, lastAttached time.Time, by string, at time.Time) error {
+// one house must be attached, and none later than the business time; houses are the live houses' planned scopes.
+// Whether FUL still reports every house as PHY verified it is checked by the caller with FUL (Entry.Confirm).
+//
+// With load units planned, the houses' planned totals are checked against the physical envelope of the live units
+// (PHY V0.3, design: "planned totals within the physical envelope or an accepted overrun reason"): their default
+// maximum gross less tare, and their capacity (volumes not planned are not counted). A plan over it, or in a unit
+// PHY does not convert, closes only with an overrun reason, which the CLOSED version keeps (PHY_ENVELOPE_EXCEEDED);
+// a plan within it, or a consolidation without units, takes none. The reason records the plan against the units live
+// at the close: a unit planned, or removed with its own reason, while CLOSED is not checked again until the next close.
+func (c *Consolidation) Close(houses []CargoScope, lastAttached time.Time, overrun, by string, at time.Time) error {
 	if c.state.State != StateOpen {
 		return ErrInvalidTransition
 	}
-	if liveHouses < 1 {
+	if len(houses) < 1 {
 		return ErrNoHouses
 	}
 	if at.Before(lastAttached) {
 		return fmt.Errorf("%w: a house was attached after the business time of the close", ErrInvalidChange)
 	}
-	return c.change(ChangeClosed, "", by, at)
+	over := c.overEnvelope(houses)
+	switch {
+	case over != "" && !text(overrun):
+		return fmt.Errorf("%w: %s; close with an overrun reason (500 characters)", ErrOverEnvelope, over)
+	case over == "" && overrun != "":
+		return fmt.Errorf("%w: the plan is within the load units' envelope, or none is planned; there is no overrun to accept", ErrInvalidChange)
+	}
+	return c.change(ChangeClosed, overrun, by, at)
+}
+
+// overEnvelope tells how the houses' planned totals exceed the live load units' envelope, or "" when they are
+// within it or no unit is planned.
+func (c *Consolidation) overEnvelope(houses []CargoScope) string {
+	units := c.LiveLoadUnits()
+	if len(units) == 0 {
+		return ""
+	}
+	var payload, capacity, weight, volume int64
+	for _, u := range units {
+		payload = addCapped(payload, scaled(u.Limits.MaxGrossKg-u.Limits.TareKg, 1000))
+		capacity = addCapped(capacity, u.Limits.CapacityCM3)
+	}
+	for _, h := range houses {
+		w, ok := toGrams(h.GrossWeight)
+		if !ok && h.GrossWeight != (kernel.Quantity{}) {
+			return fmt.Sprintf("a house is planned in %s, which PHY does not check", h.GrossWeight.Unit)
+		}
+		weight = addCapped(weight, w)
+		if h.Volume != (kernel.Quantity{}) {
+			v, ok := toCubicCm(h.Volume)
+			if !ok {
+				return fmt.Sprintf("a house is planned in %s, which PHY does not check", h.Volume.Unit)
+			}
+			volume = addCapped(volume, v)
+		}
+	}
+	switch {
+	case weight > payload:
+		return fmt.Sprintf("the houses plan %s kg gross, the %d load units take %s kg", decimal(weight, 3), len(units), decimal(payload, 3))
+	case volume > capacity:
+		return fmt.Sprintf("the houses plan %s m3, the %d load units take %s m3", decimal(volume, 6), len(units), decimal(capacity, 6))
+	}
+	return ""
 }
 
 // Stuffed is what a consolidation's stuffings tell a reopen: how many containers are sealed, and the business
@@ -335,7 +386,8 @@ func RestoreConsolidation(st ConsolidationState) (*Consolidation, error) {
 	for i, v := range st.Versions {
 		next, ok := v.Change.state(state)
 		if v.No != i+1 || !ok || v.State != next || (v.Change == ChangeCreated) != (i == 0) || !v.Route.valid(st.Mode) ||
-			!schedule(v.PlannedDeparture, v.HouseCutOff) || v.Change.needsReason() != text(v.Reason) || blank(v.By) || v.At.IsZero() ||
+			!schedule(v.PlannedDeparture, v.HouseCutOff) || (v.Change != ChangeClosed && v.Change.needsReason() != text(v.Reason)) ||
+			(v.Change == ChangeClosed && v.Reason != "" && !text(v.Reason)) || blank(v.By) || v.At.IsZero() ||
 			(i > 0 && (v.At.Before(st.Versions[i-1].At) || !transition(state, v.Change))) {
 			return nil, fmt.Errorf("%w: version %d", ErrInvalidConsolidation, i+1)
 		}

@@ -74,6 +74,7 @@ var (
 	ErrNotOpen              = errors.New("phy: the consolidation is not open")
 	ErrHousesAttached       = errors.New("phy: houses are attached to the consolidation")
 	ErrNoHouses             = errors.New("phy: no house is attached to the consolidation")
+	ErrOverEnvelope         = errors.New("phy: PHY_ENVELOPE_EXCEEDED: the houses' planned totals exceed the planned load units' envelope")
 	ErrInvalidIntent        = errors.New("phy: invalid load intent")
 	ErrIntentNotPlanned     = errors.New("phy: FUL does not report the shipment PLANNED")
 	ErrModeMismatch         = errors.New("phy: the shipment's transport mode differs from the consolidation's")

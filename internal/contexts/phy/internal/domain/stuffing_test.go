@@ -30,7 +30,12 @@ func stuffing(t *testing.T, weight int64) (*Consolidation, Entry, *CargoLot, *Lo
 	if _, err := c.PlanLoadUnit(UnitContainer, unit22G1, "ops", t0.Add(30*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	if err := errors.Join(m.Attach(c, seaIntent(weight), "ops", t0.Add(time.Hour)), c.Close(1, t0.Add(time.Hour), "ops", t0.Add(2*time.Hour))); err != nil {
+	overrun := "" // a 22G1 takes 28,230 kg of cargo; a heavier plan closes with an overrun reason
+	if weight > 28230 {
+		overrun = "the plate allows more"
+	}
+	if err := errors.Join(m.Attach(c, seaIntent(weight), "ops", t0.Add(time.Hour)),
+		c.Close([]CargoScope{seaIntent(weight).Scope}, t0.Add(time.Hour), overrun, "ops", t0.Add(2*time.Hour))); err != nil {
 		t.Fatal(err)
 	}
 	lot, err := ReceiveCargo("T", "L-1", cfs, seaIntent(weight), cartons(10, ConditionGood, t0.Add(time.Hour)), "ops", t0.Add(time.Hour))
@@ -331,7 +336,7 @@ func TestStuffingNeedsTheHousesFrozen(t *testing.T) {
 		t.Fatalf("a container is not sealed on an open house list: %v", err)
 	}
 	// Closed again at +10h: nothing is stuffed or sealed inside the reopened period.
-	if err := c.Close(1, t0.Add(time.Hour), "ops", t0.Add(10*time.Hour)); err != nil {
+	if err := c.Close([]CargoScope{seaIntent(3000).Scope}, t0.Add(time.Hour), "", "ops", t0.Add(10*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	if err := x.Load(LoadLine{Packs: 1, Evidence: ev("TALLY-3", t0.Add(7*time.Hour))}, c, lot, entry, LotLoad{Packs: 1}, 1, "ops", t0.Add(7*time.Hour)); !errors.Is(err, ErrInvalidChange) {

@@ -77,7 +77,7 @@ func TestTheModelEmitsThePublishedEventTypes(t *testing.T) {
 		m.Attach(a, intent(1, domain.IntentPlanned), "ops", at),
 		m.Transfer(a, b, intent(1, domain.IntentPlanned), domain.ReasonShutOut, "", "ops", at),
 		m.Refresh(b, intent(2, domain.IntentPlanned), "ops", at),
-		b.Close(1, at, "ops", at),
+		b.Close(make([]domain.CargoScope, 1), at, "", "ops", at),
 		b.Reopen("late cargo", "ops", at, 0, domain.Stuffed{}),
 		m.Detach(b, domain.ReasonCustomerRequest, "", "ops", at),
 		a.Cancel("no cargo", "ops", at, 0, 0),
@@ -124,7 +124,7 @@ func TestThePhysicalModelEmitsThePublishedEventTypes(t *testing.T) {
 	screening := func(o domain.Outcome) domain.Screening {
 		return domain.Screening{Outcome: o, Screener: "PVG", Method: "XRAY", Reference: "SC-" + string(o), Evidence: ev("SC-" + string(o))}
 	}
-	if err = errors.Join(m.Attach(c, intent, "ops", at), c.Close(1, at, "ops", at),
+	if err = errors.Join(m.Attach(c, intent, "ops", at), c.Close(make([]domain.CargoScope, 1), at, "", "ops", at),
 		lot.Measure(domain.Measurement{GrossWeight: kg, Method: domain.MethodScale, Evidence: ev("M-1")}, "ops", at),
 		lot.Screen(screening(domain.ScreeningFailed), "ops", at), lot.Complete(intent, "ops", at),
 		lot.Resolve(1, domain.ResolvedByAccepted, "", "dried, repacked", intent, "ops", at)); err != nil {
