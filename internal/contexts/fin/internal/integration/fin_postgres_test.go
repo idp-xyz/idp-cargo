@@ -77,6 +77,41 @@ type world struct {
 	earlier    map[string][]docapi.TransportDocumentSnapshot // shipment -> earlier issued versions of that document, oldest first
 	costBases  map[string]phyapi.PhysicalCostBasis           // consolidation -> PhysicalCostBasis v1
 	suspended  bool
+	// RATE's rated bases (V0.5 part 2): what the stand-in rates a shipment and a consolidation into, the bases it
+	// issued by id, the requests it was asked, and a refusal to answer with
+	shipmentLines []rateapi.PricingLine
+	consolLines   []rateapi.PricingLine
+	rated         map[string]rateapi.PricingBasis
+	asked         []any
+	rateRefusal   error
+}
+
+func (w *world) issue(b rateapi.PricingBasis, asked any) (rateapi.Receipt, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.asked = append(w.asked, asked)
+	if w.rateRefusal != nil {
+		return rateapi.Receipt{}, fmt.Errorf("%w: stub: %v", rateapi.ErrRejected, w.rateRefusal)
+	}
+	if w.rated == nil {
+		w.rated = map[string]rateapi.PricingBasis{}
+	}
+	if _, ok := w.rated[b.BasisID]; !ok {
+		w.rated[b.BasisID] = b
+	}
+	return rateapi.Receipt{SubjectID: b.BasisID, NewRevision: 1}, nil
+}
+
+func (w *world) RateShipmentEstimate(_ context.Context, c rateapi.RateShipmentEstimate) (rateapi.Receipt, error) {
+	return w.issue(rateapi.PricingBasis{TenantID: c.TenantID, BasisID: c.BasisID, Purpose: rateapi.BasisShipmentEstimate, LegalEntityID: c.LegalEntityID,
+		Customer: rateapi.CustomerRef{PartyID: c.CustomerPartyID, PartyRevision: 3}, SubjectKind: "SHIPMENT", SubjectID: c.ShipmentID,
+		SubjectVersion: c.PlanVersion, SnapshotID: c.BasisID, Lines: w.shipmentLines,
+		Gaps: []rateapi.PricingGap{{Side: rateapi.SideSell, ChargeCode: "CUSTOMS_CLEARING", Gap: rateapi.GapCallForPricing}}}, c)
+}
+
+func (w *world) RateConsolCost(_ context.Context, c rateapi.RateConsolCost) (rateapi.Receipt, error) {
+	return w.issue(rateapi.PricingBasis{TenantID: c.TenantID, BasisID: c.BasisID, Purpose: rateapi.BasisConsolCostEstimate, LegalEntityID: c.LegalEntityID,
+		SubjectKind: "CONSOLIDATION", SubjectID: c.ConsolidationID, SubjectVersion: c.ConsolidationRevision, SnapshotID: c.BasisID, Lines: w.consolLines}, c)
 }
 
 func (w *world) GetPhysicalCostBasis(_ context.Context, q phyapi.GetPhysicalCostBasis) (phyapi.PhysicalCostBasis, error) {
@@ -135,6 +170,13 @@ func (w *world) GetShipmentCostDriver(_ context.Context, q fulapi.GetShipmentCos
 func (w *world) GetPricingBasis(_ context.Context, q rateapi.GetPricingBasis) (rateapi.PricingBasis, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if q.BasisID != "" {
+		b, ok := w.rated[q.BasisID]
+		if !ok {
+			return rateapi.PricingBasis{}, fmt.Errorf("%w: stub", rateapi.ErrNotFound)
+		}
+		return b, nil
+	}
 	b, ok := w.bases[q.QuoteID]
 	if !ok {
 		return rateapi.PricingBasis{}, fmt.Errorf("%w: stub", rateapi.ErrRejected)

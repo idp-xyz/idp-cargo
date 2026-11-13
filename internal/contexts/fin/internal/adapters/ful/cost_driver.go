@@ -28,8 +28,9 @@ func (s Shipments) CostDriver(ctx context.Context, tenant fin.TenantID, shipment
 	if d.ShipmentID != shipment || d.Kind != fulapi.DriverShipmentPlanned {
 		return app.CostDriver{}, fmt.Errorf("%w: FUL answered for another shipment or kind", app.ErrUnknownSource)
 	}
-	out := app.CostDriver{ShipmentID: d.ShipmentID, Status: d.Status, PlanVersion: d.PlanVersion, TransportMode: d.TransportMode,
-		LegalEntityID: d.LegalEntityID, CustomerPartyID: d.CustomerPartyID}
+	out := app.CostDriver{ShipmentID: d.ShipmentID, Status: d.Status, PlanVersion: d.PlanVersion, TransportMode: d.TransportMode, Origin: d.Origin,
+		Destination: d.Destination, LegalEntityID: d.LegalEntityID, CustomerPartyID: d.CustomerPartyID, Packs: d.Packs, GrossWeight: d.GrossWeight,
+		Volume: d.Volume}
 	for _, o := range d.Orders {
 		out.Orders = append(out.Orders, app.CostOrder{OrderID: o.OrderID, QuoteID: o.QuoteID, QuoteRevision: o.QuoteRevision})
 	}

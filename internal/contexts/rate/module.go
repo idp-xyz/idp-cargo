@@ -127,8 +127,12 @@ func (m *Module) accepted(ctx context.Context, q api.GetQuoteSnapshot) (*domain.
 	return quote, revision, nil
 }
 
-// GetPricingBasis answers PricingBasis v1 of purpose QUOTE_ACCEPTED, built from the accepted revision.
+// GetPricingBasis answers PricingBasis v1: of purpose QUOTE_ACCEPTED, built from the accepted revision, or a rated
+// basis as issued.
 func (m *Module) GetPricingBasis(ctx context.Context, q api.GetPricingBasis) (api.PricingBasis, error) {
+	if q.BasisID != "" {
+		return m.ratedBasis(ctx, q)
+	}
 	quote, revision, err := m.accepted(ctx, api.GetQuoteSnapshot{TenantID: q.TenantID, QuoteID: q.QuoteID})
 	if err != nil {
 		return api.PricingBasis{}, err
@@ -138,7 +142,8 @@ func (m *Module) GetPricingBasis(ctx context.Context, q api.GetPricingBasis) (ap
 		QuoteID: string(s.QuoteID), QuoteRevision: revision, LegalEntityID: string(s.LegalEntityID),
 		Customer: api.CustomerRef{PartyID: s.Customer.PartyID, PartyRevision: a.CustomerRevision}, Currency: s.Currency, AcceptedAt: a.AcceptedAt}
 	for i, l := range s.Lines {
-		out.Lines = append(out.Lines, api.PricingLine{LineNo: i + 1, ChargeCode: string(l.ChargeCode), Sell: l.Sell, Cost: l.Cost, Discount: l.Discount()})
+		out.Lines = append(out.Lines, api.PricingLine{LineNo: i + 1, ChargeCode: string(l.ChargeCode), Sell: l.Sell, Cost: l.Cost, Discount: l.Discount(),
+			Source: api.SourceQuote, HasSell: true, HasCost: l.Cost.Minor != 0})
 	}
 	for _, r := range s.ExchangeRates {
 		out.ExchangeRates = append(out.ExchangeRates, api.ExchangeRate{From: r.From, Rate: r.Rate, Scale: r.Scale, FromDigits: r.FromDigits,
@@ -308,7 +313,7 @@ func classify(err error) error {
 		errors.Is(err, kernel.ErrOutsideRecordWindow), errors.Is(err, domain.ErrInvalidChargeCode), errors.Is(err, domain.ErrChargeCodeUnknown),
 		errors.Is(err, domain.ErrChargeCodeExists), errors.Is(err, domain.ErrInvalidRateCard), errors.Is(err, domain.ErrVersionOverlap),
 		errors.Is(err, domain.ErrNotPublishable), errors.Is(err, domain.ErrInvalidEvaluation), errors.Is(err, application.ErrPartyNotConfirmed),
-		errors.Is(err, application.ErrLocationRefused), errors.Is(err, application.ErrValidFromTooEarly):
+		errors.Is(err, application.ErrLocationRefused), errors.Is(err, application.ErrValidFromTooEarly), errors.Is(err, domain.ErrInvalidBasis):
 		kind = api.ErrRejected
 	default:
 		return err

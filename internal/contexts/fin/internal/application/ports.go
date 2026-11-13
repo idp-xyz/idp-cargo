@@ -171,8 +171,13 @@ type CostDriver struct {
 	Status          string // DRAFT, PLANNED or CANCELLED
 	PlanVersion     int
 	TransportMode   string
+	Origin          kernel.LocationCode
+	Destination     kernel.LocationCode
 	LegalEntityID   string
 	CustomerPartyID string
+	Packs           int64
+	GrossWeight     kernel.Quantity
+	Volume          kernel.Quantity
 	Orders          []CostOrder
 }
 
@@ -319,6 +324,7 @@ type Deps struct {
 	Window    kernel.RecordWindow
 	Shipments Shipments
 	Pricing   Pricing
+	Rating    Rating
 	Directory Directory
 	Documents Documents
 	Numbers   Numbers

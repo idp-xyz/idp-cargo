@@ -597,15 +597,16 @@ func (s SnapshotStore) Insert(ctx context.Context, snap *rate.RateSnapshot) erro
 	}
 	for _, l := range st.Lines {
 		var code, card, version, entry, lineNo, calculator, currency any
+		party := orNull(l.PartyID)
 		if l.ChargeCode != "" {
 			code, card, version, entry, lineNo, calculator, currency = string(l.ChargeCode), string(l.RateCardID), l.Version, l.EntryNo, l.RateLineNo,
 				string(l.Calculator), string(l.Amount.Currency)
 		}
 		if _, err = q.Exec(ctx, `INSERT INTO cargo_rate.rate_snapshot_line (tenant_id,snapshot_id,line_no,side,charge_code,rate_card_id,version_no,entry_no,
             rate_line_no,calculator,rate_unit,quantity,charged,band_from,rate_minor,rate_scale,percent_bp,base_amount,minimum_applied,maximum_applied,currency,
-            amount_minor,gap) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)`, t, st.SnapshotID, l.LineNo,
+            amount_minor,gap,party_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)`, t, st.SnapshotID, l.LineNo,
 			string(l.Side), code, card, version, entry, lineNo, calculator, orNull(string(l.Unit)), l.Quantity, l.Charged, l.BandFrom, l.Rate.Minor,
-			l.Rate.Scale, l.PercentBP, l.BaseAmount, l.MinimumApplied, l.MaximumApplied, currency, l.Amount.Minor, orNull(string(l.Gap))); err != nil {
+			l.Rate.Scale, l.PercentBP, l.BaseAmount, l.MinimumApplied, l.MaximumApplied, currency, l.Amount.Minor, orNull(string(l.Gap)), party); err != nil {
 			return err
 		}
 	}
@@ -672,7 +673,7 @@ func (s SnapshotStore) Read(ctx context.Context, tenant rate.TenantID, id string
 		return nil, err
 	}
 	rows, err = q.Query(ctx, `SELECT line_no,side,charge_code,rate_card_id,version_no,entry_no,rate_line_no,calculator,rate_unit,quantity,charged,band_from,
-        rate_minor,rate_scale,percent_bp,base_amount,minimum_applied,maximum_applied,currency,amount_minor,gap
+        rate_minor,rate_scale,percent_bp,base_amount,minimum_applied,maximum_applied,currency,amount_minor,gap,party_id
       FROM cargo_rate.rate_snapshot_line WHERE tenant_id=$1 AND snapshot_id=$2 ORDER BY line_no`, string(tenant), id)
 	if err != nil {
 		return nil, err
@@ -681,15 +682,15 @@ func (s SnapshotStore) Read(ctx context.Context, tenant rate.TenantID, id string
 	for rows.Next() {
 		var l rate.SnapshotLine
 		var side string
-		var code, card, calculator, unit, currency, gap *string
+		var code, card, calculator, unit, currency, gap, party *string
 		var version, entry, lineNo *int
 		if err = rows.Scan(&l.LineNo, &side, &code, &card, &version, &entry, &lineNo, &calculator, &unit, &l.Quantity, &l.Charged, &l.BandFrom, &l.Rate.Minor,
-			&l.Rate.Scale, &l.PercentBP, &l.BaseAmount, &l.MinimumApplied, &l.MaximumApplied, &currency, &l.Amount.Minor, &gap); err != nil {
+			&l.Rate.Scale, &l.PercentBP, &l.BaseAmount, &l.MinimumApplied, &l.MaximumApplied, &currency, &l.Amount.Minor, &gap, &party); err != nil {
 			return nil, err
 		}
 		l.Side, l.ChargeCode, l.RateCardID, l.Calculator, l.Unit = rate.Side(side), rate.ChargeCode(deref(code)), rate.RateCardID(deref(card)),
 			rate.Calculator(deref(calculator)), rate.RateUnit(deref(unit))
-		l.Amount.Currency, l.Gap = kernel.CurrencyCode(deref(currency)), rate.Gap(deref(gap))
+		l.Amount.Currency, l.Gap, l.PartyID = kernel.CurrencyCode(deref(currency)), rate.Gap(deref(gap)), deref(party)
 		if version != nil {
 			l.Version, l.EntryNo, l.RateLineNo = *version, *entry, *lineNo
 		}
@@ -709,7 +710,8 @@ func Conflict(err error) bool {
 		return false
 	}
 	switch pgErr.ConstraintName {
-	case "rate_version_overlap", "rate_version_publishable", "rate_snapshot_written_once", "charge_code_version_sequence", "rate_card_version_sequence":
+	case "rate_version_overlap", "rate_version_publishable", "rate_snapshot_written_once", "charge_code_version_sequence", "rate_card_version_sequence",
+		"pricing_basis_consistent":
 		return true
 	}
 	return false

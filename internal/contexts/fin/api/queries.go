@@ -130,13 +130,16 @@ type ChargeLine struct {
 	CostMatchedLocal kernel.Money
 }
 
-// AppliedBasis is a quote applied to the job for an order.
+// AppliedBasis is a quote applied to the job for an order (QUOTE_ACCEPTED), or RATE's rated estimate of the shipment
+// at a plan version (SHIPMENT_ESTIMATE).
 type AppliedBasis struct {
 	BasisNo       int
 	BasisID       string
+	Purpose       string
 	QuoteID       string
 	QuoteRevision int64
 	OrderID       string
+	PlanVersion   int
 	AppliedBy     string
 	AppliedAt     time.Time
 }
@@ -549,6 +552,9 @@ type PoolCostLine struct {
 	Description  string
 	SupplierRef  string
 	Method       string
+	Source       string // MANUAL or RATED
+	BasisID      string // RATED: RATE's CONSOL_COST_ESTIMATE basis and its line
+	BasisLineNo  int
 	RecordedAt   time.Time
 	EnteredAt    time.Time
 	Versions     []PoolCostVersion

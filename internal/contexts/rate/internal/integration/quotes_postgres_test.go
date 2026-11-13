@@ -346,10 +346,10 @@ func TestQuoteV03OnPostgres(t *testing.T) {
 	// PricingBasis v1 for FIN: the accepted revision's sell and cost lines, costs included
 	basis, err := f.module.GetPricingBasis(ctx, api.GetPricingBasis{TenantID: f.tenant, QuoteID: "Q-FX"})
 	wantBasis := []api.PricingLine{
-		{LineNo: 1, ChargeCode: "OCEAN_FREIGHT", Sell: usd(150_000), Cost: usd(100_000)},
-		{LineNo: 2, ChargeCode: "THC", Sell: cny(80_000), Cost: cny(60_000)},
-		{LineNo: 3, ChargeCode: "DOC_FEE", Sell: cny(0), Cost: cny(0)},
-		{LineNo: 4, ChargeCode: "LOYALTY_DISCOUNT", Sell: cny(-10_000), Cost: cny(0), Discount: true},
+		{LineNo: 1, ChargeCode: "OCEAN_FREIGHT", Sell: usd(150_000), Cost: usd(100_000), Source: api.SourceQuote, HasSell: true, HasCost: true},
+		{LineNo: 2, ChargeCode: "THC", Sell: cny(80_000), Cost: cny(60_000), Source: api.SourceQuote, HasSell: true, HasCost: true},
+		{LineNo: 3, ChargeCode: "DOC_FEE", Sell: cny(0), Cost: cny(0), Source: api.SourceQuote, HasSell: true},
+		{LineNo: 4, ChargeCode: "LOYALTY_DISCOUNT", Sell: cny(-10_000), Cost: cny(0), Discount: true, Source: api.SourceQuote, HasSell: true},
 	}
 	if err != nil || basis.Purpose != api.BasisQuoteAccepted || basis.BasisID != fmt.Sprintf("QUOTE:Q-FX@%d", basis.QuoteRevision) || basis.QuoteRevision != 3 ||
 		basis.LegalEntityID != "LE" || basis.Customer.PartyID != "P-AGENT" || basis.Currency != "CNY" || !reflect.DeepEqual(basis.Lines, wantBasis) ||

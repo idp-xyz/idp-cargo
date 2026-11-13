@@ -671,3 +671,91 @@ UPDATE cargo_rate.rate_card_version SET status='WITHDRAWN',withdrawn_by='x',with
 		t.Fatalf("withdrawn anyway: %+v", card)
 	}
 }
+
+// PricingBasis v1 rated for FIN (RATE V0.5 part 2): a shipment rated on both sides for its customer, a consolidation on
+// the BUY side with its carrier, each basis equal to its snapshot, and what the database refuses past RATE.
+func TestRatedBasesOnPostgres(t *testing.T) {
+	c := newCards(t)
+	publishedTariff(c)
+	c.must(c.module.CreateRateCard(c.ctx, c.create("S-A", api.SideBuy, api.ScopeSupplier, "coloader-a", "buyer-1")))
+	c.must(c.module.DraftRateCardVersion(c.ctx, c.draft("S-A", c.h(0), time.Time{}, 0, "buyer-1")))
+	c.must(c.module.SetRateCardEntries(c.ctx, c.set("S-A", 1, "buyer-1", air(freight(2200), api.RateLine{ChargeCode: "THC", Currency: "CNY",
+		Calculator: api.CalcFlat, Rate: 8_000}))))
+	c.must(c.module.PublishRateCardVersion(c.ctx, c.publish("S-A", 1, "buyer-1")))
+	ship := api.RateShipmentEstimate{CommandID: "fin/rate-B", TenantID: c.tenant, ActorID: "fin-1", BasisID: "FIN-1", LegalEntityID: "LE",
+		CustomerPartyID: "acme", ShipmentID: "SH-B", PlanVersion: 2, Mode: api.ModeAir, ContainerMode: api.ContainerLoose, Origin: "CNPVG",
+		Destination: "DEFRA", ServiceLevel: "STANDARD", Cargo: api.Cargo{Pieces: 6, GrossGrams: 100_000, VolumeCM3: 900_000}, OccurredAt: c.h(4)}
+	r := c.must(c.module.RateShipmentEstimate(c.ctx, ship))
+	if r.SubjectID != "FIN-1" || r.NewRevision != 1 {
+		t.Fatalf("issued: %+v", r)
+	}
+	if again, err := c.module.RateShipmentEstimate(c.ctx, ship); err != nil || again != r {
+		t.Fatalf("replay: %+v %v", again, err)
+	}
+	b, err := c.module.GetPricingBasis(c.ctx, api.GetPricingBasis{TenantID: c.tenant, BasisID: "FIN-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 150 kg: SELL freight 3,000.00 and fuel 300.00 (10%), a document fee; BUY freight at 12.00 = 1,800.00 and THC 80.00
+	want := map[string][2]int64{"AIR_FREIGHT": {300_000, 180_000}, "DOC_FEE": {15_000, -1}, "FUEL_SURCHARGE": {30_000, -1}, "THC": {-1, 8_000}}
+	if b.Purpose != api.BasisShipmentEstimate || b.Customer.PartyID != "acme" || b.Customer.PartyRevision != 3 || b.SubjectKind != "SHIPMENT" ||
+		b.SubjectID != "SH-B" || b.SubjectVersion != 2 || b.SnapshotID != "FIN-1" || len(b.Lines) != 4 || len(b.Gaps) != 1 ||
+		b.Gaps[0].Gap != api.GapCallForPricing || b.Gaps[0].ChargeCode != "CUSTOMS_CLEARING" {
+		t.Fatalf("basis: %+v", b)
+	}
+	for _, l := range b.Lines {
+		w := want[l.ChargeCode]
+		if l.Source != api.SourceRated || l.HasSell != (w[0] >= 0) || l.HasCost != (w[1] >= 0) || (l.HasSell && l.Sell != cny(w[0])) ||
+			(l.HasCost && (l.Cost != cny(w[1]) || l.CreditorPartyID != "coloader-a")) {
+			t.Errorf("line %+v, want %v", l, w)
+		}
+	}
+	if s, _ := c.module.GetRateSnapshot(c.ctx, api.GetRateSnapshot{TenantID: c.tenant, SnapshotID: "FIN-1"}); s.Purpose != api.PurposeShipmentEstimate ||
+		len(s.Lines) != 6 {
+		t.Errorf("its snapshot: %+v", s)
+	}
+	consol := api.RateConsolCost{CommandID: "fin/rate-P", TenantID: c.tenant, ActorID: "fin-1", BasisID: "FIN-2", LegalEntityID: "LE",
+		ConsolidationID: "CONSOL-1", ConsolidationRevision: 7, Mode: api.ModeAir, ContainerMode: api.ContainerLoose, Origin: "CNPVG", Destination: "DEFRA",
+		ServiceLevel: "STANDARD", Carrier: "coloader-a", Cargo: api.Cargo{Pieces: 12, GrossGrams: 400_000, VolumeCM3: 2_400_000}, OccurredAt: c.h(4)}
+	c.must(c.module.RateConsolCost(c.ctx, consol))
+	if b, err = c.module.GetPricingBasis(c.ctx, api.GetPricingBasis{TenantID: c.tenant, BasisID: "FIN-2"}); err != nil ||
+		b.Purpose != api.BasisConsolCostEstimate || b.Customer.PartyID != "" || len(b.Lines) != 2 || b.Lines[0].HasSell || b.Lines[0].Cost != cny(480_000) {
+		t.Fatalf("consolidation basis (400 kg at 12.00): %+v %v", b, err)
+	}
+	if _, err = c.module.GetPricingBasis(c.ctx, api.GetPricingBasis{TenantID: c.tenant, BasisID: "FIN-NONE"}); !errors.Is(err, api.ErrNotFound) {
+		t.Fatalf("an unknown basis: %v", err)
+	}
+	stranger := ship
+	stranger.CommandID, stranger.BasisID, stranger.CustomerPartyID = "fin/rate-X", "FIN-3", "coloader-b"
+	_, err = c.module.RateShipmentEstimate(c.ctx, stranger)
+	c.rejected("a shipment for a party ORG does not confirm as recipient", err, api.ErrRejected, "RATE_PARTY_ROLE")
+	if counts := strings.Join(c.outboxTypes(t), ","); strings.Count(counts, api.PricingBasisIssued) != 2 {
+		t.Errorf("outbox: %v", counts)
+	}
+	basisLine := `INSERT INTO cargo_rate.pricing_basis_line (tenant_id,basis_id,line_no,charge_code,sell_currency,sell_minor,sell_line_no)
+            VALUES ($1,'%s',9,'PICKUP','CNY',1,1)`
+	for name, tc := range map[string]struct{ sql, state, constraint string }{
+		"a basis changed":         {`UPDATE cargo_rate.pricing_basis_line SET sell_minor=1 WHERE tenant_id=$1`, "42501|23001", ""},
+		"a line added to a basis": {strings.Replace(basisLine, "%s", "FIN-1", 1), "23514", "pricing_basis_consistent"},
+		"a basis unlike its snapshot": {`INSERT INTO cargo_rate.rate_snapshot (tenant_id,snapshot_id,purpose,legal_entity_id,sides,mode,container_mode,origin,
+            destination,edition,service_level,commodity,business_at,pieces,gross_grams,volume_cm3,documents,subject_kind,subject_id,subject_version,
+            engine_version,evaluated_by,recorded_at) VALUES ($1,'S-X','CONSOL_COST_ESTIMATE','LE','{BUY}','AIR','LOOSE','CNPVG','DEFRA','x','STANDARD',
+            'GENERAL',now(),0,0,0,0,'CONSOLIDATION','C-X',1,'RATE-ENGINE-1','x',now());
+INSERT INTO cargo_rate.rate_snapshot_line (tenant_id,snapshot_id,line_no,side,charge_code,rate_card_id,version_no,entry_no,rate_line_no,calculator,
+            quantity,charged,band_from,rate_minor,rate_scale,percent_bp,base_amount,minimum_applied,maximum_applied,currency,amount_minor)
+            VALUES ($1,'S-X',1,'BUY','THC','S-A',1,1,2,'FLAT',0,0,0,8000,0,0,0,false,false,'CNY',8000);
+INSERT INTO cargo_rate.pricing_basis (tenant_id,basis_id,purpose,legal_entity_id,subject_kind,subject_id,subject_version,snapshot_id,issued_by,issued_at)
+            VALUES ($1,'B-X','CONSOL_COST_ESTIMATE','LE','CONSOLIDATION','C-X',1,'S-X','x',now());
+INSERT INTO cargo_rate.pricing_basis_line (tenant_id,basis_id,line_no,charge_code,cost_currency,cost_minor,cost_line_no)
+            VALUES ($1,'B-X',1,'THC','CNY',1,1)`, "23514", "pricing_basis_consistent"},
+		"a basis of a snapshot recorded before": {`INSERT INTO cargo_rate.pricing_basis (tenant_id,basis_id,purpose,legal_entity_id,subject_kind,subject_id,
+            subject_version,snapshot_id,issued_by,issued_at) VALUES ($1,'B-Y','CONSOL_COST_ESTIMATE','LE','CONSOLIDATION','CONSOL-1',7,'FIN-2','x',now())`,
+			"23505|23514", ""},
+	} {
+		err := c.statements(tc.sql)
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || !strings.Contains(tc.state, pgErr.Code) || (tc.constraint != "" && pgErr.ConstraintName != tc.constraint) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
