@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -195,5 +196,79 @@ func TestHTTPChargeCodesOnPostgres(t *testing.T) {
 	bad.TokenKey = []byte("short")
 	if _, err = p.API(bad); err == nil {
 		t.Fatal("an API with a short key")
+	}
+}
+
+// The same command sent eight times at once (a client retrying before the first answer) commits once and every
+// request answers the same receipt; a replay is authorized as the command was, and a key in use tells another actor
+// nothing.
+func TestHTTPRetriesOnPostgres(t *testing.T) {
+	p := openPlatform(t)
+	cfg := APIConfig{TokenKey: []byte("api-test-key-of-thirty-two-bytes!!"), TokenIssuer: "idp-cargo-test", TokenAudience: "idp-cargo-api",
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), MarginFloorBP: 2000}
+	h, err := p.API(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	c := apiClient{t: t, srv: srv}
+	tenant := uniqueTenant("cargo-api-r-")
+	mint := func(actor string, perms ...string) string {
+		t.Helper()
+		token, err := MintDevToken(cfg, tenant, actor, perms, time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return token
+	}
+	maintainer := mint("pricing-1", "rate:Read", "rate:MaintainChargeCodes")
+	at := `"occurred_at":"` + time.Now().UTC().Add(-time.Minute).Format(time.RFC3339) + `"`
+	define := `{"code":"RACE_FEE","name_zh":"并发费","name_en":"Race fee","group":"ORIGIN","calculator":"FLAT","modes":["AIR"],` + at + `}`
+	revise := `{"name_zh":"并发费","name_en":"Race fee, revised","group":"ORIGIN","calculator":"FLAT","modes":["AIR"],` + at + `}`
+	for _, step := range []struct {
+		name, path, body, key, ifMatch string
+		status                         int
+		revision                       float64
+	}{
+		{"define", "/v1/charge-codes", define, "race-define", "", 201, 1},
+		{"revise", "/v1/charge-codes/RACE_FEE/revise", revise, "race-revise", `"1"`, 200, 2},
+	} {
+		responses := make([]apiResponse, 8)
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		for i := range responses {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				header := []string{"Idempotency-Key", step.key}
+				if step.ifMatch != "" {
+					header = append(header, "If-Match", step.ifMatch)
+				}
+				responses[i] = c.do("POST", step.path, maintainer, step.body, header...)
+			}()
+		}
+		close(start)
+		wg.Wait()
+		for i, r := range responses {
+			if r.status != step.status || r.body["new_revision"] != step.revision || r.body["command_id"] != step.key {
+				t.Fatalf("%s, request %d: %d %v", step.name, i, r.status, r.body)
+			}
+		}
+	}
+	if r := c.do("GET", "/v1/charge-codes/RACE_FEE", maintainer, ""); r.header.Get("ETag") != `"2"` {
+		t.Fatalf("committed more than once: %v %v", r.header, r.body)
+	}
+	// the actor's permission withdrawn: its replay is refused, not answered
+	c.expect("a replay without the permission", c.do("POST", "/v1/charge-codes", mint("pricing-1", "rate:Read"), define, "Idempotency-Key",
+		"race-define"), 403, "FORBIDDEN")
+	// another actor without the permission learns nothing of the key: 403, as for an unused key
+	c.expect("a used key by an actor not allowed", c.do("POST", "/v1/charge-codes", mint("ops-1"), strings.Replace(define, "并发费", "x", 1),
+		"Idempotency-Key", "race-define"), 403, "FORBIDDEN")
+	// a body of the wrong type is described without Go's type names
+	r := c.do("POST", "/v1/charge-codes", maintainer, `{"code":7}`, "Idempotency-Key", "race-type")
+	if detail, _ := r.body["detail"].(string); r.status != 400 || strings.Contains(detail, "Go") || strings.Contains(detail, "struct") {
+		t.Fatalf("a wrong type: %d %v", r.status, r.body)
 	}
 }

@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"regexp"
 	"slices"
 	"strings"
@@ -86,7 +87,7 @@ type HS256Verifier struct {
 
 const minKeyBytes = 32
 
-var b64 = base64.RawURLEncoding
+var b64 = base64.RawURLEncoding.Strict()
 
 // Verify checks the token's header, signature, issuer, audience, times, tenant, subject and permissions.
 func (v HS256Verifier) Verify(_ context.Context, token string) (Principal, error) {
@@ -99,19 +100,21 @@ func (v HS256Verifier) Verify(_ context.Context, token string) (Principal, error
 	if len(token) > 8192 {
 		return fail("too long")
 	}
+	if strings.ContainsFunc(token, func(r rune) bool { return r <= ' ' || r > '~' }) {
+		return fail("blanks or control characters")
+	}
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
 		return fail("not a compact JWS")
 	}
 	var header struct {
-		Alg  string `json:"alg"`
-		Typ  string `json:"typ"`
-		Crit any    `json:"crit"`
+		Alg string `json:"alg"`
+		Typ string `json:"typ"`
 	}
-	if err := decodePart(parts[0], &header); err != nil {
+	if err := decodePart(parts[0], &header, "alg", "typ"); err != nil {
 		return fail("header: %v", err)
 	}
-	if header.Alg != "HS256" || (header.Typ != "" && header.Typ != "JWT") || header.Crit != nil {
+	if header.Alg != "HS256" || (header.Typ != "" && header.Typ != "JWT") {
 		return fail("algorithm %q, type %q", header.Alg, header.Typ)
 	}
 	sig, err := b64.DecodeString(parts[2])
@@ -124,7 +127,7 @@ func (v HS256Verifier) Verify(_ context.Context, token string) (Principal, error
 		return fail("signature")
 	}
 	var c Claims
-	if err = decodePart(parts[1], &c); err != nil {
+	if err = decodePart(parts[1], &c, "iss", "aud", "sub", "tenant_id", "permissions", "iat", "nbf", "exp"); err != nil {
 		return fail("claims: %v", err)
 	}
 	now := time.Now
@@ -155,19 +158,40 @@ func (v HS256Verifier) Verify(_ context.Context, token string) (Principal, error
 	return Principal{TenantID: c.TenantID, ActorID: c.Subject, Permissions: slices.Clone(c.Permissions), ExpiresAt: exp.UTC()}, nil
 }
 
-func decodePart(part string, v any) error {
+// decodePart decodes a token part: one JSON object whose keys are among known, each once and in its exact case
+// (encoding/json would take "TENANT_ID" for "tenant_id", and the last of two equal keys), with nothing after it.
+func decodePart(part string, v any, known ...string) error {
 	raw, err := b64.DecodeString(part)
 	if err != nil {
 		return err
 	}
 	d := json.NewDecoder(strings.NewReader(string(raw)))
-	if err = d.Decode(v); err != nil {
+	if t, err := d.Token(); err != nil || t != json.Delim('{') {
+		return errors.New("not an object")
+	}
+	seen := map[string]bool{}
+	for d.More() {
+		t, err := d.Token()
+		if err != nil {
+			return err
+		}
+		key, _ := t.(string)
+		if !slices.Contains(known, key) || seen[key] {
+			return fmt.Errorf("key %q unknown or repeated", key)
+		}
+		seen[key] = true
+		var skip json.RawMessage
+		if err = d.Decode(&skip); err != nil {
+			return err
+		}
+	}
+	if _, err = d.Token(); err != nil { // '}'
 		return err
 	}
-	if d.More() {
-		return errors.New("trailing data")
+	if _, err = d.Token(); err != io.EOF {
+		return errors.New("data after the object")
 	}
-	return nil
+	return json.Unmarshal(raw, v)
 }
 
 // SignHS256 signs claims for HS256Verifier: for development and tests, never for production identities.

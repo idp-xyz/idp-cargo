@@ -5,6 +5,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -17,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	bentoapp "go.idp.xyz/idp-bento-go/application"
 )
 
@@ -73,9 +75,41 @@ type Errors struct {
 	Unauthenticated, Unauthorized, NotFound, Conflict, IdempotencyConflict, Rejected error
 }
 
-// businessCode finds an IDP business code in an error's text, written "<context>: CODE: what" (as in
+// businessCode is an IDP business code at the start of a sentinel error's text, "<context>: CODE: what" (as in
 // "fin: FIN_NOT_FAPIAOABLE: ...").
-var businessCode = regexp.MustCompile(`(?:^|: )([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+): `)
+var businessCode = regexp.MustCompile(`^[a-z]+: ([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+): `)
+
+// codeOf answers the business code of the first sentinel error (one that wraps nothing) in err's tree that names one.
+// Only sentinels, whose text is the code's own, are read: text a wrapper adds may quote what a caller sent.
+func codeOf(err error) string {
+	switch e := err.(type) {
+	case nil:
+		return ""
+	case interface{ Unwrap() []error }:
+		for _, inner := range e.Unwrap() {
+			if c := codeOf(inner); c != "" {
+				return c
+			}
+		}
+		return ""
+	case interface{ Unwrap() error }:
+		return codeOf(e.Unwrap())
+	}
+	if m := businessCode.FindStringSubmatch(err.Error()); m != nil {
+		return m[1]
+	}
+	return ""
+}
+
+// detail is what a problem says of err: its text, unless it carries PostgreSQL's own message, which is not for
+// callers (the cause is logged with the correlation id).
+func detail(r *http.Request, err error, fallback string) string {
+	if _, fromDatabase := errors.AsType[*pgconn.PgError](err); fromDatabase {
+		slog.InfoContext(r.Context(), "database refusal", "correlation_id", CorrelationID(r.Context()), "path", r.URL.Path, "error", err)
+		return fallback
+	}
+	return err.Error()
+}
 
 // Fail writes the problem for err: by the context's error kinds, a commit Bento could not
 // confirm (503, retry with the same Idempotency-Key), and anything else as an internal error, logged with the
@@ -83,8 +117,8 @@ var businessCode = regexp.MustCompile(`(?:^|: )([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+): 
 func Fail(w http.ResponseWriter, r *http.Request, kinds Errors, err error) {
 	is := func(kind error) bool { return kind != nil && errors.Is(err, kind) }
 	code := func(fallback string) string {
-		if m := businessCode.FindStringSubmatch(err.Error()); m != nil {
-			return m[1]
+		if c := codeOf(err); c != "" {
+			return c
 		}
 		return fallback
 	}
@@ -96,11 +130,11 @@ func Fail(w http.ResponseWriter, r *http.Request, kinds Errors, err error) {
 	case is(kinds.IdempotencyConflict):
 		WriteProblem(w, r, http.StatusConflict, "IDEMPOTENCY_MISMATCH", "the Idempotency-Key was used for another request")
 	case is(kinds.NotFound):
-		WriteProblem(w, r, http.StatusNotFound, "NOT_FOUND", err.Error())
+		WriteProblem(w, r, http.StatusNotFound, "NOT_FOUND", detail(r, err, "no such resource"))
 	case is(kinds.Conflict):
-		WriteProblem(w, r, http.StatusConflict, code("VERSION_CONFLICT"), err.Error())
+		WriteProblem(w, r, http.StatusConflict, code("VERSION_CONFLICT"), detail(r, err, "changed meanwhile; read it again"))
 	case is(kinds.Rejected):
-		WriteProblem(w, r, http.StatusUnprocessableEntity, code("BUSINESS_RULE_VIOLATION"), err.Error())
+		WriteProblem(w, r, http.StatusUnprocessableEntity, code("BUSINESS_RULE_VIOLATION"), detail(r, err, "refused by a business rule"))
 	case errors.Is(err, bentoapp.ErrCommitUncertain):
 		w.Header().Set("Retry-After", "1")
 		WriteProblem(w, r, http.StatusServiceUnavailable, "COMMIT_UNCERTAIN", "send the request again with the same Idempotency-Key")
@@ -112,28 +146,118 @@ func Fail(w http.ResponseWriter, r *http.Request, kinds Errors, err error) {
 	}
 }
 
-// Decode reads the request body into v: application/json, one object, no unknown fields, at most MaxBodyBytes. On a
-// bad body it writes the problem and answers false.
+// Decode reads the request body into v: application/json, one object whose keys are snake_case and unique in each
+// object, no unknown fields, at most MaxBodyBytes. On a bad body it writes the problem and answers false.
 func Decode(w http.ResponseWriter, r *http.Request, v any) bool {
 	media, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || media != "application/json" {
 		WriteProblem(w, r, http.StatusUnsupportedMediaType, "UNSUPPORTED_MEDIA_TYPE", "send application/json")
 		return false
 	}
-	d := json.NewDecoder(http.MaxBytesReader(w, r.Body, MaxBodyBytes))
-	d.DisallowUnknownFields()
-	if err = d.Decode(v); err == nil {
-		if err = d.Decode(&struct{}{}); err == io.EOF {
-			return true
-		}
-		err = errors.New("one JSON object only")
-	}
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxBodyBytes))
 	if _, tooLarge := errors.AsType[*http.MaxBytesError](err); tooLarge {
 		WriteProblem(w, r, http.StatusRequestEntityTooLarge, "BODY_TOO_LARGE", fmt.Sprintf("at most %d bytes", MaxBodyBytes))
 		return false
 	}
-	WriteProblem(w, r, http.StatusBadRequest, "MALFORMED_REQUEST", err.Error())
-	return false
+	if err == nil {
+		err = checkKeys(raw)
+	}
+	if err == nil {
+		d := json.NewDecoder(bytes.NewReader(raw))
+		d.DisallowUnknownFields()
+		if err = d.Decode(v); err == nil && d.More() {
+			err = errors.New("send one JSON object")
+		}
+	}
+	if err != nil {
+		WriteProblem(w, r, http.StatusBadRequest, "MALFORMED_REQUEST", describe(err))
+		return false
+	}
+	return true
+}
+
+var snakeCase = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+
+// checkKeys reads raw as one JSON object whose keys, at every depth, are snake_case and unique in their object:
+// encoding/json would take "CODE" for "code" and the last of two equal keys.
+func checkKeys(raw []byte) error {
+	d := json.NewDecoder(bytes.NewReader(raw))
+	d.UseNumber()
+	t, err := d.Token()
+	if err != nil {
+		return err
+	}
+	if t != json.Delim('{') {
+		return errors.New("send one JSON object")
+	}
+	if err = objectKeys(d); err != nil {
+		return err
+	}
+	if _, err = d.Token(); err != io.EOF {
+		return errors.New("send one JSON object")
+	}
+	return nil
+}
+
+// objectKeys reads the rest of an object whose '{' was read.
+func objectKeys(d *json.Decoder) error {
+	seen := map[string]bool{}
+	for d.More() {
+		t, err := d.Token()
+		if err != nil {
+			return err
+		}
+		key, _ := t.(string)
+		if !snakeCase.MatchString(key) {
+			return fmt.Errorf("field %q: fields are snake_case", key)
+		}
+		if seen[key] {
+			return fmt.Errorf("field %q twice", key)
+		}
+		seen[key] = true
+		if err = value(d); err != nil {
+			return err
+		}
+	}
+	_, err := d.Token() // '}'
+	return err
+}
+
+func value(d *json.Decoder) error {
+	t, err := d.Token()
+	if err != nil {
+		return err
+	}
+	switch t {
+	case json.Delim('{'):
+		return objectKeys(d)
+	case json.Delim('['):
+		for d.More() {
+			if err = value(d); err != nil {
+				return err
+			}
+		}
+		_, err = d.Token() // ']'
+	}
+	return err
+}
+
+// describe says what is wrong with a body without Go's type names.
+func describe(err error) string {
+	if e, ok := errors.AsType[*json.UnmarshalTypeError](err); ok {
+		return fmt.Sprintf("field %q has the wrong type", e.Field)
+	}
+	if e, ok := errors.AsType[*json.SyntaxError](err); ok {
+		return fmt.Sprintf("not valid JSON at byte %d", e.Offset)
+	}
+	if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
+		return "the JSON ends early"
+	}
+	msg := err.Error()
+	if f, ok := strings.CutPrefix(msg, "json: unknown field "); ok {
+		return "unknown field " + f
+	}
+	return msg
 }
 
 // commandID: what a context takes as a command id.
@@ -154,6 +278,8 @@ func CommandID(w http.ResponseWriter, r *http.Request) (string, bool) {
 	return k, true
 }
 
+var revisionTag = regexp.MustCompile(`^"(0|[1-9][0-9]{0,17})"$`)
+
 // ExpectedRevision reads If-Match "n", the revision or version the command expects (428 when it is missing).
 func ExpectedRevision(w http.ResponseWriter, r *http.Request) (int64, bool) {
 	v := r.Header.Get("If-Match")
@@ -161,11 +287,12 @@ func ExpectedRevision(w http.ResponseWriter, r *http.Request) (int64, bool) {
 		WriteProblem(w, r, http.StatusPreconditionRequired, "PRECONDITION_REQUIRED", `a change names the revision it expects in If-Match: "n"`)
 		return 0, false
 	}
-	n, err := strconv.ParseInt(strings.TrimSuffix(strings.TrimPrefix(v, `"`), `"`), 10, 64)
-	if err != nil || n < 0 || !strings.HasPrefix(v, `"`) || !strings.HasSuffix(v, `"`) || len(v) < 3 {
+	m := revisionTag.FindStringSubmatch(v)
+	if m == nil {
 		WriteProblem(w, r, http.StatusBadRequest, "MALFORMED_REQUEST", `If-Match is a revision in quotes: "n"`)
 		return 0, false
 	}
+	n, _ := strconv.ParseInt(m[1], 10, 64)
 	return n, true
 }
 

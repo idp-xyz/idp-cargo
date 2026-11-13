@@ -126,13 +126,24 @@ func (d CardDeps) begin(ctx context.Context, s Scope, commandID string, occurred
 	return hash, recorded, Receipt{}, false, err
 }
 
+// commandLocker is a Receipts store that can hold the command id for the transaction.
+type commandLocker interface {
+	Lock(ctx context.Context, tenant rate.TenantID, commandID string) error
+}
+
 // commit writes what mutate changed, its Outbox events and the command receipt in one transaction; a receipt stored
-// meanwhile by a concurrent replay wins.
+// meanwhile by a concurrent replay wins. The command id is held first, so that the same command sent twice at once
+// (a client retrying before the first answer) commits once and the other replays its receipt.
 func (d CardDeps) commit(ctx context.Context, s Scope, commandID, hash, kind string,
 	mutate func(context.Context) (string, int64, pendingAggregate, error)) (Receipt, error) {
 	var result Receipt
 	var changed pendingAggregate
 	err := d.Tx.WithinTransaction(ctx, func(txCtx context.Context) error {
+		if l, ok := d.Receipts.(commandLocker); ok {
+			if err := l.Lock(txCtx, s.TenantID, commandID); err != nil {
+				return err
+			}
+		}
 		r, ok, err := d.Receipts.Find(txCtx, s.TenantID, commandID)
 		if err != nil {
 			return err
@@ -192,6 +203,13 @@ type ChargeCodeCommand struct {
 func (d CardDeps) ChangeChargeCode(ctx context.Context, c ChargeCodeCommand) (Receipt, error) {
 	if d.Codes == nil {
 		return Receipt{}, ErrMissingDependency
+	}
+	// authorized before a replay too: a replay answers only an actor still allowed, and a key in use tells no one else
+	if err := d.check(ctx, c.Scope, c.CommandID, c.OccurredAt); err != nil {
+		return Receipt{}, err
+	}
+	if err := d.allow(ctx, c.Scope, ActionMaintainChargeCodes, string(c.Code)); err != nil {
+		return Receipt{}, err
 	}
 	hash, recorded, stored, replayed, err := d.begin(ctx, c.Scope, c.CommandID, c.OccurredAt, c)
 	if err != nil || replayed {

@@ -3,7 +3,6 @@ package http
 import (
 	nethttp "net/http"
 	"net/url"
-	"strconv"
 	"time"
 
 	"go.idp.xyz/idp-cargo/internal/contexts/rate/api"
@@ -51,8 +50,12 @@ func (h handlers) listChargeCodes(w nethttp.ResponseWriter, r *nethttp.Request) 
 	if !ok {
 		return
 	}
-	inactive, err := strconv.ParseBool(r.URL.Query().Get("include_inactive"))
-	if err != nil && r.URL.Query().Get("include_inactive") != "" {
+	var inactive bool
+	switch r.URL.Query().Get("include_inactive") {
+	case "", "false":
+	case "true":
+		inactive = true
+	default:
 		httpapi.WriteProblem(w, r, nethttp.StatusBadRequest, "MALFORMED_REQUEST", "include_inactive is true or false")
 		return
 	}

@@ -58,7 +58,7 @@ func NewHandler(cfg Config, registrars ...Registrar) (nethttp.Handler, error) {
 	})
 	open.Handle("/v1/", authenticate(cfg.Verifier, routed(api)))
 	open.Handle("/", routed(nethttp.NewServeMux()))
-	return correlate(recoverPanic(cfg.Logger, logRequests(cfg.Logger, open))), nil
+	return correlate(logRequests(cfg.Logger, recoverPanic(cfg.Logger, open))), nil
 }
 
 var correlationPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{8,64}$`)
@@ -100,20 +100,31 @@ func (s *status) Write(b []byte) (int, error) {
 
 func (s *status) Unwrap() nethttp.ResponseWriter { return s.ResponseWriter }
 
-// recoverPanic turns a panic into a logged 500 problem (when nothing was written yet).
+// Flush passes a flush through to the connection (a handler streaming its response).
+func (s *status) Flush() {
+	if !s.written {
+		s.code, s.written = nethttp.StatusOK, true
+	}
+	_ = nethttp.NewResponseController(s.ResponseWriter).Flush()
+}
+
+// recoverPanic turns a panic into a logged 500 problem. When the handler had written already, the connection is
+// aborted instead, so that the client sees a broken response, never a truncated one that looks complete.
 func recoverPanic(logger *slog.Logger, next nethttp.Handler) nethttp.Handler {
 	return nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
 		sw := &status{ResponseWriter: w}
 		defer func() {
-			if v := recover(); v != nil {
-				if v == nethttp.ErrAbortHandler {
-					panic(v)
-				}
-				logger.ErrorContext(r.Context(), "panic", "correlation_id", httpapi.CorrelationID(r.Context()), "path", r.URL.Path, "panic", v)
-				if !sw.written {
-					httpapi.WriteProblem(sw, r, nethttp.StatusInternalServerError, "INTERNAL", "")
-				}
+			v := recover()
+			if v == nil {
+				return
 			}
+			if v != nethttp.ErrAbortHandler {
+				logger.ErrorContext(r.Context(), "panic", "correlation_id", httpapi.CorrelationID(r.Context()), "path", r.URL.Path, "panic", v)
+			}
+			if v == nethttp.ErrAbortHandler || sw.written {
+				panic(nethttp.ErrAbortHandler)
+			}
+			httpapi.WriteProblem(sw, r, nethttp.StatusInternalServerError, "INTERNAL", "")
 		}()
 		next.ServeHTTP(sw, r)
 	})
@@ -126,13 +137,20 @@ func logRequests(logger *slog.Logger, next nethttp.Handler) nethttp.Handler {
 		start := time.Now()
 		sw := &status{ResponseWriter: w}
 		var who identity.Principal
+		done := false
+		defer func() { // also when the response is aborted
+			code := sw.code
+			switch {
+			case !done:
+				code = 0 // aborted: no complete response
+			case !sw.written:
+				code = nethttp.StatusOK
+			}
+			logger.InfoContext(r.Context(), "request", "method", r.Method, "path", r.URL.Path, "status", code, "duration_ms",
+				time.Since(start).Milliseconds(), "correlation_id", httpapi.CorrelationID(r.Context()), "tenant_id", who.TenantID, "actor_id", who.ActorID)
+		}()
 		next.ServeHTTP(sw, r.WithContext(context.WithValue(r.Context(), seenKey{}, &who)))
-		code := sw.code
-		if !sw.written {
-			code = nethttp.StatusOK
-		}
-		logger.InfoContext(r.Context(), "request", "method", r.Method, "path", r.URL.Path, "status", code, "duration_ms",
-			time.Since(start).Milliseconds(), "correlation_id", httpapi.CorrelationID(r.Context()), "tenant_id", who.TenantID, "actor_id", who.ActorID)
+		done = true
 	})
 }
 
@@ -188,9 +206,10 @@ func (h *headerOnly) Header() nethttp.Header      { return h.header }
 func (h *headerOnly) Write(b []byte) (int, error) { return len(b), nil }
 func (h *headerOnly) WriteHeader(code int)        { h.code = code }
 
-// Server is an http.Server with Cargo's timeouts.
-func Server(addr string, h nethttp.Handler, logger *slog.Logger) *nethttp.Server {
+// Server is an http.Server with Cargo's timeouts. Requests run under base: cancelling it cancels the requests in
+// flight (and their database work), as a shutdown that ran out of time does.
+func Server(addr string, h nethttp.Handler, logger *slog.Logger, base context.Context) *nethttp.Server {
 	return &nethttp.Server{Addr: addr, Handler: h, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 60 * time.Second,
 		IdleTimeout: 2 * time.Minute, MaxHeaderBytes: 64 << 10, ErrorLog: slog.NewLogLogger(logger.Handler(), slog.LevelWarn),
-		BaseContext: func(net.Listener) context.Context { return context.Background() }}
+		BaseContext: func(net.Listener) context.Context { return base }}
 }

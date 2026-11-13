@@ -1,6 +1,7 @@
 // cargo-api serves Cargo's HTTP API (paths under /v1, RFC 9457 problems). Every /v1 request carries a bearer token;
 // until the IDP identity platform is connected, tokens are HS256-signed with the key in IDP_CARGO_API_TOKEN_KEY
-// (base64, 32 bytes or more), for development and tests only. -mint-token prints such a token and exits.
+// (base64, 32 bytes or more), for development and tests only: whoever holds the key can sign any tenant, actor and
+// permission, so the server starts only with -dev-tokens. -mint-token prints such a token and exits.
 package main
 
 import (
@@ -34,7 +35,7 @@ type options struct {
 	addr, schema, issuer, audience string
 	marginFloorBP, discountBP      int
 	shutdown                       time.Duration
-	mint                           bool
+	mint, devTokens                bool
 	mintTenant, mintActor          string
 	mintPermissions                string
 	mintTTL                        time.Duration
@@ -51,6 +52,7 @@ func parse(args []string) (options, error) {
 	fs.IntVar(&o.marginFloorBP, "margin-floor-bp", 2000, "RATE: a quote's margin floor, basis points of its sell total, for every legal entity")
 	fs.IntVar(&o.discountBP, "rate-card-discount-bp", 0, "RATE: how far below the rated sell an overridden line may sell without approval, basis points")
 	fs.DurationVar(&o.shutdown, "shutdown-timeout", 15*time.Second, "time for requests in flight on SIGTERM")
+	fs.BoolVar(&o.devTokens, "dev-tokens", false, "accept development tokens (HS256, shared key): never in production")
 	fs.BoolVar(&o.mint, "mint-token", false, "print a development token for -tenant, -actor and -permissions and exit")
 	fs.StringVar(&o.mintTenant, "tenant", "", "-mint-token: the tenant")
 	fs.StringVar(&o.mintActor, "actor", "", "-mint-token: the actor (subject)")
@@ -96,6 +98,9 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout 
 		_, err = fmt.Fprintln(stdout, token)
 		return err
 	}
+	if !o.devTokens {
+		return errors.New("until the IDP identity platform is connected, cargo-api accepts only development tokens: start it with -dev-tokens, never in production")
+	}
 	dsn := getenv("IDP_CARGO_POSTGRES_DSN")
 	if dsn == "" {
 		return errors.New("IDP_CARGO_POSTGRES_DSN is required")
@@ -114,7 +119,9 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout 
 	if err != nil {
 		return err
 	}
-	srv := bootstrap.APIServer(o.addr, handler, logger)
+	base, cancelRequests := context.WithCancel(context.Background())
+	defer cancelRequests()
+	srv := bootstrap.APIServer(o.addr, handler, logger, base)
 	ln, err := net.Listen("tcp", o.addr)
 	if err != nil {
 		return err
@@ -127,10 +134,15 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout 
 		return err
 	case <-ctx.Done():
 	}
+	stop() // a second signal ends the process at once
+	logger.Info("shutting down", "timeout", o.shutdown)
 	shutdown, cancel := context.WithTimeout(context.Background(), o.shutdown)
 	defer cancel()
 	if err = srv.Shutdown(shutdown); err != nil {
-		return err
+		// out of time: cancel the requests still running, so their database work ends and the pool can close
+		cancelRequests()
+		_ = srv.Close()
+		logger.Warn("requests cancelled at shutdown", "error", err)
 	}
 	if err = <-failed; err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err

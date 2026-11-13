@@ -2,8 +2,11 @@ package identity
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -89,6 +92,53 @@ func TestHS256Verifier(t *testing.T) {
 	}
 	if _, err := SignHS256([]byte("short"), claims()); err == nil {
 		t.Error("signed with a short key")
+	}
+}
+
+// signRaw signs a header and payload as they are, so that the verifier sees exactly these bytes.
+func signRaw(header, payload string) string {
+	enc := base64.RawURLEncoding.EncodeToString
+	signing := enc([]byte(header)) + "." + enc([]byte(payload))
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte(signing))
+	return signing + "." + enc(mac.Sum(nil))
+}
+
+// Signed with the key or not, a token is read strictly: canonical base64 without blanks, one object of known keys,
+// each once and in its case, and nothing after it.
+func TestHS256Strict(t *testing.T) {
+	c := claims()
+	payload := fmt.Sprintf(`{"iss":"idp-cargo-dev","aud":"idp-cargo-api","sub":"alice","tenant_id":"t1","permissions":["rate:Read"],"iat":%d,"exp":%d}`,
+		c.IssuedAt, c.ExpiresAt)
+	header := `{"alg":"HS256","typ":"JWT"}`
+	if _, err := verifier().Verify(context.Background(), signRaw(header, payload)); err != nil {
+		t.Fatalf("the token as signed: %v", err)
+	}
+	good := signRaw(header, payload)
+	// the last base64 character of a 32-byte signature carries 2 unused bits: another value of them is not canonical
+	last := good[len(good)-1]
+	alphabet := "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+	i := strings.IndexByte(alphabet, last)
+	sibling := good[:len(good)-1] + string(alphabet[(i&^3)|((i+1)&3)])
+	for name, token := range map[string]string{
+		"a non-canonical signature": sibling,
+		"a newline inside":          good[:10] + "\n" + good[10:],
+		"a blank inside":            good[:10] + " " + good[10:],
+		"a closing brace after":     signRaw(header, payload+"}"),
+		"a closing bracket after":   signRaw(header, payload+"]"),
+		"a second object":           signRaw(header, payload+"{}"),
+		"the tenant twice":          signRaw(header, strings.Replace(payload, `"tenant_id":"t1"`, `"tenant_id":"t1","tenant_id":"t2"`, 1)),
+		"the tenant in capitals":    signRaw(header, strings.Replace(payload, `"tenant_id":"t1"`, `"tenant_id":"t1","TENANT_ID":"t2"`, 1)),
+		"an unknown claim":          signRaw(header, strings.Replace(payload, `"sub"`, `"admin":true,"sub"`, 1)),
+		"an unknown header key":     signRaw(`{"alg":"HS256","typ":"JWT","kid":"k1"}`, payload),
+		"alg in capitals":           signRaw(`{"ALG":"HS256"}`, payload),
+		"an array of claims":        signRaw(header, "["+payload+"]"),
+		"a fractional expiry":       signRaw(header, strings.Replace(payload, fmt.Sprintf(`"exp":%d`, c.ExpiresAt), fmt.Sprintf(`"exp":%d.5`, c.ExpiresAt), 1)),
+		"an audience array":         signRaw(header, strings.Replace(payload, `"aud":"idp-cargo-api"`, `"aud":["idp-cargo-api"]`, 1)),
+	} {
+		if _, err := verifier().Verify(context.Background(), token); !errors.Is(err, ErrInvalidToken) {
+			t.Errorf("%s: %v", name, err)
+		}
 	}
 }
 

@@ -50,9 +50,9 @@ func (p *Platform) API(cfg APIConfig) (http.Handler, error) {
 	return transport.NewHandler(transport.Config{Verifier: cfg.verifier(), Logger: cfg.Logger, Ready: p.pool.Ping}, rate)
 }
 
-// APIServer is an http.Server for the API's handler with Cargo's timeouts.
-func APIServer(addr string, h http.Handler, logger *slog.Logger) *http.Server {
-	return transport.Server(addr, h, logger)
+// APIServer is an http.Server for the API's handler with Cargo's timeouts; its requests run under base.
+func APIServer(addr string, h http.Handler, logger *slog.Logger, base context.Context) *http.Server {
+	return transport.Server(addr, h, logger, base)
 }
 
 // MintDevToken signs a development token the API configured with the same key, issuer and audience accepts, and
