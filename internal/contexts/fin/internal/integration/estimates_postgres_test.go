@@ -84,6 +84,21 @@ func TestRatedEstimatesOnPostgres(t *testing.T) {
 		ServiceLevel: "STANDARD", OccurredAt: a.hours(3)})
 	a.rejected("an estimate on a job priced by a quote", err, "FIN_BASIS_APPLIED")
 
+	// a basis line becomes one charge line
+	dup := f.within(t, func(ctx context.Context, e bentopg.Executor) error {
+		for _, s := range []string{`UPDATE cargo_fin.freight_job SET revision=revision+1 WHERE tenant_id=$1 AND job_id='JOB-B'`,
+			`INSERT INTO cargo_fin.charge_line (tenant_id,job_id,line_no,charge_code,source,basis_no,quote_line_no,recorded_by,recorded_at,entered_at)
+               VALUES ($1,'JOB-B',9,'AIR_FREIGHT','RATED',1,1,'x',now(),now())`} {
+			if _, err := e.Exec(ctx, s, f.tenant); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if state, constraint := sqlState(dup); state != "23505" || constraint != "charge_line_basis_line_once" {
+		t.Errorf("a basis line twice: %v", dup)
+	}
+
 	// a supplier ORG does not confirm as a creditor, a shipment without a route, and RATE refusing
 	for _, s := range []string{"SH-C", "SH-D", "SH-E"} {
 		f.w.mu.Lock()
@@ -144,6 +159,25 @@ func TestRatedEstimatesOnPostgres(t *testing.T) {
 	_, err = f.module.RateConsolCostPool(ctx, ratePool)
 	a.rejected("a second estimate of the pool", err, "FIN_BASIS_APPLIED")
 
+	// RATE answered, then FIN failed (a EUR cost has no ESTIMATE rate); retried after FUL's plan moved on, the command id
+	// is refused as reused: RATE rated the earlier plan under it
+	f.w.mu.Lock()
+	f.w.shipmentLines = []rateapi.PricingLine{{LineNo: 1, ChargeCode: "AIR_FREIGHT", Source: rateapi.SourceRated, HasCost: true,
+		Cost: kernel.Money{Currency: "EUR", Minor: 100}, CreditorPartyID: "airline-mu"}}
+	e := f.w.drivers["SH-E"]
+	f.w.mu.Unlock()
+	retry := api.RateFreightJob{CommandID: "rate-E-eur", TenantID: f.tenant, ActorID: "fin-1", JobID: "JOB-SH-E", ExpectedRevision: 1, ServiceLevel: "STANDARD",
+		OccurredAt: a.hours(4)}
+	_, err = f.module.RateFreightJob(ctx, retry)
+	a.rejected("a cost in a currency without an ESTIMATE rate", err, "FIN_RATE_MISSING")
+	f.w.mu.Lock()
+	e.PlanVersion = 3
+	f.w.drivers["SH-E"] = e
+	f.w.mu.Unlock()
+	if _, err = f.module.RateFreightJob(ctx, retry); !errors.Is(err, api.ErrIdempotencyConflict) {
+		t.Fatalf("a retry after the plan changed: %v", err)
+	}
+
 	// past FIN: a second estimate on the job, a RATED line on a quote basis, a second estimate in the pool
 	for name, tc := range map[string]struct{ sql, constraint string }{
 		"a second estimate on a job": {`UPDATE cargo_fin.freight_job SET revision=revision+1 WHERE tenant_id=$1 AND job_id='JOB-B';
@@ -152,6 +186,15 @@ INSERT INTO cargo_fin.job_basis (tenant_id,job_id,basis_no,basis_id,purpose,plan
 		"a RATED line on a quote basis": {`UPDATE cargo_fin.freight_job SET revision=revision+1 WHERE tenant_id=$1 AND job_id='JOB-A';
 INSERT INTO cargo_fin.charge_line (tenant_id,job_id,line_no,charge_code,source,basis_no,quote_line_no,recorded_by,recorded_at,entered_at)
             VALUES ($1,'JOB-A',9,'THC','RATED',1,1,'x',now(),now())`, "charge_line_of_its_basis"},
+		"an estimate without its plan version": {`UPDATE cargo_fin.freight_job SET revision=revision+1 WHERE tenant_id=$1 AND job_id='JOB-SH-D';
+INSERT INTO cargo_fin.job_basis (tenant_id,job_id,basis_no,basis_id,purpose,applied_by,applied_at,entered_at)
+            VALUES ($1,'JOB-SH-D',1,'FIN-Z','SHIPMENT_ESTIMATE','x',now(),now())`, "job_basis_purpose"},
+		"a pool's basis on a job": {`UPDATE cargo_fin.freight_job SET revision=revision+1 WHERE tenant_id=$1 AND job_id='JOB-SH-D';
+INSERT INTO cargo_fin.job_basis (tenant_id,job_id,basis_no,basis_id,purpose,plan_version,applied_by,applied_at,entered_at)
+            VALUES ($1,'JOB-SH-D',1,'` + pool.Lines[0].BasisID + `','SHIPMENT_ESTIMATE',2,'x',now(),now())`, "job_basis_one_kind"},
+		"a basis in two pools": {`UPDATE cargo_fin.consol_cost_pool SET revision=revision+1 WHERE tenant_id=$1 AND pool_id='P-1';
+INSERT INTO cargo_fin.pool_cost_line (tenant_id,pool_id,line_no,charge_code,method,recorded_by,recorded_at,entered_at,source,basis_id,basis_line_no)
+            VALUES ($1,'P-1',9,'THC','PIECES','x',now(),now(),'RATED','` + pool.Lines[0].BasisID + `',3)`, "pool_one_estimate"},
 		"a second estimate in a pool": {`UPDATE cargo_fin.consol_cost_pool SET revision=revision+1 WHERE tenant_id=$1 AND pool_id='P-2';
 INSERT INTO cargo_fin.pool_cost_line (tenant_id,pool_id,line_no,charge_code,method,recorded_by,recorded_at,entered_at,source,basis_id,basis_line_no)
             VALUES ($1,'P-2',9,'THC','PIECES','x',now(),now(),'RATED','FIN-Y',1)`, "pool_one_estimate"},
@@ -164,7 +207,7 @@ INSERT INTO cargo_fin.pool_cost_line (tenant_id,pool_id,line_no,charge_code,meth
 			}
 			return nil
 		})
-		if state, constraint := sqlState(err); state != "23514" || constraint != tc.constraint {
+		if state, constraint := sqlState(err); (state != "23514" && state != "23505") || constraint != tc.constraint {
 			t.Errorf("%s: %v (%s %s)", name, err, state, constraint)
 		}
 	}

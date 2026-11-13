@@ -53,7 +53,11 @@ func refused(err error) error {
 		return fmt.Errorf("%w: RATE: %v", fin.ErrNotPriceable, err.Error())
 	case errors.Is(err, rateapi.ErrUnauthorized), errors.Is(err, rateapi.ErrUnauthenticated):
 		return fmt.Errorf("%w: RATE: %v", app.ErrUnauthorized, err.Error())
-	case errors.Is(err, rateapi.ErrConflict), errors.Is(err, rateapi.ErrIdempotencyConflict):
+	case errors.Is(err, rateapi.ErrIdempotencyConflict):
+		// the FIN command was retried after FUL's plan or PHY's consolidation changed: RATE rated the earlier facts under
+		// this command id, so a new command id is needed
+		return fmt.Errorf("%w: RATE rated other facts under this command id; ask again with a new one: %v", app.ErrIdempotencyConflict, err.Error())
+	case errors.Is(err, rateapi.ErrConflict):
 		return fmt.Errorf("%w: RATE: %v", fin.ErrConflict, err.Error())
 	}
 	return err
@@ -68,7 +72,7 @@ func (r Rating) read(ctx context.Context, tenant fin.TenantID, id, purpose strin
 		return app.RatedBasis{}, fmt.Errorf("%w: RATE answered for another basis or purpose", app.ErrUnknownSource)
 	}
 	out := app.RatedBasis{BasisID: b.BasisID, Purpose: b.Purpose, LegalEntityID: b.LegalEntityID, CustomerPartyID: b.Customer.PartyID,
-		SubjectID: b.SubjectID, SubjectVersion: b.SubjectVersion, Gaps: len(b.Gaps)}
+		SubjectID: b.SubjectID, SubjectVersion: b.SubjectVersion}
 	for _, l := range b.Lines {
 		if l.Source != rateapi.SourceRated {
 			return app.RatedBasis{}, fmt.Errorf("%w: a rated basis with a line of source %s", app.ErrUnknownSource, l.Source)

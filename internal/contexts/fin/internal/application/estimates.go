@@ -36,8 +36,8 @@ type EstimateRequest struct {
 	OccurredAt      time.Time
 }
 
-// RatedBasis is what FIN reads of a rated PricingBasis v1: its lines (creditors not yet confirmed by ORG) and how many
-// charges RATE could not rate.
+// RatedBasis is what FIN reads of a rated PricingBasis v1: its lines (creditors not yet confirmed by ORG). The charges
+// RATE could not rate are listed by the basis in RATE, under the basis id the job and the pool show.
 type RatedBasis struct {
 	BasisID         string
 	Purpose         string
@@ -46,11 +46,11 @@ type RatedBasis struct {
 	SubjectID       string
 	SubjectVersion  int64
 	Lines           []fin.EstimateLine
-	Gaps            int
 }
 
 // Rating asks RATE to rate (RATE -> FIN), outside FIN's transactions. A retried FIN command asks again with the same
-// command and basis ids, and RATE answers the basis it issued.
+// command and basis ids, and RATE answers the basis it issued; when the facts FIN reads from FUL or PHY changed in
+// between, RATE refuses the command id (an idempotency conflict) and the command is asked again with a new id.
 type Rating interface {
 	ShipmentEstimate(ctx context.Context, tenant fin.TenantID, r EstimateRequest) (RatedBasis, error)
 	ConsolEstimate(ctx context.Context, tenant fin.TenantID, r EstimateRequest) (RatedBasis, error)
@@ -111,8 +111,9 @@ func (d Deps) RateJob(ctx context.Context, c Command, in RateJobInput) (Receipt,
 		if err != nil {
 			return err
 		}
-		if basis.LegalEntityID != st.LegalEntityID || basis.CustomerPartyID != st.CustomerPartyID || basis.SubjectID != st.ShipmentID {
-			return fmt.Errorf("%w: RATE answered for another legal entity, customer or shipment", ErrUnknownSource)
+		if basis.LegalEntityID != st.LegalEntityID || basis.CustomerPartyID != st.CustomerPartyID || basis.SubjectID != st.ShipmentID ||
+			basis.SubjectVersion != int64(plan) {
+			return fmt.Errorf("%w: RATE answered for another legal entity, customer, shipment or plan version", ErrUnknownSource)
 		}
 		if customerRevision, err = d.Directory.PartyInRole(ctx, c.Scope.TenantID, st.CustomerPartyID, st.LegalEntityID, DebtorRoles, c.OccurredAt); err != nil {
 			return err
@@ -195,8 +196,8 @@ func (d Deps) RatePool(ctx context.Context, c Command, in RatePoolInput) (Receip
 		if err != nil {
 			return err
 		}
-		if basis.LegalEntityID != st.LegalEntityID || basis.SubjectID != st.ConsolidationID || basis.CustomerPartyID != "" {
-			return fmt.Errorf("%w: RATE answered for another legal entity or consolidation", ErrUnknownSource)
+		if basis.LegalEntityID != st.LegalEntityID || basis.SubjectID != st.ConsolidationID || basis.SubjectVersion != cb.Revision || basis.CustomerPartyID != "" {
+			return fmt.Errorf("%w: RATE answered for another legal entity, consolidation or revision", ErrUnknownSource)
 		}
 		return d.confirmCreditors(ctx, c, st.LegalEntityID, basis.Lines)
 	}, func(_ context.Context, pool *fin.ConsolCostPool, p *fin.FinancePolicy) (Receipt, error) {

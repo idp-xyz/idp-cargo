@@ -77,6 +77,7 @@ const (
 // ACCRUED or RELEASED (amount zero; StatusReleased).
 const (
 	SourceQuote  = "QUOTE"
+	SourceRated  = "RATED" // from RATE's rated estimate; the charges RATE could not rate are listed by the basis in RATE
 	SourceManual = "MANUAL"
 
 	StatusEstimated = "ESTIMATED"

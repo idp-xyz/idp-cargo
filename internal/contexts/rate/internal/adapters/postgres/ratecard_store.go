@@ -710,8 +710,7 @@ func Conflict(err error) bool {
 		return false
 	}
 	switch pgErr.ConstraintName {
-	case "rate_version_overlap", "rate_version_publishable", "rate_snapshot_written_once", "charge_code_version_sequence", "rate_card_version_sequence",
-		"pricing_basis_consistent":
+	case "rate_version_overlap", "rate_version_publishable", "rate_snapshot_written_once", "charge_code_version_sequence", "rate_card_version_sequence":
 		return true
 	}
 	return false

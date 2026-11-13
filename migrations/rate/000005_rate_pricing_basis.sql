@@ -44,7 +44,7 @@ CREATE TABLE cargo_rate.pricing_basis_line (
  FOREIGN KEY (tenant_id, basis_id) REFERENCES cargo_rate.pricing_basis (tenant_id, basis_id),
  CHECK ((sell_minor IS NULL) = (sell_currency IS NULL) AND (sell_minor IS NULL) = (sell_line_no IS NULL)
    AND (cost_minor IS NULL) = (cost_currency IS NULL) AND (cost_minor IS NULL) = (cost_line_no IS NULL)
-   AND (sell_minor IS NOT NULL OR cost_minor IS NOT NULL) AND (creditor_party_id IS NULL OR cost_minor IS NOT NULL))
+   AND (sell_minor IS NOT NULL OR cost_minor IS NOT NULL) AND (creditor_party_id IS NULL) = (cost_minor IS NULL))
 );
 CREATE TABLE cargo_rate.pricing_basis_gap (
  tenant_id text NOT NULL,
@@ -66,13 +66,16 @@ BEGIN
   END LOOP;
 END $immutable$;
 
--- At commit: a basis is issued in its snapshot's transaction, from a snapshot of its purpose, legal entity, customer and
--- subject; its lines and gaps are written with it; every line equals the snapshot lines it names (SELL and BUY of its
--- charge code, the BUY line's party its creditor), and every snapshot line is in the basis, as a line or a gap.
-CREATE FUNCTION cargo_rate.check_pricing_basis_at_commit() RETURNS trigger LANGUAGE plpgsql AS $fn$
-DECLARE t text := NEW.tenant_id; id text := NEW.basis_id; ok boolean;
+-- At commit: a basis is issued in its snapshot's transaction, from a snapshot of its purpose (with the sides the
+-- purpose rates), legal entity, customer and subject; its lines and gaps are written with it; every line equals the
+-- snapshot lines it names (SELL and BUY of its charge code, the BUY line's party its creditor), every snapshot line is
+-- in the basis, as a line or a gap, and the basis has no gap the snapshot lacks. It runs when the basis, its lines or
+-- gaps, or the snapshot's lines are written, so making some of these checks immediate cannot slip a change past it.
+CREATE FUNCTION cargo_rate.pricing_basis_consistent_check(t text, id text) RETURNS void LANGUAGE plpgsql AS $fn$
+DECLARE ok boolean;
 BEGIN
   SELECT b.xmin = pg_current_xact_id()::xid AND s.xmin = pg_current_xact_id()::xid AND s.purpose = b.purpose
+    AND s.sides = CASE b.purpose WHEN 'SHIPMENT_ESTIMATE' THEN '{SELL,BUY}'::text[] ELSE '{BUY}'::text[] END
     AND s.legal_entity_id = b.legal_entity_id AND s.customer_party_id IS NOT DISTINCT FROM b.customer_party_id
     AND s.customer_revision IS NOT DISTINCT FROM b.customer_revision AND s.subject_kind = b.subject_kind AND s.subject_id = b.subject_id
     AND s.subject_version = b.subject_version
@@ -90,6 +93,12 @@ BEGIN
         AND x.line_no IN (l.sell_line_no, l.cost_line_no)))
       OR (x.gap IS NOT NULL AND NOT EXISTS (SELECT 1 FROM cargo_rate.pricing_basis_gap g WHERE g.tenant_id = t AND g.basis_id = id AND g.side = x.side
         AND g.charge_code IS NOT DISTINCT FROM x.charge_code AND g.gap = x.gap))))
+    -- and the basis has no gap the snapshot lacks
+    AND NOT EXISTS (SELECT 1 FROM cargo_rate.pricing_basis_gap g WHERE g.tenant_id = t AND g.basis_id = id AND NOT EXISTS (
+      SELECT 1 FROM cargo_rate.rate_snapshot_line x WHERE x.tenant_id = t AND x.snapshot_id = b.snapshot_id AND x.side = g.side
+        AND x.charge_code IS NOT DISTINCT FROM g.charge_code AND x.gap = g.gap))
+    AND (SELECT count(*) FROM cargo_rate.pricing_basis_gap g WHERE g.tenant_id = t AND g.basis_id = id)
+      = (SELECT count(*) FROM cargo_rate.rate_snapshot_line x WHERE x.tenant_id = t AND x.snapshot_id = b.snapshot_id AND x.gap IS NOT NULL)
     AND (SELECT count(*) = coalesce(max(g.gap_no), 0) FROM cargo_rate.pricing_basis_gap g WHERE g.tenant_id = t AND g.basis_id = id)
     AND (SELECT count(*) = coalesce(max(l.line_no), 0) FROM cargo_rate.pricing_basis_line l WHERE l.tenant_id = t AND l.basis_id = id)
   INTO ok
@@ -99,6 +108,19 @@ BEGIN
     RAISE EXCEPTION 'cargo_rate: pricing basis %/% is not its snapshot as issued', t, id USING ERRCODE = 'check_violation',
       CONSTRAINT = 'pricing_basis_consistent';
   END IF;
+END $fn$;
+CREATE FUNCTION cargo_rate.check_pricing_basis_at_commit() RETURNS trigger LANGUAGE plpgsql AS $fn$
+DECLARE id text;
+BEGIN
+  IF TG_TABLE_NAME = 'rate_snapshot_line' THEN
+    SELECT b.basis_id INTO id FROM cargo_rate.pricing_basis b WHERE b.tenant_id = NEW.tenant_id AND b.snapshot_id = NEW.snapshot_id;
+    IF id IS NULL THEN
+      RETURN NULL;
+    END IF;
+  ELSE
+    id := NEW.basis_id;
+  END IF;
+  PERFORM cargo_rate.pricing_basis_consistent_check(NEW.tenant_id, id);
   RETURN NULL;
 END $fn$;
 CREATE CONSTRAINT TRIGGER pricing_basis_consistent AFTER INSERT ON cargo_rate.pricing_basis
@@ -107,6 +129,25 @@ CREATE CONSTRAINT TRIGGER pricing_basis_line_consistent AFTER INSERT ON cargo_ra
   DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION cargo_rate.check_pricing_basis_at_commit();
 CREATE CONSTRAINT TRIGGER pricing_basis_gap_consistent AFTER INSERT ON cargo_rate.pricing_basis_gap
   DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION cargo_rate.check_pricing_basis_at_commit();
+CREATE CONSTRAINT TRIGGER rate_snapshot_line_of_its_basis AFTER INSERT ON cargo_rate.rate_snapshot_line
+  DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION cargo_rate.check_pricing_basis_at_commit();
+
+-- A snapshot line names the party of the card that priced it (rate/000004's check of a snapshot's parts, extended):
+-- a supplier's, a customer's, none for a tariff.
+CREATE OR REPLACE FUNCTION cargo_rate.check_snapshot_part_at_commit() RETURNS trigger LANGUAGE plpgsql AS $fn$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM cargo_rate.rate_snapshot s WHERE s.tenant_id = NEW.tenant_id AND s.snapshot_id = NEW.snapshot_id
+       AND s.xmin = pg_current_xact_id()::xid AND NEW.side = ANY (s.sides)) THEN
+    RAISE EXCEPTION 'cargo_rate: % of snapshot %/% is written with it, for a side it was asked for', TG_TABLE_NAME, NEW.tenant_id, NEW.snapshot_id
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'rate_snapshot_written_once';
+  END IF;
+  IF TG_TABLE_NAME = 'rate_snapshot_line' AND NEW.rate_card_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM cargo_rate.rate_card c
+       WHERE c.tenant_id = NEW.tenant_id AND c.rate_card_id = NEW.rate_card_id AND c.party_id IS NOT DISTINCT FROM (to_jsonb(NEW) ->> 'party_id')) THEN
+    RAISE EXCEPTION 'cargo_rate: line % of snapshot %/% names a card and party that do not go together', NEW.line_no, NEW.tenant_id, NEW.snapshot_id
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'rate_snapshot_written_once';
+  END IF;
+  RETURN NULL;
+END $fn$;
 
 DO $rls$
 DECLARE tbl text;

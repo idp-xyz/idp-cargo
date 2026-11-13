@@ -82,6 +82,7 @@ type world struct {
 	shipmentLines []rateapi.PricingLine
 	consolLines   []rateapi.PricingLine
 	rated         map[string]rateapi.PricingBasis
+	commands      map[string]string
 	asked         []any
 	rateRefusal   error
 }
@@ -94,8 +95,14 @@ func (w *world) issue(b rateapi.PricingBasis, asked any) (rateapi.Receipt, error
 		return rateapi.Receipt{}, fmt.Errorf("%w: stub: %v", rateapi.ErrRejected, w.rateRefusal)
 	}
 	if w.rated == nil {
-		w.rated = map[string]rateapi.PricingBasis{}
+		w.rated, w.commands = map[string]rateapi.PricingBasis{}, map[string]string{}
 	}
+	// as RATE does, a command id answers its first payload only
+	key, payload := fmt.Sprintf("%T", asked), fmt.Sprintf("%+v", asked)
+	if seen, ok := w.commands[key+b.BasisID]; ok && seen != payload {
+		return rateapi.Receipt{}, fmt.Errorf("%w: stub", rateapi.ErrIdempotencyConflict)
+	}
+	w.commands[key+b.BasisID] = payload
 	if _, ok := w.rated[b.BasisID]; !ok {
 		w.rated[b.BasisID] = b
 	}

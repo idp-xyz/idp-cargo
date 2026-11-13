@@ -742,12 +742,72 @@ func TestRatedBasesOnPostgres(t *testing.T) {
             engine_version,evaluated_by,recorded_at) VALUES ($1,'S-X','CONSOL_COST_ESTIMATE','LE','{BUY}','AIR','LOOSE','CNPVG','DEFRA','x','STANDARD',
             'GENERAL',now(),0,0,0,0,'CONSOLIDATION','C-X',1,'RATE-ENGINE-1','x',now());
 INSERT INTO cargo_rate.rate_snapshot_line (tenant_id,snapshot_id,line_no,side,charge_code,rate_card_id,version_no,entry_no,rate_line_no,calculator,
-            quantity,charged,band_from,rate_minor,rate_scale,percent_bp,base_amount,minimum_applied,maximum_applied,currency,amount_minor)
-            VALUES ($1,'S-X',1,'BUY','THC','S-A',1,1,2,'FLAT',0,0,0,8000,0,0,0,false,false,'CNY',8000);
+            quantity,charged,band_from,rate_minor,rate_scale,percent_bp,base_amount,minimum_applied,maximum_applied,currency,amount_minor,party_id)
+            VALUES ($1,'S-X',1,'BUY','THC','S-A',1,1,2,'FLAT',0,0,0,8000,0,0,0,false,false,'CNY',8000,'coloader-a');
 INSERT INTO cargo_rate.pricing_basis (tenant_id,basis_id,purpose,legal_entity_id,subject_kind,subject_id,subject_version,snapshot_id,issued_by,issued_at)
             VALUES ($1,'B-X','CONSOL_COST_ESTIMATE','LE','CONSOLIDATION','C-X',1,'S-X','x',now());
-INSERT INTO cargo_rate.pricing_basis_line (tenant_id,basis_id,line_no,charge_code,cost_currency,cost_minor,cost_line_no)
-            VALUES ($1,'B-X',1,'THC','CNY',1,1)`, "23514", "pricing_basis_consistent"},
+INSERT INTO cargo_rate.pricing_basis_line (tenant_id,basis_id,line_no,charge_code,cost_currency,cost_minor,cost_line_no,creditor_party_id)
+            VALUES ($1,'B-X',1,'THC','CNY',1,1,'coloader-a')`, "23514", "pricing_basis_consistent"},
+		"a snapshot line added once its checks ran": {`INSERT INTO cargo_rate.rate_snapshot (tenant_id,snapshot_id,purpose,legal_entity_id,sides,mode,container_mode,origin,
+            destination,edition,service_level,commodity,business_at,pieces,gross_grams,volume_cm3,documents,subject_kind,subject_id,subject_version,
+            engine_version,evaluated_by,recorded_at) VALUES ($1,'S-I','CONSOL_COST_ESTIMATE','LE','{BUY}','AIR','LOOSE','CNPVG','DEFRA','x','STANDARD',
+            'GENERAL',now(),0,0,0,0,'CONSOLIDATION','C-X',1,'RATE-ENGINE-1','x',now());
+INSERT INTO cargo_rate.rate_snapshot_line (tenant_id,snapshot_id,line_no,side,charge_code,rate_card_id,version_no,entry_no,rate_line_no,calculator,
+            quantity,charged,band_from,rate_minor,rate_scale,percent_bp,base_amount,minimum_applied,maximum_applied,currency,amount_minor,party_id)
+            VALUES ($1,'S-I',1,'BUY','THC','S-A',1,1,2,'FLAT',0,0,0,8000,0,0,0,false,false,'CNY',8000,'coloader-a');
+INSERT INTO cargo_rate.pricing_basis (tenant_id,basis_id,purpose,legal_entity_id,subject_kind,subject_id,subject_version,snapshot_id,issued_by,issued_at)
+            VALUES ($1,'B-S-I','CONSOL_COST_ESTIMATE','LE','CONSOLIDATION','C-X',1,'S-I','x',now());
+INSERT INTO cargo_rate.pricing_basis_line (tenant_id,basis_id,line_no,charge_code,cost_currency,cost_minor,cost_line_no,creditor_party_id)
+            VALUES ($1,'B-S-I',1,'THC','CNY',8000,1,'coloader-a');
+SET CONSTRAINTS ALL IMMEDIATE;
+INSERT INTO cargo_rate.rate_snapshot_line (tenant_id,snapshot_id,line_no,side,charge_code,rate_card_id,version_no,entry_no,rate_line_no,calculator,
+            quantity,charged,band_from,rate_minor,rate_scale,percent_bp,base_amount,minimum_applied,maximum_applied,currency,amount_minor,party_id)
+            VALUES ($1,'S-I',2,'BUY','AIR_FREIGHT','S-A',1,1,1,'FLAT',0,0,0,1,0,0,0,false,false,'CNY',1,'coloader-a')`, "23514", "pricing_basis_consistent"},
+		"a gap the snapshot lacks": {`INSERT INTO cargo_rate.rate_snapshot (tenant_id,snapshot_id,purpose,legal_entity_id,sides,mode,container_mode,origin,
+            destination,edition,service_level,commodity,business_at,pieces,gross_grams,volume_cm3,documents,subject_kind,subject_id,subject_version,
+            engine_version,evaluated_by,recorded_at) VALUES ($1,'S-G','CONSOL_COST_ESTIMATE','LE','{BUY}','AIR','LOOSE','CNPVG','DEFRA','x','STANDARD',
+            'GENERAL',now(),0,0,0,0,'CONSOLIDATION','C-X',1,'RATE-ENGINE-1','x',now());
+INSERT INTO cargo_rate.rate_snapshot_line (tenant_id,snapshot_id,line_no,side,charge_code,rate_card_id,version_no,entry_no,rate_line_no,calculator,
+            quantity,charged,band_from,rate_minor,rate_scale,percent_bp,base_amount,minimum_applied,maximum_applied,currency,amount_minor,party_id)
+            VALUES ($1,'S-G',1,'BUY','THC','S-A',1,1,2,'FLAT',0,0,0,8000,0,0,0,false,false,'CNY',8000,'coloader-a');
+INSERT INTO cargo_rate.pricing_basis (tenant_id,basis_id,purpose,legal_entity_id,subject_kind,subject_id,subject_version,snapshot_id,issued_by,issued_at)
+            VALUES ($1,'B-S-G','CONSOL_COST_ESTIMATE','LE','CONSOLIDATION','C-X',1,'S-G','x',now());
+INSERT INTO cargo_rate.pricing_basis_line (tenant_id,basis_id,line_no,charge_code,cost_currency,cost_minor,cost_line_no,creditor_party_id)
+            VALUES ($1,'B-S-G',1,'THC','CNY',8000,1,'coloader-a');
+INSERT INTO cargo_rate.pricing_basis_gap (tenant_id,basis_id,gap_no,side,gap) VALUES ($1,'B-S-G',1,'BUY','NO_RATE')`, "23514", "pricing_basis_consistent"},
+		"a consolidation estimate of both sides": {`INSERT INTO cargo_rate.rate_snapshot (tenant_id,snapshot_id,purpose,legal_entity_id,sides,mode,container_mode,origin,
+            destination,edition,service_level,commodity,business_at,pieces,gross_grams,volume_cm3,documents,subject_kind,subject_id,subject_version,
+            engine_version,evaluated_by,recorded_at) VALUES ($1,'S-B','CONSOL_COST_ESTIMATE','LE','{SELL,BUY}','AIR','LOOSE','CNPVG','DEFRA','x','STANDARD',
+            'GENERAL',now(),0,0,0,0,'CONSOLIDATION','C-X',1,'RATE-ENGINE-1','x',now());
+INSERT INTO cargo_rate.rate_snapshot_line (tenant_id,snapshot_id,line_no,side,charge_code,rate_card_id,version_no,entry_no,rate_line_no,calculator,
+            quantity,charged,band_from,rate_minor,rate_scale,percent_bp,base_amount,minimum_applied,maximum_applied,currency,amount_minor,party_id)
+            VALUES ($1,'S-B',1,'BUY','THC','S-A',1,1,2,'FLAT',0,0,0,8000,0,0,0,false,false,'CNY',8000,'coloader-a');
+INSERT INTO cargo_rate.pricing_basis (tenant_id,basis_id,purpose,legal_entity_id,subject_kind,subject_id,subject_version,snapshot_id,issued_by,issued_at)
+            VALUES ($1,'B-S-B','CONSOL_COST_ESTIMATE','LE','CONSOLIDATION','C-X',1,'S-B','x',now());
+INSERT INTO cargo_rate.pricing_basis_line (tenant_id,basis_id,line_no,charge_code,cost_currency,cost_minor,cost_line_no,creditor_party_id)
+            VALUES ($1,'B-S-B',1,'THC','CNY',8000,1,'coloader-a')`, "23514", "pricing_basis_consistent"},
+		"a snapshot line of another card's party": {`INSERT INTO cargo_rate.rate_snapshot (tenant_id,snapshot_id,purpose,legal_entity_id,sides,mode,container_mode,origin,
+            destination,edition,service_level,commodity,business_at,pieces,gross_grams,volume_cm3,documents,subject_kind,subject_id,subject_version,
+            engine_version,evaluated_by,recorded_at) VALUES ($1,'S-P','CONSOL_COST_ESTIMATE','LE','{BUY}','AIR','LOOSE','CNPVG','DEFRA','x','STANDARD',
+            'GENERAL',now(),0,0,0,0,'CONSOLIDATION','C-X',1,'RATE-ENGINE-1','x',now());
+INSERT INTO cargo_rate.rate_snapshot_line (tenant_id,snapshot_id,line_no,side,charge_code,rate_card_id,version_no,entry_no,rate_line_no,calculator,
+            quantity,charged,band_from,rate_minor,rate_scale,percent_bp,base_amount,minimum_applied,maximum_applied,currency,amount_minor,party_id)
+            VALUES ($1,'S-P',1,'BUY','THC','S-A',1,1,2,'FLAT',0,0,0,8000,0,0,0,false,false,'CNY',8000,'coloader-b');
+INSERT INTO cargo_rate.pricing_basis (tenant_id,basis_id,purpose,legal_entity_id,subject_kind,subject_id,subject_version,snapshot_id,issued_by,issued_at)
+            VALUES ($1,'B-S-P','CONSOL_COST_ESTIMATE','LE','CONSOLIDATION','C-X',1,'S-P','x',now());
+INSERT INTO cargo_rate.pricing_basis_line (tenant_id,basis_id,line_no,charge_code,cost_currency,cost_minor,cost_line_no,creditor_party_id)
+            VALUES ($1,'B-S-P',1,'THC','CNY',8000,1,'coloader-a')`, "23514", ""},
+		"a cost without its creditor": {`INSERT INTO cargo_rate.rate_snapshot (tenant_id,snapshot_id,purpose,legal_entity_id,sides,mode,container_mode,origin,
+            destination,edition,service_level,commodity,business_at,pieces,gross_grams,volume_cm3,documents,subject_kind,subject_id,subject_version,
+            engine_version,evaluated_by,recorded_at) VALUES ($1,'S-C','CONSOL_COST_ESTIMATE','LE','{BUY}','AIR','LOOSE','CNPVG','DEFRA','x','STANDARD',
+            'GENERAL',now(),0,0,0,0,'CONSOLIDATION','C-X',1,'RATE-ENGINE-1','x',now());
+INSERT INTO cargo_rate.rate_snapshot_line (tenant_id,snapshot_id,line_no,side,charge_code,rate_card_id,version_no,entry_no,rate_line_no,calculator,
+            quantity,charged,band_from,rate_minor,rate_scale,percent_bp,base_amount,minimum_applied,maximum_applied,currency,amount_minor,party_id)
+            VALUES ($1,'S-C',1,'BUY','THC','S-A',1,1,2,'FLAT',0,0,0,8000,0,0,0,false,false,'CNY',8000,'coloader-a');
+INSERT INTO cargo_rate.pricing_basis (tenant_id,basis_id,purpose,legal_entity_id,subject_kind,subject_id,subject_version,snapshot_id,issued_by,issued_at)
+            VALUES ($1,'B-S-C','CONSOL_COST_ESTIMATE','LE','CONSOLIDATION','C-X',1,'S-C','x',now());
+INSERT INTO cargo_rate.pricing_basis_line (tenant_id,basis_id,line_no,charge_code,cost_currency,cost_minor,cost_line_no,creditor_party_id)
+            VALUES ($1,'B-S-C',1,'THC','CNY',8000,1,NULL)`, "23514", ""},
 		"a basis of a snapshot recorded before": {`INSERT INTO cargo_rate.pricing_basis (tenant_id,basis_id,purpose,legal_entity_id,subject_kind,subject_id,
             subject_version,snapshot_id,issued_by,issued_at) VALUES ($1,'B-Y','CONSOL_COST_ESTIMATE','LE','CONSOLIDATION','CONSOL-1',7,'FIN-2','x',now())`,
 			"23505|23514", ""},
