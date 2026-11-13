@@ -71,7 +71,16 @@ func New(db *bentopg.DB, org orgapi.Queries, auth api.Authorizer, margins api.Ma
 func (m *Module) CreateQuote(ctx context.Context, cmd api.CreateQuote) (api.Receipt, error) {
 	lines := make([]domain.Line, len(cmd.Lines))
 	for i, l := range cmd.Lines {
-		lines[i] = domain.Line{ChargeCode: domain.ChargeCode(l.ChargeCode), Sell: l.Sell, Cost: l.Cost}
+		lines[i] = domain.Line{ChargeCode: domain.ChargeCode(l.ChargeCode), Sell: l.Sell, Cost: l.Cost, Source: domain.LineSource(l.Source)}
+		if l.SnapshotID != "" || l.OverrideReason != "" {
+			lines[i].Rated = &domain.RatedRef{SnapshotID: l.SnapshotID, OverrideReason: l.OverrideReason}
+		}
+	}
+	var quoteScope *domain.QuoteScope
+	if sc := cmd.Scope; sc != nil {
+		quoteScope = &domain.QuoteScope{Mode: domain.Mode(sc.Mode), ContainerMode: domain.ContainerMode(sc.ContainerMode), Origin: sc.Origin,
+			Destination: sc.Destination, Via: sc.Via, Carrier: sc.Carrier, Cargo: domain.Cargo{Pieces: sc.Cargo.Pieces, GrossGrams: sc.Cargo.GrossGrams,
+				VolumeCM3: sc.Cargo.VolumeCM3, Documents: sc.Cargo.Documents}}
 	}
 	var rates []domain.ExchangeRate
 	for _, r := range cmd.ExchangeRates {
@@ -81,13 +90,14 @@ func (m *Module) CreateQuote(ctx context.Context, cmd api.CreateQuote) (api.Rece
 	t := cmd.Terms
 	receipt, err := application.CreateQuote{
 		Deps: m.deps(cmd.TenantID, cmd.CommandID), Customers: orgacl.Customers{ORG: m.org}, Margins: margins{m.margins},
+		Codes: postgres.ChargeCodeStore{DB: m.db}, Snapshots: postgres.SnapshotStore{DB: m.db},
 	}.Handle(ctx, application.CreateQuoteCommand{
 		CommandID: cmd.CommandID, Scope: scope(cmd.TenantID, cmd.ActorID), QuoteID: domain.QuoteID(cmd.QuoteID),
 		LegalEntityID: domain.LegalEntityID(cmd.LegalEntityID), CustomerPartyID: cmd.CustomerPartyID,
 		Recipient: domain.RecipientRole(cmd.RecipientRole), Currency: cmd.Currency, Lines: lines, ExchangeRates: rates,
 		Terms:      domain.CommercialTerms{IncotermsRule: t.IncotermsRule, IncotermsVersion: t.IncotermsVersion, NamedPlace: t.NamedPlace, ServiceLevel: t.ServiceLevel},
 		Validity:   kernel.ValidityInterval{From: stored(cmd.Validity.From), Until: stored(cmd.Validity.Until)},
-		OccurredAt: stored(cmd.OccurredAt),
+		QuoteScope: quoteScope, OccurredAt: stored(cmd.OccurredAt),
 	})
 	return toReceipt(receipt, err)
 }
@@ -157,6 +167,11 @@ func (m *Module) GetQuoteSnapshotV2(ctx context.Context, q api.GetQuoteSnapshot)
 	if err != nil {
 		return api.QuoteSnapshotV2{}, err
 	}
+	return snapshotV2(quote, revision)
+}
+
+// snapshotV2 is QuoteSnapshotV2 of an accepted quote read at revision.
+func snapshotV2(quote *domain.Quote, revision int64) (api.QuoteSnapshotV2, error) {
 	total, _, err := quote.Totals()
 	if err != nil {
 		return api.QuoteSnapshotV2{}, classify(err)
@@ -290,6 +305,14 @@ type margins struct{ policy api.MarginPolicy }
 
 func (m margins) MarginFloorBP(ctx context.Context, tenant domain.TenantID, entity domain.LegalEntityID) (int, error) {
 	return m.policy.MarginFloorBP(ctx, string(tenant), string(entity))
+}
+
+// RateCardDiscountBP asks the policy's DiscountPolicy, when it has one; otherwise no sell below the rated one passes.
+func (m margins) RateCardDiscountBP(ctx context.Context, tenant domain.TenantID, entity domain.LegalEntityID) (int, error) {
+	if p, ok := m.policy.(api.DiscountPolicy); ok {
+		return p.RateCardDiscountBP(ctx, string(tenant), string(entity))
+	}
+	return 0, nil
 }
 
 // classify wraps known RATE, kernel and Bento causes in their api error kind and passes anything else

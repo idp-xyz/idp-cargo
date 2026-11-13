@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	bentorepo "go.idp.xyz/idp-bento-go/repository"
 	rate "go.idp.xyz/idp-cargo/internal/contexts/rate/internal/domain"
 	"go.idp.xyz/idp-cargo/internal/kernel"
 )
@@ -86,6 +87,36 @@ func (a *authFake) RequireQuoteAction(_ context.Context, _ Scope, action QuoteAc
 	return a.fail
 }
 
+// starterCodes is the catalogue of a tenant that changed nothing: the starter list; noSnapshots knows none.
+type starterCodes struct{}
+
+func (starterCodes) Load(context.Context, rate.TenantID, rate.ChargeCode) (*rate.ChargeCodeAggregate, error) {
+	return nil, nil
+}
+func (starterCodes) Insert(context.Context, *rate.ChargeCodeAggregate) error { return nil }
+func (starterCodes) List(context.Context, rate.TenantID) ([]rate.ChargeCodeEntry, error) {
+	var out []rate.ChargeCodeEntry
+	for code, v := range rate.StarterChargeCodes {
+		out = append(out, rate.ChargeCodeEntry{Code: code, Current: v})
+	}
+	return out, nil
+}
+
+type noSnapshots struct{}
+
+func (noSnapshots) Insert(context.Context, *rate.RateSnapshot) error { return nil }
+func (noSnapshots) Read(context.Context, rate.TenantID, string) (*rate.RateSnapshot, error) {
+	return nil, bentorepo.ErrNotFound
+}
+
+// failingSnapshots cannot be read.
+type failingSnapshots struct{ err error }
+
+func (failingSnapshots) Insert(context.Context, *rate.RateSnapshot) error { return nil }
+func (s failingSnapshots) Read(context.Context, rate.TenantID, string) (*rate.RateSnapshot, error) {
+	return nil, s.err
+}
+
 // clockFake is the time RATE records a command at.
 type clockFake struct{ t time.Time }
 
@@ -139,14 +170,14 @@ func usd(minor int64) kernel.Money { return kernel.Money{Currency: "USD", Minor:
 func createCommand(id string) CreateQuoteCommand {
 	return CreateQuoteCommand{
 		CommandID: id, Scope: Scope{TenantID: "T", ActorID: "sales-1"}, QuoteID: "Q-1", LegalEntityID: "LE", CustomerPartyID: "P",
-		Currency: "USD", Lines: []rate.Line{{ChargeCode: "FREIGHT", Sell: usd(100_000), Cost: usd(90_000)}},
+		Currency: "USD", Lines: []rate.Line{{ChargeCode: "AIR_FREIGHT", Sell: usd(100_000), Cost: usd(90_000)}},
 		Validity: kernel.ValidityInterval{From: now, Until: now.Add(14 * 24 * time.Hour)}, OccurredAt: now,
 	}
 }
 
 func (f *fixture) create(t *testing.T, floorBP int) Receipt {
 	t.Helper()
-	r, err := CreateQuote{Deps: f.deps, Customers: f.customers, Margins: floorFake(floorBP)}.Handle(context.Background(), createCommand("create-1"))
+	r, err := CreateQuote{Deps: f.deps, Customers: f.customers, Codes: starterCodes{}, Snapshots: noSnapshots{}, Margins: floorFake(floorBP)}.Handle(context.Background(), createCommand("create-1"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +198,7 @@ func TestCreateQuoteAsksORGOutsideTransactionsAndReplays(t *testing.T) {
 	}
 	changed := createCommand("create-1")
 	changed.Lines[0].Sell = usd(120_000)
-	if _, err := (CreateQuote{Deps: f.deps, Customers: f.customers, Margins: floorFake(2000)}).Handle(context.Background(), changed); !errors.Is(err, ErrIdempotencyConflict) {
+	if _, err := (CreateQuote{Deps: f.deps, Customers: f.customers, Codes: starterCodes{}, Snapshots: noSnapshots{}, Margins: floorFake(2000)}).Handle(context.Background(), changed); !errors.Is(err, ErrIdempotencyConflict) {
 		t.Fatalf("changed payload under the same command id: err = %v", err)
 	}
 }
@@ -175,7 +206,7 @@ func TestCreateQuoteAsksORGOutsideTransactionsAndReplays(t *testing.T) {
 func TestCreateQuoteStopsBeforeWritingWhenRefused(t *testing.T) {
 	f := newFixture()
 	f.auth.fail = errors.New("policy deny")
-	h := CreateQuote{Deps: f.deps, Customers: f.customers, Margins: floorFake(0)}
+	h := CreateQuote{Deps: f.deps, Customers: f.customers, Codes: starterCodes{}, Snapshots: noSnapshots{}, Margins: floorFake(0)}
 	if _, err := h.Handle(context.Background(), createCommand("create-1")); !errors.Is(err, ErrUnauthorized) || f.customers.calls != 0 {
 		t.Fatalf("unauthorized: err = %v, ORG calls %d", err, f.customers.calls)
 	}
@@ -224,7 +255,7 @@ func TestApproveThenAcceptRechecksTheCustomer(t *testing.T) {
 // after it; a command committed earlier still replays later.
 func TestBusinessTimeMustLieWithinTheRecordWindow(t *testing.T) {
 	f := newFixture()
-	h := CreateQuote{Deps: f.deps, Customers: f.customers, Margins: floorFake(0)}
+	h := CreateQuote{Deps: f.deps, Customers: f.customers, Codes: starterCodes{}, Snapshots: noSnapshots{}, Margins: floorFake(0)}
 	for name, occurred := range map[string]time.Time{
 		"eight days late":       f.clock.t.Add(-8 * 24 * time.Hour),
 		"an hour in the future": f.clock.t.Add(time.Hour),
@@ -249,12 +280,12 @@ func TestTheRecipientRoleIsCheckedWithORG(t *testing.T) {
 	f.create(t, 0)
 	agent := createCommand("create-agent")
 	agent.QuoteID, agent.Recipient = "Q-2", rate.RecipientOverseasAgent
-	if _, err := (CreateQuote{Deps: f.deps, Customers: f.customers, Margins: floorFake(0)}).Handle(context.Background(), agent); err != nil {
+	if _, err := (CreateQuote{Deps: f.deps, Customers: f.customers, Codes: starterCodes{}, Snapshots: noSnapshots{}, Margins: floorFake(0)}).Handle(context.Background(), agent); err != nil {
 		t.Fatal(err)
 	}
 	unknown := createCommand("create-unknown")
 	unknown.QuoteID, unknown.Recipient = "Q-3", "FORWARDER"
-	if _, err := (CreateQuote{Deps: f.deps, Customers: f.customers, Margins: floorFake(0)}).Handle(context.Background(), unknown); !errors.Is(err, rate.ErrInvalidQuote) {
+	if _, err := (CreateQuote{Deps: f.deps, Customers: f.customers, Codes: starterCodes{}, Snapshots: noSnapshots{}, Margins: floorFake(0)}).Handle(context.Background(), unknown); !errors.Is(err, rate.ErrInvalidQuote) {
 		t.Fatalf("an unknown role: err = %v", err)
 	}
 	accept := AcceptQuoteCommand{CommandID: "accept-agent", Scope: Scope{TenantID: "T", ActorID: "sales-1"}, QuoteID: "Q-2",
@@ -308,5 +339,55 @@ func TestExpireQuote(t *testing.T) {
 	}
 	if got := fmt.Sprint(f.outbox.events); got != "[QuotePriced.v1 QuoteExpired.v1]" {
 		t.Fatalf("events %s", got)
+	}
+}
+
+// A CreateQuote command without the V0.5 line fields hashes as it did before them, so that a command recorded before
+// V0.5 and retried after it replays its receipt.
+func TestCreateQuoteHashKeptFromBeforeV05(t *testing.T) {
+	type lineV04 struct {
+		ChargeCode rate.ChargeCode
+		Sell       kernel.Money
+		Cost       kernel.Money
+	}
+	type commandV04 struct {
+		CommandID       string
+		Scope           Scope
+		QuoteID         rate.QuoteID
+		LegalEntityID   rate.LegalEntityID
+		CustomerPartyID string
+		Recipient       rate.RecipientRole `json:",omitzero"`
+		Currency        kernel.CurrencyCode
+		Lines           []lineV04
+		ExchangeRates   []rate.ExchangeRate  `json:",omitzero"`
+		Terms           rate.CommercialTerms `json:",omitzero"`
+		Validity        kernel.ValidityInterval
+		OccurredAt      time.Time
+	}
+	c := createCommand("create-1")
+	l := c.Lines[0]
+	old, err := requestHash(commandV04{CommandID: c.CommandID, Scope: c.Scope, QuoteID: c.QuoteID, LegalEntityID: c.LegalEntityID,
+		CustomerPartyID: c.CustomerPartyID, Currency: c.Currency, Lines: []lineV04{{ChargeCode: l.ChargeCode, Sell: l.Sell, Cost: l.Cost}},
+		Validity: c.Validity, OccurredAt: c.OccurredAt})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hash, err := requestHash(c); err != nil || hash != old {
+		t.Fatalf("hash %s, before V0.5 %s, %v", hash, old, err)
+	}
+}
+
+// A snapshot RATE cannot read fails the command with the cause; only a snapshot not recorded is a rejection.
+func TestCreateQuoteSnapshotReadFailures(t *testing.T) {
+	f := newFixture()
+	c := createCommand("create-rated")
+	c.Lines[0].Source, c.Lines[0].Rated = rate.SourceRated, &rate.RatedRef{SnapshotID: "RS-1"}
+	h := CreateQuote{Deps: f.deps, Customers: f.customers, Codes: starterCodes{}, Snapshots: failingSnapshots{context.DeadlineExceeded}, Margins: floorFake(0)}
+	if _, err := h.Handle(context.Background(), c); !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, rate.ErrInvalidQuote) {
+		t.Fatalf("a read failure: %v", err)
+	}
+	h.Snapshots = noSnapshots{}
+	if _, err := h.Handle(context.Background(), c); !errors.Is(err, rate.ErrInvalidQuote) {
+		t.Fatalf("a snapshot not recorded: %v", err)
 	}
 }

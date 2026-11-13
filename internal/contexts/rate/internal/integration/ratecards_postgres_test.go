@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -21,6 +22,7 @@ import (
 	"go.idp.xyz/idp-cargo/internal/contexts/rate/api"
 	rate "go.idp.xyz/idp-cargo/internal/contexts/rate/internal/domain"
 	scope "go.idp.xyz/idp-cargo/internal/foundation/bento"
+	"go.idp.xyz/idp-cargo/internal/kernel"
 	refapi "go.idp.xyz/idp-cargo/internal/reference/api"
 )
 
@@ -86,7 +88,7 @@ func newCards(t *testing.T) cards {
 	t.Helper()
 	f := newFixture(t)
 	org := &partyStub{roles: map[string]string{"coloader-a": "CO_LOADER", "coloader-b": "CO_LOADER", "acme": "CUSTOMER"}}
-	m, err := ratemodule.New(f.db, org, cardPolicy{}, quotePolicy{}, ratemodule.WithLocations(locationStub{}))
+	m, err := ratemodule.New(f.db, org, cardPolicy{}, cardMargins{}, ratemodule.WithLocations(locationStub{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -817,5 +819,286 @@ INSERT INTO cargo_rate.pricing_basis_line (tenant_id,basis_id,line_no,charge_cod
 		if !errors.As(err, &pgErr) || !strings.Contains(tc.state, pgErr.Code) || (tc.constraint != "" && pgErr.ConstraintName != tc.constraint) {
 			t.Errorf("%s: %v", name, err)
 		}
+	}
+}
+
+// cardMargins is quotePolicy's margin floor of 20%, and lets an overridden quote line sell up to 5% below its rated sell
+// without approval.
+type cardMargins struct{ quotePolicy }
+
+func (cardMargins) RateCardDiscountBP(context.Context, string, string) (int, error) { return 500, nil }
+
+// value runs a query in a transaction of the fixture's tenant ($1) and returns its one value as text.
+func (c cards) value(sql string) string {
+	c.t.Helper()
+	var out string
+	err := (scope.TenantTransactor{DB: c.db, Tenant: c.tenant}).WithinTransaction(c.ctx, func(txCtx context.Context) error {
+		e, err := c.db.RequireExecutor(txCtx)
+		if err != nil {
+			return err
+		}
+		return e.QueryRow(txCtx, sql, c.tenant).Scan(&out)
+	})
+	if err != nil {
+		c.t.Fatalf("%s: %v", sql, err)
+	}
+	return out
+}
+
+// asMigrator runs a statement as the migrator, which may write what the application role may not; $1 is the tenant.
+func (c cards) asMigrator(sql string) error {
+	c.t.Helper()
+	dsn := os.Getenv("IDP_CARGO_MIGRATOR_DSN")
+	if dsn == "" {
+		if os.Getenv("CI") != "" {
+			c.t.Fatal("IDP_CARGO_MIGRATOR_DSN required in CI; skipping forbidden")
+		}
+		c.t.Skip("set IDP_CARGO_MIGRATOR_DSN to write as the migrator")
+	}
+	conn, err := pgx.Connect(c.ctx, dsn)
+	if err != nil {
+		c.t.Fatal(err)
+	}
+	defer conn.Close(c.ctx)
+	_, err = conn.Exec(c.ctx, sql, c.tenant)
+	return err
+}
+
+// refused reports unless err is a PostgreSQL error of the code and constraint.
+func refused(t *testing.T, name string, err error, code, constraint string) {
+	t.Helper()
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != code || (constraint != "" && pgErr.ConstraintName != constraint) {
+		t.Errorf("%s: %v", name, err)
+	}
+}
+
+// Rated quote lines on PostgreSQL (RATE V0.5 part 3a): a quote rated from a snapshot of the tariff, a line overridden
+// below the rated sell beyond the threshold awaiting approval, a manual line beside them, QuoteSnapshotV3, and what RATE
+// and the database refuse.
+func TestRatedQuoteLinesOnPostgres(t *testing.T) {
+	c := newCards(t)
+	publishedTariff(c)
+	evaluate := api.EvaluateRates{CommandID: "evaluate-q", TenantID: c.tenant, ActorID: "sales-1", SnapshotID: "RS-Q", Purpose: api.PurposeQuoteLine,
+		LegalEntityID: "LE", Sides: []string{api.SideSell}, CustomerPartyID: "acme", Mode: api.ModeAir, ContainerMode: api.ContainerLoose,
+		Origin: "CNPVG", Destination: "DEFRA", ServiceLevel: "STANDARD", Commodity: api.CommodityGeneral,
+		Cargo: api.Cargo{Pieces: 3, GrossGrams: 100_000, VolumeCM3: 900_000}, OccurredAt: c.h(4)}
+	c.must(c.module.EvaluateRates(c.ctx, evaluate))
+	tariffOnly := evaluate
+	tariffOnly.CommandID, tariffOnly.SnapshotID, tariffOnly.CustomerPartyID = "evaluate-t", "RS-T", ""
+	c.must(c.module.EvaluateRates(c.ctx, tariffOnly))
+	quote := func(id string, lines ...api.QuoteLine) api.CreateQuote {
+		return api.CreateQuote{CommandID: "create-" + id, TenantID: c.tenant, ActorID: "sales-1", QuoteID: id, LegalEntityID: "LE", CustomerPartyID: "acme",
+			Currency: "CNY", Lines: lines, Validity: kernel.ValidityInterval{From: c.h(5), Until: c.h(5 + 14*24)}, OccurredAt: c.h(5)}
+	}
+	rated := func(code string) api.QuoteLine {
+		return api.QuoteLine{ChargeCode: code, Source: api.LineRated, SnapshotID: "RS-Q", Cost: cny(0)}
+	}
+	freight := rated("AIR_FREIGHT")
+	freight.Cost = cny(220_000)
+	doc := api.QuoteLine{ChargeCode: "DOC_FEE", Source: api.LineRatedOverridden, SnapshotID: "RS-Q", Sell: cny(14_000), Cost: cny(0),
+		OverrideReason: "the customer's document fee agreed last year"}
+	pickup := api.QuoteLine{ChargeCode: "PICKUP", Sell: cny(20_000), Cost: cny(15_000)}
+	r := c.must(c.module.CreateQuote(c.ctx, quote("Q-R", freight, doc, rated("FUEL_SURCHARGE"), pickup)))
+	if r.NewRevision != 1 {
+		t.Fatalf("created: %+v", r)
+	}
+	c.must(c.module.ApproveQuotePrice(c.ctx, api.ApproveQuotePrice{CommandID: "approve-Q-R", TenantID: c.tenant, ActorID: "manager-1", QuoteID: "Q-R",
+		ExpectedRevision: 1, ReasonRef: "document fee as agreed", OccurredAt: c.h(6)}))
+	c.must(c.module.AcceptQuote(c.ctx, api.AcceptQuote{CommandID: "accept-Q-R", TenantID: c.tenant, ActorID: "sales-1", QuoteID: "Q-R", ExpectedRevision: 2,
+		EvidenceKind: api.EvidenceEmail, EvidenceRef: "mail of acme", OccurredAt: c.h(7)}))
+	v3, err := c.module.GetQuoteSnapshotV3(c.ctx, api.GetQuoteSnapshot{TenantID: c.tenant, QuoteID: "Q-R"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 150 kg in the 100 kg band at 20.00 = 3,000.00; the fuel 10% = 300.00; the document fee 150.00 overridden at 140.00
+	l := v3.Lines
+	switch {
+	case v3.Kind != "ONE_OFF" || v3.Scope == nil || v3.Scope.Origin != "CNPVG" || v3.Scope.Cargo.GrossGrams != 100_000 || v3.Terms.ServiceLevel != "STANDARD":
+		t.Fatalf("snapshot v3: %+v", v3)
+	case !slices.Contains(v3.PriceApprovalReasons, "RATE_CARD_DISCOUNT") || v3.Total != cny(364_000):
+		t.Fatalf("reasons and total: %+v %v", v3.PriceApprovalReasons, v3.Total)
+	case l[0].Source != api.LineRated || l[0].SnapshotID != "RS-Q" || l[0].Amount != cny(300_000) || l[0].Basis != "PER_UNIT" || l[0].Unit != api.UnitKgChargeable ||
+		l[0].Rate != 2000 || l[0].Quantity != 150_000:
+		t.Errorf("freight: %+v", l[0])
+	case l[1].Source != api.LineRatedOverridden || l[1].SnapshotID != "RS-Q" || l[1].Amount != cny(14_000) || l[1].Basis != "LUMP_SUM":
+		t.Errorf("document fee: %+v", l[1])
+	case l[2].Amount != cny(30_000) || l[3].Source != api.LineManual || l[3].CodeVersion == nil || *l[3].CodeVersion != 0 || l[3].CodeUnlisted:
+		t.Errorf("fuel and pickup: %+v %+v", l[2], l[3])
+	}
+	if got := c.value(`SELECT string_agg(coalesce(rated_sell_minor::text,'-')||' '||coalesce(override_reason,'-'),'|' ORDER BY line_no)
+      FROM cargo_rate.quote_line WHERE tenant_id=$1 AND quote_id='Q-R'`); got != "300000 -|15000 the customer's document fee agreed last year|30000 -|- -" {
+		t.Errorf("rated sells and reasons kept in RATE: %s", got)
+	}
+
+	// The threshold of 5%: 4% and exactly 5% below the rated sell pass, 6% needs a price approval for RATE_CARD_DISCOUNT.
+	for _, tc := range []struct {
+		id, status string
+		sell       int64
+	}{{"Q-4", "PRICED", 14_400}, {"Q-5", "PRICED", 14_250}, {"Q-6", "AWAITING_APPROVAL", 14_100}} {
+		line := doc
+		line.Sell = cny(tc.sell)
+		c.must(c.module.CreateQuote(c.ctx, quote(tc.id, line)))
+		if got := c.value(`SELECT status||' '||discount_threshold_bp FROM cargo_rate.quote WHERE tenant_id=$1 AND quote_id='` + tc.id + `'`); got != tc.status+" 500" {
+			t.Errorf("%s at %d: %s", tc.id, tc.sell, got)
+		}
+	}
+
+	// A line overridden, and a line a minimum bounded, are lump sums: their rate on their quantity is not their sell.
+	small := evaluate
+	small.CommandID, small.SnapshotID, small.Cargo = "evaluate-small", "RS-SMALL", api.Cargo{Pieces: 1, GrossGrams: 5_000}
+	c.must(c.module.EvaluateRates(c.ctx, small))
+	spot := api.QuoteLine{ChargeCode: "AIR_FREIGHT", Source: api.LineRatedOverridden, SnapshotID: "RS-Q", Sell: cny(320_000), Cost: cny(0),
+		OverrideReason: "spot rate"}
+	c.must(c.module.CreateQuote(c.ctx, quote("Q-OV", spot)))
+	minimum := api.QuoteLine{ChargeCode: "AIR_FREIGHT", Source: api.LineRated, SnapshotID: "RS-SMALL", Cost: cny(0)}
+	c.must(c.module.CreateQuote(c.ctx, quote("Q-MIN", minimum)))
+	if got := c.value(`SELECT string_agg(quote_id||' '||sell_minor||' '||basis||' '||coalesce(basis_quantity::text,'-'),'|' ORDER BY quote_id)
+      FROM cargo_rate.quote_line WHERE tenant_id=$1 AND quote_id IN ('Q-OV','Q-MIN')`); got != "Q-MIN 30000 LUMP_SUM -|Q-OV 320000 LUMP_SUM -" {
+		t.Errorf("lump sums: %s", got)
+	}
+
+	// The BUY side: a rated line takes the cost the snapshot priced and names its BUY line.
+	c.must(c.module.CreateRateCard(c.ctx, c.create("S-A", api.SideBuy, api.ScopeSupplier, "coloader-a", "buyer-1")))
+	c.must(c.module.DraftRateCardVersion(c.ctx, c.draft("S-A", c.h(0), time.Time{}, 0, "buyer-1")))
+	buy := api.RateLine{ChargeCode: "AIR_FREIGHT", Currency: "CNY", Calculator: api.CalcPerUnit, Unit: api.UnitKgChargeable, Rate: 2200,
+		Breaks: []api.RateBreak{{From: 100_000, Rate: 1200}}}
+	c.must(c.module.SetRateCardEntries(c.ctx, c.set("S-A", 1, "buyer-1", air(buy))))
+	c.must(c.module.PublishRateCardVersion(c.ctx, c.publish("S-A", 1, "buyer-1")))
+	both := evaluate
+	both.CommandID, both.SnapshotID, both.Sides = "evaluate-both", "RS-B", []string{api.SideSell, api.SideBuy}
+	c.must(c.module.EvaluateRates(c.ctx, both))
+	c.must(c.module.CreateQuote(c.ctx, quote("Q-B", api.QuoteLine{ChargeCode: "AIR_FREIGHT", Source: api.LineRated, SnapshotID: "RS-B", Cost: cny(0)})))
+	buyLine := c.value(`SELECT line_no::text FROM cargo_rate.rate_snapshot_line WHERE tenant_id=$1 AND snapshot_id='RS-B' AND side='BUY' AND charge_code='AIR_FREIGHT'`)
+	if got := c.value(`SELECT sell_minor||' '||cost_minor||' '||cost_snapshot_line_no FROM cargo_rate.quote_line WHERE tenant_id=$1 AND quote_id='Q-B'`); got != "300000 180000 "+buyLine {
+		t.Errorf("rated cost: %s (BUY line %s)", got, buyLine)
+	}
+
+	// A snapshot recorded for a shipment does not price a quote; a snapshot line prices one line of a quote.
+	ship := evaluate
+	ship.CommandID, ship.SnapshotID, ship.SubjectKind, ship.SubjectID = "evaluate-ship", "RS-SHIP", "SHIPMENT", "SH-9"
+	c.must(c.module.EvaluateRates(c.ctx, ship))
+	_, err = c.module.CreateQuote(c.ctx, quote("Q-SHIP", api.QuoteLine{ChargeCode: "AIR_FREIGHT", Source: api.LineRated, SnapshotID: "RS-SHIP", Cost: cny(0)}))
+	c.rejected("a snapshot of a shipment", err, api.ErrRejected, "recorded for SHIPMENT SH-9")
+	_, err = c.module.CreateQuote(c.ctx, quote("Q-DUP", rated("AIR_FREIGHT"), rated("AIR_FREIGHT")))
+	c.rejected("one snapshot line on two lines", err, api.ErrRejected, "prices one line of a quote")
+
+	for name, tc := range map[string]struct {
+		lines []api.QuoteLine
+		text  string
+	}{
+		"a code the catalogue does not list": {[]api.QuoteLine{{ChargeCode: "FREIGHT", Sell: cny(1), Cost: cny(0)}}, "RATE_CHARGE_CODE_UNLISTED"},
+		"a snapshot of another customer": {[]api.QuoteLine{{ChargeCode: "AIR_FREIGHT", Source: api.LineRated, SnapshotID: "RS-T", Cost: cny(0)}},
+			"another purpose, legal entity or customer"},
+		"a code the snapshot did not rate": {[]api.QuoteLine{{ChargeCode: "PICKUP", Source: api.LineRated, SnapshotID: "RS-Q", Cost: cny(0)}}, "rated no sell"},
+		"an override without a reason": {[]api.QuoteLine{{ChargeCode: "DOC_FEE", Source: api.LineRatedOverridden, SnapshotID: "RS-Q", Sell: cny(1),
+			Cost: cny(0)}}, "reason"},
+		"a snapshot nobody recorded": {[]api.QuoteLine{{ChargeCode: "DOC_FEE", Source: api.LineRated, SnapshotID: "RS-NONE", Cost: cny(0)}}, "RS-NONE"},
+	} {
+		q := quote("Q-X", tc.lines...)
+		q.CommandID = "create-" + name
+		_, err := c.module.CreateQuote(c.ctx, q)
+		c.rejected(name, err, api.ErrRejected, tc.text)
+	}
+	other := quote("Q-S", freight)
+	other.Scope = &api.QuoteScope{Mode: api.ModeAir, ContainerMode: api.ContainerLoose, Origin: "CNPVG", Destination: "USLAX",
+		Cargo: api.Cargo{Pieces: 3, GrossGrams: 100_000, VolumeCM3: 900_000}}
+	_, err = c.module.CreateQuote(c.ctx, other)
+	c.rejected("a scope unlike the snapshot's", err, api.ErrRejected, "another lane")
+	c.must(c.module.DeactivateChargeCode(c.ctx, api.DeactivateChargeCode{CommandID: "deactivate-handling", TenantID: c.tenant, ActorID: "md-1",
+		Code: "HANDLING", ExpectedVersion: 0, OccurredAt: c.h(5)}))
+	_, err = c.module.CreateQuote(c.ctx, quote("Q-H", api.QuoteLine{ChargeCode: "HANDLING", Sell: cny(1), Cost: cny(0)}))
+	c.rejected("an inactive code", err, api.ErrRejected, "inactive")
+
+	// What the database refuses of lines written with their quote, as the application role.
+	sell := c.value(`SELECT line_no::text FROM cargo_rate.rate_snapshot_line WHERE tenant_id=$1 AND snapshot_id='RS-Q' AND side='SELL' AND charge_code='AIR_FREIGHT'`)
+	bothSell := c.value(`SELECT line_no::text FROM cargo_rate.rate_snapshot_line WHERE tenant_id=$1 AND snapshot_id='RS-B' AND side='SELL' AND charge_code='AIR_FREIGHT'`)
+	quoteRow := func(id, cols, vals string) string {
+		return `INSERT INTO cargo_rate.quote (tenant_id,quote_id,legal_entity_id,customer_party_id,customer_party_revision,recipient_role,currency,valid_from,
+        valid_until,margin_floor_bp,author,status,service_level,scope_mode,scope_container_mode,scope_origin,scope_destination,scope_pieces,
+        scope_gross_grams,scope_volume_cm3,scope_documents` + cols + `) VALUES ($1,'` + id + `','LE','acme',3,'CUSTOMER','CNY',now(),now()+interval '1 day',
+        0,'x','PRICED','STANDARD','AIR','LOOSE','CNPVG','DEFRA',` + vals + `)`
+	}
+	cargo := "3,100000,900000,0"
+	// the freight line as RATE writes it from RS-Q: 150 kg at 20.00 per kg
+	ratedLine := func(id, cols, vals string) string {
+		return `INSERT INTO cargo_rate.quote_line (tenant_id,quote_id,line_no,charge_code,sell_currency,sell_minor,cost_currency,cost_minor,source,snapshot_id,
+            sell_snapshot_line_no,rated_sell_currency,rated_sell_minor` + cols + `) VALUES ($1,'` + id + `',1,'AIR_FREIGHT','CNY',300000,'CNY',0,'RATED','RS-Q',` +
+			sell + `,'CNY',300000` + vals + `)`
+	}
+	perKg := ",basis,basis_unit,basis_rate_minor,basis_rate_scale,basis_quantity,code_version"
+	asRated := ",'PER_UNIT','KG_CHARGEABLE',2000,0,150000,0"
+	if err := c.statements(quoteRow("Q-OK", "", cargo) + ";\n" + ratedLine("Q-OK", perKg, asRated)); err != nil {
+		t.Fatalf("the freight line as RATE writes it: %v", err)
+	}
+	for name, tc := range map[string]struct{ sql, code, constraint string }{
+		"a rated line of other cargo": {quoteRow("Q-P1", "", "3,1,900000,0") + ";\n" + ratedLine("Q-P1", perKg, asRated), "23514", "quote_line_rated"},
+		"a rated line of another service level": {strings.Replace(quoteRow("Q-P2", "", cargo), "'STANDARD'", "'EXPRESS'", 1) + ";\n" +
+			ratedLine("Q-P2", perKg, asRated), "23514", "quote_line_rated"},
+		"a rated line via a hub and a carrier the snapshot lacks": {quoteRow("Q-P3", ",scope_via,scope_carrier", cargo+",'HKHKG','zzz'") + ";\n" +
+			ratedLine("Q-P3", perKg, asRated), "23514", "quote_line_rated"},
+		"a rated line priced per piece": {quoteRow("Q-P4", "", cargo) + ";\n" + ratedLine("Q-P4", perKg, ",'PER_UNIT','PIECE',100000,0,3,0"), "23514",
+			"quote_line_rated"},
+		"a rated line as a lump sum the snapshot priced per unit": {quoteRow("Q-P5", "", cargo) + ";\n" + ratedLine("Q-P5", ",code_version", ",0"),
+			"23514", "quote_line_rated"},
+		"a rated line at a version the catalogue lacks": {quoteRow("Q-P6", "", cargo) + ";\n" + ratedLine("Q-P6", perKg, ",'PER_UNIT','KG_CHARGEABLE',2000,0,150000,77"),
+			"23514", "quote_line_catalogued"},
+		"a rated line without the BUY line its snapshot priced": {quoteRow("Q-P7", "", cargo) + ";\n" +
+			strings.Replace(strings.Replace(ratedLine("Q-P7", perKg, asRated), "'RS-Q',"+sell, "'RS-B',"+bothSell, 1), "'RATED','RS-Q'", "'RATED','RS-B'", 1),
+			"23514", "quote_line_rated"},
+		"an override below zero": {quoteRow("Q-P8", "", cargo) + ";\n" + `INSERT INTO cargo_rate.quote_line (tenant_id,quote_id,line_no,charge_code,
+            sell_currency,sell_minor,cost_currency,cost_minor,source,snapshot_id,sell_snapshot_line_no,rated_sell_currency,rated_sell_minor,override_reason,
+            code_version) VALUES ($1,'Q-P8',1,'AIR_FREIGHT','CNY',-5,'CNY',0,'RATED_OVERRIDDEN','RS-Q',` + sell + `,'CNY',300000,'spot',0)`, "23514",
+			"quote_line_source"},
+		"an override with a blank reason": {quoteRow("Q-P9", "", cargo) + ";\n" + `INSERT INTO cargo_rate.quote_line (tenant_id,quote_id,line_no,charge_code,
+            sell_currency,sell_minor,cost_currency,cost_minor,source,snapshot_id,sell_snapshot_line_no,rated_sell_currency,rated_sell_minor,override_reason,
+            code_version) VALUES ($1,'Q-P9',1,'AIR_FREIGHT','CNY',5,'CNY',0,'RATED_OVERRIDDEN','RS-Q',` + sell + `,'CNY',300000,E'\t\u3000',0)`, "23514",
+			"quote_line_override_reason_check"},
+		"an overridden line priced per unit": {quoteRow("Q-P10", "", cargo) + ";\n" + `INSERT INTO cargo_rate.quote_line (tenant_id,quote_id,line_no,
+            charge_code,sell_currency,sell_minor,cost_currency,cost_minor,source,snapshot_id,sell_snapshot_line_no,rated_sell_currency,rated_sell_minor,
+            override_reason` + perKg + `) VALUES ($1,'Q-P10',1,'AIR_FREIGHT','CNY',280000,'CNY',0,'RATED_OVERRIDDEN','RS-Q',` + sell +
+			`,'CNY',300000,'spot','PER_UNIT','KG_CHARGEABLE',2000,0,140000,0)`, "23514", "quote_line_source"},
+		"a new line of a free-text code": {quoteRow("Q-P11", "", cargo) + ";\n" + `INSERT INTO cargo_rate.quote_line (tenant_id,quote_id,line_no,charge_code,
+            sell_currency,sell_minor,cost_currency,cost_minor,code_unlisted) VALUES ($1,'Q-P11',1,'free text','CNY',100,'CNY',0,true)`, "23514",
+			"quote_line_catalogued"},
+		"a manual line naming a snapshot": {quoteRow("Q-P12", "", cargo) + ";\n" + `INSERT INTO cargo_rate.quote_line (tenant_id,quote_id,line_no,
+            charge_code,sell_currency,sell_minor,cost_currency,cost_minor,source,snapshot_id,code_version) VALUES ($1,'Q-P12',1,'PICKUP','CNY',1,'CNY',0,
+            'MANUAL','RS-Q',0)`, "23514", "quote_line_source"},
+		"an override selling the rated amount": {quoteRow("Q-P13", "", cargo) + ";\n" + `INSERT INTO cargo_rate.quote_line (tenant_id,quote_id,line_no,
+            charge_code,sell_currency,sell_minor,cost_currency,cost_minor,source,snapshot_id,sell_snapshot_line_no,rated_sell_currency,rated_sell_minor,
+            override_reason,code_version) VALUES ($1,'Q-P13',1,'DOC_FEE','CNY',15000,'CNY',0,'RATED_OVERRIDDEN','RS-Q',2,'CNY',15000,'x',0)`, "23514",
+			"quote_line_source"},
+		"one snapshot line on two lines": {quoteRow("Q-P14", "", cargo) + ";\n" + ratedLine("Q-P14", perKg, asRated) + ";\n" +
+			strings.Replace(ratedLine("Q-P14", perKg, asRated), ",1,'AIR_FREIGHT'", ",2,'AIR_FREIGHT'", 1), "23505", "quote_line_snapshot_line_once"},
+		"a carrier with surrounding blanks": {quoteRow("Q-P15", ",scope_carrier", cargo+",' zzz'"), "23514", "quote_scope"},
+		"cargo beyond RATE's bounds":        {quoteRow("Q-P16", "", "3,1000000000001,900000,0"), "23514", "quote_scope"},
+		"SET CONSTRAINTS ALL IMMEDIATE, then a line unlike its snapshot": {"SET CONSTRAINTS ALL IMMEDIATE;\n" + quoteRow("Q-P17", "", cargo) + ";\n" +
+			ratedLine("Q-P17", perKg, ",'PER_UNIT','KG_CHARGEABLE',2000,0,149000,0"), "23514", "quote_line_rated"},
+	} {
+		refused(t, name, c.statements(tc.sql), tc.code, tc.constraint)
+	}
+
+	// Lines and exchange rates are written with their quote: none is added to a quote once committed, accepted or not.
+	for name, sql := range map[string]string{
+		"a line added to the accepted quote": `INSERT INTO cargo_rate.quote_line (tenant_id,quote_id,line_no,charge_code,sell_currency,sell_minor,cost_currency,
+            cost_minor,code_version) VALUES ($1,'Q-R',5,'PICKUP','CNY',20000,'CNY',0,0)`,
+		"a line added to a priced quote": `INSERT INTO cargo_rate.quote_line (tenant_id,quote_id,line_no,charge_code,sell_currency,sell_minor,cost_currency,
+            cost_minor,code_version) VALUES ($1,'Q-OK',2,'PICKUP','CNY',1,'CNY',0,0)`,
+		"an exchange rate added to a priced quote": `INSERT INTO cargo_rate.quote_exchange_rate (tenant_id,quote_id,from_currency,rate,scale,from_digits,
+            quote_digits,source,as_of) VALUES ($1,'Q-4','USD',72000,4,2,2,'bank',now())`,
+	} {
+		refused(t, name, c.statements(sql), "23514", "quote_written_once")
+	}
+
+	// A quote keeps what it was priced on: the application role may not change it, nor may the migrator.
+	refused(t, "the threshold raised by the application", c.statements(`UPDATE cargo_rate.quote SET discount_threshold_bp=10000 WHERE tenant_id=$1 AND quote_id='Q-6'`),
+		"42501", "")
+	refused(t, "the threshold raised by the migrator", c.asMigrator(`UPDATE cargo_rate.quote SET discount_threshold_bp=10000 WHERE tenant_id=$1 AND quote_id='Q-6'`),
+		"23001", "")
+	refused(t, "the scope moved by the migrator", c.asMigrator(`UPDATE cargo_rate.quote SET scope_gross_grams=1 WHERE tenant_id=$1 AND quote_id='Q-OK'`),
+		"23001", "")
+	if err := c.asMigrator(`UPDATE cargo_rate.quote SET status='PRICED',approved_by='manager-1',approved_at=now(),approval_reason_ref='probe',
+      revision=revision+1,updated_at=now() WHERE tenant_id=$1 AND quote_id='Q-6'`); err != nil {
+		t.Errorf("an approval written as the store writes it: %v", err)
 	}
 }

@@ -14,10 +14,39 @@ import (
 // other than the quote's needs an ExchangeRate. A zero sell amount is a charge included elsewhere; a
 // negative one is a discount, which has no cost and makes the quote need a price approval. Cost is
 // RATE-internal: it decides whether a price approval is needed and never appears in a QuoteSnapshot.
+//
+// V0.5: ChargeCode is a listed, active code of the catalogue (RATE_CHARGE_CODE_UNLISTED otherwise). A line is MANUAL
+// (Source empty), RATED or RATED_OVERRIDDEN: a rated line names a RateSnapshot of purpose QUOTE_LINE recorded for the
+// quote's legal entity, customer, scope and service level within the record window before the quote, and RATE takes
+// its sell (and its cost, when a BUY line of the code priced one) and per-unit basis from it; an overridden line gives
+// the Sell entered, in the rated currency, and a Reason. Selling below the rated sell by more than the legal entity's
+// threshold needs a price approval (RATE_CARD_DISCOUNT).
 type QuoteLine struct {
-	ChargeCode string
-	Sell       kernel.Money
-	Cost       kernel.Money
+	ChargeCode     string
+	Sell           kernel.Money
+	Cost           kernel.Money
+	Source         string
+	SnapshotID     string
+	OverrideReason string
+}
+
+// Line sources of a quote line.
+const (
+	LineManual          = "MANUAL"
+	LineRated           = "RATED"
+	LineRatedOverridden = "RATED_OVERRIDDEN"
+)
+
+// QuoteScope is the lane and cargo a quote is priced for (V0.5): AIR LOOSE or SEA LCL, UN/LOCODEs as RATE resolved them
+// in the snapshot, an optional carrier, and the cargo. A quote with rated lines and no scope takes its snapshot's.
+type QuoteScope struct {
+	Mode          string
+	ContainerMode string
+	Origin        string
+	Destination   string
+	Via           string
+	Carrier       string
+	Cargo         Cargo
 }
 
 // ExchangeRate converts amounts in From into the quote currency (R8): one unit of From is
@@ -68,7 +97,15 @@ type CreateQuote struct {
 	ExchangeRates   []ExchangeRate
 	Terms           CommercialTerms
 	Validity        kernel.ValidityInterval
+	Scope           *QuoteScope
 	OccurredAt      time.Time
+}
+
+// DiscountPolicy may be implemented by a MarginPolicy: how far below the rated sell, in basis points of it, an
+// overridden quote line of a legal entity may sell before the quote needs approval (RATE_CARD_DISCOUNT). Without it,
+// any sell below the rated one needs approval.
+type DiscountPolicy interface {
+	RateCardDiscountBP(ctx context.Context, tenantID, legalEntityID string) (int, error)
 }
 
 // ApproveQuotePrice authorizes a quote that needs a price approval: its margin is below the floor or it

@@ -111,7 +111,7 @@ func newFixture(t *testing.T) *fixture {
 
 func (f *fixture) create(id string, sell, cost int64) api.CreateQuote {
 	return api.CreateQuote{CommandID: "create-" + id, TenantID: f.tenant, ActorID: "sales-1", QuoteID: id, LegalEntityID: "LE",
-		CustomerPartyID: "P-1", Currency: "USD", Lines: []api.QuoteLine{{ChargeCode: "FREIGHT", Sell: usd(sell), Cost: usd(cost)}},
+		CustomerPartyID: "P-1", Currency: "USD", Lines: []api.QuoteLine{{ChargeCode: "AIR_FREIGHT", Sell: usd(sell), Cost: usd(cost)}},
 		Validity: kernel.ValidityInterval{From: f.at, Until: f.at.Add(14 * 24 * time.Hour)}, OccurredAt: f.at}
 }
 
@@ -185,7 +185,7 @@ func TestQuoteLifecycleOnPostgres(t *testing.T) {
 		t.Fatal(err)
 	}
 	if s.QuoteRevision != 3 || s.Customer != (api.CustomerRef{PartyID: "P-1", PartyRevision: 3}) || s.Total != usd(100_000) ||
-		!reflect.DeepEqual(s.Lines, []api.SnapshotLine{{ChargeCode: "FREIGHT", Amount: usd(100_000)}}) || s.PriceApprovedBy != "manager-1" ||
+		!reflect.DeepEqual(s.Lines, []api.SnapshotLine{{ChargeCode: "AIR_FREIGHT", Amount: usd(100_000)}}) || s.PriceApprovedBy != "manager-1" ||
 		s.AcceptanceEvidenceRef != "signed-quote" || !s.AcceptedAt.Equal(f.at.Add(time.Hour)) || !s.Validity.From.Equal(f.at) {
 		t.Fatalf("snapshot %+v", s)
 	}
@@ -214,7 +214,8 @@ func TestAcceptedQuoteCannotBeChangedInPostgres(t *testing.T) {
 		})
 	}
 	for _, tc := range []struct{ sql, state, why string }{
-		{`UPDATE cargo_rate.quote SET author='someone-else' WHERE tenant_id=$1`, "23001", "the trigger guards accepted quotes"},
+		{`UPDATE cargo_rate.quote SET status='PRICED' WHERE tenant_id=$1`, "23001", "the trigger guards accepted quotes"},
+		{`UPDATE cargo_rate.quote SET author='someone-else' WHERE tenant_id=$1`, "42501", "the application role changes only what moves a quote on"},
 		{`UPDATE cargo_rate.quote_line SET sell_minor=1 WHERE tenant_id=$1`, "42501", "the application role cannot change lines"},
 		{`DELETE FROM cargo_rate.quote WHERE tenant_id=$1`, "42501", "the application role cannot delete quotes"},
 	} {
@@ -303,7 +304,7 @@ func TestQuoteV03OnPostgres(t *testing.T) {
 			{ChargeCode: "OCEAN_FREIGHT", Sell: usd(150_000), Cost: usd(100_000)},
 			{ChargeCode: "THC", Sell: cny(80_000), Cost: cny(60_000)},
 			{ChargeCode: "DOC_FEE", Sell: cny(0), Cost: cny(0)},
-			{ChargeCode: "LOYALTY_DISCOUNT", Sell: cny(-10_000), Cost: cny(0)},
+			{ChargeCode: "DISCOUNT", Sell: cny(-10_000), Cost: cny(0)},
 		},
 		ExchangeRates: []api.ExchangeRate{rateUSD},
 		Terms:         api.CommercialTerms{IncotermsRule: "FOB", IncotermsVersion: "2020", NamedPlace: "Shanghai port", ServiceLevel: "STANDARD"},
@@ -334,7 +335,7 @@ func TestQuoteV03OnPostgres(t *testing.T) {
 		{ChargeCode: "OCEAN_FREIGHT", Amount: usd(150_000), InQuoteCurrency: cny(1_068_510)},
 		{ChargeCode: "THC", Amount: cny(80_000), InQuoteCurrency: cny(80_000)},
 		{ChargeCode: "DOC_FEE", Amount: cny(0), InQuoteCurrency: cny(0)},
-		{ChargeCode: "LOYALTY_DISCOUNT", Amount: cny(-10_000), InQuoteCurrency: cny(-10_000), Discount: true},
+		{ChargeCode: "DISCOUNT", Amount: cny(-10_000), InQuoteCurrency: cny(-10_000), Discount: true},
 	}
 	if v2.RecipientRole != api.RecipientOverseasAgent || v2.Currency != "CNY" || v2.Total != cny(1_138_510) || !reflect.DeepEqual(v2.Lines, wantLines) ||
 		len(v2.ExchangeRates) != 1 || v2.ExchangeRates[0] != rateUSD || v2.Rounding != "HALF_UP_PER_LINE" || v2.Terms != create.Terms ||
@@ -349,7 +350,7 @@ func TestQuoteV03OnPostgres(t *testing.T) {
 		{LineNo: 1, ChargeCode: "OCEAN_FREIGHT", Sell: usd(150_000), Cost: usd(100_000), Source: api.SourceQuote, HasSell: true, HasCost: true},
 		{LineNo: 2, ChargeCode: "THC", Sell: cny(80_000), Cost: cny(60_000), Source: api.SourceQuote, HasSell: true, HasCost: true},
 		{LineNo: 3, ChargeCode: "DOC_FEE", Sell: cny(0), Cost: cny(0), Source: api.SourceQuote, HasSell: true},
-		{LineNo: 4, ChargeCode: "LOYALTY_DISCOUNT", Sell: cny(-10_000), Cost: cny(0), Discount: true, Source: api.SourceQuote, HasSell: true},
+		{LineNo: 4, ChargeCode: "DISCOUNT", Sell: cny(-10_000), Cost: cny(0), Discount: true, Source: api.SourceQuote, HasSell: true},
 	}
 	if err != nil || basis.Purpose != api.BasisQuoteAccepted || basis.BasisID != fmt.Sprintf("QUOTE:Q-FX@%d", basis.QuoteRevision) || basis.QuoteRevision != 3 ||
 		basis.LegalEntityID != "LE" || basis.Customer.PartyID != "P-AGENT" || basis.Currency != "CNY" || !reflect.DeepEqual(basis.Lines, wantBasis) ||

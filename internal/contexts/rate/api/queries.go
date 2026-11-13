@@ -64,7 +64,7 @@ type QuoteSnapshotV2 struct {
 	Rounding               string // "HALF_UP_PER_LINE"
 	Terms                  CommercialTerms
 	Validity               kernel.ValidityInterval
-	PriceApprovalReasons   []string // BELOW_MARGIN_FLOOR, DISCOUNT; empty when none was needed
+	PriceApprovalReasons   []string // BELOW_MARGIN_FLOOR, DISCOUNT, RATE_CARD_DISCOUNT (V0.5); empty when none was needed
 	PriceApprovedBy        string   // empty when no approval was needed
 	PriceSelfApproved      bool
 	AcceptedAt             time.Time
@@ -94,6 +94,38 @@ type GetServiceLevel struct {
 // tenant; tenants maintain their own list before the pilot.
 type ListServiceLevels struct {
 	TenantID string
+}
+
+// SnapshotLineV3 is a line of QuoteSnapshotV3: SnapshotLineV2 with where its price comes from (Source, and for a rated
+// line the snapshot it was rated in), its basis (LUMP_SUM, or PER_UNIT with the unit, the rate in minor units times
+// 10^-RateScale and the quantity it was priced on, which reproduce Amount), the catalogue version of its code (nil for a
+// line priced before the catalogue), and whether the code was recorded unlisted before the catalogue. No costs, and
+// nothing of how far an overridden line was moved from its rated sell.
+type SnapshotLineV3 struct {
+	SnapshotLineV2
+	Source       string
+	SnapshotID   string
+	Basis        string
+	Unit         string
+	Rate         int64
+	RateScale    int
+	Quantity     int64
+	CodeVersion  *int
+	CodeUnlisted bool
+}
+
+// QuoteSnapshotV3 is QuoteSnapshotV2 with the quote's kind (ONE_OFF; AGREEMENT comes with RATE V0.5 part 3b), its scope
+// and the V0.5 line details. Like v2 it carries no costs or margins; v2 and v1 stay published.
+type QuoteSnapshotV3 struct {
+	QuoteSnapshotV2
+	Kind  string
+	Scope *QuoteScope
+	Lines []SnapshotLineV3
+}
+
+// QuoteSnapshotV3Queries answers QuoteSnapshotV3.
+type QuoteSnapshotV3Queries interface {
+	GetQuoteSnapshotV3(ctx context.Context, q GetQuoteSnapshot) (QuoteSnapshotV3, error)
 }
 
 // GetQuoteSnapshot asks for the snapshot of an accepted quote. TenantID must come from a verified
