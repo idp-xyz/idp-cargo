@@ -6,22 +6,67 @@ import (
 	"time"
 )
 
-// acceptedOneOff is an accepted ONE_OFF quote of three lines: AIR_FREIGHT RATED at 20.00 per chargeable kg on 150 kg,
-// DOC_FEE overridden as a lump sum and PICKUP entered by hand.
-func acceptedOneOff(t *testing.T) *Quote {
+// The cards a quote is rated from: the tariff's freight at 30/25/20 per chargeable kg (breaks at 45 and 100 kg,
+// at least 300.00), a fuel surcharge of 10% of the freight (at most 500.00) and a flat document fee; the co-loader buys
+// the freight at 20.00, 12.00 from 100 kg, at least 200.00.
+var (
+	reFreight = airFreight(1)
+	reFuel    = RateLine{No: 2, ChargeCode: "FUEL_SURCHARGE", Currency: "CNY", Calculator: CalcPercentOf, PercentBP: 1000, BaseCode: "AIR_FREIGHT",
+		Maximum: 50_000}
+	reDoc = flat(3, "DOC_FEE", "CNY", 15_000)
+	reBuy = RateLine{No: 1, ChargeCode: "AIR_FREIGHT", Currency: "CNY", Calculator: CalcPerUnit, Unit: UnitKgChargeable, Rate: UnitRate{Minor: 2000},
+		Minimum: 20_000, Step: 500, VolumeFactor: 6000, Breaks: []RateBreak{{From: 100_000, Rate: 1200}}}
+	reCards = []PublishedVersion{version("T1", ScopeTariff, "", airEntry(1, reFreight, reFuel, reDoc)),
+		version("S1", ScopeSupplier, "coloader", airEntry(1, reBuy))}
+)
+
+// ratedQuote is the accepted ONE_OFF quote RATE builds from an evaluation of cargo, every SELL line RATED (with the BUY
+// line of its code as its cost), plus a manual line, and the rules RATE reads back for re-evaluating it.
+func ratedQuote(t *testing.T, cargo Cargo) (*Quote, map[int]RatedRule) {
 	t.Helper()
-	d := draft(0)
-	d.Currency, d.DiscountThresholdBP = "CNY", 1000 // the document fee's 6.7% off needs no approval
-	d.Scope = &QuoteScope{Mode: ModeAir, ContainerMode: ContainerLoose, Origin: "CNPVG", Destination: "DEFRA", Cargo: Cargo{Pieces: 3, GrossGrams: 100_000,
-		VolumeCM3: 900_000}}
-	d.Lines = []Line{
-		{ChargeCode: "AIR_FREIGHT", Sell: cny(300_000), Cost: cny(180_000), Source: SourceRated,
-			Rated: &RatedRef{SnapshotID: "RS-1", SellLineNo: 1, CostLineNo: 4, RatedSell: cny(300_000)},
-			Basis: LineBasis{Kind: BasisPerUnit, Unit: UnitKgChargeable, Rate: UnitRate{Minor: 2000}, Quantity: 150_000}},
-		{ChargeCode: "DOC_FEE", Sell: cny(14_000), Cost: cny(0), Source: SourceRatedOverridden,
-			Rated: &RatedRef{SnapshotID: "RS-1", SellLineNo: 2, RatedSell: cny(15_000), OverrideReason: "agreed"}, Basis: LineBasis{Kind: BasisLumpSum}},
-		{ChargeCode: "PICKUP", Sell: cny(20_000), Cost: cny(15_000)},
+	in := EvaluationInput{Purpose: PurposeQuoteLine, LegalEntityID: "LE", Sides: []Side{SideSell, SideBuy}, Customer: CustomerRef{PartyID: "P", PartyRevision: 2},
+		Mode: ModeAir, ContainerMode: ContainerLoose, Origin: "CNPVG", Destination: "DEFRA", ServiceLevel: "STANDARD", Commodity: CommodityGeneral,
+		At: t0.Add(time.Hour), Cargo: cargo}
+	_, lines, err := Evaluate(in, reCards)
+	if err != nil {
+		t.Fatal(err)
 	}
+	cards := map[RateCardID]map[ChargeCode]RateLine{"T1": {"AIR_FREIGHT": reFreight, "FUEL_SURCHARGE": reFuel, "DOC_FEE": reDoc}, "S1": {"AIR_FREIGHT": reBuy}}
+	side := func(sl SnapshotLine) (*UnitRule, *PercentRule) {
+		card := cards[sl.RateCardID][sl.ChargeCode]
+		switch sl.Calculator {
+		case CalcPerUnit:
+			return &UnitRule{Line: card}, nil
+		case CalcPercentOf:
+			return nil, &PercentRule{Line: card, BP: sl.PercentBP}
+		}
+		return nil, nil
+	}
+	d := draft(0)
+	d.Currency = "CNY"
+	d.Scope = &QuoteScope{Mode: ModeAir, ContainerMode: ContainerLoose, Origin: "CNPVG", Destination: "DEFRA", Cargo: cargo}
+	rules := map[int]RatedRule{}
+	for _, sl := range lines {
+		if sl.Side != SideSell || sl.Gap != GapNone {
+			continue
+		}
+		l := Line{ChargeCode: sl.ChargeCode, Sell: sl.Amount, Cost: cny(0), Source: SourceRated,
+			Rated: &RatedRef{SnapshotID: "RS-1", SellLineNo: sl.LineNo, RatedSell: sl.Amount}, Basis: LineBasis{Kind: BasisLumpSum}}
+		if sl.Calculator == CalcPerUnit && !sl.MinimumApplied && !sl.MaximumApplied {
+			l.Basis = LineBasis{Kind: BasisPerUnit, Unit: sl.Unit, Rate: sl.Rate, Quantity: sl.Charged}
+		}
+		var rule RatedRule
+		rule.Sell, rule.SellPercent = side(sl)
+		for _, bl := range lines {
+			if bl.Side == SideBuy && bl.Gap == GapNone && bl.ChargeCode == sl.ChargeCode {
+				l.Cost, l.Rated.CostLineNo = bl.Amount, bl.LineNo
+				rule.Cost, rule.CostPercent = side(bl)
+			}
+		}
+		d.Lines = append(d.Lines, l)
+		rules[len(d.Lines)] = rule
+	}
+	d.Lines = append(d.Lines, Line{ChargeCode: "PICKUP", Sell: cny(20_000), Cost: cny(15_000)})
 	q, err := PriceQuote(d, at)
 	if err != nil {
 		t.Fatal(err)
@@ -29,62 +74,80 @@ func acceptedOneOff(t *testing.T) *Quote {
 	if err = q.Accept("sales-1", EvidenceEmail, "mail", 2, at.Add(time.Hour), at.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	return q
+	return q, rules
 }
 
-// OD-7 A: a quote's per-unit lines are re-evaluated on the cargo shipped at its frozen rates, by the quantity rule of
-// the card line each was rated from; lump sums and manual lines are as quoted.
+func byCode(lines []ShippedLine) map[ChargeCode]ShippedLine {
+	out := map[ChargeCode]ShippedLine{}
+	for _, l := range lines {
+		out[l.ChargeCode] = l
+	}
+	return out
+}
+
+// OD-7 A: a quote's RATED lines re-evaluated on the cargo shipped by the card lines they were rated from; on the cargo
+// quoted, the quote itself.
 func TestQuoteOnShipment(t *testing.T) {
-	q := acceptedOneOff(t)
-	sellRule := airFreight(1) // chargeable weight at 6000 cm3/kg in 0.5 kg steps
-	buyRule := airFreight(1)
-	rules := map[int]RatedRule{1: {Sell: sellRule, Cost: &buyRule, CostRate: UnitRate{Minor: 1200}, CostUnit: UnitKgChargeable}}
+	// on the cargo quoted, every line is the quoted line: 150 kg, 90 kg (charged as 100 kg, the cheaper break), 5 kg (the
+	// minimum), 10 m3 (by volume, the fuel at its maximum) and 2 t
+	for _, cargo := range []Cargo{{Pieces: 3, GrossGrams: 150_000}, {Pieces: 2, GrossGrams: 90_000}, {Pieces: 1, GrossGrams: 5_000},
+		{Pieces: 9, GrossGrams: 100_000, VolumeCM3: 10_000_000}, {Pieces: 40, GrossGrams: 2_000_000}} {
+		q, rules := ratedQuote(t, cargo)
+		lines, err := q.OnShipment(cargo, rules)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, l := range q.State().Lines {
+			if lines[i].Sell != l.Sell || lines[i].Cost != l.Cost {
+				t.Errorf("on %+v, line %s: %+v, quoted %v / %v", cargo, l.ChargeCode, lines[i], l.Sell, l.Cost)
+			}
+		}
+	}
+	q, rules := ratedQuote(t, Cargo{Pieces: 3, GrossGrams: 150_000})
 	for name, tc := range map[string]struct {
-		cargo      Cargo
-		sell, cost int64
-		quantity   int64
+		cargo                    Cargo
+		freight, fuel, cost, qty int64
 	}{
-		// 1,000 kg gross: 1,000 kg at 20.00 = 20,000.00, bought at 12.00 = 12,000.00
-		"heavier than quoted": {Cargo{Pieces: 30, GrossGrams: 1_000_000}, 2_000_000, 1_200_000, 1_000_000},
-		// 10 m3 at 6000 cm3/kg is 1,666.67 kg, 1,667 kg in 0.5 kg steps
-		"by volume": {Cargo{Pieces: 30, GrossGrams: 100_000, VolumeCM3: 10_000_000}, 3_334_000, 2_000_400, 1_667_000},
-		// 10 kg: the frozen rate on 10 kg, no minimum (OD-7 A: the quote's frozen unit rates)
-		"lighter than quoted": {Cargo{Pieces: 1, GrossGrams: 10_000}, 20_000, 12_000, 10_000},
+		// 1,500 kg at 20.00 = 30,000.00 bought at 12.00 = 18,000.00; the fuel at its maximum of 500.00
+		"heavier than quoted": {Cargo{Pieces: 30, GrossGrams: 1_500_000}, 3_000_000, 50_000, 1_800_000, 1_500_000},
+		// 60 kg at 25.00 = 1,500.00 bought at 20.00 = 1,200.00; the fuel 150.00
+		"lighter, in another break": {Cargo{Pieces: 2, GrossGrams: 60_000}, 150_000, 15_000, 120_000, 60_000},
+		// 5 kg: the minimum of 300.00, bought at its minimum of 200.00; the fuel 30.00
+		"under the minimum": {Cargo{Pieces: 1, GrossGrams: 5_000}, 30_000, 3_000, 20_000, 5_000},
 	} {
 		lines, err := q.OnShipment(tc.cargo, rules)
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
-		f, doc, pickup := lines[0], lines[1], lines[2]
+		got := byCode(lines)
+		f, fuel, doc, pickup := got["AIR_FREIGHT"], got["FUEL_SURCHARGE"], got["DOC_FEE"], got["PICKUP"]
 		switch {
-		case !f.Reevaluated || f.Sell != cny(tc.sell) || f.Cost != cny(tc.cost) || f.Quantity != tc.quantity || f.Unit != UnitKgChargeable:
+		case !f.Reevaluated || f.Sell != cny(tc.freight) || f.Cost != cny(tc.cost) || f.Quantity != tc.qty || f.Unit != UnitKgChargeable:
 			t.Errorf("%s: freight %+v", name, f)
-		case doc.Reevaluated || doc.Sell != cny(14_000) || pickup.Reevaluated || pickup.Sell != cny(20_000) || pickup.Cost != cny(15_000):
-			t.Errorf("%s: lump sums %+v %+v", name, doc, pickup)
+		case !fuel.Reevaluated || fuel.Sell != cny(tc.fuel):
+			t.Errorf("%s: fuel %+v", name, fuel)
+		case doc.Reevaluated || doc.Sell != cny(15_000) || pickup.Reevaluated || pickup.Sell != cny(20_000) || pickup.Cost != cny(15_000):
+			t.Errorf("%s: flat and manual lines %+v %+v", name, doc, pickup)
 		}
 	}
-	// a cost from a BUY line a minimum bounded stays as quoted; a cargo without the unit leaves the line as quoted
-	lines, err := q.OnShipment(Cargo{Pieces: 30, GrossGrams: 1_000_000}, map[int]RatedRule{1: {Sell: sellRule}})
-	if err != nil || lines[0].Sell != cny(2_000_000) || lines[0].Cost != cny(180_000) {
-		t.Fatalf("a cost as quoted: %+v %v", lines[0], err)
+	// a cargo without weight or volume leaves the lines as quoted
+	if lines, err := q.OnShipment(Cargo{Pieces: 3}, rules); err != nil || byCode(lines)["AIR_FREIGHT"].Reevaluated ||
+		byCode(lines)["FUEL_SURCHARGE"].Reevaluated {
+		t.Fatalf("no weight or volume shipped: %+v %v", lines, err)
 	}
-	if lines, err = q.OnShipment(Cargo{Pieces: 3}, rules); err != nil || lines[0].Reevaluated || lines[0].Sell != cny(300_000) {
-		t.Fatalf("no weight or volume shipped: %+v %v", lines[0], err)
-	}
-	documents := sellRule
+	documents := reFreight
 	documents.Unit = UnitDocument
-	if _, err = q.OnShipment(Cargo{Pieces: 3, GrossGrams: 1}, map[int]RatedRule{1: {Sell: documents}}); !errors.Is(err, ErrInvalidQuote) {
-		t.Fatalf("a card line of another unit: %v", err)
-	}
-	if Shipped(RateLine{Unit: UnitDocument}, Cargo{Documents: 3}) != 0 {
+	if _, _, on, _ := (UnitRule{Line: documents}).onCargo(Cargo{Documents: 3}); on {
 		t.Fatal("documents are not shipped quantities")
 	}
-	// only an accepted ONE_OFF quote is re-evaluated
+	// only an accepted ONE_OFF quote is re-evaluated, on cargo within RATE's bounds
 	pending, _ := PriceQuote(func() QuoteDraft { d := draft(0, freight(100, 10)); d.Lines[0].ChargeCode = "AIR_FREIGHT"; return d }(), at)
-	if _, err = pending.OnShipment(Cargo{GrossGrams: 1}, nil); !errors.Is(err, ErrInvalidQuote) {
+	if _, err := pending.OnShipment(Cargo{GrossGrams: 1}, nil); !errors.Is(err, ErrInvalidQuote) {
 		t.Fatalf("a quote not accepted: %v", err)
 	}
-	if _, err = q.OnShipment(Cargo{GrossGrams: -1}, rules); !errors.Is(err, ErrInvalidQuote) {
-		t.Fatalf("negative cargo: %v", err)
+	for _, c := range []Cargo{{GrossGrams: -1}, {Documents: -1}, {GrossGrams: MaxQuantity + 1}} {
+		if _, err := q.OnShipment(c, rules); !errors.Is(err, ErrInvalidQuote) {
+			t.Errorf("cargo %+v: %v", c, err)
+		}
 	}
 }

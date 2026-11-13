@@ -25,6 +25,8 @@ func TestRatedEstimatesOnPostgres(t *testing.T) {
 	d := f.w.drivers["SH-B"]
 	d.Origin, d.Destination = kernel.LocationCode{Scheme: kernel.UNLOCODE, Code: "CNPVG"}, kernel.LocationCode{Scheme: kernel.UNLOCODE, Code: "DEFRA"}
 	d.GrossWeight, d.Volume = kernel.Quantity{Unit: "KGM", Amount: 100}, kernel.Quantity{Unit: "MTQ", Amount: 1}
+	// SH-B carries an order under an agreement, whose customer card RATE rates (RATE has no quote basis for it)
+	d.Orders = []fulapi.CostOrder{{OrderID: "O-E", QuoteID: "Q-AG", QuoteRevision: 1, Packs: 6}}
 	f.w.drivers["SH-B"] = d
 	f.w.shipmentLines = []rateapi.PricingLine{
 		{LineNo: 1, ChargeCode: "AIR_FREIGHT", Source: rateapi.SourceRated, HasSell: true, Sell: usd(120_000), HasCost: true, Cost: usd(95_000),
@@ -71,7 +73,15 @@ func TestRatedEstimatesOnPostgres(t *testing.T) {
 		t.Errorf("THC: %+v", thc)
 	}
 
-	// a job is priced by its quotes or by one rated estimate
+	// a job is priced by its quotes or by one rated estimate; a shipment under an accepted ONE_OFF quote by the quote
+	_, err = f.module.RateFreightJob(ctx, api.RateFreightJob{CommandID: "rate-A-first", TenantID: f.tenant, ActorID: "fin-1", JobID: "JOB-A",
+		ExpectedRevision: 2, ServiceLevel: "STANDARD", OccurredAt: a.hours(3)})
+	a.rejected("an estimate of a shipment under an accepted quote", err, "priced by that quote")
+	f.w.mu.Lock() // FUL plans a part of O-A on SH-B too
+	d = f.w.drivers["SH-B"]
+	d.Orders = append(d.Orders, fulapi.CostOrder{OrderID: "O-A", QuoteID: "Q-1", QuoteRevision: 2, Packs: 2})
+	f.w.drivers["SH-B"] = d
+	f.w.mu.Unlock()
 	again := rate
 	again.CommandID, again.ExpectedRevision = "rate-B-again", job.Revision
 	_, err = f.module.RateFreightJob(ctx, again)
@@ -104,7 +114,7 @@ func TestRatedEstimatesOnPostgres(t *testing.T) {
 	for _, s := range []string{"SH-C", "SH-D", "SH-E"} {
 		f.w.mu.Lock()
 		c := d
-		c.ShipmentID = s
+		c.ShipmentID, c.Orders = s, []fulapi.CostOrder{{OrderID: "O-E", QuoteID: "Q-AG", QuoteRevision: 1, Packs: 6}}
 		if s == "SH-D" {
 			c.Origin = kernel.LocationCode{}
 		}
@@ -224,6 +234,7 @@ func TestEstimatesRaceForOneJob(t *testing.T) {
 		d := a.w.drivers["SH-B"]
 		d.Origin, d.Destination = kernel.LocationCode{Scheme: kernel.UNLOCODE, Code: "CNPVG"}, kernel.LocationCode{Scheme: kernel.UNLOCODE, Code: "DEFRA"}
 		d.GrossWeight = kernel.Quantity{Unit: "KGM", Amount: 100}
+		d.Orders = []fulapi.CostOrder{{OrderID: "O-E", QuoteID: "Q-AG", QuoteRevision: 1, Packs: 6}} // under an agreement
 		a.w.drivers["SH-B"] = d
 		a.w.shipmentLines = []rateapi.PricingLine{{LineNo: 1, ChargeCode: "DOC_FEE", Source: rateapi.SourceRated, HasSell: true, Sell: cny(30_000)}}
 		a.w.mu.Unlock()
@@ -271,5 +282,48 @@ func TestQuoteBasisOnShipmentOnPostgres(t *testing.T) {
 	job, err := f.module.GetFreightJob(ctx, api.GetFreightJob{TenantID: f.tenant, JobID: "JOB-A"})
 	if err != nil || len(job.Bases) != 1 || job.Bases[0].PlanVersion != 2 {
 		t.Fatalf("the job's basis: %+v %v", job.Bases, err)
+	}
+	// a shipment FUL is planning again is not priced by its quote until planned; one weighed in pounds is re-evaluated on its grams;
+	// one measured in a unit RATE cannot take keeps the quoted amounts
+	f.w.mu.Lock()
+	for id, edit := range map[string]func(*fulapi.CostDriver){
+		"SH-DRAFT": func(*fulapi.CostDriver) {},
+		"SH-LB":    func(d *fulapi.CostDriver) { d.GrossWeight = kernel.Quantity{Unit: "LBR", Amount: 1000} },
+		"SH-OZ":    func(d *fulapi.CostDriver) { d.GrossWeight = kernel.Quantity{Unit: "ONZ", Amount: 1000} },
+	} {
+		d := f.w.drivers["SH-A"]
+		d.ShipmentID, d.Orders = id, []fulapi.CostOrder{{OrderID: "O-" + id, QuoteID: "Q-1", QuoteRevision: 2, Packs: 6}}
+		edit(&d)
+		f.w.drivers[id] = d
+	}
+	f.w.mu.Unlock()
+	for _, id := range []string{"SH-DRAFT", "SH-LB", "SH-OZ"} {
+		a.must(f.module.OpenFreightJob(ctx, api.OpenFreightJob{CommandID: "open-" + id, TenantID: f.tenant, ActorID: "fin-1", JobID: "JOB-" + id, ShipmentID: id,
+			OccurredAt: a.hours(1)}))
+	}
+	f.w.mu.Lock() // FUL takes SH-DRAFT back to a draft to plan it again
+	d := f.w.drivers["SH-DRAFT"]
+	d.Status = fulapi.StatusDraft
+	f.w.drivers["SH-DRAFT"] = d
+	f.w.mu.Unlock()
+	apply := func(id string) error {
+		_, err := f.module.ApplyPricingBasis(ctx, api.ApplyPricingBasis{CommandID: "quote-" + id, TenantID: f.tenant, ActorID: "fin-1", JobID: "JOB-" + id,
+			ExpectedRevision: 1, QuoteID: "Q-1", OrderID: "O-" + id, OccurredAt: a.hours(2)})
+		return err
+	}
+	a.rejected("a shipment FUL has not planned", apply("SH-DRAFT"), "once FUL planned it")
+	a.must(api.Receipt{}, apply("SH-LB"))
+	f.w.mu.Lock()
+	asked := f.w.asked[len(f.w.asked)-1].(rateapi.GetPricingBasis)
+	f.w.mu.Unlock()
+	if asked.Shipment == nil || asked.Shipment.Cargo.GrossGrams != 453_592 { // 1,000 lb = 453,592.37 g
+		t.Fatalf("asked RATE for the shipment in pounds: %+v", asked.Shipment)
+	}
+	a.must(api.Receipt{}, apply("SH-OZ"))
+	if err := f.within(t, func(ctx context.Context, e bentopg.Executor) error {
+		return e.QueryRow(ctx, `SELECT string_agg(job_id||' '||coalesce(plan_version::text,'-'),'|' ORDER BY job_id) FROM cargo_fin.job_basis
+          WHERE tenant_id=$1 AND job_id IN ('JOB-SH-LB','JOB-SH-OZ')`, f.tenant).Scan(&got)
+	}); err != nil || got != "JOB-SH-LB 2|JOB-SH-OZ -" {
+		t.Fatalf("quote bases in pounds and in ounces: %s %v", got, err)
 	}
 }

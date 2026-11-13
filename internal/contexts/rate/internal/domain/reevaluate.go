@@ -2,17 +2,21 @@ package domain
 
 import (
 	"fmt"
+	"math/big"
 
 	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
 // RATE V0.5 part 3b-2 (N1-RATE OD-7 A): when the cargo shipped differs from what an accepted ONE_OFF quote assumed,
-// its per-unit lines are re-evaluated on the quantity shipped with the quote's frozen unit rates, and its lump sums
-// are unchanged. A per-unit line takes its quantity from the cargo by the rule of the card line it was rated from (its
-// unit, chargeable weight at the line's volume factor, its step and its minimum quantity).
+// its rated per-unit lines are re-evaluated on the quantity shipped with the quote's frozen unit rates, and its lump
+// sums are unchanged. The frozen rates are those of the card line each RATED line was rated from, which never changes
+// once published: its rate and weight breaks, its quantity rule (unit, chargeable weight at its volume factor, step,
+// minimum quantity) and its minimum and maximum. A RATED per-unit line is rated again by that line on the cargo
+// shipped, as RATE rated it; a RATED percentage line again on its re-evaluated base. On the cargo quoted each gives
+// the quoted line.
 
-// ShippedLine is a quote line on the cargo shipped: Sell and Cost as quoted, or, Reevaluated, Quantity base units of
-// Unit at the quote's frozen rate (the cost too when its BUY line was priced per unit without a minimum or maximum).
+// ShippedLine is a quote line on the cargo shipped: Sell and Cost as quoted, or, Reevaluated, as rated on the cargo
+// (a per-unit line on Quantity base units of Unit; a percentage line on its re-evaluated base).
 type ShippedLine struct {
 	LineNo      int
 	ChargeCode  ChargeCode
@@ -23,76 +27,108 @@ type ShippedLine struct {
 	Quantity    int64
 }
 
-// Shipped is the quantity a card line's rule takes from shipped cargo, in base units: rounded up to its step and at
-// least its minimum quantity. It is 0 when the cargo has none of the unit, and for documents, which a shipment's cost
-// driver does not report.
-func Shipped(l RateLine, c Cargo) int64 {
-	if l.Unit == UnitDocument {
-		return 0
-	}
-	q := Quantity(l, c)
-	if q <= 0 {
-		return 0
-	}
-	q = ceilDiv(q, max(l.Step, 1)) * max(l.Step, 1)
-	return max(q, l.MinQuantity)
+// UnitRule is how a PER_UNIT snapshot line is rated again on other cargo: the card line it was rated from.
+type UnitRule struct {
+	Line RateLine
 }
 
-// atRate is rate per unit on quantity base units in currency, rounded half away from zero once, as RATE rates a
-// PER_UNIT line that no minimum or maximum bounds.
-func atRate(unit RateUnit, rate UnitRate, quantity int64, currency kernel.CurrencyCode) (kernel.Money, error) {
-	amount, ok := LineBasis{Kind: BasisPerUnit, Unit: unit, Rate: rate, Quantity: quantity}.amount()
-	if !ok {
-		return kernel.Money{}, fmt.Errorf("%w: %d at %d×10^-%d per %s", kernel.ErrAmountOverflow, quantity, rate.Minor, rate.Scale, unit)
-	}
-	return kernel.Money{Currency: currency, Minor: amount}, nil
+// PercentRule is how a PERCENT_OF snapshot line is rated again: the card line it was rated from (minimum, maximum,
+// currency, base code) and its frozen percentage, in basis points, of its base charge.
+type PercentRule struct {
+	Line RateLine
+	BP   int64
 }
 
-// RatedRule is what re-evaluating a RATED per-unit line needs of its snapshot: the card line its SELL line was rated
-// from, and, when the line's cost came from a BUY line priced per unit without a minimum or maximum, that BUY line's
-// card line and frozen rate.
+// RatedRule is what re-evaluating a RATED quote line needs of its snapshot: the rule of its SELL line, and of the BUY
+// line its cost came from when it named one; a FLAT line has none.
 type RatedRule struct {
-	Sell     RateLine
-	Cost     *RateLine
-	CostRate UnitRate
-	CostUnit RateUnit
+	Sell, Cost               *UnitRule
+	SellPercent, CostPercent *PercentRule
 }
 
-// OnShipment re-evaluates an accepted ONE_OFF quote's lines on the cargo shipped (OD-7 A): a PER_UNIT line, with the
-// rule of its line number in rules, at its frozen rate on the quantity its card line takes from the cargo, its cost
-// likewise when the rule names one; every other line, and a per-unit line whose unit the cargo does not carry, as
-// quoted.
+// rated is amount bounded by the card line's minimum and maximum and rounded half away from zero once, as RATE rates.
+func rated(l RateLine, amount *big.Rat) (kernel.Money, error) {
+	s := SnapshotLine{ChargeCode: l.ChargeCode}
+	if err := bound(&s, l, amount); err != nil {
+		return kernel.Money{}, err
+	}
+	return s.Amount, nil
+}
+
+// onCargo rates a per-unit rule's card line on the cargo, as RATE rates it. It answers false when the cargo carries
+// none of the unit (documents, which a shipment's cost driver does not report, included).
+func (r UnitRule) onCargo(c Cargo) (kernel.Money, int64, bool, error) {
+	if r.Line.Unit == UnitDocument {
+		return kernel.Money{}, 0, false, nil
+	}
+	s := SnapshotLine{ChargeCode: r.Line.ChargeCode}
+	if err := rateLine(&s, r.Line, c); err != nil || s.Gap != GapNone {
+		return kernel.Money{}, 0, false, err
+	}
+	return s.Amount, s.Charged, true, nil
+}
+
+// of rates a percentage rule on its base amount.
+func (r PercentRule) of(base kernel.Money) (kernel.Money, error) {
+	return rated(r.Line, new(big.Rat).SetFrac(new(big.Int).Mul(big.NewInt(base.Minor), big.NewInt(r.BP)), big.NewInt(10_000)))
+}
+
+// OnShipment re-evaluates an accepted ONE_OFF quote's lines on the cargo shipped (OD-7 A), with the rule of each RATED
+// line by its line number: a per-unit line as rated on the cargo, its cost likewise when its BUY line was per unit; then
+// a percentage line on its base line from the same snapshot, when that line was re-evaluated and is in its currency.
+// Manual, overridden and flat lines, and a per-unit line whose unit the cargo does not carry, are as quoted.
 func (q *Quote) OnShipment(cargo Cargo, rules map[int]RatedRule) ([]ShippedLine, error) {
 	if q.state.kind() != KindOneOff || q.state.Status != QuoteAccepted {
 		return nil, fmt.Errorf("%w: only an accepted ONE_OFF quote is re-evaluated on a shipment", ErrInvalidQuote)
 	}
-	if cargo.Pieces < 0 || cargo.GrossGrams < 0 || cargo.VolumeCM3 < 0 || cargo.GrossGrams > MaxQuantity || cargo.VolumeCM3 > MaxVolume ||
-		cargo.Pieces > MaxCount {
+	if cargo.Pieces < 0 || cargo.GrossGrams < 0 || cargo.VolumeCM3 < 0 || cargo.Documents < 0 || cargo.GrossGrams > MaxQuantity ||
+		cargo.VolumeCM3 > MaxVolume || cargo.Pieces > MaxCount || cargo.Documents > MaxCount {
 		return nil, fmt.Errorf("%w: the cargo shipped", ErrInvalidQuote)
 	}
-	out := make([]ShippedLine, 0, len(q.state.Lines))
+	out := make([]ShippedLine, len(q.state.Lines))
 	for i, l := range q.state.Lines {
-		s := ShippedLine{LineNo: i + 1, ChargeCode: l.ChargeCode, Sell: l.Sell, Cost: l.Cost}
-		if rule, ok := rules[i+1]; ok && l.Basis.Kind == BasisPerUnit {
-			if rule.Sell.Unit != l.Basis.Unit {
-				return nil, fmt.Errorf("%w: line %d is priced per %s, its card line per %s", ErrInvalidQuote, i+1, l.Basis.Unit, rule.Sell.Unit)
+		out[i] = ShippedLine{LineNo: i + 1, ChargeCode: l.ChargeCode, Sell: l.Sell, Cost: l.Cost}
+		rule, ok := rules[i+1]
+		if !ok || l.Source != SourceRated || rule.Sell == nil {
+			continue
+		}
+		sell, qty, on, err := rule.Sell.onCargo(cargo)
+		if err != nil || !on {
+			if err != nil {
+				return nil, err
 			}
-			if qty := Shipped(rule.Sell, cargo); qty > 0 {
-				sell, err := atRate(l.Basis.Unit, l.Basis.Rate, qty, l.Sell.Currency)
-				if err != nil {
+			continue
+		}
+		out[i].Sell, out[i].Reevaluated, out[i].Unit, out[i].Quantity = sell, true, rule.Sell.Line.Unit, qty
+		if rule.Cost != nil {
+			if cost, _, on, err := rule.Cost.onCargo(cargo); err != nil {
+				return nil, err
+			} else if on {
+				out[i].Cost = cost
+			}
+		}
+	}
+	for i, l := range q.state.Lines {
+		rule, ok := rules[i+1]
+		if !ok || l.Source != SourceRated || rule.SellPercent == nil {
+			continue
+		}
+		for j, b := range q.state.Lines {
+			if b.ChargeCode != rule.SellPercent.Line.BaseCode || b.Rated == nil || b.Rated.SnapshotID != l.Rated.SnapshotID || !out[j].Reevaluated ||
+				out[j].Sell.Currency != l.Sell.Currency {
+				continue
+			}
+			sell, err := rule.SellPercent.of(out[j].Sell)
+			if err != nil {
+				return nil, err
+			}
+			out[i].Sell, out[i].Reevaluated = sell, true
+			if p := rule.CostPercent; p != nil && out[j].Cost.Currency == l.Cost.Currency {
+				if out[i].Cost, err = p.of(out[j].Cost); err != nil {
 					return nil, err
-				}
-				s.Sell, s.Reevaluated, s.Unit, s.Quantity = sell, true, l.Basis.Unit, qty
-				if rule.Cost != nil {
-					if cq := Shipped(*rule.Cost, cargo); cq > 0 {
-						if s.Cost, err = atRate(rule.CostUnit, rule.CostRate, cq, l.Cost.Currency); err != nil {
-							return nil, err
-						}
-					}
 				}
 			}
 		}
-		out = append(out, s)
 	}
 	return out, nil
 }

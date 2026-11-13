@@ -164,6 +164,9 @@ func (m *Module) oneOff(ctx context.Context, q api.GetQuoteSnapshot) (*domain.Qu
 // basis as issued.
 func (m *Module) GetPricingBasis(ctx context.Context, q api.GetPricingBasis) (api.PricingBasis, error) {
 	if q.BasisID != "" {
+		if q.Shipment != nil || q.QuoteID != "" {
+			return api.PricingBasis{}, fmt.Errorf("%w: a basis id, or a quote with an optional shipment", api.ErrRejected)
+		}
 		return m.ratedBasis(ctx, q)
 	}
 	quote, revision, err := m.oneOff(ctx, api.GetQuoteSnapshot{TenantID: q.TenantID, QuoteID: q.QuoteID})
@@ -179,8 +182,9 @@ func (m *Module) GetPricingBasis(ctx context.Context, q api.GetPricingBasis) (ap
 		shipped[i] = domain.ShippedLine{LineNo: i + 1, ChargeCode: l.ChargeCode, Sell: l.Sell, Cost: l.Cost}
 	}
 	if sh := q.Shipment; sh != nil {
-		if strings.TrimSpace(sh.ShipmentID) == "" || sh.PlanVersion < 1 {
-			return api.PricingBasis{}, fmt.Errorf("%w: a shipment and its plan version", api.ErrRejected)
+		if sh.ShipmentID == "" || sh.ShipmentID != strings.TrimSpace(sh.ShipmentID) || strings.ContainsAny(sh.ShipmentID, "/@ \t\n") ||
+			utf8.RuneCountInString(sh.ShipmentID) > 128 || sh.PlanVersion < 1 {
+			return api.PricingBasis{}, fmt.Errorf("%w: a shipment id (no blanks, '/' or '@') and its plan version", api.ErrRejected)
 		}
 		c := sh.Cargo
 		if err = m.reader(ctx, q.TenantID, func(txCtx context.Context) (err error) {

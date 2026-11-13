@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"slices"
 	"time"
@@ -71,7 +72,8 @@ type RateJobInput struct {
 
 // RateJob rates the job's shipment (SHIPMENT_ESTIMATE): FUL's CostDriver v1 gives the route, cargo, legal entity and
 // customer of the shipment as planned; RATE rates both sides; ORG confirms the customer as a debtor and each supplier as
-// a creditor. Every rated line becomes a RATED charge line; a job is priced by its quotes or by one rated estimate.
+// a creditor. Every rated line becomes a RATED charge line; a job is priced by its quotes or by one rated estimate. A
+// shipment carrying an order under an accepted ONE_OFF quote is priced by the quote, not here.
 func (d Deps) RateJob(ctx context.Context, c Command, in RateJobInput) (Receipt, error) {
 	if d.Shipments == nil || d.Rating == nil || d.Directory == nil {
 		return Receipt{}, ErrMissingDependency
@@ -92,7 +94,28 @@ func (d Deps) RateJob(ctx context.Context, c Command, in RateJobInput) (Receipt,
 		case driver.Status != "PLANNED" || driver.LegalEntityID != st.LegalEntityID || driver.CustomerPartyID != st.CustomerPartyID:
 			return fmt.Errorf("%w: FUL reports shipment %s %s for %s of %s", fin.ErrNotPriceable, st.ShipmentID, driver.Status, driver.CustomerPartyID,
 				driver.LegalEntityID)
-		case driver.Origin.IsZero() || driver.Destination.IsZero():
+		}
+		// a shipment that carries an order under an accepted ONE_OFF quote is priced by that quote (ApplyPricingBasis,
+		// re-evaluated on its cargo, OD-7 A), never by current cards; under an agreement its customer card is rated here
+		asked := map[string]bool{}
+		for _, o := range driver.Orders {
+			if o.QuoteID == "" || asked[o.QuoteID] {
+				continue
+			}
+			asked[o.QuoteID] = true
+			if d.Pricing == nil {
+				return ErrMissingDependency
+			}
+			_, err := d.Pricing.QuoteBasis(ctx, c.Scope.TenantID, o.QuoteID, nil)
+			if err == nil {
+				return fmt.Errorf("%w: shipment %s carries order %s under accepted quote %s; the job is priced by that quote", fin.ErrNotPriceable,
+					st.ShipmentID, o.OrderID, o.QuoteID)
+			}
+			if !errors.Is(err, fin.ErrNotPriceable) {
+				return err
+			}
+		}
+		if driver.Origin.IsZero() || driver.Destination.IsZero() {
 			return fmt.Errorf("%w: shipment %s has no planned route to rate", fin.ErrNotPriceable, st.ShipmentID)
 		}
 		gross, err := fin.Grams(driver.GrossWeight)
