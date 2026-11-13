@@ -221,8 +221,10 @@ const (
 
 var (
 	ErrInvalidRateCard = errors.New("rate: invalid rate card")
-	ErrVersionOverlap  = errors.New("rate: RATE_VERSION_OVERLAP: another published version of the card is valid then")
-	ErrNotPublishable  = errors.New("rate: RATE_NOT_PUBLISHABLE: the version cannot be published")
+	// ErrNoSuchVersion is a version a card does not have (wrapped with ErrInvalidRateCard).
+	ErrNoSuchVersion  = errors.New("rate: no such version")
+	ErrVersionOverlap = errors.New("rate: RATE_VERSION_OVERLAP: another published version of the card is valid then")
+	ErrNotPublishable = errors.New("rate: RATE_NOT_PUBLISHABLE: the version cannot be published")
 )
 
 // RateCardDraft is what a new card states.
@@ -285,7 +287,7 @@ func (c *RateCard) version(no int) (*RateCardVersion, error) {
 			return &c.state.Versions[i], nil
 		}
 	}
-	return nil, fmt.Errorf("%w: card %s has no version %d", ErrInvalidRateCard, c.state.RateCardID, no)
+	return nil, fmt.Errorf("%w: %w: card %s has no version %d", ErrInvalidRateCard, ErrNoSuchVersion, c.state.RateCardID, no)
 }
 
 func (c *RateCard) mark(no int, content bool) {

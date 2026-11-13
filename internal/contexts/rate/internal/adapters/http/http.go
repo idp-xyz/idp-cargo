@@ -33,6 +33,7 @@ func Register(mux *nethttp.ServeMux, s Service) {
 	mux.HandleFunc("POST /v1/charge-codes/{code}/revise", h.reviseChargeCode)
 	mux.HandleFunc("POST /v1/charge-codes/{code}/deactivate", h.deactivateChargeCode)
 	mux.HandleFunc("POST /v1/charge-codes/{code}/reactivate", h.reactivateChargeCode)
+	registerCards(mux, h)
 }
 
 type handlers struct{ s Service }
