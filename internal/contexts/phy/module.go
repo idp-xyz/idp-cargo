@@ -111,7 +111,8 @@ func (m *Module) AmendConsolidation(ctx context.Context, cmd api.AmendConsolidat
 func (m *Module) CloseConsolidation(ctx context.Context, cmd api.CloseConsolidation) (api.Receipt, error) {
 	r, err := application.CloseConsolidation{Deps: m.deps(cmd.TenantID, cmd.CommandID), Intents: m.intents}.Handle(ctx,
 		application.CloseConsolidationCommand{CommandID: cmd.CommandID, Scope: scope(cmd.TenantID, cmd.ActorID),
-			ConsolidationID: domain.ConsolidationID(cmd.ConsolidationID), ExpectedRevision: cmd.ExpectedRevision, OccurredAt: stored(cmd.OccurredAt)})
+			ConsolidationID: domain.ConsolidationID(cmd.ConsolidationID), ExpectedRevision: cmd.ExpectedRevision, OverrunReason: cmd.OverrunReason,
+			OccurredAt: stored(cmd.OccurredAt)})
 	return toReceipt(r, err)
 }
 
@@ -361,7 +362,7 @@ func classify(err error) error {
 		errors.Is(err, domain.ErrInvalidTransition), errors.Is(err, domain.ErrInvalidChange), errors.Is(err, domain.ErrNotOpen),
 		errors.Is(err, domain.ErrHousesAttached), errors.Is(err, domain.ErrNoHouses), errors.Is(err, domain.ErrInvalidIntent),
 		errors.Is(err, domain.ErrIntentNotPlanned), errors.Is(err, domain.ErrModeMismatch), errors.Is(err, domain.ErrRouteMismatch),
-		errors.Is(err, domain.ErrFCLHouse), errors.Is(err, domain.ErrInvalidLoadUnit), errors.Is(err, domain.ErrLoadUnitKind),
+		errors.Is(err, domain.ErrFCLHouse), errors.Is(err, domain.ErrOverEnvelope), errors.Is(err, domain.ErrInvalidLoadUnit), errors.Is(err, domain.ErrLoadUnitKind),
 		errors.Is(err, application.ErrEquipmentRefused),
 		errors.Is(err, domain.ErrWindowMismatch), errors.Is(err, domain.ErrOtherLegalEntity), errors.Is(err, domain.ErrInvalidMembership),
 		errors.Is(err, domain.ErrAlreadyAttached), errors.Is(err, domain.ErrNotAttached), errors.Is(err, domain.ErrSameConsolidation),

@@ -119,6 +119,7 @@ type CloseConsolidationCommand struct {
 	Scope            Scope
 	ConsolidationID  phy.ConsolidationID
 	ExpectedRevision int64
+	OverrunReason    string `json:",omitzero"` // left out of the hash when empty, as before PHY V0.3
 	OccurredAt       time.Time
 }
 
@@ -167,12 +168,14 @@ func (h CloseConsolidation) Handle(ctx context.Context, c CloseConsolidationComm
 				return fmt.Errorf("%w: the houses changed while FUL was asked; try again", phy.ErrConflict)
 			}
 			var last time.Time
+			scopes := make([]phy.CargoScope, 0, len(houses))
 			for _, house := range houses {
 				if house.Entry.At.After(last) {
 					last = house.Entry.At
 				}
+				scopes = append(scopes, house.Entry.Scope)
 			}
-			return consol.Close(len(houses), last, c.Scope.ActorID, c.OccurredAt)
+			return consol.Close(scopes, last, c.OverrunReason, c.Scope.ActorID, c.OccurredAt)
 		})
 }
 

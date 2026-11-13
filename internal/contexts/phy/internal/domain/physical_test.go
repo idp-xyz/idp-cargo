@@ -132,7 +132,7 @@ func tender(t *testing.T) (*Consolidation, Entry, *LoadExecution) {
 	t.Helper()
 	c := airConsol(t, "C-1")
 	m, _ := NewMembership("T", "SH-1")
-	if err := errors.Join(m.Attach(c, intent("SH-1", 1), "ops", t0.Add(time.Hour)), c.Close(1, t0.Add(time.Hour), "ops", t0.Add(2*time.Hour))); err != nil {
+	if err := errors.Join(m.Attach(c, intent("SH-1", 1), "ops", t0.Add(time.Hour)), c.Close(scopes(1), t0.Add(time.Hour), "", "ops", t0.Add(2*time.Hour))); err != nil {
 		t.Fatal(err)
 	}
 	x, err := OpenLoadExecution("T", "X-1", c, ExecutionTender, terminal, "ops", t0.Add(4*time.Hour))

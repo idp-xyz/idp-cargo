@@ -72,12 +72,18 @@ type AmendConsolidation struct {
 // CloseConsolidation is the house cut-off: it freezes the membership. At least one house must be attached,
 // and FUL must re-confirm every house PLANNED at the plan version PHY verified and allocated to this
 // consolidation (FUL's attachment); otherwise the house must be refreshed or recorded in FUL first.
+//
+// With load units planned (PHY V0.3), the houses' planned gross weight and volume are checked against the live
+// units' envelope: their default maximum gross less tare, and their capacity. A plan over it, or in a unit PHY does
+// not convert, closes only with an OverrunReason (PHY_ENVELOPE_EXCEEDED), which the CLOSED version keeps as its
+// reason; a plan within it, or a consolidation without units, takes none.
 type CloseConsolidation struct {
 	CommandID        string
 	TenantID         string
 	ActorID          string
 	ConsolidationID  string
 	ExpectedRevision int64
+	OverrunReason    string // only when the plan exceeds the load units' envelope (500 characters)
 	OccurredAt       time.Time
 }
 
