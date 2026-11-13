@@ -144,7 +144,7 @@ func TestStuffingOnPostgres(t *testing.T) {
 		t.Fatalf("cost basis = %+v, %v", basis, err)
 	}
 	ev, err := f.module.GetPhysicalLoadEvidence(ctx, api.GetPhysicalLoadEvidence{TenantID: f.tenant, ShipmentID: "SH-S2"})
-	if err != nil || len(ev.Tenders) != 1 || ev.Tenders[0].Kind != api.ExecutionStuffing || ev.Tenders[0].LoadUnitNo != 1 ||
+	if err != nil || len(ev.Tenders) != 1 || ev.Tenders[0].Kind != api.ExecutionStuffing || ev.Tenders[0].LoadUnitNo != 1 || ev.Tenders[0].LoadUnitType != "22G1" ||
 		ev.Tenders[0].CloseEvidence.Reference != "CN-SEAL-0042" || ev.Tenders[0].LoadedPacks != 6 {
 		t.Fatalf("evidence = %+v, %v", ev, err)
 	}

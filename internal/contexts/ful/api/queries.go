@@ -185,6 +185,66 @@ type AirOperationPlan struct {
 	Screenings          []SecurityScreening
 }
 
+// OceanOperationPlan is OceanOperationPlan v1 (relationship 10, FUL -> SEA): a SEA shipment's plan as SEA needs it to
+// associate the house with the bill of its consolidation (decision N1-PHY OD-2, option A: membership, measures and
+// stuffing reach SEA through FUL): the plan with its container mode and its parts, their package types and goods
+// descriptions, and the consolidation FUL recorded the shipment attached to, with the PHY membership entry and
+// revision. Packs, GrossWeight and Volume are planned. Once FUL recorded PHY's evidence (EvidenceVersion > 0) it
+// relays the measures (MeasuredBasis as in AirOperationPlan v1), the execution status, and the sealed containers of
+// the attached consolidation with the shipment's packs in them (Stuffings, PHY V0.3). It carries no names. A shipment
+// not planned by SEA is refused (ErrRejected).
+type OceanOperationPlan struct {
+	TenantID           string
+	ShipmentID         string
+	Revision           int64
+	Status             string
+	PlanVersion        int
+	CustomerPartyID    string
+	LegalEntityID      string
+	TransportMode      string // ModeSea
+	ContainerMode      string // N1-PHY OD-9: LCL or FCL; empty when not planned
+	Origin             kernel.LocationCode
+	Destination        kernel.LocationCode
+	LocationEdition    string
+	DepartureWindow    kernel.ValidityInterval
+	Packs              int64
+	GrossWeight        kernel.Quantity
+	Volume             kernel.Quantity
+	Parts              []LoadIntentPart // none once cancelled
+	Stage              string
+	ConsolidationID    string // empty when FUL records no attachment on the stage
+	MembershipEntryNo  int
+	MembershipRevision int64
+	// From PHY's verified evidence
+	EvidenceVersion     int
+	ExecutionStatus     string
+	MeasuredBasis       string // "", MeasuredReceived or MeasuredTendered
+	MeasuredPacks       int64
+	MeasuredGrossWeight kernel.Quantity
+	MeasuredVolume      kernel.Quantity
+	Stuffings           []ContainerStuffing
+}
+
+// ContainerStuffing is a sealed container of the attached consolidation with the shipment's live packs in it, as
+// PHY verified them (lines measured for themselves as measured, apportioned lines at their lot's latest
+// measurement): PHY's stuffing (load execution) and planned unit with its ISO 6346 size-type, and the seal PHY
+// recorded as the stuffing's closing evidence. The container's number and plate data are SEA's.
+type ContainerStuffing struct {
+	ExecutionID string
+	LoadUnitNo  int
+	TypeCode    string
+	Packs       int64
+	GrossWeight kernel.Quantity
+	Volume      kernel.Quantity
+	Seal        string
+	SealedAt    time.Time
+}
+
+// OceanOperationPlanQueries is FUL's OceanOperationPlan v1 for SEA. An unknown shipment yields ErrNotFound.
+type OceanOperationPlanQueries interface {
+	GetOceanOperationPlan(ctx context.Context, q GetShipmentPlanSnapshot) (OceanOperationPlan, error)
+}
+
 // SecurityScreening is a lot's latest screening result as PHY recorded it: external evidence of the screening
 // party (the airport security station), its method code, reference and time.
 type SecurityScreening struct {

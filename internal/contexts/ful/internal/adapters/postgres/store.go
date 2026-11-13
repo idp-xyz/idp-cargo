@@ -146,6 +146,18 @@ type evidenceRow struct {
 		Reference  string    `json:"reference"`
 		ScreenedAt time.Time `json:"screened_at"`
 	} `json:"screenings"`
+	Stuffings []struct {
+		ExecutionID     string    `json:"execution_id"`
+		LoadUnitNo      int       `json:"load_unit_no"`
+		TypeCode        string    `json:"type_code"`
+		Packs           int64     `json:"packs"`
+		GrossWeightUnit string    `json:"gross_weight_unit"`
+		GrossWeight     int64     `json:"gross_weight"`
+		VolumeUnit      string    `json:"volume_unit"`
+		Volume          int64     `json:"volume"`
+		Seal            string    `json:"seal"`
+		SealedAt        time.Time `json:"sealed_at"`
+	} `json:"stuffings"`
 	ExecutionStatus string    `json:"execution_status"`
 	DepartedFinal   int64     `json:"departed_final"`
 	RecordedBy      string    `json:"recorded_by"`
@@ -159,6 +171,12 @@ func (e evidenceRow) version() ful.EvidenceVersion {
 		screenings = append(screenings, ful.Screening{LotID: s.LotID, Outcome: s.Outcome, Screener: s.Screener, Method: s.Method, Reference: s.Reference,
 			ScreenedAt: utc(s.ScreenedAt)})
 	}
+	var stuffings []ful.Stuffing
+	for _, s := range e.Stuffings {
+		stuffings = append(stuffings, ful.Stuffing{ExecutionID: s.ExecutionID, LoadUnitNo: s.LoadUnitNo, TypeCode: s.TypeCode,
+			Scope: ful.CargoScope{Packs: s.Packs, GrossWeight: quantity(s.GrossWeightUnit, s.GrossWeight), Volume: quantity(s.VolumeUnit, s.Volume)},
+			Seal:  s.Seal, SealedAt: utc(s.SealedAt)})
+	}
 	return ful.EvidenceVersion{No: e.EvidenceNo, Digest: e.Digest, Execution: ful.ExecutionStatus(e.ExecutionStatus), Final: e.DepartedFinal, By: e.RecordedBy,
 		At: utc(e.RecordedAt), EnteredAt: utc(e.EnteredAt), Evidence: ful.LoadEvidence{Lots: e.Lots, ReceiptComplete: e.ReceiptComplete,
 			Received: ful.CargoScope{Packs: e.ReceivedPacks, GrossWeight: quantity(e.ReceivedWeightUnit, e.ReceivedWeight),
@@ -167,7 +185,7 @@ func (e evidenceRow) version() ful.EvidenceVersion {
 			Tendered: ful.CargoScope{Packs: e.TenderedPacks, GrossWeight: quantity(e.TenderedWeightUnit, e.TenderedWeight),
 				Volume: quantity(e.TenderedVolumeUnit, e.TenderedVolume)},
 			Departed: e.Departed, Arrived: e.Arrived, Offloaded: e.Offloaded, Security: ful.Security(e.Security),
-			OpenDiscrepancies: e.OpenDiscrepancies, Screenings: screenings}}
+			OpenDiscrepancies: e.OpenDiscrepancies, Screenings: screenings, Stuffings: stuffings}}
 }
 
 type confirmationRow struct {
@@ -217,6 +235,8 @@ func readShipment(ctx context.Context, q queryRower, tenant ful.TenantID, id ful
           WHERE a.tenant_id=s.tenant_id AND a.shipment_id=s.shipment_id),
         (SELECT coalesce(json_agg(to_jsonb(e) || jsonb_build_object('screenings',
             (SELECT coalesce(jsonb_agg(to_jsonb(x) ORDER BY x.screening_no), '[]') FROM cargo_ful.shipment_load_evidence_screening x
+              WHERE x.tenant_id=e.tenant_id AND x.shipment_id=e.shipment_id AND x.evidence_no=e.evidence_no),
+            'stuffings', (SELECT coalesce(jsonb_agg(to_jsonb(x) ORDER BY x.stuffing_no), '[]') FROM cargo_ful.shipment_load_evidence_stuffing x
               WHERE x.tenant_id=e.tenant_id AND x.shipment_id=e.shipment_id AND x.evidence_no=e.evidence_no)) ORDER BY e.evidence_no), '[]')
           FROM cargo_ful.shipment_load_evidence e WHERE e.tenant_id=s.tenant_id AND e.shipment_id=s.shipment_id)
       FROM cargo_ful.shipment s WHERE s.tenant_id=$1 AND s.shipment_id=$2`, string(tenant), string(id)).Scan(
@@ -430,6 +450,16 @@ func (s ShipmentStore) writeAdded(ctx context.Context, q bentopg.Executor, shipm
 			if _, err := q.Exec(ctx, `INSERT INTO cargo_ful.shipment_load_evidence_screening (tenant_id,shipment_id,evidence_no,screening_no,lot_id,outcome,
                 screener,method,reference,screened_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
 				string(st.TenantID), string(st.ShipmentID), v.No, i+1, sc.LotID, sc.Outcome, sc.Screener, sc.Method, sc.Reference, sc.ScreenedAt); err != nil {
+				return err
+			}
+		}
+		for i, sf := range e.Stuffings {
+			if _, err := q.Exec(ctx, `INSERT INTO cargo_ful.shipment_load_evidence_stuffing (tenant_id,shipment_id,evidence_no,stuffing_no,execution_id,
+                load_unit_no,type_code,packs,gross_weight_unit,gross_weight,volume_unit,volume,seal,sealed_at)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+				string(st.TenantID), string(st.ShipmentID), v.No, i+1, sf.ExecutionID, sf.LoadUnitNo, sf.TypeCode, sf.Scope.Packs,
+				orNull(string(sf.Scope.GrossWeight.Unit)), sf.Scope.GrossWeight.Amount, orNull(string(sf.Scope.Volume.Unit)), sf.Scope.Volume.Amount,
+				sf.Seal, sf.SealedAt); err != nil {
 				return err
 			}
 		}

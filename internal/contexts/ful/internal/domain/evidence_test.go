@@ -136,4 +136,39 @@ func TestEvidenceDigestKeepsItsV235Form(t *testing.T) {
 	if e.Digest() == v235 {
 		t.Fatal("screenings are part of the digest")
 	}
+	withScreenings := e.Digest()
+	e.Stuffings = []Stuffing{{ExecutionID: "X-1", LoadUnitNo: 1, TypeCode: "22G1", Scope: CargoScope{Packs: 6, GrossWeight: kg(318)}, Seal: "SEAL-1",
+		SealedAt: time.Date(2026, 11, 13, 8, 0, 0, 0, time.UTC)}}
+	if e.Digest() == withScreenings {
+		t.Fatal("stuffings are part of the digest")
+	}
+}
+
+func TestStuffingEvidenceRules(t *testing.T) {
+	kg := func(n int64) kernel.Quantity { return kernel.Quantity{Unit: "KGM", Amount: n} }
+	at := time.Date(2026, 11, 13, 8, 0, 0, 0, time.UTC)
+	good := Stuffing{ExecutionID: "X-1", LoadUnitNo: 1, TypeCode: "22G1", Scope: CargoScope{Packs: 6, GrossWeight: kg(318)}, Seal: "SEAL-1", SealedAt: at}
+	base := LoadEvidence{Lots: 1, ReceiptComplete: true, Received: CargoScope{Packs: 6, GrossWeight: kg(318)}, ConsolidationID: "C-1",
+		Tendered: CargoScope{Packs: 6, GrossWeight: kg(318)}}
+	for name, tc := range map[string]struct {
+		mutate func(*LoadEvidence)
+		valid  bool
+	}{
+		"a sealed container": {func(e *LoadEvidence) {}, true},
+		"no consolidation":   {func(e *LoadEvidence) { e.ConsolidationID, e.Tendered = "", CargoScope{} }, false},
+		"no packs":           {func(e *LoadEvidence) { e.Stuffings[0].Scope.Packs = 0 }, false},
+		"no unit":            {func(e *LoadEvidence) { e.Stuffings[0].LoadUnitNo = 0 }, false},
+		"no seal":            {func(e *LoadEvidence) { e.Stuffings[0].Seal = " " }, false},
+		"no time":            {func(e *LoadEvidence) { e.Stuffings[0].SealedAt = time.Time{} }, false},
+		"no execution":       {func(e *LoadEvidence) { e.Stuffings[0].ExecutionID = "" }, false},
+		"a negative weight":  {func(e *LoadEvidence) { e.Stuffings[0].Scope.GrossWeight = kg(-1) }, false},
+		"no size-type":       {func(e *LoadEvidence) { e.Stuffings[0].TypeCode = "" }, false},
+	} {
+		e := base
+		e.Stuffings = []Stuffing{good}
+		tc.mutate(&e)
+		if got := e.valid(); got != tc.valid {
+			t.Errorf("%s: valid %v", name, got)
+		}
+	}
 }

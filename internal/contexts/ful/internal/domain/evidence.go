@@ -79,6 +79,27 @@ type LoadEvidence struct {
 	// party; DOC needs who screened, how and when. Left out of the digest while empty, so that versions recorded
 	// before FUL kept them keep their digests.
 	Screenings []Screening `json:",omitempty"`
+	// Stuffings are the sealed containers of the attached consolidation with packs of the shipment (PHY V0.3), for
+	// SEA's OceanOperationPlan v1. Left out of the digest while empty, as Screenings are.
+	Stuffings []Stuffing `json:",omitempty"`
+}
+
+// Stuffing is a sealed container of the consolidation FUL records the shipment attached to, with the shipment's
+// live packs in it as PHY measures them (lines measured for themselves as measured, apportioned lines at their
+// lot's latest measurement) and the seal PHY recorded as its closing evidence. The container's number and plate
+// are SEA's; PHY gives the planned unit's number and ISO 6346 size-type.
+type Stuffing struct {
+	ExecutionID string
+	LoadUnitNo  int
+	TypeCode    string
+	Scope       CargoScope
+	Seal        string
+	SealedAt    time.Time
+}
+
+func (s Stuffing) valid() bool {
+	return identifier(s.ExecutionID) && s.LoadUnitNo > 0 && identifier(s.TypeCode) && s.Scope.Packs > 0 && s.Scope.GrossWeight.Amount >= 0 &&
+		s.Scope.Volume.Amount >= 0 && text(s.Seal) && !s.SealedAt.IsZero()
 }
 
 // Screening is a lot's latest screening result as PHY records it.
@@ -105,6 +126,11 @@ func (e LoadEvidence) Digest() string {
 func (e LoadEvidence) valid() bool {
 	for _, s := range e.Screenings {
 		if !s.valid() {
+			return false
+		}
+	}
+	for _, s := range e.Stuffings {
+		if !s.valid() || e.ConsolidationID == "" {
 			return false
 		}
 	}

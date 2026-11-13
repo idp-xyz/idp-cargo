@@ -85,6 +85,11 @@ func (e Evidence) Evidence(ctx context.Context, tenant ful.TenantID, shipment fu
 			continue // tendered means handed over: the tender receipt is recorded
 		}
 		out.Tendered.Packs += t.LoadedPacks
+		if t.Kind == phyapi.ExecutionStuffing && t.LoadedPacks > 0 {
+			out.Stuffings = append(out.Stuffings, ful.Stuffing{ExecutionID: t.ExecutionID, LoadUnitNo: t.LoadUnitNo, TypeCode: t.LoadUnitType,
+				Scope: ful.CargoScope{Packs: t.LoadedPacks, GrossWeight: t.GrossWeight, Volume: t.Volume}, Seal: t.CloseEvidence.Reference,
+				SealedAt: t.ClosedAt.UTC()})
+		}
 		tenderedWeight.add(t.GrossWeight)
 		tenderedVolume.add(t.Volume)
 		tenderedVolume.unknown = tenderedVolume.unknown || (t.LoadedPacks > 0 && t.Volume.Unit == "")

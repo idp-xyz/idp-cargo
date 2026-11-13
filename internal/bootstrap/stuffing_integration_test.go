@@ -15,7 +15,8 @@ import (
 
 // Sea freight part 1b-ii with the real COM, FUL and PHY and the real reference data: two LCL orders planned as SEA
 // houses of an own-container consolidation, a 22G1 planned, the houses frozen, received and weighed at the CFS,
-// stuffed into the container and sealed; FUL takes the sealed container's measures as tendered (OD-2).
+// stuffed into the container and sealed; FUL takes the sealed container's measures as tendered and relays the
+// container in OceanOperationPlan v1 (OD-2).
 func TestStuffingAnOwnContainerWithEveryContext(t *testing.T) {
 	ctx := context.Background()
 	platform := openPlatform(t)
@@ -103,10 +104,13 @@ func TestStuffingAnOwnContainerWithEveryContext(t *testing.T) {
 		ShipmentID: "SH-L", ExpectedRevision: 4, OccurredAt: hours(13)}); err != nil {
 		t.Fatal(err)
 	}
-	// FUL relays the measures in its operation plan; OceanOperationPlan v1 comes with part 1c, so the plan FUL answers
-	// for any shipment is read here.
-	plan, err := fulModule.GetAirOperationPlan(ctx, fulapi.GetShipmentPlanSnapshot{TenantID: tenant, ShipmentID: "SH-L"})
-	if err != nil || plan.MeasuredBasis != fulapi.MeasuredTendered || plan.MeasuredPacks != 6 || plan.MeasuredGrossWeight != kg(300) {
-		t.Fatalf("FUL's measures of SH-L: %+v %v", plan, err)
+	plan, err := fulModule.GetOceanOperationPlan(ctx, fulapi.GetShipmentPlanSnapshot{TenantID: tenant, ShipmentID: "SH-L"})
+	if err != nil || plan.MeasuredBasis != fulapi.MeasuredTendered || plan.MeasuredPacks != 6 || plan.MeasuredGrossWeight != kg(300) ||
+		plan.ContainerMode != fulapi.ContainerLCL || plan.ConsolidationID != "C-1" || len(plan.Parts) != 1 || plan.Parts[0].GoodsDescription == "" {
+		t.Fatalf("FUL's OceanOperationPlan v1 of SH-L: %+v %v", plan, err)
+	}
+	if len(plan.Stuffings) != 1 || plan.Stuffings[0] != (fulapi.ContainerStuffing{ExecutionID: "X-1", LoadUnitNo: 1, TypeCode: "22G1", Packs: 6,
+		GrossWeight: kg(300), Seal: "CN-SEAL-77120", SealedAt: hours(12)}) {
+		t.Fatalf("the sealed 22G1 in SH-L's plan: %+v", plan.Stuffings)
 	}
 }

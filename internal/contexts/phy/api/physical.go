@@ -607,7 +607,8 @@ type TenderEvidence struct {
 	Kind              string
 	State             string
 	Facility          Facility
-	LoadUnitNo        int // the container of a STUFFING (PHY V0.3), whose seal is the closing evidence
+	LoadUnitNo        int    // the container of a STUFFING (PHY V0.3), whose seal is the closing evidence
+	LoadUnitType      string // its ISO 6346 size-type (PHY V0.3)
 	LoadedPacks       int64
 	GrossWeight       kernel.Quantity
 	Volume            kernel.Quantity

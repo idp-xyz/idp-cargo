@@ -70,3 +70,27 @@ func TestEvidenceIsSummedAsFULKeepsIt(t *testing.T) {
 		t.Fatalf("a lot or tender without a volume makes the volume unknown: %+v", e)
 	}
 }
+
+// A sealed container of the attached consolidation with packs of the shipment is relayed; a stuffing still loading,
+// one of another consolidation and a tender are not.
+func TestSealedContainersAreRelayed(t *testing.T) {
+	at := time.Date(2026, 11, 13, 8, 0, 0, 0, time.UTC)
+	kg := func(n int64) kernel.Quantity { return kernel.Quantity{Unit: "KGM", Amount: n} }
+	seal := phyapi.Evidence{Source: phyapi.EvidenceSeal, Reference: "SEAL-1", OccurredAt: at}
+	got := phyapi.PhysicalLoadEvidence{TenantID: "T", ShipmentID: "SH-1", Tenders: []phyapi.TenderEvidence{
+		{ExecutionID: "X-1", ConsolidationID: "C-1", Kind: phyapi.ExecutionStuffing, State: phyapi.ExecutionClosed, LoadUnitNo: 1, LoadUnitType: "22G1",
+			LoadedPacks: 4, GrossWeight: kg(200), ClosedAt: at, CloseEvidence: seal},
+		{ExecutionID: "X-2", ConsolidationID: "C-1", Kind: phyapi.ExecutionStuffing, State: phyapi.ExecutionLoading, LoadUnitNo: 2, LoadUnitType: "22G1",
+			LoadedPacks: 1, GrossWeight: kg(50)},
+		{ExecutionID: "X-3", ConsolidationID: "C-0", Kind: phyapi.ExecutionStuffing, State: phyapi.ExecutionClosed, LoadUnitNo: 1, LoadUnitType: "42G1",
+			LoadedPacks: 2, GrossWeight: kg(100), ClosedAt: at, CloseEvidence: seal},
+		{ExecutionID: "X-4", ConsolidationID: "C-1", Kind: phyapi.ExecutionStuffing, State: phyapi.ExecutionClosed, LoadUnitNo: 3, LoadUnitType: "22G1",
+			ClosedAt: at, CloseEvidence: seal}, // every pack of the shipment taken out again
+	}}
+	e, err := Evidence{PHY: evidenceStub{got: got}}.Evidence(context.Background(), "T", "SH-1", "C-1", false)
+	want := []ful.Stuffing{{ExecutionID: "X-1", LoadUnitNo: 1, TypeCode: "22G1", Scope: ful.CargoScope{Packs: 4, GrossWeight: kg(200)}, Seal: "SEAL-1",
+		SealedAt: at}}
+	if err != nil || !reflect.DeepEqual(e.Stuffings, want) || e.Tendered.Packs != 4 {
+		t.Fatalf("stuffings %+v, tendered %+v (%v)", e.Stuffings, e.Tendered, err)
+	}
+}
