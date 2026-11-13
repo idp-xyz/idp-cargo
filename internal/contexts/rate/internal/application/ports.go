@@ -156,11 +156,17 @@ func (d Deps) replay(ctx context.Context, tenant rate.TenantID, commandID, hash 
 }
 
 // write commits mutate's quote, its Outbox events and the command receipt in one transaction. A receipt
-// stored meanwhile by a concurrent replay wins.
+// stored meanwhile by a concurrent replay wins; the command id is held first, so that the same command sent twice at
+// once commits once and the other replays its receipt.
 func (d Deps) write(ctx context.Context, s Scope, commandID, hash string, mutate func(context.Context) (*rate.Quote, int64, error)) (Receipt, error) {
 	var result Receipt
 	var changed *rate.Quote
 	err := d.Tx.WithinTransaction(ctx, func(txCtx context.Context) error {
+		if l, ok := d.Receipts.(commandLocker); ok {
+			if err := l.Lock(txCtx, s.TenantID, commandID); err != nil {
+				return err
+			}
+		}
 		r, ok, err := d.Receipts.Find(txCtx, s.TenantID, commandID)
 		if err != nil {
 			return err

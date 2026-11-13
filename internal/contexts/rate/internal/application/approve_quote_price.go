@@ -27,6 +27,24 @@ func (h ApproveQuotePrice) Handle(ctx context.Context, c ApproveQuotePriceComman
 	if err := h.check(ctx, c.Scope, c.CommandID, c.OccurredAt); err != nil {
 		return Receipt{}, err
 	}
+	// authorized before a replay too; the quote's author approves only with ApproveOwnQuotePrice (R3)
+	if err := h.Auth.RequireQuoteAction(ctx, c.Scope, ActionApproveQuotePrice, c.QuoteID); err != nil {
+		return Receipt{}, fmt.Errorf("%w: %v", ErrUnauthorized, err)
+	}
+	var author string
+	if err := h.Tx.WithinTransaction(ctx, func(txCtx context.Context) error {
+		quote, _, err := h.Quotes.Load(txCtx, c.Scope.TenantID, c.QuoteID)
+		if err == nil {
+			author = quote.Author()
+		}
+		return err
+	}); err != nil {
+		return Receipt{}, err
+	}
+	if author == c.Scope.ActorID && h.Auth.RequireQuoteAction(ctx, c.Scope, ActionApproveOwnQuotePrice, c.QuoteID) != nil {
+		// a permission the author lacks (R3): refused as unauthorized, a replay of an earlier self-approval too
+		return Receipt{}, fmt.Errorf("%w: %w", ErrUnauthorized, rate.ErrSelfApproval)
+	}
 	hash, err := requestHash(c)
 	if err != nil {
 		return Receipt{}, err

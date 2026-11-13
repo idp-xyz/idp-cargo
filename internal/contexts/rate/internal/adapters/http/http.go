@@ -15,10 +15,11 @@ import (
 // bc is RATE's name in permissions ("rate:<Action>", "rate:Read").
 const bc = "rate"
 
-// Service is what the adapter calls: RATE's catalogue, card and rating commands and queries.
+// Service is what the adapter calls: RATE's catalogue, card, rating and quote commands and queries.
 type Service interface {
 	api.RateCardCommands
 	api.RateCardQueries
+	QuoteService
 }
 
 var kinds = httpapi.Errors{Unauthenticated: api.ErrUnauthenticated, Unauthorized: api.ErrUnauthorized, NotFound: api.ErrNotFound,
@@ -34,6 +35,7 @@ func Register(mux *nethttp.ServeMux, s Service) {
 	mux.HandleFunc("POST /v1/charge-codes/{code}/deactivate", h.deactivateChargeCode)
 	mux.HandleFunc("POST /v1/charge-codes/{code}/reactivate", h.reactivateChargeCode)
 	registerCards(mux, h)
+	registerQuotes(mux, s)
 }
 
 type handlers struct{ s Service }

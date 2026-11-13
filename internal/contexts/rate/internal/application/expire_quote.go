@@ -24,6 +24,10 @@ func (h ExpireQuote) Handle(ctx context.Context, c ExpireQuoteCommand) (Receipt,
 	if err := h.check(ctx, c.Scope, c.CommandID, c.OccurredAt); err != nil {
 		return Receipt{}, err
 	}
+	// authorized before a replay too
+	if err := h.Auth.RequireQuoteAction(ctx, c.Scope, ActionExpireQuote, c.QuoteID); err != nil {
+		return Receipt{}, fmt.Errorf("%w: %v", ErrUnauthorized, err)
+	}
 	hash, err := requestHash(c)
 	if err != nil {
 		return Receipt{}, err

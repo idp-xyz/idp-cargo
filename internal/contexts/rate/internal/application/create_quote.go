@@ -58,6 +58,16 @@ func (h CreateQuote) Handle(ctx context.Context, c CreateQuoteCommand) (Receipt,
 	if c.Kind == rate.KindOneOff { // the default kind hashes as an omitted one, so a retry that names it replays
 		c.Kind = ""
 	}
+	// authorized before a replay too: a replay answers only an actor still allowed, and a key in use tells no one else
+	if err := h.Auth.RequireQuoteAction(ctx, c.Scope, ActionCreateQuote, c.QuoteID); err != nil {
+		return Receipt{}, fmt.Errorf("%w: %v", ErrUnauthorized, err)
+	}
+	if c.Kind == rate.KindAgreement && c.Agreement != nil {
+		// an agreement fixes the customer's draft until it expires: only one who maintains sell rates may name it
+		if err := h.Auth.RequireQuoteAction(ctx, c.Scope, ActionMaintainSellRates, rate.QuoteID(c.Agreement.RateCardID)); err != nil {
+			return Receipt{}, fmt.Errorf("%w: %v", ErrUnauthorized, err)
+		}
+	}
 	hash, err := requestHash(c)
 	if err != nil {
 		return Receipt{}, err
@@ -70,15 +80,6 @@ func (h CreateQuote) Handle(ctx context.Context, c CreateQuoteCommand) (Receipt,
 	}
 	if c.Kind == rate.KindAgreement && (h.Cards == nil || h.Agreements == nil) {
 		return Receipt{}, ErrMissingDependency
-	}
-	if err = h.Auth.RequireQuoteAction(ctx, c.Scope, ActionCreateQuote, c.QuoteID); err != nil {
-		return Receipt{}, fmt.Errorf("%w: %v", ErrUnauthorized, err)
-	}
-	if c.Kind == rate.KindAgreement && c.Agreement != nil {
-		// an agreement fixes the customer's draft until it expires: only one who maintains sell rates may name it
-		if err = h.Auth.RequireQuoteAction(ctx, c.Scope, ActionMaintainSellRates, rate.QuoteID(c.Agreement.RateCardID)); err != nil {
-			return Receipt{}, fmt.Errorf("%w: %v", ErrUnauthorized, err)
-		}
 	}
 	recipient := c.Recipient
 	if recipient == "" {
