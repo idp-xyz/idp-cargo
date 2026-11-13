@@ -98,7 +98,25 @@ type CreateQuote struct {
 	Terms           CommercialTerms
 	Validity        kernel.ValidityInterval
 	Scope           *QuoteScope
-	OccurredAt      time.Time
+	// V0.5 part 3b: Kind is ONE_OFF (empty) or AGREEMENT. An AGREEMENT has no lines: it names the DRAFT version of the
+	// customer's CUSTOMER SELL card it prices with (one entry per lane, valid over the quote's validity) and a scope of
+	// its mode only; each lane is checked against the valid buy rates at a reference quantity (AGREEMENT_BELOW_FLOOR),
+	// converted at the quote's exchange rates. Accepting it publishes the version.
+	Kind       string
+	Agreement  *AgreementRef
+	OccurredAt time.Time
+}
+
+// Quote kinds (V0.5 part 3b).
+const (
+	QuoteOneOff    = "ONE_OFF"
+	QuoteAgreement = "AGREEMENT"
+)
+
+// AgreementRef is the customer card version an AGREEMENT quote prices with.
+type AgreementRef struct {
+	RateCardID string
+	Version    int
 }
 
 // DiscountPolicy may be implemented by a MarginPolicy: how far below the rated sell, in basis points of it, an
@@ -130,7 +148,8 @@ const (
 
 // AcceptQuote records the customer's acceptance at OccurredAt, within the quote's validity, with the kind
 // and reference of its evidence. OccurredAt may be up to the record window earlier than the time RATE
-// records it, which is kept too (T1).
+// records it, which is kept too (T1). Accepting an AGREEMENT publishes its customer card version in the same
+// transaction (V0.5 part 3b).
 type AcceptQuote struct {
 	CommandID        string
 	TenantID         string

@@ -5,6 +5,7 @@ import (
 
 	"go.idp.xyz/idp-cargo/internal/contexts/rate/api"
 	"go.idp.xyz/idp-cargo/internal/contexts/rate/internal/domain"
+	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
 var _ api.QuoteSnapshotV3Queries = (*Module)(nil)
@@ -22,7 +23,11 @@ func (m *Module) GetQuoteSnapshotV3(ctx context.Context, q api.GetQuoteSnapshot)
 		return api.QuoteSnapshotV3{}, err
 	}
 	s := quote.State()
-	out := api.QuoteSnapshotV3{QuoteSnapshotV2: v2, Kind: "ONE_OFF"}
+	out := api.QuoteSnapshotV3{QuoteSnapshotV2: v2, Kind: string(quote.Kind())}
+	if a := s.Agreement; a != nil {
+		// an agreement prices by lane with its card; it has no total COM could take as a commitment (OD-5)
+		out.Agreement, out.Total = &api.AgreementRef{RateCardID: string(a.RateCardID), Version: a.Version}, kernel.Money{}
+	}
 	if sc := s.Scope; sc != nil {
 		out.Scope = &api.QuoteScope{Mode: string(sc.Mode), ContainerMode: string(sc.ContainerMode), Origin: sc.Origin, Destination: sc.Destination,
 			Via: sc.Via, Carrier: sc.Carrier, Cargo: api.Cargo{Pieces: sc.Cargo.Pieces, GrossGrams: sc.Cargo.GrossGrams, VolumeCM3: sc.Cargo.VolumeCM3,

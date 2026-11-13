@@ -15,6 +15,7 @@ import (
 
 type rateStub struct {
 	snapshot rateapi.QuoteSnapshotV2
+	v3       *rateapi.QuoteSnapshotV3 // when set, the V3 answer; otherwise snapshot as a ONE_OFF quote
 	err      error
 	levels   map[string]string
 }
@@ -23,8 +24,15 @@ func (r rateStub) GetQuoteSnapshotV2(context.Context, rateapi.GetQuoteSnapshot) 
 	return r.snapshot, r.err
 }
 
+func (r rateStub) GetQuoteSnapshotV3(context.Context, rateapi.GetQuoteSnapshot) (rateapi.QuoteSnapshotV3, error) {
+	if r.v3 != nil {
+		return *r.v3, r.err
+	}
+	return rateapi.QuoteSnapshotV3{QuoteSnapshotV2: r.snapshot, Kind: rateapi.QuoteOneOff}, r.err
+}
+
 func (r rateStub) GetQuoteSnapshot(context.Context, rateapi.GetQuoteSnapshot) (rateapi.QuoteSnapshot, error) {
-	return rateapi.QuoteSnapshot{}, errors.New("COM reads QuoteSnapshot v2")
+	return rateapi.QuoteSnapshot{}, errors.New("COM reads QuoteSnapshotV3")
 }
 
 func (r rateStub) GetServiceLevel(_ context.Context, q rateapi.GetServiceLevel) (rateapi.ServiceLevel, error) {
@@ -118,6 +126,60 @@ func TestQuotesTranslateQuoteSnapshotV2(t *testing.T) {
 		_, err := (Quotes{RATE: stub}).AcceptedQuote(context.Background(), "T", "Q-1")
 		if !errors.Is(err, app.ErrQuoteNotAccepted) || errors.Is(err, rateapi.ErrNotFound) || errors.Is(err, repositoryNotFound) {
 			t.Errorf("%s: err = %v, want only ErrQuoteNotAccepted in its chain", name, err)
+		}
+	}
+}
+
+// An AGREEMENT is read from QuoteSnapshotV3: no total, the v3 contract, a hash of its card version and mode
+// (OD-5 A); a ONE_OFF quote read the same way keeps its v2 contract and hash.
+func TestQuotesTranslateAgreements(t *testing.T) {
+	agreement := func() rateapi.QuoteSnapshotV3 {
+		s := snapshot()
+		s.Lines, s.Total, s.ExchangeRates = nil, kernel.Money{}, nil
+		return rateapi.QuoteSnapshotV3{QuoteSnapshotV2: s, Kind: rateapi.QuoteAgreement, Scope: &rateapi.QuoteScope{Mode: "AIR", ContainerMode: "LOOSE"},
+			Agreement: &rateapi.AgreementRef{RateCardID: "C-ACME", Version: 1}}
+	}
+	a := agreement()
+	q, err := Quotes{RATE: rateStub{v3: &a}}.AcceptedQuote(context.Background(), "T", "Q-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, _ := TermsHashV3(a)
+	if q.Kind != com.QuoteAgreement || q.TermsContract != com.QuoteSnapshotV3 || q.TermsHash != base || len(base) != 64 ||
+		q.Total != (kernel.Money{Currency: "USD"}) || !q.Validity.Until.Equal(a.Validity.Until) {
+		t.Fatalf("an agreement: %+v", q)
+	}
+	for name, edit := range map[string]func(*rateapi.QuoteSnapshotV3){
+		"card":          func(s *rateapi.QuoteSnapshotV3) { s.Agreement.RateCardID = "C-OTHER" },
+		"version":       func(s *rateapi.QuoteSnapshotV3) { s.Agreement.Version = 2 },
+		"mode":          func(s *rateapi.QuoteSnapshotV3) { s.Scope.Mode, s.Scope.ContainerMode = "SEA", "LCL" },
+		"validity":      func(s *rateapi.QuoteSnapshotV3) { s.Validity.Until = s.Validity.Until.Add(time.Hour) },
+		"approval":      func(s *rateapi.QuoteSnapshotV3) { s.PriceApprovalReasons = []string{"AGREEMENT_BELOW_FLOOR"} },
+		"recipient":     func(s *rateapi.QuoteSnapshotV3) { s.RecipientRole = "CUSTOMER" },
+		"evidence kind": func(s *rateapi.QuoteSnapshotV3) { s.AcceptanceEvidenceKind = "SIGNED_DOCUMENT" },
+	} {
+		changed := agreement()
+		edit(&changed)
+		if h, _ := TermsHashV3(changed); h == base {
+			t.Errorf("changing the %s must change the terms hash", name)
+		}
+	}
+	oneOff := snapshot()
+	q, err = Quotes{RATE: rateStub{v3: &rateapi.QuoteSnapshotV3{QuoteSnapshotV2: oneOff, Kind: rateapi.QuoteOneOff}}}.AcceptedQuote(context.Background(), "T", "Q-1")
+	if v2, _ := TermsHashV2(oneOff); err != nil || q.Kind != com.QuoteOneOff || q.TermsContract != com.QuoteSnapshotV2 || q.TermsHash != v2 || q.Total != oneOff.Total {
+		t.Fatalf("a ONE_OFF quote read from V3: %+v %v", q, err)
+	}
+	for name, v3 := range map[string]rateapi.QuoteSnapshotV3{
+		"an agreement with a total": func() rateapi.QuoteSnapshotV3 {
+			s := agreement()
+			s.Total = kernel.Money{Currency: "USD", Minor: 1}
+			return s
+		}(),
+		"an agreement without its card": func() rateapi.QuoteSnapshotV3 { s := agreement(); s.Agreement = nil; return s }(),
+		"a quote of another kind":       func() rateapi.QuoteSnapshotV3 { s := agreement(); s.Kind = "FRAMEWORK"; return s }(),
+	} {
+		if _, err := (Quotes{RATE: rateStub{v3: &v3}}).AcceptedQuote(context.Background(), "T", "Q-1"); !errors.Is(err, app.ErrQuoteNotAccepted) {
+			t.Errorf("%s: %v", name, err)
 		}
 	}
 }

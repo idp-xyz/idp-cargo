@@ -4,6 +4,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -45,17 +46,22 @@ func readQuote(ctx context.Context, db *bentopg.DB, tenant rate.TenantID, id rat
 	var revision int64
 	var scopeMode, scopeContainer, scopeOrigin, scopeDestination, scopeVia, scopeCarrier *string
 	var scopePieces, scopeGross, scopeVolume, scopeDocuments *int64
+	var kind string
+	var agreementCard *string
+	var agreementVersion *int
 	err = q.QueryRow(ctx, `SELECT legal_entity_id,customer_party_id,customer_party_revision,recipient_role,currency,valid_from,valid_until,
         margin_floor_bp,author,status,approved_by,approved_at,approval_reason_ref,self_approved,
         accepted_by,accepted_at,accepted_recorded_at,acceptance_evidence_kind,acceptance_evidence_ref,accepted_customer_revision,
         expired_at,incoterms_rule,incoterms_version,named_place,service_level,service_level_unlisted,revision,discount_threshold_bp,
-        scope_mode,scope_container_mode,scope_origin,scope_destination,scope_via,scope_carrier,scope_pieces,scope_gross_grams,scope_volume_cm3,scope_documents
+        scope_mode,scope_container_mode,scope_origin,scope_destination,scope_via,scope_carrier,scope_pieces,scope_gross_grams,scope_volume_cm3,scope_documents,
+        kind,agreement_rate_card_id,agreement_version_no
       FROM cargo_rate.quote WHERE tenant_id=$1 AND quote_id=$2`+lock, string(tenant), string(id)).Scan(
 		&entity, &party, &s.Customer.PartyRevision, &recipient, &currency, &s.Validity.From, &s.Validity.Until,
 		&s.MarginFloorBP, &s.Author, &status, &approvedBy, &approvedAt, &approvalReason, &selfApproved,
 		&acceptedBy, &acceptedAt, &acceptedRecordedAt, &evidenceKind, &evidence, &acceptedRevision,
 		&expiredAt, &rule, &version, &place, &service, &unlisted, &revision, &s.DiscountThresholdBP,
-		&scopeMode, &scopeContainer, &scopeOrigin, &scopeDestination, &scopeVia, &scopeCarrier, &scopePieces, &scopeGross, &scopeVolume, &scopeDocuments)
+		&scopeMode, &scopeContainer, &scopeOrigin, &scopeDestination, &scopeVia, &scopeCarrier, &scopePieces, &scopeGross, &scopeVolume, &scopeDocuments,
+		&kind, &agreementCard, &agreementVersion)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, 0, bentorepo.ErrNotFound
 	}
@@ -82,7 +88,13 @@ func readQuote(ctx context.Context, db *bentopg.DB, tenant rate.TenantID, id rat
 	if scopeMode != nil {
 		s.Scope = &rate.QuoteScope{Mode: rate.Mode(*scopeMode), ContainerMode: rate.ContainerMode(deref(scopeContainer)), Origin: deref(scopeOrigin),
 			Destination: deref(scopeDestination), Via: deref(scopeVia), Carrier: deref(scopeCarrier),
-			Cargo: rate.Cargo{Pieces: *scopePieces, GrossGrams: *scopeGross, VolumeCM3: *scopeVolume, Documents: *scopeDocuments}}
+			Cargo: rate.Cargo{Pieces: zero(scopePieces), GrossGrams: zero(scopeGross), VolumeCM3: zero(scopeVolume), Documents: zero(scopeDocuments)}}
+	}
+	if s.Kind = rate.QuoteKind(kind); agreementCard != nil {
+		s.Agreement = &rate.AgreementRef{RateCardID: rate.RateCardID(*agreementCard), Version: *agreementVersion}
+		if s.AgreementChecks, err = readAgreementChecks(ctx, q, tenant, id, s.Currency); err != nil {
+			return nil, 0, err
+		}
 	}
 	rows, err := q.Query(ctx, `SELECT charge_code,sell_currency,sell_minor,cost_currency,cost_minor,source,snapshot_id,sell_snapshot_line_no,
         cost_snapshot_line_no,rated_sell_currency,rated_sell_minor,override_reason,basis,basis_unit,basis_rate_minor,basis_rate_scale,basis_quantity,
@@ -146,6 +158,30 @@ func readQuote(ctx context.Context, db *bentopg.DB, tenant rate.TenantID, id rat
 	return quote, revision, err
 }
 
+// readAgreementChecks reads the margin check of each lane of an AGREEMENT quote (OD-4), amounts in the quote currency.
+func readAgreementChecks(ctx context.Context, q bentopg.Querier, tenant rate.TenantID, id rate.QuoteID, currency kernel.CurrencyCode) ([]rate.AgreementCheck, error) {
+	rows, err := q.Query(ctx, `SELECT entry_no,checked_at,sell_minor,cost_minor FROM cargo_rate.quote_agreement_check
+      WHERE tenant_id=$1 AND quote_id=$2 ORDER BY entry_no`, string(tenant), string(id))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []rate.AgreementCheck
+	for rows.Next() {
+		c := rate.AgreementCheck{Sell: kernel.Money{Currency: currency}, Cost: kernel.Money{Currency: currency}}
+		var cost *int64
+		if err = rows.Scan(&c.EntryNo, &c.At, &c.Sell.Minor, &cost); err != nil {
+			return nil, err
+		}
+		c.At = c.At.UTC()
+		if cost != nil {
+			c.Cost.Minor, c.CostRated = *cost, true
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
 func deref(s *string) string {
 	if s == nil {
 		return ""
@@ -174,18 +210,30 @@ func (s QuoteStore) Insert(ctx context.Context, quote *rate.Quote) (int64, error
 	if sc := st.Scope; sc != nil {
 		scope = []any{string(sc.Mode), string(sc.ContainerMode), sc.Origin, sc.Destination, orNull(sc.Via), orNull(sc.Carrier), sc.Cargo.Pieces,
 			sc.Cargo.GrossGrams, sc.Cargo.VolumeCM3, sc.Cargo.Documents}
+		if quote.Kind() == rate.KindAgreement { // an agreement's scope is its mode; its lanes are its card's entries
+			scope = []any{string(sc.Mode), string(sc.ContainerMode), nil, nil, nil, nil, nil, nil, nil, nil}
+		}
+	}
+	var agreementCard, agreementVersion any
+	if a := st.Agreement; a != nil {
+		agreementCard, agreementVersion = string(a.RateCardID), a.Version
 	}
 	err = q.QueryRow(ctx, `INSERT INTO cargo_rate.quote (tenant_id,quote_id,legal_entity_id,customer_party_id,customer_party_revision,
         recipient_role,currency,valid_from,valid_until,margin_floor_bp,author,status,incoterms_rule,incoterms_version,named_place,service_level,
         discount_threshold_bp,scope_mode,scope_container_mode,scope_origin,scope_destination,scope_via,scope_carrier,scope_pieces,scope_gross_grams,
-        scope_volume_cm3,scope_documents)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27) RETURNING revision`,
-		append([]any{string(st.TenantID), string(st.QuoteID), string(st.LegalEntityID), st.Customer.PartyID, st.Customer.PartyRevision,
+        scope_volume_cm3,scope_documents,kind,agreement_rate_card_id,agreement_version_no)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30) RETURNING revision`,
+		append(append([]any{string(st.TenantID), string(st.QuoteID), string(st.LegalEntityID), st.Customer.PartyID, st.Customer.PartyRevision,
 			string(st.Recipient), string(st.Currency), st.Validity.From, st.Validity.Until, st.MarginFloorBP, st.Author, string(st.Status),
-			orNull(t.IncotermsRule), orNull(t.IncotermsVersion), orNull(t.NamedPlace), orNull(t.ServiceLevel), st.DiscountThresholdBP}, scope...)...).Scan(&revision)
+			orNull(t.IncotermsRule), orNull(t.IncotermsVersion), orNull(t.NamedPlace), orNull(t.ServiceLevel), st.DiscountThresholdBP}, scope...),
+			string(quote.Kind()), agreementCard, agreementVersion)...).Scan(&revision)
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "quote_pkey" {
 		return 0, bentorepo.ErrAlreadyExists
+	}
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "quote_agreement_version_once" {
+		return 0, fmt.Errorf("%w: version %d of card %s is quoted by another agreement that has not expired", rate.ErrInvalidQuote, st.Agreement.Version,
+			st.Agreement.RateCardID)
 	}
 	if err != nil {
 		return 0, err
@@ -222,6 +270,16 @@ func (s QuoteStore) Insert(ctx context.Context, quote *rate.Quote) (int64, error
 			return 0, err
 		}
 	}
+	for _, c := range st.AgreementChecks {
+		var cost any
+		if c.CostRated {
+			cost = c.Cost.Minor
+		}
+		if _, err = q.Exec(ctx, `INSERT INTO cargo_rate.quote_agreement_check (tenant_id,quote_id,entry_no,checked_at,sell_minor,cost_minor)
+          VALUES ($1,$2,$3,$4,$5,$6)`, string(st.TenantID), string(st.QuoteID), c.EntryNo, c.At, c.Sell.Minor, cost); err != nil {
+			return 0, err
+		}
+	}
 	for _, r := range st.ExchangeRates {
 		if _, err = q.Exec(ctx, `INSERT INTO cargo_rate.quote_exchange_rate (tenant_id,quote_id,from_currency,rate,scale,from_digits,quote_digits,source,as_of)
           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, string(st.TenantID), string(st.QuoteID), string(r.From), r.Rate, r.Scale, r.FromDigits,
@@ -230,6 +288,21 @@ func (s QuoteStore) Insert(ctx context.Context, quote *rate.Quote) (int64, error
 		}
 	}
 	return revision, nil
+}
+
+// QuotedBy answers the AGREEMENT quote that has not expired naming a card version, if any.
+func (s QuoteStore) QuotedBy(ctx context.Context, tenant rate.TenantID, card rate.RateCardID, version int) (rate.QuoteID, bool, error) {
+	q, err := s.DB.ReadExecutor(ctx)
+	if err != nil {
+		return "", false, err
+	}
+	var id string
+	err = q.QueryRow(ctx, `SELECT quote_id FROM cargo_rate.quote WHERE tenant_id=$1 AND agreement_rate_card_id=$2 AND agreement_version_no=$3
+        AND kind='AGREEMENT' AND status <> 'EXPIRED'`, string(tenant), string(card), version).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	return rate.QuoteID(id), err == nil, err
 }
 
 // Save writes the quote's status, approval and acceptance if the stored revision is still expected.

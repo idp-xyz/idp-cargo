@@ -24,6 +24,8 @@ type AcceptQuoteCommand struct {
 type AcceptQuote struct {
 	Deps
 	Customers Customers
+	Codes     ChargeCodeStore // AGREEMENT quotes
+	Cards     RateCardStore   // AGREEMENT quotes
 }
 
 func (h AcceptQuote) Handle(ctx context.Context, c AcceptQuoteCommand) (Receipt, error) {
@@ -73,7 +75,42 @@ func (h AcceptQuote) Handle(ctx context.Context, c AcceptQuoteCommand) (Receipt,
 		if err = quote.Accept(c.Scope.ActorID, c.EvidenceKind, c.EvidenceRef, customer.PartyRevision, c.OccurredAt, recorded); err != nil {
 			return nil, 0, err
 		}
+		if quote.Kind() == rate.KindAgreement {
+			if err = h.publishAgreement(txCtx, c.Scope, quote, recorded); err != nil {
+				return nil, 0, err
+			}
+		}
 		newRevision, err := h.Quotes.Save(txCtx, quote, revision)
 		return quote, newRevision, err
 	})
+}
+
+// publishAgreement publishes the customer card version of an accepted AGREEMENT in the acceptance's transaction, with
+// the acceptance as its evidence (RB16): whoever recorded the acceptance publishes it, at the recording time. The
+// version keeps the validity the customer accepted; rating uses it only at business times within the record window.
+func (h AcceptQuote) publishAgreement(ctx context.Context, s Scope, q *rate.Quote, recorded time.Time) error {
+	if h.Codes == nil || h.Cards == nil {
+		return ErrMissingDependency
+	}
+	st := q.State()
+	codes, err := h.Codes.List(ctx, st.TenantID)
+	if err != nil {
+		return err
+	}
+	card, revision, err := h.Cards.Load(ctx, st.TenantID, st.Agreement.RateCardID)
+	if err != nil {
+		return err
+	}
+	if err = card.PublishAgreement(st.Agreement.Version, st.QuoteID, st.Validity, listed(codes), s.ActorID, recorded); err != nil {
+		return err
+	}
+	if _, err = h.Cards.Save(ctx, card, revision); err != nil {
+		return err
+	}
+	for _, e := range card.Pending() {
+		if err = h.Outbox.EnqueueRATEEvent(ctx, e); err != nil {
+			return err
+		}
+	}
+	return nil
 }

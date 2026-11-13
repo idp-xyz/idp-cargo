@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	bentopg "go.idp.xyz/idp-bento-go/postgres"
 	"go.idp.xyz/idp-cargo/internal/contexts/com/api"
 	rateacl "go.idp.xyz/idp-cargo/internal/contexts/com/internal/adapters/rate"
@@ -351,5 +352,62 @@ func TestTermsAndOrderingRoleOnPostgres(t *testing.T) {
 	}
 	if got := read("O-2"); got.role != "OVERSEAS_AGENT" || got.recipient != "OVERSEAS_AGENT" {
 		t.Fatalf("O-2 stored %+v", got)
+	}
+}
+
+// TestAgreementOrdersOnPostgres records orders on an AGREEMENT quote beyond the built-in policy's one order per quote
+// (RATE V0.5 part 3b, OD-5 A): COM keeps QuoteSnapshotV3's terms without a total, reads the orders back, and still
+// counts the orders of a ONE_OFF quote.
+func TestAgreementOrdersOnPostgres(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	f.rate.agreements = map[string]bool{"Q-AG": true}
+	for _, order := range []string{"O-1", "O-2", "O-3"} {
+		if _, err := f.module.RecordCustomerOrder(ctx, f.record(order, "Q-AG", pallets)); err != nil {
+			t.Fatalf("order %s on the agreement: %v", order, err)
+		}
+	}
+	var got string
+	if err := f.within(t, func(ctx context.Context, e bentopg.Executor) error {
+		return e.QueryRow(ctx, `SELECT string_agg(order_id||' '||quote_kind||' '||accepted_terms_contract||' '||coalesce(quote_total_minor::text,'-'),'|'
+          ORDER BY order_id) FROM cargo_com.customer_order WHERE tenant_id=$1`, f.tenant).Scan(&got)
+	}); err != nil || got != "O-1 AGREEMENT QuoteSnapshot.v3 -|O-2 AGREEMENT QuoteSnapshot.v3 -|O-3 AGREEMENT QuoteSnapshot.v3 -" {
+		t.Fatalf("agreement orders: %s %v", got, err)
+	}
+	if _, err := f.module.AllocateOrderToObligation(ctx, f.allocate("O-2", "allocate-O-2", 1, 1, "OB-2", cargo{10, kg(500), dm3(12_000)})); err != nil {
+		t.Fatalf("an agreement order read back: %v", err)
+	}
+	if _, err := f.module.RecordCustomerOrder(ctx, f.record("O-4", "Q-1", pallets)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.module.RecordCustomerOrder(ctx, f.record("O-5", "Q-1", pallets)); !errors.Is(err, api.ErrConflict) {
+		t.Fatalf("a second order on a ONE_OFF quote: %v", err)
+	}
+	// RATE cannot turn a quote into an agreement once it backs ONE_OFF orders, and the kind keeps its total rule
+	f.rate.agreements["Q-1"] = true
+	if _, err := f.module.RecordCustomerOrder(ctx, f.record("O-6", "Q-1", pallets)); err == nil {
+		t.Fatal("an agreement order on a quote that backs ONE_OFF orders")
+	}
+	// an order row unlike its kind is refused; the commitment of an order, its kind included, never changes
+	copyOf := func(order, changes string) string {
+		return `INSERT INTO cargo_com.customer_order SELECT (jsonb_populate_record(NULL::cargo_com.customer_order, to_jsonb(o) || '` + changes + `'::jsonb)).*
+          FROM cargo_com.customer_order o WHERE o.tenant_id=$1 AND o.order_id='` + order + `'`
+	}
+	for name, tc := range map[string]struct{ sql, state, constraint string }{
+		"a total on an agreement order": {copyOf("O-1", `{"order_id":"O-X1","quote_total_minor":100}`), "23514", "customer_order_quote_kind"},
+		"an agreement order under v2": {copyOf("O-1", `{"order_id":"O-X2","accepted_terms_contract":"QuoteSnapshot.v2"}`), "23514",
+			"customer_order_quote_kind"},
+		"a ONE_OFF order without total": {copyOf("O-4", `{"order_id":"O-X3","quote_id":"Q-NEW","quote_total_minor":null}`), "23514",
+			"customer_order_quote_kind"},
+		"a ONE_OFF order under v3": {copyOf("O-4", `{"order_id":"O-X4","quote_id":"Q-NEW-2","accepted_terms_contract":"QuoteSnapshot.v3"}`), "23514",
+			"customer_order_quote_kind"},
+		"an order turned into an agreement order": {`UPDATE cargo_com.customer_order SET quote_kind='AGREEMENT',quote_total_minor=NULL,
+          accepted_terms_contract='QuoteSnapshot.v3' WHERE tenant_id=$1 AND order_id='O-4'`, "23001", ""},
+	} {
+		err := f.exec(t, tc.sql)
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.Code != tc.state || (tc.constraint != "" && pgErr.ConstraintName != tc.constraint) {
+			t.Errorf("%s: %v", name, err)
+		}
 	}
 }

@@ -153,6 +153,11 @@ type QuoteDraft struct {
 	// sell, in basis points of it, an overridden line may sell before it needs approval (RATE_CARD_DISCOUNT).
 	Scope               *QuoteScope
 	DiscountThresholdBP int
+	// V0.5 part 3b: the kind (empty reads as ONE_OFF), and for an AGREEMENT its customer card version and the margin
+	// check of each of its lanes (OD-4).
+	Kind            QuoteKind
+	Agreement       *AgreementRef
+	AgreementChecks []AgreementCheck
 }
 
 // QuoteState is a stored quote, for persistence.
@@ -192,6 +197,7 @@ func PriceQuote(d QuoteDraft, at time.Time) (*Quote, error) {
 	}
 	d.Lines = append([]Line(nil), d.Lines...)
 	d.ExchangeRates = append([]ExchangeRate(nil), d.ExchangeRates...)
+	d.AgreementChecks = append([]AgreementCheck(nil), d.AgreementChecks...)
 	q := &Quote{state: QuoteState{QuoteDraft: d, Status: QuotePriced}}
 	reasons, err := q.ApprovalReasons()
 	if err != nil {
@@ -206,14 +212,26 @@ func PriceQuote(d QuoteDraft, at time.Time) (*Quote, error) {
 
 func (d QuoteDraft) validate() error {
 	switch {
+	case d.kind() != KindOneOff && d.kind() != KindAgreement:
+		return fmt.Errorf("%w: quote kind %q", ErrInvalidQuote, d.Kind)
+	case d.kind() == KindOneOff && (d.Agreement != nil || len(d.AgreementChecks) > 0):
+		return fmt.Errorf("%w: a ONE_OFF quote names no agreement", ErrInvalidQuote)
 	case blank(string(d.TenantID)), blank(string(d.QuoteID)), blank(string(d.LegalEntityID)), blank(d.Customer.PartyID),
-		d.Customer.PartyRevision < 1, !d.Recipient.Valid(), !d.Currency.Valid(), len(d.Lines) == 0, blank(d.Author),
+		d.Customer.PartyRevision < 1, !d.Recipient.Valid(), !d.Currency.Valid(), d.kind() == KindOneOff && len(d.Lines) == 0, blank(d.Author),
 		d.MarginFloorBP < 0, d.MarginFloorBP > 10000, d.DiscountThresholdBP < 0, d.DiscountThresholdBP > 10000:
 		return ErrInvalidQuote
 	case !d.Validity.Valid() || d.Validity.Until.IsZero():
 		return fmt.Errorf("%w: a quote needs a bounded validity", ErrInvalidQuote)
 	}
 	if err := d.Terms.validate(); err != nil {
+		return err
+	}
+	if d.kind() == KindAgreement {
+		if err := d.validateAgreement(); err != nil {
+			return err
+		}
+		// the exchange rates convert the lanes' sell and buy rates for the floor check
+		_, err := newConverter(d.Currency, d.ExchangeRates)
 		return err
 	}
 	if d.Scope != nil {
@@ -260,6 +278,7 @@ func RestoreQuote(s QuoteState) (*Quote, error) {
 	}
 	s.Lines = append([]Line(nil), s.Lines...)
 	s.ExchangeRates = append([]ExchangeRate(nil), s.ExchangeRates...)
+	s.AgreementChecks = append([]AgreementCheck(nil), s.AgreementChecks...)
 	q := &Quote{state: s}
 	reasons, err := q.ApprovalReasons()
 	if err != nil {
@@ -384,6 +403,9 @@ func (q *Quote) Totals() (sell, cost kernel.Money, err error) {
 // ApprovalReasons returns why the quote needs a price approval: a margin below the floor, a discount line,
 // or both; none means it can be accepted without one.
 func (q *Quote) ApprovalReasons() ([]ApprovalReason, error) {
+	if q.state.kind() == KindAgreement {
+		return q.agreementReasons(), nil
+	}
 	below, err := q.BelowMarginFloor()
 	if err != nil {
 		return nil, err
@@ -435,6 +457,11 @@ func (q *Quote) State() QuoteState {
 		s.Scope = &scope
 	}
 	s.ExchangeRates = append([]ExchangeRate(nil), s.ExchangeRates...)
+	s.AgreementChecks = append([]AgreementCheck(nil), s.AgreementChecks...)
+	if s.Agreement != nil {
+		a := *s.Agreement
+		s.Agreement = &a
+	}
 	if s.Approval != nil {
 		a := *s.Approval
 		s.Approval = &a
@@ -449,6 +476,7 @@ func (q *Quote) State() QuoteState {
 func (q *Quote) ID() QuoteID         { return q.state.QuoteID }
 func (q *Quote) Tenant() TenantID    { return q.state.TenantID }
 func (q *Quote) Status() QuoteStatus { return q.state.Status }
+func (q *Quote) Kind() QuoteKind     { return q.state.kind() }
 func (q *Quote) Author() string      { return q.state.Author }
 func (q *Quote) Pending() []Event    { return append([]Event(nil), q.pending...) }
 

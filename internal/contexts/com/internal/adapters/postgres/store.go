@@ -204,6 +204,7 @@ func readOrder(ctx context.Context, q queryRower, tenant com.TenantID, id com.Or
 	var roleUntil, cancelledAt, closedAt, enteredAt *time.Time
 	var cancelledBy, closedBy, rule, version, place, incotermsSource, service, serviceSource, policyEntity *string
 	var revision int64
+	var quoteTotal *int64 // NULL for an AGREEMENT
 	var lineJSON, amendmentJSON, obligationJSON, reservationJSON, retentionJSON, erasureJSON, transportJSON, partyJSON, lockJSON []byte
 	err := q.QueryRow(ctx, `SELECT o.legal_entity_id,o.customer_party_id,o.customer_party_revision,o.customer_legal_name,
         o.customer_country_code,o.customer_role_code,o.customer_role_valid_from,o.customer_role_valid_until,o.customer_role_evidence_ref,
@@ -211,7 +212,7 @@ func readOrder(ctx context.Context, q queryRower, tenant com.TenantID, id com.Or
         o.quote_valid_until,o.quote_accepted_at,o.quote_acceptance_evidence_ref,o.accepted_terms_contract,o.accepted_terms_sha256,
         o.incoterms_rule,o.incoterms_version,o.named_place,o.incoterms_source,o.service_level,o.service_level_source,
         o.policy_scope,o.policy_legal_entity_id,o.policy_version,o.max_orders_per_quote,o.grace_days,
-        o.recorded_by,o.recorded_at,o.entered_at,o.status,o.revision,o.cancelled_by,o.cancelled_at,o.closed_by,o.closed_at,
+        o.recorded_by,o.recorded_at,o.entered_at,o.status,o.revision,o.cancelled_by,o.cancelled_at,o.closed_by,o.closed_at,o.quote_kind,
         (SELECT coalesce(json_agg(l ORDER BY l.line_no), '[]') FROM cargo_com.order_line l
           WHERE l.tenant_id=o.tenant_id AND l.order_id=o.order_id),
         (SELECT coalesce(json_agg(a ORDER BY a.change_no), '[]') FROM cargo_com.order_line_amendment a
@@ -223,11 +224,11 @@ func readOrder(ctx context.Context, q queryRower, tenant com.TenantID, id com.Or
       FROM cargo_com.customer_order o WHERE o.tenant_id=$1 AND o.order_id=$2`, string(tenant), string(id)).Scan(
 		&entity, &s.Customer.PartyID, &s.Customer.PartyRevision, &s.Customer.LegalName,
 		&s.Customer.CountryCode, &s.Customer.RoleCode, &s.Customer.RoleValidity.From, &roleUntil, &s.Customer.RoleEvidenceRef,
-		&s.Quote.QuoteID, &s.Quote.QuoteRevision, &s.Quote.CustomerRevision, &s.Quote.RecipientRole, &currency, &s.Quote.Total.Minor,
+		&s.Quote.QuoteID, &s.Quote.QuoteRevision, &s.Quote.CustomerRevision, &s.Quote.RecipientRole, &currency, &quoteTotal,
 		&s.Quote.Validity.From, &s.Quote.Validity.Until, &s.Quote.AcceptedAt, &s.Quote.EvidenceRef, &s.Quote.TermsContract, &s.Quote.TermsHash,
 		&rule, &version, &place, &incotermsSource, &service, &serviceSource,
 		&scope, &policyEntity, &s.Policy.Version, &s.Policy.MaxOrdersPerQuote, &s.Policy.GraceDays,
-		&s.RecordedBy, &s.RecordedAt, &enteredAt, &status, &revision, &cancelledBy, &cancelledAt, &closedBy, &closedAt,
+		&s.RecordedBy, &s.RecordedAt, &enteredAt, &status, &revision, &cancelledBy, &cancelledAt, &closedBy, &closedAt, &s.Quote.Kind,
 		&lineJSON, &amendmentJSON, &obligationJSON, &reservationJSON, &retentionJSON, &erasureJSON, &transportJSON, &partyJSON, &lockJSON)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, 0, bentorepo.ErrNotFound
@@ -253,6 +254,9 @@ func readOrder(ctx context.Context, q queryRower, tenant com.TenantID, id com.Or
 	}
 	s.Quote.LegalEntityID, s.Quote.CustomerPartyID, s.Status = com.LegalEntityID(entity), s.Customer.PartyID, com.OrderStatus(status)
 	s.Quote.Total.Currency = kernel.CurrencyCode(currency)
+	if quoteTotal != nil {
+		s.Quote.Total.Minor = *quoteTotal
+	}
 	if roleUntil != nil {
 		s.Customer.RoleValidity.Until = *roleUntil
 	}
@@ -326,6 +330,10 @@ func (s OrderStore) Insert(ctx context.Context, order *com.CustomerOrder) (int64
 		roleUntil = c.RoleValidity.Until
 	}
 	tm, p := st.Terms, st.Policy
+	kind, total := com.QuoteOneOff, any(qt.Total.Minor)
+	if qt.Kind == com.QuoteAgreement {
+		kind, total = com.QuoteAgreement, nil
+	}
 	var revision int64
 	err = q.QueryRow(ctx, `INSERT INTO cargo_com.customer_order (tenant_id,order_id,legal_entity_id,customer_party_id,
         customer_party_revision,customer_legal_name,customer_country_code,customer_role_valid_from,customer_role_valid_until,
@@ -333,17 +341,17 @@ func (s OrderStore) Insert(ctx context.Context, order *com.CustomerOrder) (int64
         quote_valid_from,quote_valid_until,quote_accepted_at,quote_acceptance_evidence_ref,accepted_terms_sha256,
         recorded_by,recorded_at,status,customer_role_code,quote_recipient_role,accepted_terms_contract,
         incoterms_rule,incoterms_version,named_place,incoterms_source,service_level,service_level_source,
-        policy_scope,policy_legal_entity_id,policy_version,max_orders_per_quote,grace_days,entered_at)
+        policy_scope,policy_legal_entity_id,policy_version,max_orders_per_quote,grace_days,entered_at,quote_kind)
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,
-        $27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38) RETURNING revision`,
+        $27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39) RETURNING revision`,
 		string(st.TenantID), string(st.OrderID), string(qt.LegalEntityID), c.PartyID,
 		c.PartyRevision, c.LegalName, c.CountryCode, c.RoleValidity.From, roleUntil,
-		c.RoleEvidenceRef, qt.QuoteID, qt.QuoteRevision, qt.CustomerRevision, string(qt.Total.Currency), qt.Total.Minor,
+		c.RoleEvidenceRef, qt.QuoteID, qt.QuoteRevision, qt.CustomerRevision, string(qt.Total.Currency), total,
 		qt.Validity.From, qt.Validity.Until, qt.AcceptedAt, qt.EvidenceRef, qt.TermsHash,
 		st.RecordedBy, st.RecordedAt, string(st.Status), c.RoleCode, qt.RecipientRole, qt.TermsContract,
 		orNull(tm.IncotermsRule), orNull(tm.IncotermsVersion), orNull(tm.NamedPlace), orNull(string(tm.IncotermsSource)),
 		orNull(tm.ServiceLevel), orNull(string(tm.ServiceLevelSource)),
-		string(p.Scope), orNull(string(p.LegalEntityID)), p.Version, p.MaxOrdersPerQuote, p.GraceDays, st.EnteredAt).Scan(&revision)
+		string(p.Scope), orNull(string(p.LegalEntityID)), p.Version, p.MaxOrdersPerQuote, p.GraceDays, st.EnteredAt, kind).Scan(&revision)
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
 		switch {

@@ -81,9 +81,23 @@ func (o *orgStub) ResolvePartyRole(_ context.Context, q orgapi.ResolvePartyRole)
 // rateStub answers RATE's queries: every quote is accepted for P-1 as a customer, unless edit changes it, or
 // the query is refused. STANDARD and EXPRESS are the listed service levels.
 type rateStub struct {
-	at     time.Time
-	refuse error
-	edit   map[string]func(*rateapi.QuoteSnapshotV2)
+	at         time.Time
+	refuse     error
+	edit       map[string]func(*rateapi.QuoteSnapshotV2)
+	agreements map[string]bool // AGREEMENT quotes: no lines, no total, priced with card C-<quote> version 1
+}
+
+func (r *rateStub) GetQuoteSnapshotV3(ctx context.Context, q rateapi.GetQuoteSnapshot) (rateapi.QuoteSnapshotV3, error) {
+	s, err := r.GetQuoteSnapshotV2(ctx, q)
+	if err != nil {
+		return rateapi.QuoteSnapshotV3{}, err
+	}
+	if !r.agreements[q.QuoteID] {
+		return rateapi.QuoteSnapshotV3{QuoteSnapshotV2: s, Kind: rateapi.QuoteOneOff}, nil
+	}
+	s.Lines, s.Total = nil, kernel.Money{}
+	return rateapi.QuoteSnapshotV3{QuoteSnapshotV2: s, Kind: rateapi.QuoteAgreement, Scope: &rateapi.QuoteScope{Mode: "AIR", ContainerMode: "LOOSE"},
+		Agreement: &rateapi.AgreementRef{RateCardID: "C-" + q.QuoteID, Version: 1}}, nil
 }
 
 func (r *rateStub) GetQuoteSnapshotV2(_ context.Context, q rateapi.GetQuoteSnapshot) (rateapi.QuoteSnapshotV2, error) {
@@ -98,7 +112,7 @@ func (r *rateStub) GetQuoteSnapshotV2(_ context.Context, q rateapi.GetQuoteSnaps
 }
 
 func (r *rateStub) GetQuoteSnapshot(context.Context, rateapi.GetQuoteSnapshot) (rateapi.QuoteSnapshot, error) {
-	return rateapi.QuoteSnapshot{}, errors.New("COM reads QuoteSnapshot v2")
+	return rateapi.QuoteSnapshot{}, errors.New("COM reads QuoteSnapshotV3")
 }
 
 func (r *rateStub) GetServiceLevel(_ context.Context, q rateapi.GetServiceLevel) (rateapi.ServiceLevel, error) {

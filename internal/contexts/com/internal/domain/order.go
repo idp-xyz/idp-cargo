@@ -45,10 +45,20 @@ func orderingRole(r string) bool {
 	return r == RoleCustomer || r == RoleOverseasAgent || r == RoleShipper || r == RoleConsignee
 }
 
-// Contracts of the RATE snapshot an order relies on.
+// Contracts of the RATE snapshot an order relies on: v2 for ONE_OFF quotes (v1 before COM V0.5), QuoteSnapshotV3 for
+// AGREEMENT quotes (RATE V0.5 part 3b).
 const (
 	QuoteSnapshotV1 = "QuoteSnapshot.v1"
 	QuoteSnapshotV2 = "QuoteSnapshot.v2"
+	QuoteSnapshotV3 = "QuoteSnapshot.v3"
+)
+
+// Kinds of the quote an order relies on (C1 option 3, OD-5 A): a ONE_OFF quote backs as many orders as the policy
+// allows and has a total; an AGREEMENT backs any number of orders within its validity (each shipment is rated with
+// the customer's card) and has none.
+const (
+	QuoteOneOff    = "ONE_OFF"
+	QuoteAgreement = "AGREEMENT"
 )
 
 // AcceptedQuote is COM's copy of the RATE snapshot an order relies on: QuoteSnapshot v2 for orders
@@ -69,7 +79,11 @@ type AcceptedQuote struct {
 	Terms            CommercialTerms
 	TermsContract    string
 	TermsHash        string
+	Kind             string // empty for orders recorded before RATE V0.5: ONE_OFF
 }
+
+// agreement reports whether the quote is an AGREEMENT.
+func (q AcceptedQuote) agreement() bool { return q.Kind == QuoteAgreement }
 
 // OrderLine is one goods requirement: packs of one package type with their declared gross weight and,
 // optionally, volume (C3). Lines are numbered from 1.
@@ -231,7 +245,7 @@ func RecordOrder(d OrderDraft, ordersOfQuote int, at, entered time.Time) (*Custo
 	if err = s.validateCommitment(); err != nil {
 		return nil, err
 	}
-	if ordersOfQuote >= d.Policy.MaxOrdersPerQuote {
+	if !d.Quote.agreement() && ordersOfQuote >= d.Policy.MaxOrdersPerQuote {
 		return nil, fmt.Errorf("%w: quote %s backs %d of at most %d", ErrQuoteFullyOrdered, d.Quote.QuoteID, ordersOfQuote, d.Policy.MaxOrdersPerQuote)
 	}
 	o := &CustomerOrder{state: s}
@@ -273,10 +287,13 @@ func (s OrderState) validateCommitment() error {
 	case blank(string(s.TenantID)), blank(string(s.OrderID)), blank(s.RecordedBy), s.RecordedAt.IsZero():
 		return ErrInvalidOrder
 	case blank(q.QuoteID), q.QuoteRevision < 1, blank(string(q.LegalEntityID)), blank(q.CustomerPartyID), q.CustomerRevision < 1,
-		!orderingRole(q.RecipientRole), !q.Total.Currency.Valid(), q.Total.Minor <= 0, !q.Validity.Valid(), q.Validity.Until.IsZero(),
-		!q.Validity.Contains(q.AcceptedAt), blank(q.EvidenceRef), !hexDigest(q.TermsHash),
-		q.TermsContract != QuoteSnapshotV1 && q.TermsContract != QuoteSnapshotV2:
+		!orderingRole(q.RecipientRole), !q.Total.Currency.Valid(), !q.Validity.Valid(), q.Validity.Until.IsZero(),
+		!q.Validity.Contains(q.AcceptedAt), blank(q.EvidenceRef), !hexDigest(q.TermsHash):
 		return fmt.Errorf("%w: accepted quote", ErrInvalidOrder)
+	case q.Kind != "" && q.Kind != QuoteOneOff && q.Kind != QuoteAgreement,
+		!q.agreement() && (q.Total.Minor <= 0 || q.TermsContract != QuoteSnapshotV1 && q.TermsContract != QuoteSnapshotV2),
+		q.agreement() && (q.Total.Minor != 0 || q.TermsContract != QuoteSnapshotV3):
+		return fmt.Errorf("%w: a ONE_OFF quote has a total under QuoteSnapshot v1 or v2, an AGREEMENT none under QuoteSnapshotV3", ErrInvalidOrder)
 	case q.TermsContract == QuoteSnapshotV1 && (q.RecipientRole != RoleCustomer || q.Terms != CommercialTerms{}):
 		return fmt.Errorf("%w: a QuoteSnapshot v1 has no recipient role or terms", ErrInvalidOrder)
 	case blank(c.PartyID), c.PartyRevision < 1, !text(c.LegalName), !countryCode(c.CountryCode), !c.RoleValidity.Valid(),
