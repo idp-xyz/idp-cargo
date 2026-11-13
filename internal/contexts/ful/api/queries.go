@@ -191,8 +191,9 @@ type AirOperationPlan struct {
 // descriptions, and the consolidation FUL recorded the shipment attached to, with the PHY membership entry and
 // revision. Packs, GrossWeight and Volume are planned. Once FUL recorded PHY's evidence (EvidenceVersion > 0) it
 // relays the measures (MeasuredBasis as in AirOperationPlan v1), the execution status, and the sealed containers of
-// the attached consolidation with the shipment's packs in them (Stuffings, PHY V0.3). It carries no names. A shipment
-// not planned by SEA is refused (ErrRejected).
+// the attached consolidation with the shipment's packs in them (Stuffings, PHY V0.3; evidence versions recorded
+// before V2.60 carry none until FUL records the evidence again). It carries no names. Like AirOperationPlan v1 it
+// answers any shipment, with its TransportMode, so that SEA can end the association of a house planned elsewhere.
 type OceanOperationPlan struct {
 	TenantID           string
 	ShipmentID         string
@@ -227,8 +228,10 @@ type OceanOperationPlan struct {
 
 // ContainerStuffing is a sealed container of the attached consolidation with the shipment's live packs in it, as
 // PHY verified them (lines measured for themselves as measured, apportioned lines at their lot's latest
-// measurement): PHY's stuffing (load execution) and planned unit with its ISO 6346 size-type, and the seal PHY
-// recorded as the stuffing's closing evidence. The container's number and plate data are SEA's.
+// measurement): PHY's stuffing (load execution) and planned unit with its ISO 6346 size-type, PHY's load lines of
+// the shipment with live packs in it (with ExecutionID, the PHY evidence ids), and the seal PHY recorded as the
+// stuffing's closing evidence: its number, the SHA-256 of its document when given, and when it was applied. The
+// container's number and plate data are SEA's.
 type ContainerStuffing struct {
 	ExecutionID string
 	LoadUnitNo  int
@@ -236,7 +239,9 @@ type ContainerStuffing struct {
 	Packs       int64
 	GrossWeight kernel.Quantity
 	Volume      kernel.Quantity
+	LineNos     []int
 	Seal        string
+	SealSHA256  string
 	SealedAt    time.Time
 }
 

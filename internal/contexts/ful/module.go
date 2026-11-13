@@ -265,18 +265,15 @@ func (m *Module) GetAirOperationPlan(ctx context.Context, q api.GetShipmentPlanS
 	return plan, nil
 }
 
-// GetOceanOperationPlan answers OceanOperationPlan v1 for SEA: the LoadIntent of a SEA shipment with the PHY
-// membership revision of its current attachment, the measures relayed from PHY's evidence and the sealed containers
-// with packs of it. A shipment not planned by SEA is refused.
+// GetOceanOperationPlan answers OceanOperationPlan v1 for SEA: the LoadIntent of the shipment with the PHY membership
+// revision of its current attachment, the measures relayed from PHY's evidence and the sealed containers with packs of
+// it. Like AirOperationPlan v1 it answers any shipment, with its mode.
 func (m *Module) GetOceanOperationPlan(ctx context.Context, q api.GetShipmentPlanSnapshot) (api.OceanOperationPlan, error) {
 	shipment, revision, err := m.shipment(ctx, q)
 	if err != nil {
 		return api.OceanOperationPlan{}, err
 	}
 	intent := loadIntent(shipment, revision)
-	if intent.TransportMode != api.ModeSea {
-		return api.OceanOperationPlan{}, fmt.Errorf("%w: FUL_NOT_SEA: shipment %s is planned by %q", api.ErrRejected, q.ShipmentID, intent.TransportMode)
-	}
 	plan := api.OceanOperationPlan{TenantID: intent.TenantID, ShipmentID: intent.ShipmentID, Revision: intent.Revision, Status: intent.Status,
 		PlanVersion: intent.PlanVersion, CustomerPartyID: intent.CustomerPartyID, LegalEntityID: intent.LegalEntityID, TransportMode: intent.TransportMode,
 		ContainerMode: intent.ContainerMode, Origin: intent.Origin, Destination: intent.Destination, LocationEdition: intent.LocationEdition,
@@ -294,7 +291,8 @@ func (m *Module) GetOceanOperationPlan(ctx context.Context, q api.GetShipmentPla
 		if v.Evidence.ConsolidationID == intent.ConsolidationID {
 			for _, s := range v.Evidence.Stuffings {
 				plan.Stuffings = append(plan.Stuffings, api.ContainerStuffing{ExecutionID: s.ExecutionID, LoadUnitNo: s.LoadUnitNo, TypeCode: s.TypeCode,
-					Packs: s.Scope.Packs, GrossWeight: s.Scope.GrossWeight, Volume: s.Scope.Volume, Seal: s.Seal, SealedAt: s.SealedAt})
+					Packs: s.Scope.Packs, GrossWeight: s.Scope.GrossWeight, Volume: s.Scope.Volume, LineNos: append([]int(nil), s.Lines...), Seal: s.Seal,
+					SealSHA256: s.SealSHA256, SealedAt: s.SealedAt})
 			}
 		}
 	}

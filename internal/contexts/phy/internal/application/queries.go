@@ -112,7 +112,7 @@ func (r Reads) Execution(ctx context.Context, tenant phy.TenantID, id phy.LoadEx
 }
 
 // Evidence reads a shipment's lots, the load executions with lines of it and, for stuffings, the limits of the
-// units they fill, in one snapshot.
+// units they fill, in one transaction (read committed: each read sees what was committed when it ran).
 func (r Reads) Evidence(ctx context.Context, tenant phy.TenantID, shipment phy.ShipmentID) ([]LotRead, []ExecutionRead,
 	map[phy.LoadExecutionID]phy.UnitLimits, error) {
 	if tenant == "" || shipment == "" {

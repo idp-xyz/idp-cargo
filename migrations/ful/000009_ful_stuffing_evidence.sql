@@ -2,9 +2,10 @@
 -- What SEA needs of a shipment's stuffing for OceanOperationPlan v1 (decision N1-PHY OD-2, option A): with every load
 -- evidence version, the sealed containers of the attached consolidation with packs of the shipment, as PHY verified
 -- them (PhysicalLoadEvidence v1, PHY V0.3): the stuffing, the planned unit's number and ISO 6346 size-type, the
--- shipment's packs, gross weight and volume in it, and the seal PHY recorded as its closing evidence. The container's
--- number and plate are SEA's. Rows are immutable and written with their evidence version; versions recorded before
--- keep none.
+-- shipment's packs, gross weight and volume in it, PHY's load lines of the shipment with live packs in it, and the
+-- seal PHY recorded as its closing evidence (number, document digest when given, when applied). The container's
+-- number and plate are SEA's. Rows are immutable and written with their evidence version. Versions recorded before
+-- keep none: RecordVerifiedLoadEvidence after the upgrade records a sealed container's facts as a new version.
 
 CREATE TABLE cargo_ful.shipment_load_evidence_stuffing (
  tenant_id text NOT NULL,
@@ -19,7 +20,9 @@ CREATE TABLE cargo_ful.shipment_load_evidence_stuffing (
  gross_weight bigint NOT NULL CHECK (gross_weight >= 0),
  volume_unit text CHECK (volume_unit ~ '^[A-Z0-9]{1,3}$'),
  volume bigint NOT NULL CHECK (volume >= 0),
+ line_nos integer[] NOT NULL CHECK (cardinality(line_nos) >= 1 AND 0 < ALL (line_nos) AND array_position(line_nos, NULL) IS NULL),
  seal text NOT NULL CHECK (length(btrim(seal)) BETWEEN 1 AND 500),
+ seal_sha256 char(64) CHECK (seal_sha256 ~ '^[0-9a-f]{64}$'),
  sealed_at timestamptz NOT NULL,
  PRIMARY KEY (tenant_id, shipment_id, evidence_no, stuffing_no),
  FOREIGN KEY (tenant_id, shipment_id, evidence_no) REFERENCES cargo_ful.shipment_load_evidence (tenant_id, shipment_id, evidence_no),

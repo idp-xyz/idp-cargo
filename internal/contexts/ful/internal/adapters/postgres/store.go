@@ -155,7 +155,9 @@ type evidenceRow struct {
 		GrossWeight     int64     `json:"gross_weight"`
 		VolumeUnit      string    `json:"volume_unit"`
 		Volume          int64     `json:"volume"`
+		LineNos         []int     `json:"line_nos"`
 		Seal            string    `json:"seal"`
+		SealSHA256      string    `json:"seal_sha256"`
 		SealedAt        time.Time `json:"sealed_at"`
 	} `json:"stuffings"`
 	ExecutionStatus string    `json:"execution_status"`
@@ -175,7 +177,7 @@ func (e evidenceRow) version() ful.EvidenceVersion {
 	for _, s := range e.Stuffings {
 		stuffings = append(stuffings, ful.Stuffing{ExecutionID: s.ExecutionID, LoadUnitNo: s.LoadUnitNo, TypeCode: s.TypeCode,
 			Scope: ful.CargoScope{Packs: s.Packs, GrossWeight: quantity(s.GrossWeightUnit, s.GrossWeight), Volume: quantity(s.VolumeUnit, s.Volume)},
-			Seal:  s.Seal, SealedAt: utc(s.SealedAt)})
+			Lines: s.LineNos, Seal: s.Seal, SealSHA256: s.SealSHA256, SealedAt: utc(s.SealedAt)})
 	}
 	return ful.EvidenceVersion{No: e.EvidenceNo, Digest: e.Digest, Execution: ful.ExecutionStatus(e.ExecutionStatus), Final: e.DepartedFinal, By: e.RecordedBy,
 		At: utc(e.RecordedAt), EnteredAt: utc(e.EnteredAt), Evidence: ful.LoadEvidence{Lots: e.Lots, ReceiptComplete: e.ReceiptComplete,
@@ -455,11 +457,11 @@ func (s ShipmentStore) writeAdded(ctx context.Context, q bentopg.Executor, shipm
 		}
 		for i, sf := range e.Stuffings {
 			if _, err := q.Exec(ctx, `INSERT INTO cargo_ful.shipment_load_evidence_stuffing (tenant_id,shipment_id,evidence_no,stuffing_no,execution_id,
-                load_unit_no,type_code,packs,gross_weight_unit,gross_weight,volume_unit,volume,seal,sealed_at)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+                load_unit_no,type_code,packs,gross_weight_unit,gross_weight,volume_unit,volume,line_nos,seal,seal_sha256,sealed_at)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
 				string(st.TenantID), string(st.ShipmentID), v.No, i+1, sf.ExecutionID, sf.LoadUnitNo, sf.TypeCode, sf.Scope.Packs,
 				orNull(string(sf.Scope.GrossWeight.Unit)), sf.Scope.GrossWeight.Amount, orNull(string(sf.Scope.Volume.Unit)), sf.Scope.Volume.Amount,
-				sf.Seal, sf.SealedAt); err != nil {
+				sf.Lines, sf.Seal, orNull(sf.SealSHA256), sf.SealedAt); err != nil {
 				return err
 			}
 		}

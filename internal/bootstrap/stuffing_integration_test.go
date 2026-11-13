@@ -4,6 +4,7 @@ package bootstrap
 
 import (
 	"context"
+	"reflect"
 	"testing"
 	"time"
 
@@ -109,8 +110,9 @@ func TestStuffingAnOwnContainerWithEveryContext(t *testing.T) {
 		plan.ContainerMode != fulapi.ContainerLCL || plan.ConsolidationID != "C-1" || len(plan.Parts) != 1 || plan.Parts[0].GoodsDescription == "" {
 		t.Fatalf("FUL's OceanOperationPlan v1 of SH-L: %+v %v", plan, err)
 	}
-	if len(plan.Stuffings) != 1 || plan.Stuffings[0] != (fulapi.ContainerStuffing{ExecutionID: "X-1", LoadUnitNo: 1, TypeCode: "22G1", Packs: 6,
-		GrossWeight: kg(300), Seal: "CN-SEAL-77120", SealedAt: hours(12)}) {
+	want := fulapi.ContainerStuffing{ExecutionID: "X-1", LoadUnitNo: 1, TypeCode: "22G1", Packs: 6, GrossWeight: kg(300), LineNos: []int{1},
+		Seal: "CN-SEAL-77120", SealedAt: hours(12)}
+	if len(plan.Stuffings) != 1 || !reflect.DeepEqual(plan.Stuffings[0], want) {
 		t.Fatalf("the sealed 22G1 in SH-L's plan: %+v", plan.Stuffings)
 	}
 }

@@ -2,6 +2,7 @@ package domain
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -137,7 +138,7 @@ func TestEvidenceDigestKeepsItsV235Form(t *testing.T) {
 		t.Fatal("screenings are part of the digest")
 	}
 	withScreenings := e.Digest()
-	e.Stuffings = []Stuffing{{ExecutionID: "X-1", LoadUnitNo: 1, TypeCode: "22G1", Scope: CargoScope{Packs: 6, GrossWeight: kg(318)}, Seal: "SEAL-1",
+	e.Stuffings = []Stuffing{{ExecutionID: "X-1", LoadUnitNo: 1, TypeCode: "22G1", Scope: CargoScope{Packs: 6, GrossWeight: kg(318)}, Lines: []int{1}, Seal: "SEAL-1",
 		SealedAt: time.Date(2026, 11, 13, 8, 0, 0, 0, time.UTC)}}
 	if e.Digest() == withScreenings {
 		t.Fatal("stuffings are part of the digest")
@@ -147,7 +148,8 @@ func TestEvidenceDigestKeepsItsV235Form(t *testing.T) {
 func TestStuffingEvidenceRules(t *testing.T) {
 	kg := func(n int64) kernel.Quantity { return kernel.Quantity{Unit: "KGM", Amount: n} }
 	at := time.Date(2026, 11, 13, 8, 0, 0, 0, time.UTC)
-	good := Stuffing{ExecutionID: "X-1", LoadUnitNo: 1, TypeCode: "22G1", Scope: CargoScope{Packs: 6, GrossWeight: kg(318)}, Seal: "SEAL-1", SealedAt: at}
+	good := Stuffing{ExecutionID: "X-1", LoadUnitNo: 1, TypeCode: "22G1", Scope: CargoScope{Packs: 6, GrossWeight: kg(318)}, Lines: []int{1, 3},
+		Seal: "SEAL-1", SealSHA256: strings.Repeat("ab", 32), SealedAt: at}
 	base := LoadEvidence{Lots: 1, ReceiptComplete: true, Received: CargoScope{Packs: 6, GrossWeight: kg(318)}, ConsolidationID: "C-1",
 		Tendered: CargoScope{Packs: 6, GrossWeight: kg(318)}}
 	for name, tc := range map[string]struct {
@@ -163,6 +165,10 @@ func TestStuffingEvidenceRules(t *testing.T) {
 		"no execution":       {func(e *LoadEvidence) { e.Stuffings[0].ExecutionID = "" }, false},
 		"a negative weight":  {func(e *LoadEvidence) { e.Stuffings[0].Scope.GrossWeight = kg(-1) }, false},
 		"no size-type":       {func(e *LoadEvidence) { e.Stuffings[0].TypeCode = "" }, false},
+		"no lines":           {func(e *LoadEvidence) { e.Stuffings[0].Lines = nil }, false},
+		"a line zero":        {func(e *LoadEvidence) { e.Stuffings[0].Lines = []int{0} }, false},
+		"a bad seal digest":  {func(e *LoadEvidence) { e.Stuffings[0].SealSHA256 = "AB" }, false},
+		"no seal digest":     {func(e *LoadEvidence) { e.Stuffings[0].SealSHA256 = "" }, true},
 	} {
 		e := base
 		e.Stuffings = []Stuffing{good}

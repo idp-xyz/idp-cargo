@@ -1143,6 +1143,7 @@ func (x *LoadExecution) HouseMeasure(shipment ShipmentID, lots map[CargoLotID]*C
 	}
 	type lotShare struct{ apportioned, measuredPacks, measuredWeight, measuredVolume int64 }
 	byLot := map[CargoLotID]*lotShare{}
+	var order []CargoLotID // lots in the order their lines were loaded, so that the result never depends on map order
 	for _, line := range x.state.Lines {
 		if line.ShipmentID != shipment {
 			continue
@@ -1156,7 +1157,7 @@ func (x *LoadExecution) HouseMeasure(shipment ShipmentID, lots map[CargoLotID]*C
 		_, measured := lot.Measured()
 		if ok && measured && lot.Received() > 0 {
 			if byLot[line.LotID] == nil {
-				byLot[line.LotID] = &lotShare{}
+				byLot[line.LotID], order = &lotShare{}, append(order, line.LotID)
 			}
 			s := byLot[line.LotID]
 			if line.Basis == BasisApportioned {
@@ -1168,7 +1169,8 @@ func (x *LoadExecution) HouseMeasure(shipment ShipmentID, lots map[CargoLotID]*C
 		weight = kernel.Quantity{Unit: line.GrossWeight.Unit, Amount: weight.Amount + w}
 		addVolume(line.Volume.Unit, v)
 	}
-	for id, s := range byLot {
+	for _, id := range order {
+		s := byLot[id]
 		if s.apportioned == 0 {
 			continue
 		}
