@@ -83,6 +83,7 @@ type transportRow struct {
 	Version   int64     `json:"version"`
 	Mode      *string   `json:"transport_mode"`
 	Movement  *string   `json:"movement_type"`
+	Container *string   `json:"container_mode"`
 	Reason    *string   `json:"reason"`
 	ChangedBy string    `json:"changed_by"`
 	ChangedAt time.Time `json:"changed_at"`
@@ -188,8 +189,9 @@ func restoreParties(s *com.OrderState, transportJSON, partyJSON []byte) error {
 	}
 	for _, v := range transports {
 		s.TransportVersions = append(s.TransportVersions, com.TransportVersion{Version: v.Version,
-			Transport: com.Transport{Mode: com.TransportMode(deref(v.Mode)), Movement: com.MovementType(deref(v.Movement))},
-			Reason:    deref(v.Reason), ChangedBy: v.ChangedBy, ChangedAt: utc(v.ChangedAt), EnteredAt: utc(v.EnteredAt)})
+			Transport: com.Transport{Mode: com.TransportMode(deref(v.Mode)), Movement: com.MovementType(deref(v.Movement)),
+				ContainerMode: com.ContainerMode(deref(v.Container))},
+			Reason: deref(v.Reason), ChangedBy: v.ChangedBy, ChangedAt: utc(v.ChangedAt), EnteredAt: utc(v.EnteredAt)})
 	}
 	for _, p := range parties {
 		party := com.OrderParty{Role: p.Role, Version: p.Version, Kind: com.PartyKind(p.Kind), ToOrderText: deref(p.ToOrderText),
@@ -221,9 +223,9 @@ func restoreParties(s *com.OrderState, transportJSON, partyJSON []byte) error {
 func saveParties(ctx context.Context, q bentopg.Executor, order *com.CustomerOrder) error {
 	tenant, id := string(order.Tenant()), string(order.ID())
 	for _, v := range order.AddedTransport() {
-		if _, err := q.Exec(ctx, `INSERT INTO cargo_com.order_transport (tenant_id,order_id,version,transport_mode,movement_type,reason,
-            changed_by,changed_at,entered_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, tenant, id, v.Version, orNull(string(v.Mode)),
-			orNull(string(v.Movement)), orNull(v.Reason), v.ChangedBy, v.ChangedAt, v.EnteredAt); err != nil {
+		if _, err := q.Exec(ctx, `INSERT INTO cargo_com.order_transport (tenant_id,order_id,version,transport_mode,movement_type,container_mode,
+            reason,changed_by,changed_at,entered_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, tenant, id, v.Version, orNull(string(v.Mode)),
+			orNull(string(v.Movement)), orNull(string(v.ContainerMode)), orNull(v.Reason), v.ChangedBy, v.ChangedAt, v.EnteredAt); err != nil {
 			return err
 		}
 	}

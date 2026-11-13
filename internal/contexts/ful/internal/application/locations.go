@@ -63,11 +63,17 @@ func resolveRoute(ctx context.Context, locations Locations, r ful.Route) (ful.Ro
 	return r, nil
 }
 
-// RequestedModes asks COM which transport mode the order of an obligation version requests (C11), whatever the
-// version's status or reservations; empty when the order requests none. It is called outside FUL's
-// transactions.
+// Requested is what an order requests of its transport: the mode (C11) and the container mode (N1-PHY OD-9); either
+// empty when it requests none.
+type Requested struct {
+	Mode          ful.TransportMode
+	ContainerMode ful.ContainerMode
+}
+
+// RequestedModes asks COM which transport mode and container mode the order of an obligation version requests,
+// whatever the version's status or reservations. It is called outside FUL's transactions.
 type RequestedModes interface {
-	RequestedMode(ctx context.Context, tenant ful.TenantID, id ful.ObligationID, version int64) (ful.TransportMode, error)
+	RequestedMode(ctx context.Context, tenant ful.TenantID, id ful.ObligationID, version int64) (Requested, error)
 }
 
 // requestedModes reads the obligations a shipment plans at the expected revision and asks COM what their
@@ -93,9 +99,11 @@ func requestedModes(ctx context.Context, d Deps, modes RequestedModes, id ful.Sh
 		return nil, err
 	}
 	for i, ob := range planned {
-		if planned[i].RequestedMode, err = modes.RequestedMode(ctx, s.TenantID, ob.ObligationID, ob.ObligationVersion); err != nil {
+		r, err := modes.RequestedMode(ctx, s.TenantID, ob.ObligationID, ob.ObligationVersion)
+		if err != nil {
 			return nil, err
 		}
+		planned[i].RequestedMode, planned[i].RequestedContainerMode = r.Mode, r.ContainerMode
 	}
 	return planned, nil
 }

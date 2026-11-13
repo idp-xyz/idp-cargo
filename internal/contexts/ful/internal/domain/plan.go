@@ -24,12 +24,39 @@ func (m TransportMode) Valid() bool {
 	return false
 }
 
+// ContainerMode is how the shipment's cargo travels in its mode (decision N1-PHY OD-9, option A: requested on the COM
+// order and planned in FUL): LCL or FCL on SEA, LOOSE on AIR; none on ROAD or RAIL yet. PHY's LCL consolidations
+// refuse FCL houses.
+type ContainerMode string
+
+const (
+	ContainerLCL   ContainerMode = "LCL"
+	ContainerFCL   ContainerMode = "FCL"
+	ContainerLoose ContainerMode = "LOOSE"
+)
+
+// For reports whether the container mode belongs to the transport mode (an empty one belongs to any).
+func (c ContainerMode) For(m TransportMode) bool {
+	switch c {
+	case "":
+		return true
+	case ContainerLCL, ContainerFCL:
+		return m == ModeSea
+	case ContainerLoose:
+		return m == ModeAir
+	}
+	return false
+}
+
 // Route is the transport mode, the origin and destination UN/LOCODEs and the planned departure window.
 // A draft may leave parts of it empty; a confirmed plan has all of them. Since FUL V0.3 (decision F2, option
 // 4) every location is resolved against the location reference data: the route freezes the UN/LOCODEs, for AIR
 // the IATA airport codes, and the reference data edition used. Routes stored before V0.3 have neither.
 type Route struct {
-	Mode            TransportMode
+	Mode TransportMode
+	// ContainerMode (N1-PHY OD-9) is left out of a command's request hash when unset, so commands recorded before it hash
+	// as they did.
+	ContainerMode   ContainerMode `json:",omitzero"`
 	Origin          kernel.LocationCode
 	Destination     kernel.LocationCode
 	Departure       kernel.ValidityInterval
@@ -40,7 +67,8 @@ type Route struct {
 
 func (r Route) valid() bool {
 	noWindow := r.Departure.From.IsZero() && r.Departure.Until.IsZero()
-	return (r.Mode == "" || r.Mode.Valid()) && unlocode(r.Origin) && unlocode(r.Destination) &&
+	return (r.Mode == "" || r.Mode.Valid()) && (r.ContainerMode == "" || r.Mode != "" && r.ContainerMode.For(r.Mode)) &&
+		unlocode(r.Origin) && unlocode(r.Destination) &&
 		(r.Origin.IsZero() || r.Origin != r.Destination) && (noWindow || r.Departure.Valid() && !r.Departure.Until.IsZero()) &&
 		iata(r.OriginIATA, r.Mode, r.Origin) && iata(r.DestinationIATA, r.Mode, r.Destination) && len(r.LocationEdition) <= 64
 }
@@ -79,7 +107,7 @@ func (r Route) Complete() bool {
 
 // Same reports whether two routes are equal, comparing instants rather than their representation.
 func (r Route) Same(o Route) bool {
-	return r.Mode == o.Mode && r.Origin == o.Origin && r.Destination == o.Destination &&
+	return r.Mode == o.Mode && r.ContainerMode == o.ContainerMode && r.Origin == o.Origin && r.Destination == o.Destination &&
 		r.Departure.From.Equal(o.Departure.From) && r.Departure.Until.Equal(o.Departure.Until) &&
 		r.OriginIATA == o.OriginIATA && r.DestinationIATA == o.DestinationIATA && r.LocationEdition == o.LocationEdition
 }

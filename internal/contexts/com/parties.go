@@ -55,7 +55,7 @@ func (m *Module) GetOrderParties(ctx context.Context, q api.GetOrderParties) (ap
 	}
 	t := order.Transport()
 	out := api.OrderParties{OrderID: string(order.ID()), Revision: revision, CustomerPartyID: order.State().Customer.PartyID,
-		Transport: api.Transport{Mode: string(t.Mode), Movement: string(t.Movement)},
+		Transport: api.Transport{Mode: string(t.Mode), Movement: string(t.Movement), ContainerMode: string(t.ContainerMode)},
 		Contacts:  api.ContactsStatus{State: api.ContactsInUse}}
 	if r, ok := order.Retention(); ok {
 		out.Contacts = api.ContactsStatus{State: api.ContactsRestricted, RetainedUntil: r.RetainedUntil}
@@ -91,7 +91,8 @@ func (m *Module) GetOrderParties(ctx context.Context, q api.GetOrderParties) (ap
 }
 
 func transportOf(t api.Transport) domain.Transport {
-	return domain.Transport{Mode: domain.TransportMode(t.Mode), Movement: domain.MovementType(t.Movement)}
+	return domain.Transport{Mode: domain.TransportMode(t.Mode), Movement: domain.MovementType(t.Movement),
+		ContainerMode: domain.ContainerMode(t.ContainerMode)}
 }
 
 func partyInputs(in []api.OrderParty) []application.PartyInput {

@@ -34,15 +34,38 @@ const (
 	PortToPort MovementType = "PORT_TO_PORT"
 )
 
-// Transport is the requested transport mode and movement type of an order; either may be absent.
+// ContainerMode is how the cargo of an order travels in its mode (decision N1-PHY OD-9, option A: requested on the
+// order with the transport mode and planned in FUL, so that an LCL consolidation can refuse an FCL house): on SEA
+// LCL (less than a container, consolidated by the forwarder) or FCL (a full container); on AIR LOOSE (loose cargo,
+// consolidated by the forwarder; a shipper-built ULD comes later). ROAD and RAIL take none yet. CargoWise records a
+// container mode on the shipment at registration, beside the transport mode.
+type ContainerMode string
+
+const (
+	ContainerLCL   ContainerMode = "LCL"
+	ContainerFCL   ContainerMode = "FCL"
+	ContainerLoose ContainerMode = "LOOSE"
+)
+
+// Transport is the requested transport mode, movement type and container mode of an order; each may be absent, but
+// a container mode only with the mode it belongs to.
 type Transport struct {
 	Mode     TransportMode
 	Movement MovementType
+	// ContainerMode is left out of a command's request hash when unset, so commands recorded before it hash as they did.
+	ContainerMode ContainerMode `json:",omitzero"`
 }
 
 func (t Transport) valid() bool {
 	switch t.Mode {
 	case "", ModeAir, ModeSea, ModeRoad, ModeRail:
+	default:
+		return false
+	}
+	switch {
+	case t.ContainerMode == "":
+	case t.Mode == ModeSea && (t.ContainerMode == ContainerLCL || t.ContainerMode == ContainerFCL):
+	case t.Mode == ModeAir && t.ContainerMode == ContainerLoose:
 	default:
 		return false
 	}

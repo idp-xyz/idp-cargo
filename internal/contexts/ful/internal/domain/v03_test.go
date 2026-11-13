@@ -1,7 +1,9 @@
 package domain
 
 import (
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -108,5 +110,62 @@ func TestStampRecordsTheEntryTime(t *testing.T) {
 	plans := s.State().Plans
 	if !plans[0].EnteredAt.Equal(entered) || !plans[1].EnteredAt.Equal(at.Add(2*time.Hour)) {
 		t.Fatalf("entered times %v %v", plans[0].EnteredAt, plans[1].EnteredAt)
+	}
+}
+
+// N1-PHY OD-9: a shipment plans a container mode of its transport mode, and plans an obligation only in the
+// container mode its order requests.
+func TestRequestedContainerModes(t *testing.T) {
+	s := created(t)
+	s.Acknowledge()
+	later := at.Add(time.Hour)
+	fcl := route(at.Add(72 * time.Hour))
+	fcl.ContainerMode = ContainerLoose
+	if err := s.AmendPlan(fcl, "loose on sea", "planner-1", later); err == nil {
+		t.Fatal("LOOSE planned on a SEA route")
+	}
+	lcl := route(at.Add(72 * time.Hour))
+	lcl.ContainerMode = ContainerLCL
+	if err := s.AmendPlan(lcl, "sea LCL", "planner-1", later); err != nil {
+		t.Fatal(err)
+	}
+	fclOrder := ref("OB-2", 1, 2)
+	fclOrder.RequestedMode, fclOrder.RequestedContainerMode = ModeSea, ContainerFCL
+	if err := s.AddObligation(fclOrder, "planner-1", later); !errors.Is(err, ErrModeMismatch) {
+		t.Fatalf("an FCL order into an LCL shipment: %v", err)
+	}
+	lclOrder := ref("OB-2", 1, 2)
+	lclOrder.RequestedMode, lclOrder.RequestedContainerMode = ModeSea, ContainerLCL
+	if err := s.AddObligation(lclOrder, "planner-1", later); err != nil {
+		t.Fatalf("an LCL order: %v", err)
+	}
+	if err := s.AddObligation(ref("OB-3", 1, 2), "planner-1", later); err != nil {
+		t.Fatalf("an order requesting no container mode: %v", err)
+	}
+	if err := s.CheckRequestedModes([]ObligationRef{lclOrder, fclOrder}); !errors.Is(err, ErrModeMismatch) {
+		t.Fatalf("check fresh references: %v", err)
+	}
+	noMode := ref("OB-4", 1, 2)
+	noMode.RequestedContainerMode = ContainerLCL
+	if err := s.AddObligation(noMode, "planner-1", later); !errors.Is(err, ErrInvalidObligation) {
+		t.Fatalf("a container mode without a mode: %v", err)
+	}
+	if got := s.Latest().Route.ContainerMode; got != ContainerLCL {
+		t.Fatalf("a plan version added with a part keeps the container mode: %q", got)
+	}
+}
+
+// Commands recorded before the container mode hash as they did: an empty one is left out of the route's JSON; and a
+// route differs from another by its container mode alone.
+func TestRouteContainerModeHashAndSame(t *testing.T) {
+	r := route(at.Add(72 * time.Hour))
+	blob, err := json.Marshal(r)
+	if err != nil || strings.Contains(string(blob), "ContainerMode") {
+		t.Fatalf("%s %v", blob, err)
+	}
+	lcl := r
+	lcl.ContainerMode = ContainerLCL
+	if r.Same(lcl) || !lcl.Same(lcl) {
+		t.Fatal("a route differs by its container mode alone")
 	}
 }

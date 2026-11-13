@@ -42,7 +42,7 @@ var (
 	ErrInvalidChange     = errors.New("ful: invalid change to the shipment")
 	ErrConflict          = errors.New("ful: concurrent revision conflict")
 	ErrUnresolvedRoute   = errors.New("ful: the route's locations are not resolved against the location reference data")
-	ErrModeMismatch      = errors.New("ful: the order requests another transport mode")
+	ErrModeMismatch      = errors.New("ful: the order requests another transport mode or container mode")
 )
 
 // Event types, as package api publishes them.
@@ -97,10 +97,13 @@ type ObligationRef struct {
 	// RequestedMode is the transport mode the order requests (C11), as COM reported it when FUL asked; empty
 	// when the order requests none. FUL does not store it: every check asks COM again.
 	RequestedMode TransportMode
+	// RequestedContainerMode is the container mode the order requests (N1-PHY OD-9), asked of COM like the mode.
+	RequestedContainerMode ContainerMode
 }
 
 func (o ObligationRef) valid() bool {
 	return (o.RequestedMode == "" || o.RequestedMode.Valid()) &&
+		(o.RequestedContainerMode == "" || o.RequestedMode != "" && o.RequestedContainerMode.For(o.RequestedMode)) &&
 		identifier(string(o.ObligationID)) && o.ObligationVersion > 0 && identifier(o.OrderID) && identifier(o.CustomerPartyID) &&
 		identifier(o.LegalEntityID) && o.Packs > 0 && len(o.PackageType) == 2 && o.GrossWeight.Unit.Valid() && o.GrossWeight.Amount > 0 &&
 		(o.Volume == kernel.Quantity{} || o.Volume.Unit.Valid() && o.Volume.Amount > 0) && (o.Description == "" || text(o.Description)) &&
@@ -424,14 +427,25 @@ func (s *Shipment) Cancel(reason, by string, at time.Time) error {
 	return nil
 }
 
-// CheckRequestedModes checks obligation references, fresh from COM, against the shipment's transport mode:
-// where both the route and an order name a mode, they must be the same (C11). A shipment of another mode needs
-// the order's transport changed first, in COM.
+// CheckRequestedModes checks obligation references, fresh from COM, against the shipment's transport mode and
+// container mode: where both the route and an order name a mode, they must be the same (C11); where an order names a
+// container mode, a route that names its transport mode must plan that container mode (N1-PHY OD-9: PHY's LCL
+// consolidations refuse FCL houses by what FUL plans). A shipment of another mode needs the order's transport changed
+// first, in COM.
 func (s *Shipment) CheckRequestedModes(obligations []ObligationRef) error {
-	mode := s.Latest().Route.Mode
+	route := s.Latest().Route
 	for _, ob := range obligations {
-		if mode != "" && ob.RequestedMode != "" && ob.RequestedMode != mode {
-			return fmt.Errorf("%w: order %s of %s requests %s, the shipment plans %s", ErrModeMismatch, ob.OrderID, ob.ObligationID, ob.RequestedMode, mode)
+		if route.Mode != "" && ob.RequestedMode != "" && ob.RequestedMode != route.Mode {
+			return fmt.Errorf("%w: order %s of %s requests %s, the shipment plans %s", ErrModeMismatch, ob.OrderID, ob.ObligationID, ob.RequestedMode,
+				route.Mode)
+		}
+		if route.Mode != "" && ob.RequestedContainerMode != "" && ob.RequestedContainerMode != route.ContainerMode {
+			planned := string(route.ContainerMode)
+			if planned == "" {
+				planned = "no container mode"
+			}
+			return fmt.Errorf("%w: order %s of %s requests %s, the shipment plans %s", ErrModeMismatch, ob.OrderID, ob.ObligationID,
+				ob.RequestedContainerMode, planned)
 		}
 	}
 	return nil

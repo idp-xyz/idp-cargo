@@ -135,7 +135,8 @@ func (m *Module) ChangeShipmentPart(ctx context.Context, cmd api.ChangeShipmentP
 }
 
 func (m *Module) AmendShipmentPlan(ctx context.Context, cmd api.AmendShipmentPlan) (api.Receipt, error) {
-	route := domain.Route{Mode: domain.TransportMode(cmd.TransportMode), Origin: cmd.Origin, Destination: cmd.Destination,
+	route := domain.Route{Mode: domain.TransportMode(cmd.TransportMode), ContainerMode: domain.ContainerMode(cmd.ContainerMode),
+		Origin: cmd.Origin, Destination: cmd.Destination,
 		Departure: kernel.ValidityInterval{From: stored(cmd.DepartureWindow.From), Until: stored(cmd.DepartureWindow.Until)}}
 	receipt, err := application.AmendShipmentPlan{Deps: m.deps(cmd.TenantID, cmd.CommandID), Locations: m.locations, Modes: comacl.Obligations{COM: m.com}}.Handle(ctx, application.AmendShipmentPlanCommand{
 		CommandID: cmd.CommandID, Scope: scope(cmd.TenantID, cmd.ActorID), ShipmentID: domain.ShipmentID(cmd.ShipmentID),
@@ -212,9 +213,9 @@ func loadIntent(shipment *domain.Shipment, revision int64) api.LoadIntent {
 	intent := api.LoadIntent{
 		TenantID: string(st.TenantID), ShipmentID: string(st.ShipmentID), Revision: revision, Status: string(st.Status),
 		PlanVersion: plan.No, CustomerPartyID: st.CustomerPartyID, LegalEntityID: st.LegalEntityID,
-		TransportMode: string(plan.Route.Mode), Origin: plan.Route.Origin, Destination: plan.Route.Destination,
-		OriginIATA: plan.Route.OriginIATA, DestinationIATA: plan.Route.DestinationIATA, LocationEdition: plan.Route.LocationEdition,
-		DepartureWindow: plan.Route.Departure, Stage: api.StageMain,
+		TransportMode: string(plan.Route.Mode), ContainerMode: string(plan.Route.ContainerMode), Origin: plan.Route.Origin,
+		Destination: plan.Route.Destination, OriginIATA: plan.Route.OriginIATA, DestinationIATA: plan.Route.DestinationIATA,
+		LocationEdition: plan.Route.LocationEdition, DepartureWindow: plan.Route.Departure, Stage: api.StageMain,
 	}
 	if n := len(st.Confirmations); n > 0 {
 		intent.ConfirmedVersion = st.Confirmations[n-1].PlanNo
@@ -297,7 +298,7 @@ func (m *Module) GetShipmentPlanSnapshotV2(ctx context.Context, q api.GetShipmen
 	snapshot := api.ShipmentPlanSnapshotV2{
 		TenantID: string(st.TenantID), ShipmentID: string(st.ShipmentID), Revision: revision, Status: string(st.Status),
 		PlanVersion: plan.No, CustomerPartyID: st.CustomerPartyID, LegalEntityID: st.LegalEntityID,
-		TransportMode: string(plan.Route.Mode), Origin: plan.Route.Origin, Destination: plan.Route.Destination, DepartureWindow: plan.Route.Departure,
+		TransportMode: string(plan.Route.Mode), ContainerMode: string(plan.Route.ContainerMode), Origin: plan.Route.Origin, Destination: plan.Route.Destination, DepartureWindow: plan.Route.Departure,
 		PlannedAt: plan.At, OriginIATA: plan.Route.OriginIATA, DestinationIATA: plan.Route.DestinationIATA,
 		LocationEdition: plan.Route.LocationEdition, EnteredAt: plan.EnteredAt,
 	}
