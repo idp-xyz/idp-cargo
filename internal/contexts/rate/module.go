@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -17,6 +18,7 @@ import (
 	bentorepo "go.idp.xyz/idp-bento-go/repository"
 	orgapi "go.idp.xyz/idp-cargo/internal/contexts/org/api"
 	"go.idp.xyz/idp-cargo/internal/contexts/rate/api"
+	ratehttp "go.idp.xyz/idp-cargo/internal/contexts/rate/internal/adapters/http"
 	orgacl "go.idp.xyz/idp-cargo/internal/contexts/rate/internal/adapters/org"
 	"go.idp.xyz/idp-cargo/internal/contexts/rate/internal/adapters/postgres"
 	"go.idp.xyz/idp-cargo/internal/contexts/rate/internal/application"
@@ -51,6 +53,9 @@ var (
 	_ api.Queries             = (*Module)(nil)
 	_ api.PricingBasisQueries = (*Module)(nil)
 )
+
+// RegisterHTTP registers RATE's inbound HTTP routes; the composition root calls it.
+func (m *Module) RegisterHTTP(mux *http.ServeMux) { ratehttp.Register(mux, m) }
 
 // New assembles RATE. org answers recipient checks; the composition root passes ORG's module.
 func New(db *bentopg.DB, org orgapi.Queries, auth api.Authorizer, margins api.MarginPolicy, opts ...Option) (*Module, error) {

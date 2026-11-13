@@ -11,6 +11,10 @@
 ```
 cmd/cargo-migrate/              operator-only migrations: Bento schema, framework migration, then each context's migrations in manifest order
 cmd/cargo-worker/               Outbox relay: claim, publish to an HTTP sink, settle; at least once
+cmd/cargo-api/                  the HTTP API (paths under /v1): bearer tokens, RFC 9457 problems; reaches Cargo through internal/bootstrap
+internal/transport/http/        the server: routing, correlation id, panic recovery, access log, authentication of the bearer token
+internal/foundation/identity/   the verified principal, the token Verifier port (HS256 for development and tests) and permission checks
+internal/foundation/httpapi/    what context adapters share: problems, error kinds to status codes, strict JSON, Idempotency-Key, If-Match, ETag
 internal/contexts/org/          ORG bounded context
   module.go                     assembles ORG; the only constructor other code uses
   api/                          ORG's contract: commands, PartyRef v1 and the party-role query, party identity and address book commands and queries, published events, error kinds, Authorizer port
@@ -26,6 +30,7 @@ internal/contexts/rate/         RATE bounded context (Rate, Quote & Commercial R
   internal/application/         CreateQuote, ApproveQuotePrice, AcceptQuote, GetQuoteSnapshot and their ports
   internal/adapters/postgres/   quotes, receipts and Outbox in cargo_rate
   internal/adapters/org/        customer check through ORG's api (anticorruption layer)
+  internal/adapters/http/       inbound HTTP: the charge-code catalogue
   internal/integration/         PG16 tests with a stand-in for ORG
 internal/contexts/com/          COM bounded context (Commercial Commitment)
   module.go                     assembles COM; ORG and RATE are passed in as query ports
@@ -376,6 +381,15 @@ GitHub Actions, `ubuntu-24.04` runner, workflow `org-pg16-contract.yml`, on ever
   - Not yet: the platform adapter (requests are recorded, not sent); CN_INDIVIDUAL buyers and delivery contacts (with the privacy controls); fapiao for overseas debtors and the treatment of disbursements, which wait for the tax adviser, as does which CNY amount (the note's conversion) a foreign-currency line goes on the fapiao at; the platform's own amounts (it rounds by item, the record states FIN's lines and keeps the platform's number, date and evidence); fapiao issued before 2024-12-01 with an invoice code; a record of a debtor whose roles ended; incoming fapiao of creditors (kept by the ERP); postings (FB7).
   - Tests: domain tests of requests (the lines, VAT rounded half up per rate, disbursements left off and a note of disbursements only refused, each refusal, amounts over the largest), the issue, failure and red letter with their refusals (numbers not of 20 digits, no confirmation form) and stored records that do not hold together; PG16 with stand-ins: the cycle on party-a's notes (exempt freight, 6% and a USD line at 9%) with every refusal (a special fapiao on exempt freight, another debtor's note, a foreign debtor, a disbursement only alone and beside another note, an unknown note, no notes, a note named twice, a stale profile), a covered note neither covered again nor credited until red-lettered while its disbursement is credited, the replay, a reused command id and the record requested by another command, a fapiao dated before its notes, numbers recorded once, a red letter without its form, a failed record, a note credited in full, the outbox, and what the database refuses past FIN (a buyer rewritten, a record deleted, a failed record issued, a note covered again, an amount rewritten, a note or number added past its move, totals or amounts not the notes', a disbursement stored, a record issued before its notes, without its number or with a number recorded already, failed without releasing its notes, a covered note credited, a record on a superseded profile version); races of two requests on one note, of a request and a credit note reversing the note in full, each won by both sides, and of one request sent twice at once.
   - An independent review found 1 major and 3 minor defects and some nits, reproduced on PostgreSQL 16 where it could and fixed before merge: a note of disbursements only was covered, so crediting a disbursement, which is not on the fapiao, needed the whole fapiao red-lettered; a request retried while the first was committing was refused as covered by its own record; the database did not check an issued date against the notes or that the profile version was the latest; and 8-digit numbers, unique only with their invoice code, were taken as unique per legal entity.
+- V2.53 adds the HTTP API's foundation and RATE's charge-code catalogue on it (backlog RB18, first part; repository structure baseline V1.1: `cmd/cargo-api`, `internal/transport/http`, `RegisterHTTP`, inbound adapters in `internal/adapters/http`; contract conventions of Engineering Contracts V2.0 §05). The rate card, rating and quote routes come next.
+  - `cmd/cargo-api` serves `/v1` through the composition root (entry points import only `internal/bootstrap`), with graceful shutdown on SIGTERM and server timeouts. `-mint-token` prints a development token.
+  - Authentication: a `Verifier` port turns the bearer token into the principal (tenant, actor, permissions); the HS256 verifier (standard library only) is for development and tests, until the IDP identity platform's issuer and keys are known. Authorization: each context's authorizer port is answered from the principal's permissions, which must be the tenant and actor the command names; queries need `<context>:Read`.
+  - `internal/transport/http`: a correlation id per request, panic recovery as a 500 problem, an access log of ids only (never bodies, tokens or query strings), 401 without a valid token, and problems for routes or methods that do not exist. `internal/foundation/httpapi`: problems from a context's error kinds (rule C5) with the business code its message names, strict JSON bodies (one object, no unknown fields, 1 MiB), `Idempotency-Key` as the command id, `If-Match` as the expected version, `ETag`, and 503 `COMMIT_UNCERTAIN` when Bento cannot confirm a commit.
+  - RATE: `GET /v1/charge-codes` (`include_inactive`), `GET /v1/charge-codes/{code}` (ETag its version), `POST /v1/charge-codes` (201, Location), `POST /v1/charge-codes/{code}/revise|deactivate|reactivate` (If-Match the version; 0 for a starter code).
+  - A command's body states `occurred_at`: a time the server filled in would differ on each attempt, and a retry with the same `Idempotency-Key` would be refused as another command.
+  - RATE's margin policy for the API is one floor and one rate-card discount for every legal entity, from flags (`-margin-floor-bp`, default 2000; `-rate-card-discount-bp`, default 0), until the legal entities' commercial policy is configurable.
+  - Not yet: the rate card, rating, pricing basis and quote routes (next); the other contexts' routes; the IDP identity platform and policy service; rate limits (429); the OpenAPI contract in `contracts/` (rule C2) and its publication, which wait for the owner; masking and export controls (P7).
+  - Tests: unit tests of the verifier (issuer, audience, expiry and leeway, lifetime, `alg`, a critical header, another key, altered claims, malformed tenants and permissions), of permission checks, of the server (tokens, health, correlation ids, problems for routes and methods, panics, the log) and of the helpers (each error kind, business codes, commit uncertainty, media types, unknown fields, two objects, body size, If-Match and Idempotency-Key forms); `cmd/cargo-api`'s configuration and tokens; and on PG16 the catalogue through the API end to end: reads and permissions, a define replayed and its key reused, a code defined twice, a bad code, no business time or one outside the record window, a stale or missing If-Match, deactivation and reactivation, a starter code revised, tenant isolation and a token of another key.
 
 Bento testkit contracts:
 
@@ -409,6 +423,20 @@ NOT executed:
 9. Relay events: `IDP_CARGO_POSTGRES_DSN=... go run ./cmd/cargo-worker -sink https://...`. A claimed batch is sent one delivery at a time under one lease, so `-lease` must exceed `-batch` × `-sink-timeout` (defaults 10 × 5s under 1m); the worker refuses to start otherwise. `-max-attempts` (50) stays five times `-max-failures` (10), as Bento recommends, so the claim limit only ends publishers that crash before settling.
 10. Package rules: `go run ./tools/dependency-check`. After the Context Map changes or a context is added, regenerate the allowlist with `-generate <Context Map JSON>` from the master archive.
 
+### The HTTP API
+
+`cmd/cargo-api` serves `/v1`. Until the IDP identity platform is connected, a bearer token is a development token: HS256-signed with `IDP_CARGO_API_TOKEN_KEY` (base64 of 32 bytes or more), naming its issuer and audience (`-token-issuer`, `-token-audience`), the tenant, the actor and the permissions (`<context>:<Action>`, `<context>:*` or `*`; queries need `<context>:Read`), valid for a day at most. Tenant and actor always come from the token, never from a body. Use `-addr 127.0.0.1:0` locally: the server takes a free port and logs it.
+
+```sh
+export IDP_CARGO_API_TOKEN_KEY=$(head -c 32 /dev/urandom | base64)
+go run ./cmd/cargo-api -mint-token -tenant t1 -actor pricing-1 -permissions rate:Read,rate:MaintainChargeCodes
+IDP_CARGO_POSTGRES_DSN=... go run ./cmd/cargo-api -addr 127.0.0.1:0
+```
+
+- A command is a `POST` with an `Idempotency-Key` (its command id: sent again, it answers its first receipt; with another body, 409 `IDEMPOTENCY_MISMATCH`), `If-Match: "n"` when it changes an existing version (428 without it, 409 `VERSION_CONFLICT` when stale), and `occurred_at`, its business time, in the body: a retry sends the same body. It answers a receipt (`command_id`, `subject_id`, `new_revision`) with `ETag: "n"`, 201 and `Location` for a create.
+- Errors are `application/problem+json` (RFC 9457) with `code` (a business code such as `RATE_VERSION_OVERLAP` where the context names one) and `correlation_id`, from the context's error kinds only: 400, 401, 403, 404, 405, 409, 413, 415, 422, 428, 503 `COMMIT_UNCERTAIN` (send the request again with the same key), 500 with nothing described.
+- `GET /healthz` and `GET /readyz` (the database) take no token. `X-Correlation-ID` is taken when well formed, otherwise made, and returned.
+
 ### Local PostgreSQL 16 on IDP-Cargo's ports
 
 Ports 25430-25439 are reserved for IDP-Cargo on developer machines: 25432 for integration runs (`dev`), 25433 for upgrade runs (`upgrade`), 25434 for empty-database checks (`empty`), the rest reserved. They lie below the default ephemeral port ranges of Linux and Windows. `tools/localpg/localpg.sh` serves each port only from its own labelled container (`idp-cargo-pg16-<role>`, PostgreSQL 16.15) and refuses to start, print a DSN or stop anything when a port is held by another program, so tests and migrations never reach someone else's server.
@@ -424,7 +452,7 @@ tools/localpg/localpg.sh down dev          # remove the container and its data
 
 ## Important boundaries
 
-- The approval actor and tenant identity are **not trusted merely because they are inside a Go struct**. A production HTTP adapter must derive them from a verified authenticated identity and enforce business authority.
+- The approval actor and tenant identity are **not trusted merely because they are inside a Go struct**. The HTTP adapters take them from the verified token's principal; the development tokens of `cmd/cargo-api` are not an identity platform, and permissions in a token stand in for the IDP policy service until it is connected.
 - `app.tenant_id` RLS protects against accidental missing/wrong query scopes. SQL injection that can execute arbitrary `set_config` is out of its security boundary.
 - A missing or legacy `result_revision=0` receipt does **not** count as execution success.
 - Callers branch on the `api` error kinds (`ErrConflict`, `ErrRejected`, `ErrUnauthorized`, …), never on ORG or Bento causes; `org.ErrConflict` and Bento `repository.ErrConflict` both classify as `api.ErrConflict`.
