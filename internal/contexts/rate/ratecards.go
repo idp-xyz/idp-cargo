@@ -262,7 +262,7 @@ func (m *Module) GetRateCardVersion(ctx context.Context, q api.GetRateCardVersio
 	var out api.RateCardVersion
 	err := m.reader(ctx, q.TenantID, func(txCtx context.Context) error {
 		store := postgres.RateCardStore{DB: m.db}
-		c, _, err := store.Read(txCtx, domain.TenantID(q.TenantID), domain.RateCardID(q.RateCardID))
+		c, revision, err := store.Read(txCtx, domain.TenantID(q.TenantID), domain.RateCardID(q.RateCardID))
 		if err != nil {
 			return err
 		}
@@ -274,7 +274,8 @@ func (m *Module) GetRateCardVersion(ctx context.Context, q api.GetRateCardVersio
 		if err != nil {
 			return err
 		}
-		out = api.RateCardVersion{RateCardID: q.RateCardID, RateCardVersionHeader: headerView(c.State().Versions[i]), Entries: []api.RateEntry{}}
+		out = api.RateCardVersion{RateCardID: q.RateCardID, CardRevision: revision, RateCardVersionHeader: headerView(c.State().Versions[i]),
+			Entries: []api.RateEntry{}}
 		for _, e := range entries {
 			out.Entries = append(out.Entries, entryView(e))
 		}

@@ -283,9 +283,11 @@ type RateCard struct {
 	Versions      []RateCardVersionHeader
 }
 
-// RateCardVersion is a version with its entries.
+// RateCardVersion is a version with its entries; CardRevision is the card's revision, which a command on the version
+// expects.
 type RateCardVersion struct {
-	RateCardID string
+	RateCardID   string
+	CardRevision int64
 	RateCardVersionHeader
 	Entries []RateEntry
 }

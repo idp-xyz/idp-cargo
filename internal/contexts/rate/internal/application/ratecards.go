@@ -470,12 +470,20 @@ func (d CardDeps) PublishRateCardVersion(ctx context.Context, c PublishVersionCo
 		_, err := d.Parties.ConfirmRole(ctx, st.TenantID, st.PartyID, st.LegalEntityID, SupplierRoles, c.OccurredAt)
 		return err
 	}
-	// the pricing manager publishes a tariff; a replay asks it too
+	// the pricing manager publishes a tariff, with ApproveOwnTariff when it prepared the version; a replay asks it too
 	approver := func(ctx context.Context, st rate.RateCardState) error {
 		if st.Scope != rate.ScopeTariff {
 			return nil
 		}
-		return d.allow(ctx, c.Scope, ActionApproveTariff, string(c.RateCardID))
+		if err := d.allow(ctx, c.Scope, ActionApproveTariff, string(c.RateCardID)); err != nil {
+			return err
+		}
+		for _, v := range st.Versions {
+			if v.No == c.Version && slices.Contains(v.Preparers, c.Scope.ActorID) {
+				return d.allow(ctx, c.Scope, ActionApproveOwnTariff, string(c.RateCardID))
+			}
+		}
+		return nil
 	}
 	return d.changeCard(ctx, c.Scope, c.CommandID, c.OccurredAt, c, c.RateCardID, c.ExpectedRevision, approver, confirm,
 		func(txCtx context.Context, card *rate.RateCard, at time.Time) error {

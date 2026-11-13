@@ -316,6 +316,8 @@ func TestHTTPRateCardsOnPostgres(t *testing.T) {
 	buyer := mint("buyer-1", "rate:Read", "rate:MaintainBuyRates")
 	manager := mint("pricing-manager", "rate:Read", "rate:MaintainSellRates", "rate:ApproveTariff")
 	sales := mint("sales-1", "rate:Read", "rate:EvaluateRates")
+	auditor := mint("auditor-1", "rate:Read", "rate:ReadBuyRates")
+	reader := mint("reader-1", "rate:Read")
 	when := func(t time.Time) string { return `"occurred_at":"` + t.Format(time.RFC3339) + `"` }
 	ok := func(name string, r apiResponse, status int, etag string) apiResponse {
 		t.Helper()
@@ -348,7 +350,17 @@ func TestHTTPRateCardsOnPostgres(t *testing.T) {
 		ok("entries "+card.id, c.do("PUT", "/v1/rate-cards/"+card.id+"/versions/1/entries", card.token, lcl(rate), "Idempotency-Key",
 			"set-"+card.id, "If-Match", `"2"`), 200, `"3"`)
 	}
-	v := ok("version", c.do("GET", "/v1/rate-cards/T-SEA/versions/1", pricing, ""), 200, "")
+	c.expect("a draft without If-Match", c.do("POST", "/v1/rate-cards/T-SEA/versions", pricing, `{"valid_from":"`+at.Format(time.RFC3339)+
+		`","currency":"USD",`+when(at)+`}`, "Idempotency-Key", "draft-x"), 428, "PRECONDITION_REQUIRED")
+	c.expect("a draft at a stale revision", c.do("POST", "/v1/rate-cards/T-SEA/versions", pricing, `{"valid_from":"`+at.Format(time.RFC3339)+
+		`","currency":"USD",`+when(at)+`}`, "Idempotency-Key", "draft-y", "If-Match", `"1"`), 409, "")
+	c.expect("a BUY card drafted by a SELL maintainer", c.do("POST", "/v1/rate-cards/S-SHA-HAM/versions", pricing, `{"valid_from":"`+
+		at.Format(time.RFC3339)+`","currency":"USD",`+when(at)+`}`, "Idempotency-Key", "draft-z", "If-Match", `"3"`), 403, "FORBIDDEN")
+	c.expect("entries of a version the card does not have", c.do("PUT", "/v1/rate-cards/T-SEA/versions/9/entries", pricing, lcl(5000),
+		"Idempotency-Key", "set-9", "If-Match", `"3"`), 404, "NOT_FOUND")
+	c.expect("the create replayed by one who lost the permission", c.do("POST", "/v1/rate-cards", reader, `{"rate_card_id":"T-SEA","side":"SELL",
+		"scope":"TARIFF","legal_entity_id":"LE","party_id":"","name":"T-SEA",`+when(at)+`}`, "Idempotency-Key", "card-T-SEA"), 403, "FORBIDDEN")
+	v := ok("version", c.do("GET", "/v1/rate-cards/T-SEA/versions/1", pricing, ""), 200, `"3"`)
 	entries, _ := v.body["entries"].([]any)
 	if len(entries) != 1 || v.body["status"] != "DRAFT" {
 		t.Fatalf("the draft: %v", v.body)
@@ -382,6 +394,49 @@ func TestHTTPRateCardsOnPostgres(t *testing.T) {
 		t.Fatalf("SELL cards: %v", cards)
 	}
 	c.expect("a bad valid_at", c.do("GET", "/v1/rate-cards?valid_at=yesterday", pricing, ""), 400, "MALFORMED_REQUEST")
+	c.expect("a bad side", c.do("GET", "/v1/rate-cards?side=buy", pricing, ""), 400, "MALFORMED_REQUEST")
+	// supplier costs: rate:Read shows SELL cards only; ReadBuyRates or MaintainBuyRates shows BUY cards
+	if cards, _ := ok("cards a reader sees", c.do("GET", "/v1/rate-cards", reader, ""), 200, "").body["rate_cards"].([]any); len(cards) != 1 ||
+		cards[0].(map[string]any)["side"] != "SELL" {
+		t.Fatalf("a reader sees SELL cards only: %v", cards)
+	}
+	if cards, _ := ok("cards an auditor sees", c.do("GET", "/v1/rate-cards", auditor, ""), 200, "").body["rate_cards"].([]any); len(cards) != 2 {
+		t.Fatalf("an auditor sees both: %v", cards)
+	}
+	c.expect("BUY cards listed by a reader", c.do("GET", "/v1/rate-cards?side=BUY", reader, ""), 403, "FORBIDDEN")
+	c.expect("a BUY card read by a reader", c.do("GET", "/v1/rate-cards/S-SHA-HAM", reader, ""), 403, "FORBIDDEN")
+	c.expect("a BUY version read by a reader", c.do("GET", "/v1/rate-cards/S-SHA-HAM/versions/1", reader, ""), 403, "FORBIDDEN")
+	ok("a BUY version read by its buyer", c.do("GET", "/v1/rate-cards/S-SHA-HAM/versions/1", buyer, ""), 200, `"4"`)
+	c.expect("cards read without rate:Read", c.do("GET", "/v1/rate-cards", mint("ops-1"), ""), 403, "FORBIDDEN")
+	c.expect("an unknown card", c.do("GET", "/v1/rate-cards/NO-CARD", pricing, ""), 404, "NOT_FOUND")
+	stranger, err := MintDevToken(cfg, uniqueTenant("cargo-api-other-"), "pricing-9", []string{"rate:*"}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.expect("another tenant's card", c.do("GET", "/v1/rate-cards/T-SEA", stranger, ""), 404, "NOT_FOUND")
+
+	// a tariff its preparer publishes with ApproveOwnTariff, flagged; replayed after the permission is withdrawn: refused
+	own := mint("pricing-manager-2", "rate:Read", "rate:MaintainSellRates", "rate:ApproveTariff", "rate:ApproveOwnTariff")
+	ok("create T-AIR", c.do("POST", "/v1/rate-cards", own, `{"rate_card_id":"T-AIR","side":"SELL","scope":"TARIFF","legal_entity_id":"LE",
+		"name":"T-AIR",`+when(at)+`}`, "Idempotency-Key", "card-T-AIR"), 201, `"1"`)
+	ok("draft T-AIR", c.do("POST", "/v1/rate-cards/T-AIR/versions", own, `{"valid_from":"`+at.Format(time.RFC3339)+`","currency":"USD",`+
+		when(at)+`}`, "Idempotency-Key", "draft-T-AIR", "If-Match", `"1"`), 201, `"2"`)
+	air := `{"entries":[{"mode":"AIR","container_mode":"LOOSE","origin":"CNPVG","destination":"DEFRA","service_level":"STANDARD","commodity":"GENERAL",
+		"lines":[{"charge_code":"AIR_FREIGHT","currency":"CNY","calculator":"PER_UNIT","unit":"KG_CHARGEABLE","rate":3000,"minimum":30000,
+		"breaks":[{"from":45000,"rate":2500},{"from":100000,"rate":2000}]}]}],` + when(at) + `}`
+	ok("entries T-AIR", c.do("PUT", "/v1/rate-cards/T-AIR/versions/1/entries", own, air, "Idempotency-Key", "set-T-AIR", "If-Match", `"2"`),
+		200, `"3"`)
+	if lines := ok("T-AIR's entries", c.do("GET", "/v1/rate-cards/T-AIR/versions/1", own, ""), 200, `"3"`).body["entries"].([]any)[0].(map[string]any)["lines"].([]any); len(lines[0].(map[string]any)["breaks"].([]any)) != 2 {
+		t.Fatalf("breaks: %v", lines)
+	}
+	ok("self-approved", c.do("POST", "/v1/rate-cards/T-AIR/versions/1/publish", own, publish, "Idempotency-Key", "publish-T-AIR", "If-Match", `"3"`),
+		200, `"4"`)
+	if vs := ok("T-AIR", c.do("GET", "/v1/rate-cards/T-AIR", own, ""), 200, `"4"`).body["versions"].([]any); vs[0].(map[string]any)["self_approved"] != true {
+		t.Fatalf("not flagged: %v", vs)
+	}
+	c.expect("the self-approval replayed without ApproveOwnTariff", c.do("POST", "/v1/rate-cards/T-AIR/versions/1/publish",
+		mint("pricing-manager-2", "rate:Read", "rate:MaintainSellRates", "rate:ApproveTariff"), publish, "Idempotency-Key", "publish-T-AIR",
+		"If-Match", `"3"`), 403, "FORBIDDEN")
 
 	// 0.8 t and 2.5 m3: 2.5 W/M; SELL 125.00 USD and CNY 300.00 CFS; BUY 87.50 USD
 	evaluate := `{"snapshot_id":"RS-LCL","purpose":"QUOTE_LINE","legal_entity_id":"LE","sides":["SELL","BUY"],"mode":"SEA","container_mode":"LCL",
@@ -392,7 +447,15 @@ func TestHTTPRateCardsOnPostgres(t *testing.T) {
 		"/v1/rate-snapshots/RS-LCL" {
 		t.Fatalf("Location %q", r.header.Get("Location"))
 	}
-	s := ok("the snapshot", c.do("GET", "/v1/rate-snapshots/RS-LCL", sales, ""), 200, "")
+	ok("the evaluation replayed", c.do("POST", "/v1/rate-evaluations", sales, evaluate, "Idempotency-Key", "evaluate"), 201, "")
+	c.expect("the evaluation replayed by one who lost the permission", c.do("POST", "/v1/rate-evaluations", mint("sales-1", "rate:Read"), evaluate,
+		"Idempotency-Key", "evaluate"), 403, "FORBIDDEN")
+	// sales sees the SELL side of the snapshot only; the auditor sees the costs
+	if s := ok("the snapshot for sales", c.do("GET", "/v1/rate-snapshots/RS-LCL", sales, ""), 200, ""); len(s.body["lines"].([]any)) != 2 ||
+		len(s.body["candidates"].([]any)) != 1 || s.body["customer"] != nil {
+		t.Fatalf("sales sees SELL only: %v", s.body)
+	}
+	s := ok("the snapshot", c.do("GET", "/v1/rate-snapshots/RS-LCL", auditor, ""), 200, "")
 	want := map[string]float64{"SELL OCEAN_FREIGHT": 12_500, "SELL CFS_HANDLING": 30_000, "BUY OCEAN_FREIGHT": 8_750, "BUY CFS_HANDLING": 30_000}
 	lines, _ := s.body["lines"].([]any)
 	if len(lines) != 4 || s.body["origin"] != "CNSHG" {
@@ -402,6 +465,20 @@ func TestHTTPRateCardsOnPostgres(t *testing.T) {
 		m := l.(map[string]any)
 		if amount := m["amount"].(map[string]any); amount["minor"] != want[m["side"].(string)+" "+m["charge_code"].(string)] || m["quantity"] != 2500.0 {
 			t.Errorf("line %v", m)
+		}
+	}
+	c.expect("an unknown snapshot", c.do("GET", "/v1/rate-snapshots/RS-NONE", sales, ""), 404, "NOT_FOUND")
+	c.expect("another tenant's snapshot", c.do("GET", "/v1/rate-snapshots/RS-LCL", stranger, ""), 404, "NOT_FOUND")
+	// a lane no card prices: gaps, without amounts
+	ok("a lane without cards", c.do("POST", "/v1/rate-evaluations", sales, strings.Replace(strings.Replace(evaluate, `"RS-LCL"`, `"RS-GAP"`, 1),
+		`"DEHAM"`, `"USNYC"`, 1), "Idempotency-Key", "evaluate-gap"), 201, "")
+	gaps := ok("the gaps", c.do("GET", "/v1/rate-snapshots/RS-GAP", auditor, ""), 200, "").body["lines"].([]any)
+	if len(gaps) == 0 {
+		t.Fatal("no gap lines")
+	}
+	for _, l := range gaps {
+		if m := l.(map[string]any); m["gap"] == "" || m["amount"] != nil {
+			t.Fatalf("a gap with an amount: %v", m)
 		}
 	}
 	ok("withdrawn", c.do("POST", "/v1/rate-cards/T-SEA/versions/1/withdraw", pricing, `{"reason":"replaced by the 2027 tariff",`+

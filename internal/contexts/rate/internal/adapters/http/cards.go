@@ -8,8 +8,27 @@ import (
 
 	"go.idp.xyz/idp-cargo/internal/contexts/rate/api"
 	"go.idp.xyz/idp-cargo/internal/foundation/httpapi"
+	"go.idp.xyz/idp-cargo/internal/foundation/identity"
 	"go.idp.xyz/idp-cargo/internal/kernel"
 )
+
+// actionReadBuyRates lets a reader see supplier costs: BUY cards, and the BUY lines and candidates of snapshots.
+// Costs and margins stay in RATE, so rate:Read alone shows the SELL side only; maintaining BUY rates sees them too.
+const actionReadBuyRates = "ReadBuyRates"
+
+// seesCosts reports whether the principal may see supplier costs.
+func seesCosts(p identity.Principal) bool {
+	return identity.Allowed(p, bc, actionReadBuyRates) || identity.Allowed(p, bc, api.ActionMaintainBuyRates)
+}
+
+// costsHidden refuses a BUY card to a reader who may not see costs.
+func costsHidden(w nethttp.ResponseWriter, r *nethttp.Request, p identity.Principal, side string) bool {
+	if side == api.SideBuy && !seesCosts(p) {
+		httpapi.WriteProblem(w, r, nethttp.StatusForbidden, "FORBIDDEN", "supplier costs need rate:ReadBuyRates")
+		return true
+	}
+	return false
+}
 
 func registerCards(mux *nethttp.ServeMux, h handlers) {
 	mux.HandleFunc("GET /v1/rate-cards", h.listRateCards)
@@ -204,7 +223,8 @@ func cardView(c api.RateCard) rateCard {
 	return out
 }
 
-// GET /v1/rate-cards[?side=&scope=&legal_entity_id=&party_id=&valid_at=]
+// GET /v1/rate-cards[?side=&scope=&legal_entity_id=&party_id=&valid_at=]; BUY cards only to a reader who may see
+// costs.
 func (h handlers) listRateCards(w nethttp.ResponseWriter, r *nethttp.Request) {
 	p, ok := reader(w, r)
 	if !ok {
@@ -213,10 +233,20 @@ func (h handlers) listRateCards(w nethttp.ResponseWriter, r *nethttp.Request) {
 	q := r.URL.Query()
 	in := api.ListRateCards{TenantID: p.TenantID, Side: q.Get("side"), Scope: q.Get("scope"), LegalEntityID: q.Get("legal_entity_id"),
 		PartyID: q.Get("party_id")}
+	switch {
+	case in.Side != "" && in.Side != api.SideSell && in.Side != api.SideBuy:
+		httpapi.WriteProblem(w, r, nethttp.StatusBadRequest, "MALFORMED_REQUEST", "side is SELL or BUY")
+		return
+	case in.Scope != "" && in.Scope != api.ScopeTariff && in.Scope != api.ScopeCustomer && in.Scope != api.ScopeSupplier:
+		httpapi.WriteProblem(w, r, nethttp.StatusBadRequest, "MALFORMED_REQUEST", "scope is TARIFF, CUSTOMER or SUPPLIER")
+		return
+	case costsHidden(w, r, p, in.Side):
+		return
+	}
 	if v := q.Get("valid_at"); v != "" {
 		t, err := time.Parse(time.RFC3339, v)
 		if err != nil {
-			httpapi.WriteProblem(w, r, nethttp.StatusBadRequest, "MALFORMED_REQUEST", "valid_at is an RFC 3339 time")
+			httpapi.WriteProblem(w, r, nethttp.StatusBadRequest, "MALFORMED_REQUEST", "valid_at is an RFC 3339 time (percent-encode a + offset)")
 			return
 		}
 		in.ValidAt = t.UTC()
@@ -228,6 +258,9 @@ func (h handlers) listRateCards(w nethttp.ResponseWriter, r *nethttp.Request) {
 	}
 	out := make([]rateCard, 0, len(cards))
 	for _, c := range cards {
+		if c.Side == api.SideBuy && !seesCosts(p) {
+			continue
+		}
 		out = append(out, cardView(c))
 	}
 	httpapi.WriteJSON(w, nethttp.StatusOK, map[string]any{"rate_cards": out})
@@ -244,6 +277,9 @@ func (h handlers) getRateCard(w nethttp.ResponseWriter, r *nethttp.Request) {
 		httpapi.Fail(w, r, kinds, err)
 		return
 	}
+	if costsHidden(w, r, p, c.Side) {
+		return
+	}
 	httpapi.ETag(w, c.Revision)
 	httpapi.WriteJSON(w, nethttp.StatusOK, cardView(c))
 }
@@ -258,7 +294,8 @@ func version(w nethttp.ResponseWriter, r *nethttp.Request) (int, bool) {
 	return n, true
 }
 
-// GET /v1/rate-cards/{card}/versions/{version}: the version with its entries.
+// GET /v1/rate-cards/{card}/versions/{version}: the version with its entries; ETag is the card's revision, which a
+// command on the version names in If-Match.
 func (h handlers) getVersion(w nethttp.ResponseWriter, r *nethttp.Request) {
 	p, ok := reader(w, r)
 	if !ok {
@@ -268,11 +305,20 @@ func (h handlers) getVersion(w nethttp.ResponseWriter, r *nethttp.Request) {
 	if !ok {
 		return
 	}
+	card, err := h.s.GetRateCard(r.Context(), api.GetRateCard{TenantID: p.TenantID, RateCardID: r.PathValue("card")})
+	if err != nil {
+		httpapi.Fail(w, r, kinds, err)
+		return
+	}
+	if costsHidden(w, r, p, card.Side) {
+		return
+	}
 	v, err := h.s.GetRateCardVersion(r.Context(), api.GetRateCardVersion{TenantID: p.TenantID, RateCardID: r.PathValue("card"), Version: n})
 	if err != nil {
 		httpapi.Fail(w, r, kinds, err)
 		return
 	}
+	httpapi.ETag(w, v.CardRevision)
 	entries := make([]entryView, 0, len(v.Entries))
 	for _, e := range v.Entries {
 		entries = append(entries, entryOut(e))
@@ -503,11 +549,12 @@ type snapshotLine struct {
 	BaseAmount     int64  `json:"base_amount"`
 	MinimumApplied bool   `json:"minimum_applied"`
 	MaximumApplied bool   `json:"maximum_applied"`
-	Amount         money  `json:"amount"`
+	Amount         *money `json:"amount,omitempty"` // none on a gap: what RATE cannot rate is never zero
 	Gap            string `json:"gap,omitempty"`
 }
 
-// GET /v1/rate-snapshots/{snapshot}: a recorded evaluation.
+// GET /v1/rate-snapshots/{snapshot}: a recorded evaluation; its BUY lines and candidates only to a reader who may see
+// costs.
 func (h handlers) getSnapshot(w nethttp.ResponseWriter, r *nethttp.Request) {
 	p, ok := reader(w, r)
 	if !ok {
@@ -518,23 +565,38 @@ func (h handlers) getSnapshot(w nethttp.ResponseWriter, r *nethttp.Request) {
 		httpapi.Fail(w, r, kinds, err)
 		return
 	}
+	costs := seesCosts(p)
 	candidates := make([]candidate, 0, len(s.Candidates))
 	for _, c := range s.Candidates {
+		if c.Side == api.SideBuy && !costs {
+			continue
+		}
 		candidates = append(candidates, candidate{Side: c.Side, RateCardID: c.RateCardID, Version: c.Version, EntryNo: c.EntryNo, Taken: c.Taken,
 			Reason: c.Reason, Total: moneys(c.Total)})
 	}
 	lines := make([]snapshotLine, 0, len(s.Lines))
 	for _, l := range s.Lines {
+		if l.Side == api.SideBuy && !costs {
+			continue
+		}
+		var amount *money
+		if l.Gap == "" {
+			m := moneyView(l.Amount)
+			amount = &m
+		}
 		lines = append(lines, snapshotLine{LineNo: l.LineNo, Side: l.Side, ChargeCode: l.ChargeCode, RateCardID: l.RateCardID, Version: l.Version,
 			EntryNo: l.EntryNo, RateLineNo: l.RateLineNo, Calculator: l.Calculator, Unit: l.Unit, Quantity: l.Quantity, Charged: l.Charged,
 			BandFrom: l.BandFrom, Rate: l.Rate, RateScale: l.RateScale, PercentBP: l.PercentBP, BaseAmount: l.BaseAmount, MinimumApplied: l.MinimumApplied,
-			MaximumApplied: l.MaximumApplied, Amount: moneyView(l.Amount), Gap: l.Gap})
+			MaximumApplied: l.MaximumApplied, Amount: amount, Gap: l.Gap})
 	}
-	httpapi.WriteJSON(w, nethttp.StatusOK, map[string]any{"snapshot_id": s.SnapshotID, "purpose": s.Purpose, "legal_entity_id": s.LegalEntityID,
-		"sides": orEmpty(s.Sides), "customer": map[string]any{"party_id": s.Customer.PartyID, "party_revision": s.Customer.PartyRevision},
-		"carrier": s.Carrier, "mode": s.Mode, "container_mode": s.ContainerMode, "origin": s.Origin, "destination": s.Destination, "via": s.Via,
+	out := map[string]any{"snapshot_id": s.SnapshotID, "purpose": s.Purpose, "legal_entity_id": s.LegalEntityID,
+		"sides": orEmpty(s.Sides), "carrier": s.Carrier, "mode": s.Mode, "container_mode": s.ContainerMode, "origin": s.Origin, "destination": s.Destination, "via": s.Via,
 		"edition": s.Edition, "service_level": s.ServiceLevel, "commodity": s.Commodity, "at": s.At, "cargo": cargo{Pieces: s.Cargo.Pieces,
 			GrossGrams: s.Cargo.GrossGrams, VolumeCM3: s.Cargo.VolumeCM3, Documents: s.Cargo.Documents}, "subject_kind": s.SubjectKind,
 		"subject_id": s.SubjectID, "subject_version": s.SubjectVersion, "engine_version": s.EngineVersion, "candidates": candidates, "lines": lines,
-		"evaluated_by": s.EvaluatedBy, "recorded_at": s.RecordedAt})
+		"evaluated_by": s.EvaluatedBy, "recorded_at": s.RecordedAt}
+	if s.Customer.PartyID != "" {
+		out["customer"] = map[string]any{"party_id": s.Customer.PartyID, "party_revision": s.Customer.PartyRevision}
+	}
+	httpapi.WriteJSON(w, nethttp.StatusOK, out)
 }

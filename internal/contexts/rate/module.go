@@ -389,7 +389,7 @@ func classify(err error) error {
 		kind = api.ErrIdempotencyConflict
 	case errors.Is(err, domain.ErrConflict), errors.Is(err, bentorepo.ErrConflict), errors.Is(err, bentorepo.ErrAlreadyExists), postgres.Conflict(err):
 		kind = api.ErrConflict
-	case errors.Is(err, bentorepo.ErrNotFound):
+	case errors.Is(err, bentorepo.ErrNotFound), errors.Is(err, domain.ErrNoSuchVersion):
 		kind = api.ErrNotFound
 	case errors.Is(err, domain.ErrInvalidQuote), errors.Is(err, domain.ErrInvalidTransition), errors.Is(err, domain.ErrSelfApproval),
 		errors.Is(err, domain.ErrOutsideValidity), errors.Is(err, application.ErrCustomerNotConfirmed),
