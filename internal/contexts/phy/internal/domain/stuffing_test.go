@@ -330,6 +330,19 @@ func TestStuffingNeedsTheHousesFrozen(t *testing.T) {
 	if err := x.Seal(c, seal("SEAL-1", at), "ops", at); !errors.Is(err, ErrNotFrozen) {
 		t.Fatalf("a container is not sealed on an open house list: %v", err)
 	}
+	// Closed again at +10h: nothing is stuffed or sealed inside the reopened period.
+	if err := c.Close(1, t0.Add(time.Hour), "ops", t0.Add(10*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := x.Load(LoadLine{Packs: 1, Evidence: ev("TALLY-3", t0.Add(7*time.Hour))}, c, lot, entry, LotLoad{Packs: 1}, 1, "ops", t0.Add(7*time.Hour)); !errors.Is(err, ErrInvalidChange) {
+		t.Fatalf("a line dated in the reopened period: %v", err)
+	}
+	if err := x.Seal(c, seal("SEAL-1", t0.Add(8*time.Hour)), "ops", t0.Add(8*time.Hour)); !errors.Is(err, ErrInvalidChange) {
+		t.Fatalf("a seal dated in the reopened period: %v", err)
+	}
+	if err := x.Seal(c, seal("SEAL-1", t0.Add(11*time.Hour)), "ops", t0.Add(11*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestEmptyContainerNotSealed(t *testing.T) {

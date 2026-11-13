@@ -367,6 +367,9 @@ func (x *LoadExecution) Load(in LoadLine, c *Consolidation, lot *CargoLot, entry
 	if x.state.Kind == ExecutionStuffing && c.Current().State != StateClosed {
 		return fmt.Errorf("%w: it is %s", ErrNotFrozen, c.Current().State)
 	}
+	if x.state.Kind == ExecutionStuffing && at.Before(c.lastChange()) {
+		return fmt.Errorf("%w: a stuffed line is dated not before the consolidation's latest change", ErrInvalidChange)
+	}
 	if !entry.Live() || entry.ConsolidationID != x.state.ConsolidationID {
 		return fmt.Errorf("%w: %s in %s", ErrNotAttached, lot.Shipment(), x.state.ConsolidationID)
 	}
@@ -428,8 +431,8 @@ func (x *LoadExecution) Load(in LoadLine, c *Consolidation, lot *CargoLot, entry
 // volume in a unit PHY does not convert holds it too, as not checked. The line or measurement that crossed the
 // limits stays recorded (G06-05); an OVERWEIGHT hold already placed is not placed again. The limits are defaults:
 // the container's plate (SEA's) may allow more, which releasing the hold with its evidence records, and a later
-// line or measurement over them holds again. It reports whether it placed a hold; the hold takes evidence's time,
-// or the execution's last change if that is later.
+// line or measurement over them holds again. It reports whether it placed a hold; the hold takes the business time
+// at, or the execution's last change if that is later.
 func (x *LoadExecution) HoldIfOverLimits(c *Consolidation, lots map[CargoLotID]*CargoLot, evidence Evidence, by string, at time.Time) bool {
 	if x.state.Kind != ExecutionStuffing || (x.state.State != ExecutionLoading && x.state.State != ExecutionOnHold) || c == nil ||
 		c.ID() != x.state.ConsolidationID || x.state.LoadUnitNo > len(c.state.LoadUnits) || blank(by) || at.IsZero() {
@@ -695,6 +698,9 @@ func (x *LoadExecution) Seal(c *Consolidation, evidence Evidence, by string, at 
 	}
 	if s := c.Current().State; s != StateClosed {
 		return fmt.Errorf("%w: it is %s", ErrNotFrozen, s)
+	}
+	if at.Before(c.lastChange()) {
+		return fmt.Errorf("%w: a seal is dated not before the consolidation's latest change", ErrInvalidChange)
 	}
 	if x.state.State == ExecutionLoading && evidence.valid(at) && evidence.Source != EvidenceSeal {
 		return fmt.Errorf("%w: a stuffing closes with the container's seal (source %s)", ErrInvalidEvidence, EvidenceSeal)

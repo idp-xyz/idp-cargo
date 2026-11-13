@@ -339,6 +339,20 @@ func TestSealingOnPostgres(t *testing.T) {
 	if _, err := f.module.ReopenConsolidation(ctx, reopen); !errors.Is(err, api.ErrRejected) {
 		t.Fatalf("a reopen dated before the line it pauses: %v", err)
 	}
+	var pgErr *pgconn.PgError
+	reopenAt := func(at time.Time) error {
+		return f.within(t, func(ctx context.Context, e bentopg.Executor) error {
+			_, err := e.Exec(ctx, `INSERT INTO cargo_phy.consolidation_version (tenant_id,consolidation_id,version_no,change,state,origin_code,
+                destination_code,location_edition,planned_departure,house_cut_off,reason,written_by,written_at,entered_at)
+                SELECT tenant_id,consolidation_id,version_no+1,'REOPENED','OPEN',origin_code,destination_code,location_edition,planned_departure,
+                  house_cut_off,'x','x',$2,now() FROM cargo_phy.consolidation_version WHERE tenant_id=$1 AND consolidation_id='C-S'
+                ORDER BY version_no DESC LIMIT 1`, f.tenant, at)
+			return err
+		})
+	}
+	if err := reopenAt(at.Add(30 * time.Minute)); !errors.As(err, &pgErr) || pgErr.ConstraintName != "consolidation_reopen_after_stuffing" {
+		t.Fatalf("a reopen dated before the line in the database: %v", err)
+	}
 	reopen.CommandID, reopen.OccurredAt = "reopen", at.Add(2*time.Hour)
 	ok(t, 5)(f.module.ReopenConsolidation(ctx, reopen))
 	seal := api.CloseLoadExecution{CommandID: "seal", TenantID: f.tenant, ActorID: "ops-1", ExecutionID: "X-S1", ExpectedRevision: 3,
@@ -352,13 +366,40 @@ func TestSealingOnPostgres(t *testing.T) {
             close_evidence_source='SEAL', close_evidence_reference='S', close_evidence_occurred_at=now() WHERE tenant_id=$1 AND execution_id='X-S1'`, f.tenant)
 		return err
 	})
-	var pgErr *pgconn.PgError
 	if !errors.As(err, &pgErr) || pgErr.ConstraintName != "load_execution_seal_frozen" {
 		t.Fatalf("sealed on an open house list in the database: %v", err)
 	}
 	closeAgain := f.closeCmd("close-again", "C-S", 5)
 	closeAgain.OccurredAt = f.at.Add(6*time.Hour + 30*time.Minute)
 	ok(t, 6)(f.module.CloseConsolidation(ctx, closeAgain))
+	// Nothing is stuffed or sealed inside the reopened period, in the domain or the database.
+	late := f.load("stuff-late", "X-S1", 3, "L-S2", 6, f.at.Add(6*time.Hour+15*time.Minute))
+	if _, err = f.module.RecordCargoLoaded(ctx, late); !errors.Is(err, api.ErrRejected) {
+		t.Fatalf("a line dated in the reopened period: %v", err)
+	}
+	early := seal
+	early.CommandID, early.OccurredAt, early.Evidence.OccurredAt = "seal-early", f.at.Add(6*time.Hour+20*time.Minute), f.at.Add(6*time.Hour+20*time.Minute)
+	if _, err = f.module.CloseLoadExecution(ctx, early); !errors.Is(err, api.ErrRejected) {
+		t.Fatalf("a seal dated in the reopened period: %v", err)
+	}
+	for name, tc := range map[string]struct{ sql, constraint string }{
+		"a line in the reopened period": {`INSERT INTO cargo_phy.load_line (tenant_id,execution_id,line_no,consolidation_id,shipment_id,lot_id,entry_no,packs,
+            gross_weight_unit,gross_weight,basis,evidence_source,evidence_reference,evidence_occurred_at,loaded_by,loaded_at,entered_at)
+            SELECT tenant_id,execution_id,2,consolidation_id,shipment_id,lot_id,entry_no,1,gross_weight_unit,1,'MEASURED',evidence_source,'x',
+              evidence_occurred_at,loaded_by,loaded_at + interval '75 minutes',now() FROM cargo_phy.load_line WHERE tenant_id=$1 AND execution_id='X-S1'`,
+			"load_line_stuffing_frozen"},
+		"a seal in the reopened period": {`UPDATE cargo_phy.load_execution SET state='CLOSED', closed_by='x', closed_at=started_at + interval '2 hours',
+            closed_entered_at=now(), close_evidence_source='SEAL', close_evidence_reference='S', close_evidence_occurred_at=started_at
+            WHERE tenant_id=$1 AND execution_id='X-S1'`, "load_execution_seal_frozen"},
+	} {
+		err := f.within(t, func(ctx context.Context, e bentopg.Executor) error {
+			_, err := e.Exec(ctx, tc.sql, f.tenant)
+			return err
+		})
+		if !errors.As(err, &pgErr) || pgErr.ConstraintName != tc.constraint {
+			t.Errorf("%s: %v, want %s", name, err, tc.constraint)
+		}
+	}
 	seal.OccurredAt, seal.Evidence.OccurredAt = f.at.Add(7*time.Hour), f.at.Add(7*time.Hour)
 	ok(t, 4)(f.module.CloseLoadExecution(ctx, seal))
 
@@ -455,5 +496,49 @@ func TestStuffingOpeningRulesInTheDatabase(t *testing.T) {
 		if !errors.As(err, &pgErr) || pgErr.ConstraintName != "load_execution_stuffing" {
 			t.Errorf("%s: %v", name, err)
 		}
+	}
+}
+
+// A lot weighed again re-checks only stuffings: it neither locks nor waits for a tender with its packs.
+func TestWeighingDoesNotWaitForTenders(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	f.create(t, "C-1")
+	if _, err := f.module.AttachHouse(ctx, f.attach("attach", "C-1", "SH-1", 0)); err != nil {
+		t.Fatal(err)
+	}
+	f.ful.allocate("SH-1", "C-1")
+	ok(t, 2)(f.module.CloseConsolidation(ctx, f.closeCmd("close", "C-1", 1)))
+	at := f.at.Add(3 * time.Hour)
+	ok(t, 1)(f.module.ReceiveCargo(ctx, f.receive("rcv", "L-1", "SH-1", 0, 6, api.ConditionGood, at)))
+	weigh := api.RecordCargoMeasurement{CommandID: "weigh", TenantID: f.tenant, ActorID: "ops-1", LotID: "L-1", ExpectedRevision: 1,
+		GrossWeight: kgm(300), Method: api.MethodScale, Evidence: evidence("weigh", at), OccurredAt: at}
+	ok(t, 2)(f.module.RecordCargoMeasurement(ctx, weigh))
+	f.tender(t, "X-1", "C-1", at)
+	ok(t, 3)(f.module.RecordCargoLoaded(ctx, f.load("load", "X-1", 2, "L-1", 3, at)))
+
+	locked, release, done := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+	go func() {
+		done <- f.within(t, func(ctx context.Context, e bentopg.Executor) error {
+			if _, err := e.Exec(ctx, `SELECT 1 FROM cargo_phy.load_execution WHERE tenant_id=$1 AND execution_id='X-1' FOR UPDATE`, f.tenant); err != nil {
+				return err
+			}
+			close(locked)
+			<-release
+			return nil
+		})
+	}()
+	<-locked
+	defer func() {
+		close(release)
+		if err := <-done; err != nil {
+			t.Error(err)
+		}
+	}()
+	timed, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	weigh.CommandID, weigh.ExpectedRevision, weigh.GrossWeight = "weigh-again", 2, kgm(310)
+	if r, err := f.module.RecordCargoMeasurement(timed, weigh); err != nil || r.NewRevision != 3 {
+		t.Fatalf("weighed again while the tender is locked: %+v %v", r, err)
 	}
 }

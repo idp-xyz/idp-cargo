@@ -70,8 +70,9 @@ BEGIN
   END IF;
   IF NEW.kind = 'STUFFING' AND NEW.state = 'CLOSED' AND OLD.state <> 'CLOSED' THEN
     SELECT * INTO c FROM cargo_phy.consolidation WHERE tenant_id = NEW.tenant_id AND consolidation_id = NEW.consolidation_id FOR SHARE;
-    IF c.state IS DISTINCT FROM 'CLOSED' THEN
-      RAISE EXCEPTION 'cargo_phy: consolidation %/% is %; its containers are sealed once it is CLOSED', NEW.tenant_id, NEW.consolidation_id,
+    IF c.state IS DISTINCT FROM 'CLOSED' OR NEW.closed_at < (SELECT max(v.written_at) FROM cargo_phy.consolidation_version v
+         WHERE v.tenant_id = NEW.tenant_id AND v.consolidation_id = NEW.consolidation_id) THEN
+      RAISE EXCEPTION 'cargo_phy: consolidation %/% is %; its containers are sealed once it is CLOSED, after its latest version', NEW.tenant_id, NEW.consolidation_id,
         c.state USING ERRCODE = 'check_violation', CONSTRAINT = 'load_execution_seal_frozen';
     END IF;
   END IF;
@@ -121,8 +122,8 @@ END $fn$;
 CREATE TRIGGER consolidation_version_stuffing BEFORE INSERT ON cargo_phy.consolidation_version
   FOR EACH ROW EXECUTE FUNCTION cargo_phy.check_reopen_after_stuffing();
 
--- A stuffing's lines come while its consolidation is CLOSED: a house is stuffed only from a frozen house list. The
--- execution row is locked by load_line_rules, which runs first.
+-- A stuffing's lines come while its consolidation is CLOSED, dated not before its latest version: a house is stuffed
+-- only from a frozen house list. The execution row is locked by load_line_rules, which runs first.
 CREATE FUNCTION cargo_phy.check_stuffing_line() RETURNS trigger LANGUAGE plpgsql AS $fn$
 DECLARE
   s text;
@@ -130,8 +131,10 @@ BEGIN
   IF EXISTS (SELECT 1 FROM cargo_phy.load_execution x WHERE x.tenant_id = NEW.tenant_id AND x.execution_id = NEW.execution_id
        AND x.kind = 'STUFFING') THEN
     SELECT state INTO s FROM cargo_phy.consolidation WHERE tenant_id = NEW.tenant_id AND consolidation_id = NEW.consolidation_id FOR SHARE;
-    IF s IS DISTINCT FROM 'CLOSED' THEN
-      RAISE EXCEPTION 'cargo_phy: consolidation %/% is %; its houses are stuffed once it is CLOSED', NEW.tenant_id, NEW.consolidation_id, s
+    IF s IS DISTINCT FROM 'CLOSED' OR NEW.loaded_at < (SELECT max(v.written_at) FROM cargo_phy.consolidation_version v
+         WHERE v.tenant_id = NEW.tenant_id AND v.consolidation_id = NEW.consolidation_id) THEN
+      RAISE EXCEPTION 'cargo_phy: consolidation %/% is %; its houses are stuffed once it is CLOSED, after its latest version', NEW.tenant_id,
+        NEW.consolidation_id, s
         USING ERRCODE = 'check_violation', CONSTRAINT = 'load_line_stuffing_frozen';
     END IF;
   END IF;

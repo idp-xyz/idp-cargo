@@ -77,8 +77,9 @@ type RecordCargoMeasurementCommand struct {
 
 // RecordCargoMeasurement adds a measurement version of a lot. A stuffing loading or on hold with live packs of the
 // lot is checked again against its container's limits with the new measure (HoldIfOverLimits): their consolidations
-// are locked FOR SHARE and the executions FOR UPDATE, in id order, before the lot, as RecordScreeningResult does; if
-// the executions with live packs of the lot changed meanwhile, the command is a conflict and the caller tries again.
+// are locked FOR SHARE and the stuffings FOR UPDATE, in id order, before the lot, as RecordScreeningResult does;
+// tenders are not locked. If the stuffings with live packs of the lot changed meanwhile, the command is a conflict
+// and the caller tries again.
 // A lot measured again after its container was sealed changes the measures PHY publishes; the container's verified
 // gross mass is SEA's (VGM).
 type RecordCargoMeasurement struct{ Deps }
@@ -94,7 +95,7 @@ func (h RecordCargoMeasurement) Handle(ctx context.Context, c RecordCargoMeasure
 	var live []phy.LoadExecutionID
 	consolidations := map[phy.LoadExecutionID]phy.ConsolidationID{}
 	if err = h.Tx.WithinTransaction(ctx, func(txCtx context.Context) error {
-		if live, err = h.Executions.WithLiveLot(txCtx, c.Scope.TenantID, c.LotID); err != nil {
+		if live, err = h.Executions.StuffingsWithLiveLot(txCtx, c.Scope.TenantID, c.LotID); err != nil {
 			return err
 		}
 		for _, id := range live {
@@ -141,12 +142,12 @@ func (h RecordCargoMeasurement) Handle(ctx context.Context, c RecordCargoMeasure
 		}
 		changed := group{l}
 		if len(live) > 0 {
-			now, err := h.Executions.WithLiveLot(txCtx, tenant, c.LotID)
+			now, err := h.Executions.StuffingsWithLiveLot(txCtx, tenant, c.LotID)
 			if err != nil {
 				return Receipt{}, nil, err
 			}
 			if !slices.Equal(now, live) {
-				return Receipt{}, nil, fmt.Errorf("%w: the executions loading lot %s changed; try again", phy.ErrConflict, c.LotID)
+				return Receipt{}, nil, fmt.Errorf("%w: the stuffings loading lot %s changed; try again", phy.ErrConflict, c.LotID)
 			}
 		}
 		for _, r := range executions {

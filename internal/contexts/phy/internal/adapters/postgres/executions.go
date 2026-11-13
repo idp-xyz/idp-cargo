@@ -302,6 +302,15 @@ func (s ExecutionStore) list(ctx context.Context, tenant phy.TenantID, sql strin
 
 // WithLiveLot returns the LOADING or ON_HOLD executions with live packs of a lot, by execution id.
 func (s ExecutionStore) WithLiveLot(ctx context.Context, tenant phy.TenantID, lot phy.CargoLotID) ([]phy.LoadExecutionID, error) {
+	return s.withLiveLot(ctx, tenant, lot, "")
+}
+
+// StuffingsWithLiveLot returns the LOADING or ON_HOLD stuffings with live packs of a lot, by execution id.
+func (s ExecutionStore) StuffingsWithLiveLot(ctx context.Context, tenant phy.TenantID, lot phy.CargoLotID) ([]phy.LoadExecutionID, error) {
+	return s.withLiveLot(ctx, tenant, lot, string(phy.ExecutionStuffing))
+}
+
+func (s ExecutionStore) withLiveLot(ctx context.Context, tenant phy.TenantID, lot phy.CargoLotID, kind string) ([]phy.LoadExecutionID, error) {
 	q, err := s.DB.ReadExecutor(ctx)
 	if err != nil {
 		return nil, err
@@ -311,8 +320,8 @@ func (s ExecutionStore) WithLiveLot(ctx context.Context, tenant phy.TenantID, lo
       SELECT l.execution_id FROM cargo_phy.load_line l
         JOIN cargo_phy.load_execution x ON x.tenant_id=l.tenant_id AND x.execution_id=l.execution_id
         LEFT JOIN reversed r ON r.execution_id=l.execution_id AND r.line_no=l.line_no
-      WHERE l.tenant_id=$1 AND l.lot_id=$2 AND x.state IN ('LOADING','ON_HOLD')
-      GROUP BY l.execution_id HAVING sum(l.packs - coalesce(r.packs, 0)) > 0 ORDER BY l.execution_id`, string(tenant), string(lot))
+      WHERE l.tenant_id=$1 AND l.lot_id=$2 AND x.state IN ('LOADING','ON_HOLD') AND ($3='' OR x.kind=$3)
+      GROUP BY l.execution_id HAVING sum(l.packs - coalesce(r.packs, 0)) > 0 ORDER BY l.execution_id`, string(tenant), string(lot), kind)
 	if err != nil {
 		return nil, err
 	}

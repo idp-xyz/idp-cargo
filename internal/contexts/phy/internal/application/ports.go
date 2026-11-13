@@ -218,6 +218,7 @@ type ExecutionStore interface {
 	ByConsolidation(context.Context, phy.TenantID, phy.ConsolidationID) ([]ExecutionRead, error)
 	ByShipment(context.Context, phy.TenantID, phy.ShipmentID) ([]ExecutionRead, error)
 	WithLiveLot(context.Context, phy.TenantID, phy.CargoLotID) ([]phy.LoadExecutionID, error)
+	StuffingsWithLiveLot(context.Context, phy.TenantID, phy.CargoLotID) ([]phy.LoadExecutionID, error)
 	HouseLoaded(context.Context, phy.TenantID, phy.ConsolidationID, phy.ShipmentID) (int64, error)
 	UnitUses(context.Context, phy.TenantID, phy.ConsolidationID) (map[int]UnitUse, error)
 }
