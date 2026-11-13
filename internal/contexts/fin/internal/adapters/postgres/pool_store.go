@@ -28,6 +28,9 @@ type (
 		Description *string   `json:"description"`
 		SupplierRef *string   `json:"supplier_ref"`
 		Method      string    `json:"method"`
+		Source      string    `json:"source"`
+		BasisID     *string   `json:"basis_id"`
+		BasisLineNo *int      `json:"basis_line_no"`
 		By          string    `json:"recorded_by"`
 		At          time.Time `json:"recorded_at"`
 		EnteredAt   time.Time `json:"entered_at"`
@@ -130,8 +133,12 @@ func scanPool(row pgx.Row, tenant fin.TenantID) (*fin.ConsolCostPool, int64, err
 	}
 	st.FunctionalCurrency, st.OpenedAt, st.EnteredAt = kernel.CurrencyCode(currency), st.OpenedAt.UTC(), st.EnteredAt.UTC()
 	for _, l := range lr {
-		st.Lines = append(st.Lines, fin.PoolCostLine{No: l.No, ChargeCode: l.ChargeCode, Description: deref(l.Description),
-			SupplierRef: deref(l.SupplierRef), Method: l.Method, By: l.By, At: utc(l.At), EnteredAt: utc(l.EnteredAt)})
+		line := fin.PoolCostLine{No: l.No, ChargeCode: l.ChargeCode, Description: deref(l.Description), SupplierRef: deref(l.SupplierRef),
+			Method: l.Method, Source: l.Source, BasisID: deref(l.BasisID), By: l.By, At: utc(l.At), EnteredAt: utc(l.EnteredAt)}
+		if l.BasisLineNo != nil {
+			line.BasisLineNo = *l.BasisLineNo
+		}
+		st.Lines = append(st.Lines, line)
 	}
 	for _, v := range vr {
 		if v.LineNo < 1 || v.LineNo > len(st.Lines) {
@@ -293,9 +300,23 @@ func writePool(ctx context.Context, q bentopg.Executor, p *fin.ConsolCostPool) e
 		return err
 	}
 	for _, l := range lines {
-		if err := exec(`INSERT INTO cargo_fin.pool_cost_line (tenant_id,pool_id,line_no,charge_code,description,supplier_ref,method,recorded_by,recorded_at,
-            entered_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, l.No, l.ChargeCode, orNull(l.Description), orNull(l.SupplierRef), l.Method, l.By, l.At,
-			l.EnteredAt); err != nil {
+		source := l.Source
+		if source == "" {
+			source = fin.SourceManual
+		}
+		var basisLine any
+		if l.BasisLineNo != 0 {
+			basisLine = l.BasisLineNo
+		}
+		err := exec(`INSERT INTO cargo_fin.pool_cost_line (tenant_id,pool_id,line_no,charge_code,description,supplier_ref,method,recorded_by,recorded_at,
+            entered_at,source,basis_id,basis_line_no) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`, l.No, l.ChargeCode, orNull(l.Description),
+			orNull(l.SupplierRef), l.Method, l.By, l.At, l.EnteredAt, source, orNull(l.BasisID), basisLine)
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && ((pgErr.Code == "23505" && pgErr.ConstraintName == "pool_cost_line_basis_once") ||
+			(pgErr.Code == "23514" && pgErr.ConstraintName == "pool_one_estimate")) {
+			return fmt.Errorf("%w: basis %s", fin.ErrBasisApplied, l.BasisID)
+		}
+		if err != nil {
 			return err
 		}
 	}

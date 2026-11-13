@@ -120,6 +120,9 @@ type PoolCostLine struct {
 	Description string
 	SupplierRef string
 	Method      string
+	Source      string // MANUAL (empty reads as it) or RATED
+	BasisID     string // RATED: RATE's CONSOL_COST_ESTIMATE basis and its line
+	BasisLineNo int
 	By          string
 	At          time.Time
 	EnteredAt   time.Time
@@ -336,6 +339,42 @@ func (p *ConsolCostPool) RecordCost(code, description, supplierRef, method strin
 		By: by, At: at.UTC(), Versions: []PoolCostVersion{v}}
 	p.state.Lines = append(p.state.Lines, line)
 	p.record(eventPoolCostRecorded, at, line.No)
+	return nil
+}
+
+// RecordEstimate adds the cost lines of RATE's rated estimate of the consolidation (CONSOL_COST_ESTIMATE): one RATED
+// line per rated cost, for the supplier whose card priced it, ACCRUED at the ESTIMATE rate, apportioned by method. A
+// pool takes one rated estimate (FIN_BASIS_APPLIED); a charge RATE could not rate is left to a person.
+func (p *ConsolCostPool) RecordEstimate(basisID string, lines []EstimateLine, method string, conv Converter, by string, at time.Time) error {
+	if err := p.open(by, at); err != nil {
+		return err
+	}
+	switch {
+	case !identifier(basisID):
+		return fmt.Errorf("%w: a rated estimate names its basis", ErrInvalid)
+	case method != MethodChargeable && method != MethodVolume && method != MethodPieces && method != MethodManual:
+		return fmt.Errorf("%w: apportionment method %q", ErrInvalid, method)
+	case len(lines) == 0:
+		return fmt.Errorf("%w: RATE rated no cost for the consolidation", ErrNotPriceable)
+	}
+	for _, l := range p.state.Lines {
+		if l.Source == SourceRated {
+			return fmt.Errorf("%w: line %d of the pool comes from rated estimate %s", ErrBasisApplied, l.No, l.BasisID)
+		}
+	}
+	for _, l := range lines {
+		if !ValidChargeCode(l.ChargeCode) || l.LineNo < 1 || l.HasSell || !l.HasCost || !identifier(l.CreditorPartyID) || l.CreditorRevision < 1 {
+			return fmt.Errorf("%w: rated cost %d is a cost of a supplier ORG confirmed", ErrInvalid, l.LineNo)
+		}
+		v, err := p.costVersion(1, SideInput{PartyID: l.CreditorPartyID, PartyRevision: l.CreditorRevision, Amount: l.Cost}, "", conv, by, at)
+		if err != nil {
+			return err
+		}
+		line := PoolCostLine{No: len(p.state.Lines) + 1, ChargeCode: l.ChargeCode, Method: method, Source: SourceRated, BasisID: basisID,
+			BasisLineNo: l.LineNo, By: by, At: at.UTC(), Versions: []PoolCostVersion{v}}
+		p.state.Lines = append(p.state.Lines, line)
+		p.record(eventPoolCostRecorded, at, line.No)
+	}
 	return nil
 }
 
@@ -614,6 +653,10 @@ func methodQuantities(method, mode, stage string, houses []HouseFacts) ([]int64,
 	}
 	return out, unit, nil
 }
+
+// Grams converts a weight into grams and CubicCm a volume into cubic centimetres (GRM, KGM, TNE; CMQ, DMQ, MTQ).
+func Grams(q kernel.Quantity) (int64, error)   { return grams(q) }
+func CubicCm(q kernel.Quantity) (int64, error) { return cubicCm(q) }
 
 // grams converts a weight into grams; a zero quantity is zero.
 func grams(q kernel.Quantity) (int64, error) {

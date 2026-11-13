@@ -29,7 +29,11 @@ const (
 	SideCost = "COST"
 
 	SourceQuote  = "QUOTE"
+	SourceRated  = "RATED" // a line of a rated estimate (RATE's PricingBasis v1 SHIPMENT_ESTIMATE or CONSOL_COST_ESTIMATE)
 	SourceManual = "MANUAL"
+
+	PurposeQuoteAccepted    = "QUOTE_ACCEPTED"
+	PurposeShipmentEstimate = "SHIPMENT_ESTIMATE"
 
 	StatusEstimated = "ESTIMATED"
 	StatusInvoiced  = "INVOICED"
@@ -88,9 +92,11 @@ type ChargeLine struct {
 type Basis struct {
 	No            int
 	BasisID       string
+	Purpose       string // QUOTE_ACCEPTED (an empty Purpose reads as it) or SHIPMENT_ESTIMATE
 	QuoteID       string
 	QuoteRevision int64
 	OrderID       string
+	PlanVersion   int // SHIPMENT_ESTIMATE: the shipment plan version RATE rated
 	By            string
 	At            time.Time
 	EnteredAt     time.Time
@@ -251,11 +257,14 @@ func (j *FreightJob) ApplyBasis(b Basis, customer string, customerRevision int64
 		return fmt.Errorf("%w: the quote is for %s, the job for %s", ErrNotPriceable, customer, j.state.CustomerPartyID)
 	}
 	for _, o := range j.state.Bases {
+		if o.Purpose == PurposeShipmentEstimate {
+			return fmt.Errorf("%w: basis %d prices the job by a rated estimate", ErrBasisApplied, o.No)
+		}
 		if o.QuoteID == b.QuoteID {
 			return fmt.Errorf("%w: basis %d applies quote %s to the job for order %s", ErrBasisApplied, o.No, o.QuoteID, o.OrderID)
 		}
 	}
-	b.No, b.By, b.At = len(j.state.Bases)+1, by, at.UTC()
+	b.No, b.By, b.At, b.Purpose = len(j.state.Bases)+1, by, at.UTC(), PurposeQuoteAccepted
 	j.state.Bases = append(j.state.Bases, b)
 	for _, l := range lines {
 		if !ValidChargeCode(l.ChargeCode) || l.LineNo < 1 || l.Cost.Minor < 0 || (l.Sell.Minor < 0 && l.Cost.Minor != 0) {
@@ -270,6 +279,67 @@ func (j *FreightJob) ApplyBasis(b Basis, customer string, customerRevision int64
 		line.Sell = []SideVersion{sell}
 		if l.Cost.Minor != 0 {
 			cost, err := j.side(SideCost, "", 0, l.Cost, StatusAccrued, "", conv, 1, by, at)
+			if err != nil {
+				return err
+			}
+			line.Cost = []SideVersion{cost}
+		}
+		j.state.Lines = append(j.state.Lines, line)
+		j.recordLine(eventLineRecorded, at, line.No, "", 1)
+	}
+	j.record(eventBasisApplied, at, b.No)
+	return nil
+}
+
+// EstimateLine is a line of a rated estimate: the sides RATE rated (a side not rated is absent, never zero), the
+// creditor of the cost (the supplier whose card priced it) with the revision ORG confirmed, and the basis line.
+type EstimateLine struct {
+	LineNo           int
+	ChargeCode       string
+	HasSell          bool
+	Sell             kernel.Money
+	HasCost          bool
+	Cost             kernel.Money
+	CreditorPartyID  string
+	CreditorRevision int64
+}
+
+// ApplyEstimate applies RATE's rated estimate of the shipment (SHIPMENT_ESTIMATE): every rated line becomes a RATED
+// charge line with a sell side for the job's customer and a cost side for its supplier, as RATE rated them, converted
+// at the ESTIMATE rate. A job is priced by its accepted quotes or by one rated estimate (FIN_BASIS_APPLIED); a charge
+// RATE could not rate is left to a person.
+func (j *FreightJob) ApplyEstimate(b Basis, customerRevision int64, lines []EstimateLine, conv Converter, by string, at time.Time) error {
+	if err := j.open(by, at); err != nil {
+		return err
+	}
+	switch {
+	case !identifier(b.BasisID) || b.PlanVersion < 1 || b.QuoteID != "" || b.OrderID != "" || customerRevision < 1:
+		return fmt.Errorf("%w: a rated estimate names its basis, the plan version it rated and the customer's revision", ErrInvalid)
+	case len(lines) == 0:
+		return fmt.Errorf("%w: RATE rated nothing for the shipment", ErrNotPriceable)
+	case len(j.state.Bases) > 0:
+		return fmt.Errorf("%w: the job is priced by basis %d already", ErrBasisApplied, len(j.state.Bases))
+	}
+	b.No, b.By, b.At, b.Purpose = 1, by, at.UTC(), PurposeShipmentEstimate
+	j.state.Bases = append(j.state.Bases, b)
+	for _, l := range lines {
+		switch {
+		case !ValidChargeCode(l.ChargeCode) || l.LineNo < 1 || (!l.HasSell && !l.HasCost) || (l.HasSell && l.Sell.Minor < 0) || (l.HasCost && l.Cost.Minor < 0):
+			return fmt.Errorf("%w: rated line %d", ErrInvalid, l.LineNo)
+		case l.HasCost && (!identifier(l.CreditorPartyID) || l.CreditorRevision < 1):
+			return fmt.Errorf("%w: rated line %d names its supplier as ORG confirmed it", ErrInvalid, l.LineNo)
+		}
+		line := ChargeLine{No: len(j.state.Lines) + 1, ChargeCode: l.ChargeCode, Source: SourceRated, BasisNo: b.No, QuoteLineNo: l.LineNo, By: by,
+			At: at.UTC()}
+		if l.HasSell {
+			sell, err := j.side(SideSell, j.state.CustomerPartyID, customerRevision, l.Sell, StatusEstimated, "", conv, 1, by, at)
+			if err != nil {
+				return err
+			}
+			line.Sell = []SideVersion{sell}
+		}
+		if l.HasCost {
+			cost, err := j.side(SideCost, l.CreditorPartyID, l.CreditorRevision, l.Cost, StatusAccrued, "", conv, 1, by, at)
 			if err != nil {
 				return err
 			}

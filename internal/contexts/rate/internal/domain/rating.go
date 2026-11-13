@@ -105,6 +105,7 @@ type SnapshotLine struct {
 	LineNo         int
 	ChargeCode     ChargeCode
 	RateCardID     RateCardID
+	PartyID        string // the card's party: a SUPPLIER card's supplier, a CUSTOMER card's customer, none for a tariff
 	Version        int
 	EntryNo        int
 	RateLineNo     int
@@ -434,7 +435,7 @@ func rateLines(side Side, chosen map[ChargeCode]picked, cargo Cargo) ([]Snapshot
 	for i, code := range codes {
 		p := chosen[code]
 		l := p.l
-		out[i] = SnapshotLine{Side: side, ChargeCode: code, RateCardID: p.m.v.RateCardID, Version: p.m.v.No, EntryNo: p.m.e.No, RateLineNo: l.No,
+		out[i] = SnapshotLine{Side: side, ChargeCode: code, RateCardID: p.m.v.RateCardID, PartyID: p.m.v.PartyID, Version: p.m.v.No, EntryNo: p.m.e.No, RateLineNo: l.No,
 			Calculator: l.Calculator, Unit: l.Unit, Amount: kernel.Money{Currency: l.Currency}}
 		at[code] = i
 		if l.CallForPricing {

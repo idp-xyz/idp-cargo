@@ -290,9 +290,11 @@ type (
 	basisRow struct {
 		No            int       `json:"basis_no"`
 		BasisID       string    `json:"basis_id"`
-		QuoteID       string    `json:"quote_id"`
-		QuoteRevision int64     `json:"quote_revision"`
-		OrderID       string    `json:"order_id"`
+		Purpose       string    `json:"purpose"`
+		QuoteID       *string   `json:"quote_id"`
+		QuoteRevision *int64    `json:"quote_revision"`
+		OrderID       *string   `json:"order_id"`
+		PlanVersion   *int      `json:"plan_version"`
 		By            string    `json:"applied_by"`
 		At            time.Time `json:"applied_at"`
 		EnteredAt     time.Time `json:"entered_at"`
@@ -495,8 +497,15 @@ func scanJob(row pgx.Row, tenant fin.TenantID) (*fin.FreightJob, int64, error) {
 	st.FunctionalCurrency, st.OpenedAt, st.EnteredAt = kernel.CurrencyCode(currency), st.OpenedAt.UTC(), st.EnteredAt.UTC()
 	st.CancelReason, st.CancelledBy, st.CancelledAt, st.CancelEnteredAt = deref(cancelReason), deref(cancelledBy), utc(deref(cancelledAt)), utc(deref(cancelEntered))
 	for _, b := range br {
-		st.Bases = append(st.Bases, fin.Basis{No: b.No, BasisID: b.BasisID, QuoteID: b.QuoteID, QuoteRevision: b.QuoteRevision, OrderID: b.OrderID,
-			By: b.By, At: utc(b.At), EnteredAt: utc(b.EnteredAt)})
+		basis := fin.Basis{No: b.No, BasisID: b.BasisID, Purpose: b.Purpose, QuoteID: deref(b.QuoteID), OrderID: deref(b.OrderID), By: b.By,
+			At: utc(b.At), EnteredAt: utc(b.EnteredAt)}
+		if b.QuoteRevision != nil {
+			basis.QuoteRevision = *b.QuoteRevision
+		}
+		if b.PlanVersion != nil {
+			basis.PlanVersion = *b.PlanVersion
+		}
+		st.Bases = append(st.Bases, basis)
 	}
 	for _, l := range lr {
 		st.Lines = append(st.Lines, fin.ChargeLine{No: l.No, ChargeCode: l.ChargeCode, Description: deref(l.Description), Source: l.Source,
@@ -698,11 +707,27 @@ func writeJob(ctx context.Context, q bentopg.Executor, j *fin.FreightJob) error 
 		return err
 	}
 	for _, b := range bases {
-		err := exec(`INSERT INTO cargo_fin.job_basis (tenant_id,job_id,basis_no,basis_id,quote_id,quote_revision,order_id,applied_by,applied_at,entered_at)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, b.No, b.BasisID, b.QuoteID, b.QuoteRevision, b.OrderID, b.By, b.At, b.EnteredAt)
+		var revision, plan any
+		if b.QuoteRevision != 0 {
+			revision = b.QuoteRevision
+		}
+		if b.PlanVersion != 0 {
+			plan = b.PlanVersion
+		}
+		purpose := b.Purpose
+		if purpose == "" {
+			purpose = fin.PurposeQuoteAccepted
+		}
+		err := exec(`INSERT INTO cargo_fin.job_basis (tenant_id,job_id,basis_no,basis_id,purpose,quote_id,quote_revision,order_id,plan_version,applied_by,
+            applied_at,entered_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, b.No, b.BasisID, purpose, orNull(b.QuoteID), revision, orNull(b.OrderID),
+			plan, b.By, b.At, b.EnteredAt)
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "job_basis_once" {
 			return fmt.Errorf("%w: quote %s for order %s", fin.ErrBasisApplied, b.QuoteID, b.OrderID)
+		}
+		if errors.As(err, &pgErr) && ((pgErr.Code == "23505" && pgErr.ConstraintName == "job_basis_estimate_once") ||
+			(pgErr.Code == "23514" && pgErr.ConstraintName == "job_basis_one_kind")) {
+			return fmt.Errorf("%w: basis %s", fin.ErrBasisApplied, b.BasisID)
 		}
 		if err != nil {
 			return err

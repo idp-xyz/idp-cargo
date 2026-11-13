@@ -17,6 +17,7 @@ const (
 	RateCardVersionPublished = "RateCardVersionPublished.v1"
 	RateCardVersionWithdrawn = "RateCardVersionWithdrawn.v1"
 	RatesEvaluated           = "RatesEvaluated.v1"
+	PricingBasisIssued       = "PricingBasisIssued.v1"
 )
 
 // EventPayload is the JSON payload of every RATE event: identifiers only, no prices or party data.

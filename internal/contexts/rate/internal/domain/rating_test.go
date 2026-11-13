@@ -323,3 +323,52 @@ func TestEvaluationInputChecks(t *testing.T) {
 		t.Fatalf("snapshot: %+v", st)
 	}
 }
+
+func TestIssueBasis(t *testing.T) {
+	tariff := version("T1", ScopeTariff, "", airEntry(1, airFreight(1), flat(2, "DOC_FEE", "CNY", 15_000),
+		RateLine{No: 3, ChargeCode: "CUSTOMS_CLEARING", Currency: "CNY", Calculator: CalcFlat, CallForPricing: true}))
+	supplier := version("S-A", ScopeSupplier, "airline-mu", airEntry(1, airFreight(1), flat(2, "THC", "CNY", 8_000)))
+	in := input(SideSell, SideBuy)
+	in.Purpose, in.Customer, in.SubjectKind, in.SubjectID, in.SubjectVersion = PurposeShipmentEstimate, CustomerRef{PartyID: "acme", PartyRevision: 2},
+		"SHIPMENT", "SH-1", 3
+	s, err := RecordSnapshot("t", "B-1", in, []PublishedVersion{tariff, supplier}, "fin-1", t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := IssueBasis("B-1", s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := b.State()
+	// AIR_FREIGHT sells and costs, DOC_FEE sells, THC costs; customs clearing is a gap
+	if len(st.Lines) != 3 || len(st.Gaps) != 1 || st.Gaps[0].Gap != GapCallForPricing || st.SubjectID != "SH-1" || st.Customer.PartyID != "acme" {
+		t.Fatalf("basis: %+v", st)
+	}
+	freight, doc, thc := st.Lines[0], st.Lines[1], st.Lines[2]
+	if freight.ChargeCode != "AIR_FREIGHT" || !freight.HasSell || !freight.HasCost || freight.Sell != cny(300_000) || freight.Cost != cny(300_000) ||
+		freight.CreditorPartyID != "airline-mu" || freight.SellLineNo == 0 || freight.CostLineNo == 0 {
+		t.Errorf("freight: %+v", freight)
+	}
+	if doc.ChargeCode != "DOC_FEE" || !doc.HasSell || doc.HasCost || doc.CreditorPartyID != "" {
+		t.Errorf("doc fee: %+v", doc)
+	}
+	if thc.ChargeCode != "THC" || thc.HasSell || !thc.HasCost || thc.Cost != cny(8_000) {
+		t.Errorf("THC: %+v", thc)
+	}
+	if p := b.Pending(); len(p) != 1 || p[0].Type != EventPricingBasisIssued {
+		t.Errorf("events: %+v", p)
+	}
+	// a consolidation estimate rates the BUY side only, without a customer
+	in = input(SideBuy)
+	in.Purpose, in.SubjectKind, in.SubjectID, in.Carrier = PurposeConsolCostEstimate, "CONSOLIDATION", "C-1", "airline-mu"
+	s, _ = RecordSnapshot("t", "B-2", in, []PublishedVersion{tariff, supplier}, "fin-1", t0)
+	if b, err = IssueBasis("B-2", s); err != nil || len(b.State().Lines) != 2 || b.State().Lines[0].HasSell {
+		t.Fatalf("consol basis: %+v %v", b, err)
+	}
+	// a quote-line snapshot is not a basis
+	in = input(SideSell)
+	s, _ = RecordSnapshot("t", "B-3", in, nil, "fin-1", t0)
+	if _, err = IssueBasis("B-3", s); !errors.Is(err, ErrInvalidBasis) {
+		t.Fatalf("a quote-line snapshot: %v", err)
+	}
+}

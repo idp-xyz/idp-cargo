@@ -107,6 +107,48 @@ type ApplyPricingBasis struct {
 	OccurredAt       time.Time
 }
 
+// RateFreightJob asks RATE to rate the job's shipment (PricingBasis v1 SHIPMENT_ESTIMATE, RATE V0.5) at the
+// service level given, with an optional via and carrier: FUL's CostDriver v1 gives the route and cargo as planned, and
+// RATE prices both sides (the customer's card, then the tariff; the given carrier's cards, else the lowest total). ORG
+// confirms the customer as a debtor and each supplier as a creditor. Every rated line becomes a RATED charge line with a
+// sell side for the customer and a cost side for the supplier, converted at FIN's ESTIMATE rate; a charge RATE could
+// not rate is left to a person (manual lines). A job is priced by its accepted quotes or by one rated estimate
+// (FIN_BASIS_APPLIED); a shipment RATE cannot rate is FIN_NOT_PRICEABLE. Receipt.Version is the number of lines added;
+// the charges RATE could not rate are listed by RATE's basis (GetPricingBasis with the job's basis id). A command retried
+// after FUL's plan changed is an idempotency conflict: ask again with a new command id.
+type RateFreightJob struct {
+	CommandID        string
+	TenantID         string
+	ActorID          string
+	JobID            string
+	ExpectedRevision int64
+	ServiceLevel     string
+	Via              string
+	Carrier          string
+	OccurredAt       time.Time
+}
+
+// RateConsolCostPool asks RATE to rate the pool's consolidation on the BUY side (PricingBasis v1
+// CONSOL_COST_ESTIMATE) for the lane and service level given and its carrier (the carrier's cards; without one, the
+// lowest total): PHY's PhysicalCostBasis v1 gives the mode and the cargo of the live houses. Every rated cost becomes a
+// RATED pool cost line, ACCRUED for its supplier at the ESTIMATE rate and apportioned by Method; a pool takes one rated
+// estimate (FIN_BASIS_APPLIED). As for jobs, RATE's basis lists the costs it could not rate, and a command retried after
+// PHY's consolidation changed is an idempotency conflict.
+type RateConsolCostPool struct {
+	CommandID        string
+	TenantID         string
+	ActorID          string
+	PoolID           string
+	ExpectedRevision int64
+	Carrier          string
+	Origin           string
+	Destination      string
+	Via              string
+	ServiceLevel     string
+	Method           string
+	OccurredAt       time.Time
+}
+
 // ChargeSide is a side entered by hand: the debtor of a sell side (an ORG party in the CUSTOMER or OVERSEAS_AGENT
 // role for the job's legal entity) or the creditor of a cost side (CARRIER, CO_LOADER or OVERSEAS_AGENT; empty
 // while not known), and the amount, not negative.
@@ -549,6 +591,8 @@ type Commands interface {
 	EndExchangeRate(ctx context.Context, cmd EndExchangeRate) (Receipt, error)
 	OpenFreightJob(ctx context.Context, cmd OpenFreightJob) (Receipt, error)
 	ApplyPricingBasis(ctx context.Context, cmd ApplyPricingBasis) (Receipt, error)
+	RateFreightJob(ctx context.Context, cmd RateFreightJob) (Receipt, error)
+	RateConsolCostPool(ctx context.Context, cmd RateConsolCostPool) (Receipt, error)
 	RecordChargeLine(ctx context.Context, cmd RecordChargeLine) (Receipt, error)
 	ReviseChargeSide(ctx context.Context, cmd ReviseChargeSide) (Receipt, error)
 	CancelFreightJob(ctx context.Context, cmd CancelFreightJob) (Receipt, error)
@@ -592,6 +636,8 @@ const (
 	ActionEndExchangeRate    = "EndExchangeRate"
 	ActionOpenFreightJob     = "OpenFreightJob"
 	ActionApplyPricingBasis  = "ApplyPricingBasis"
+	ActionRateFreightJob     = "RateFreightJob"
+	ActionRateConsolCostPool = "RateConsolCostPool"
 	ActionRecordChargeLine   = "RecordChargeLine"
 	ActionReviseChargeSide   = "ReviseChargeSide"
 	ActionCancelFreightJob   = "CancelFreightJob"

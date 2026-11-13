@@ -42,6 +42,7 @@ type Module struct {
 	outbox    *bentooutbox.Store
 	shipments application.Shipments
 	pricing   application.Pricing
+	rating    application.Rating
 	directory application.Directory
 	documents application.Documents
 	physical  application.Physical
@@ -63,9 +64,16 @@ var (
 	_ api.CreditStatusQueries = (*Module)(nil)
 )
 
-// New assembles FIN. ful answers CostDriver v1, rate PricingBasis v1, doc TransportDocumentSnapshot v1, phy
-// PhysicalCostBasis v1 and org LegalEntityRef v1, PartyRef v1 and party identity; FIN writes to none of them.
-func New(db *bentopg.DB, org orgacl.ORG, rate rateapi.PricingBasisQueries, ful fulapi.CostDriverQueries, doc docapi.TransportDocumentSnapshotQueries,
+// RATE is what FIN uses of RATE: PricingBasis v1 and the commands that rate a shipment or a consolidation into one.
+type RATE interface {
+	rateapi.PricingBasisQueries
+	rateapi.PricingBasisCommands
+}
+
+// New assembles FIN. ful answers CostDriver v1, rate PricingBasis v1 (and rates into it when FIN asks), doc
+// TransportDocumentSnapshot v1, phy PhysicalCostBasis v1 and org LegalEntityRef v1, PartyRef v1 and party identity;
+// FIN writes to none of them.
+func New(db *bentopg.DB, org orgacl.ORG, rate RATE, ful fulapi.CostDriverQueries, doc docapi.TransportDocumentSnapshotQueries,
 	phy phyapi.PhysicalCostBasisQueries, auth api.Authorizer, opts ...Option) (*Module, error) {
 	if db == nil || org == nil || rate == nil || ful == nil || doc == nil || phy == nil || auth == nil {
 		return nil, errors.New("fin: module needs a database, ORG, RATE's pricing bases, FUL's cost drivers, DOC's document snapshots, PHY's cost bases and an authorizer")
@@ -74,7 +82,7 @@ func New(db *bentopg.DB, org orgacl.ORG, rate rateapi.PricingBasisQueries, ful f
 	if err != nil {
 		return nil, err
 	}
-	m := &Module{db: db, outbox: outbox, shipments: fulacl.Shipments{FUL: ful}, pricing: rateacl.Pricing{RATE: rate}, directory: orgacl.Directory{ORG: org},
+	m := &Module{db: db, outbox: outbox, shipments: fulacl.Shipments{FUL: ful}, pricing: rateacl.Pricing{RATE: rate}, rating: rateacl.Rating{RATE: rate}, directory: orgacl.Directory{ORG: org},
 		documents: docacl.Documents{DOC: doc}, physical: phyacl.Physical{PHY: phy}, auth: auth, window: kernel.DefaultRecordWindow}
 	if m.numbers, err = numbering.NewSequences(db, "cargo_fin"); err != nil {
 		return nil, err
@@ -127,6 +135,21 @@ func (m *Module) EndExchangeRate(ctx context.Context, cmd api.EndExchangeRate) (
 func (m *Module) OpenFreightJob(ctx context.Context, cmd api.OpenFreightJob) (api.Receipt, error) {
 	r, err := m.deps(cmd.TenantID, cmd.CommandID).OpenJob(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, api.ActionOpenFreightJob, cmd.JobID, 0,
 		cmd.OccurredAt, cmd), cmd.ShipmentID)
+	return receipt(r, err)
+}
+
+// RateFreightJob asks RATE to rate the job's shipment and applies the estimate (SHIPMENT_ESTIMATE).
+func (m *Module) RateFreightJob(ctx context.Context, cmd api.RateFreightJob) (api.Receipt, error) {
+	r, err := m.deps(cmd.TenantID, cmd.CommandID).RateJob(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, api.ActionRateFreightJob, cmd.JobID,
+		cmd.ExpectedRevision, cmd.OccurredAt, cmd), application.RateJobInput{ServiceLevel: cmd.ServiceLevel, Via: cmd.Via, Carrier: cmd.Carrier})
+	return receipt(r, err)
+}
+
+// RateConsolCostPool asks RATE to rate the pool's consolidation and records the estimate (CONSOL_COST_ESTIMATE).
+func (m *Module) RateConsolCostPool(ctx context.Context, cmd api.RateConsolCostPool) (api.Receipt, error) {
+	r, err := m.deps(cmd.TenantID, cmd.CommandID).RatePool(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, api.ActionRateConsolCostPool, cmd.PoolID,
+		cmd.ExpectedRevision, cmd.OccurredAt, cmd), application.RatePoolInput{Carrier: cmd.Carrier, Origin: cmd.Origin, Destination: cmd.Destination,
+		Via: cmd.Via, ServiceLevel: cmd.ServiceLevel, Method: cmd.Method})
 	return receipt(r, err)
 }
 
@@ -325,8 +348,12 @@ func jobView(j *domain.FreightJob, revision int64) api.FreightJob {
 		Kind: st.Kind, FunctionalCurrency: st.FunctionalCurrency, BookCode: st.BookCode, CustomerPartyID: st.CustomerPartyID, PlanVersion: st.PlanVersion,
 		State: st.State, OpenedAt: st.OpenedAt, CancelReason: st.CancelReason, CancelledAt: st.CancelledAt}
 	for _, b := range st.Bases {
-		out.Bases = append(out.Bases, api.AppliedBasis{BasisNo: b.No, BasisID: b.BasisID, QuoteID: b.QuoteID, QuoteRevision: b.QuoteRevision, OrderID: b.OrderID,
-			AppliedBy: b.By, AppliedAt: b.At})
+		purpose := b.Purpose
+		if purpose == "" {
+			purpose = domain.PurposeQuoteAccepted
+		}
+		out.Bases = append(out.Bases, api.AppliedBasis{BasisNo: b.No, BasisID: b.BasisID, Purpose: purpose, QuoteID: b.QuoteID, QuoteRevision: b.QuoteRevision,
+			OrderID: b.OrderID, PlanVersion: b.PlanVersion, AppliedBy: b.By, AppliedAt: b.At})
 	}
 	for _, l := range st.Lines {
 		line := api.ChargeLine{LineNo: l.No, ChargeCode: l.ChargeCode, Description: l.Description, Source: l.Source, BasisNo: l.BasisNo,
@@ -739,6 +766,7 @@ func (m *Module) deps(tenant, commandID string) application.Deps {
 		Window:    m.window,
 		Shipments: m.shipments,
 		Pricing:   m.pricing,
+		Rating:    m.rating,
 		Directory: m.directory,
 		Documents: m.documents,
 		Numbers:   m.numbers,

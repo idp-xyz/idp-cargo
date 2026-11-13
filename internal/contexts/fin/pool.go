@@ -60,7 +60,12 @@ func poolView(p *domain.ConsolCostPool, revision int64) api.ConsolCostPool {
 		currency := l.Versions[len(l.Versions)-1].Amount.Currency
 		c := p.Consumed(l.No)
 		cost, costLocal := p.LineCost(l.No)
+		source := l.Source
+		if source == "" {
+			source = domain.SourceManual
+		}
 		line := api.PoolCostLine{LineNo: l.No, ChargeCode: l.ChargeCode, Description: l.Description, SupplierRef: l.SupplierRef, Method: l.Method,
+			Source: source, BasisID: l.BasisID, BasisLineNo: l.BasisLineNo,
 			RecordedAt: l.At, EnteredAt: l.EnteredAt, Status: p.LineStatus(l.No), Matched: kernel.Money{Currency: currency, Minor: c.Amount},
 			MatchedLocal: local(c.Local), Cost: kernel.Money{Currency: currency, Minor: cost}, CostLocal: local(costLocal)}
 		for _, v := range l.Versions {

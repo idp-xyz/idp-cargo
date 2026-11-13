@@ -81,12 +81,19 @@ type SnapshotStore interface {
 	Read(ctx context.Context, tenant rate.TenantID, id string) (*rate.RateSnapshot, error)
 }
 
-// CardDeps are the ports of the catalogue, card and rating commands.
+// BasisStore writes and reads issued pricing bases.
+type BasisStore interface {
+	Insert(ctx context.Context, b *rate.PricingBasis) error
+	Read(ctx context.Context, tenant rate.TenantID, id string) (*rate.PricingBasis, error)
+}
+
+// CardDeps are the ports of the catalogue, card, rating and estimate commands.
 type CardDeps struct {
 	Deps
 	Codes     ChargeCodeStore
 	Cards     RateCardStore
 	Snapshots SnapshotStore
+	Bases     BasisStore
 	Parties   Parties
 	Locations Locations
 }
@@ -494,18 +501,30 @@ type EvaluateRatesCommand struct {
 }
 
 func (d CardDeps) EvaluateRates(ctx context.Context, c EvaluateRatesCommand) (Receipt, error) {
-	if d.Cards == nil || d.Snapshots == nil || d.Parties == nil || d.Locations == nil {
+	return d.evaluate(ctx, c.Scope, c.CommandID, c.OccurredAt, c, c.SnapshotID, c.Input, "")
+}
+
+// evaluate rates the input at the command's business time and records the snapshot, and, when basisID is given, issues
+// the pricing basis built from it in the same transaction. The Authorizer answers first; then the location reference
+// data resolves the lane and ORG confirms a named customer (T3).
+func (d CardDeps) evaluate(ctx context.Context, s Scope, commandID string, occurredAt time.Time, command any, snapshotID string,
+	input rate.EvaluationInput, basisID string) (Receipt, error) {
+	if d.Cards == nil || d.Snapshots == nil || d.Parties == nil || d.Locations == nil || (basisID != "" && d.Bases == nil) {
 		return Receipt{}, ErrMissingDependency
 	}
-	hash, recorded, stored, replayed, err := d.begin(ctx, c.Scope, c.CommandID, c.OccurredAt, c)
+	hash, recorded, stored, replayed, err := d.begin(ctx, s, commandID, occurredAt, command)
 	if err != nil || replayed {
 		return stored, err
 	}
-	if err = d.allow(ctx, c.Scope, ActionEvaluateRates, c.SnapshotID); err != nil {
+	subject := snapshotID
+	if basisID != "" {
+		subject = basisID
+	}
+	if err = d.allow(ctx, s, ActionEvaluateRates, subject); err != nil {
 		return Receipt{}, err
 	}
-	in := c.Input
-	in.At = c.OccurredAt
+	in := input
+	in.At = occurredAt
 	edition := ""
 	for _, code := range []*string{&in.Origin, &in.Destination, &in.Via} {
 		if *code == "" {
@@ -519,23 +538,70 @@ func (d CardDeps) EvaluateRates(ctx context.Context, c EvaluateRatesCommand) (Re
 	}
 	in.Edition = edition
 	if in.Customer.PartyID != "" {
-		if in.Customer.PartyRevision, err = d.Parties.ConfirmRole(ctx, c.Scope.TenantID, in.Customer.PartyID, in.LegalEntityID, CustomerRoles, in.At); err != nil {
+		if in.Customer.PartyRevision, err = d.Parties.ConfirmRole(ctx, s.TenantID, in.Customer.PartyID, in.LegalEntityID, CustomerRoles, in.At); err != nil {
 			return Receipt{}, err
 		}
 	}
-	return d.commit(ctx, c.Scope, c.CommandID, hash, "RateSnapshot", func(txCtx context.Context) (string, int64, pendingAggregate, error) {
-		if err := d.allow(txCtx, c.Scope, ActionEvaluateRates, c.SnapshotID); err != nil {
+	kind := "RateSnapshot"
+	if basisID != "" {
+		kind = "PricingBasis"
+	}
+	return d.commit(ctx, s, commandID, hash, kind, func(txCtx context.Context) (string, int64, pendingAggregate, error) {
+		if err := d.allow(txCtx, s, ActionEvaluateRates, subject); err != nil {
 			return "", 0, nil, err
 		}
-		versions, err := d.Cards.Published(txCtx, c.Scope.TenantID, in.LegalEntityID, in.At,
+		versions, err := d.Cards.Published(txCtx, s.TenantID, in.LegalEntityID, in.At,
 			Lane{Mode: in.Mode, ContainerMode: in.ContainerMode, Origin: in.Origin, Destination: in.Destination})
 		if err != nil {
 			return "", 0, nil, err
 		}
-		snapshot, err := rate.RecordSnapshot(c.Scope.TenantID, c.SnapshotID, in, versions, c.Scope.ActorID, recorded)
+		snapshot, err := rate.RecordSnapshot(s.TenantID, snapshotID, in, versions, s.ActorID, recorded)
 		if err != nil {
 			return "", 0, nil, err
 		}
-		return c.SnapshotID, 1, snapshot, d.Snapshots.Insert(txCtx, snapshot)
+		if err = d.Snapshots.Insert(txCtx, snapshot); err != nil {
+			return "", 0, nil, err
+		}
+		if basisID == "" {
+			return snapshotID, 1, snapshot, nil
+		}
+		basis, err := rate.IssueBasis(basisID, snapshot)
+		if err != nil {
+			return "", 0, nil, err
+		}
+		return basisID, 1, both{snapshot, basis}, d.Bases.Insert(txCtx, basis)
 	})
+}
+
+// both is a snapshot and the basis issued from it, written in one transaction.
+type both struct {
+	snapshot *rate.RateSnapshot
+	basis    *rate.PricingBasis
+}
+
+func (b both) Pending() []rate.Event { return append(b.snapshot.Pending(), b.basis.Pending()...) }
+func (b both) Acknowledge()          { b.snapshot.Acknowledge(); b.basis.Acknowledge() }
+
+// EstimateCommand asks RATE to rate a shipment (SHIPMENT_ESTIMATE: both sides, for the shipment's customer) or a
+// consolidation (CONSOL_COST_ESTIMATE: the BUY side, with the consolidation's carrier when known) at OccurredAt and to
+// issue PricingBasis v1 BasisID from the snapshot (FIN asks, RATE -> FIN). The snapshot takes the basis id.
+type EstimateCommand struct {
+	CommandID  string
+	Scope      Scope
+	BasisID    string
+	Input      rate.EvaluationInput
+	OccurredAt time.Time
+}
+
+func (d CardDeps) IssueEstimate(ctx context.Context, c EstimateCommand) (Receipt, error) {
+	in := c.Input
+	switch in.Purpose {
+	case rate.PurposeShipmentEstimate:
+		in.Sides, in.SubjectKind = []rate.Side{rate.SideSell, rate.SideBuy}, "SHIPMENT"
+	case rate.PurposeConsolCostEstimate:
+		in.Sides, in.SubjectKind, in.Customer = []rate.Side{rate.SideBuy}, "CONSOLIDATION", rate.CustomerRef{}
+	default:
+		return Receipt{}, fmt.Errorf("%w: an estimate is a SHIPMENT_ESTIMATE or a CONSOL_COST_ESTIMATE", rate.ErrInvalidBasis)
+	}
+	return d.evaluate(ctx, c.Scope, c.CommandID, c.OccurredAt, c, c.BasisID, in, c.BasisID)
 }
