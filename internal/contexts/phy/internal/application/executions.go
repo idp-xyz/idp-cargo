@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	phy "go.idp.xyz/idp-cargo/internal/contexts/phy/internal/domain"
@@ -15,10 +16,12 @@ type OpenLoadExecutionCommand struct {
 	ConsolidationID phy.ConsolidationID
 	Kind            phy.ExecutionKind
 	Facility        phy.Facility
+	LoadUnitNo      int `json:",omitzero"` // the unit a STUFFING fills; left out of the hash of a tender, as before
 	OccurredAt      time.Time
 }
 
-// OpenLoadExecution opens a tender of a consolidation, under the consolidation's FOR SHARE lock.
+// OpenLoadExecution opens a tender of a consolidation, or the stuffing of one of its planned containers, under the
+// consolidation's FOR SHARE lock. Two stuffings of one unit opened at once meet the database's one-per-unit index.
 type OpenLoadExecution struct{ Deps }
 
 func (h OpenLoadExecution) Handle(ctx context.Context, c OpenLoadExecutionCommand) (Receipt, error) {
@@ -34,9 +37,24 @@ func (h OpenLoadExecution) Handle(ctx context.Context, c OpenLoadExecutionComman
 		if err != nil {
 			return Receipt{}, nil, err
 		}
-		x, err := phy.OpenLoadExecution(c.Scope.TenantID, c.ExecutionID, consol, c.Kind, c.Facility, c.Scope.ActorID, c.OccurredAt)
-		if err != nil {
-			return Receipt{}, nil, err
+		var x *phy.LoadExecution
+		if c.Kind == phy.ExecutionStuffing {
+			uses, err := h.Executions.UnitUses(txCtx, c.Scope.TenantID, c.ConsolidationID)
+			if err != nil {
+				return Receipt{}, nil, err
+			}
+			_, taken := uses[c.LoadUnitNo]
+			x, err = phy.OpenStuffing(c.Scope.TenantID, c.ExecutionID, consol, c.LoadUnitNo, c.Facility, taken, c.Scope.ActorID, c.OccurredAt)
+			if err != nil {
+				return Receipt{}, nil, err
+			}
+		} else {
+			if c.LoadUnitNo != 0 {
+				return Receipt{}, nil, fmt.Errorf("%w: a tender names no load unit", phy.ErrInvalidExecution)
+			}
+			if x, err = phy.OpenLoadExecution(c.Scope.TenantID, c.ExecutionID, consol, c.Kind, c.Facility, c.Scope.ActorID, c.OccurredAt); err != nil {
+				return Receipt{}, nil, err
+			}
 		}
 		x.Stamp(entered)
 		revision, err := h.Executions.Insert(txCtx, x)

@@ -73,6 +73,7 @@ type fulStub struct {
 	packs     map[string]int64
 	status    map[string]string
 	allocated map[string]string
+	sea       map[string]bool  // shipments planned by SEA, LCL, from Shanghai to Hamburg
 	asked     map[int][]string // per close attempt
 	delay     time.Duration
 }
@@ -102,6 +103,14 @@ func (f *fulStub) GetLoadIntent(ctx context.Context, q fulapi.GetShipmentPlanSna
 		packs = p
 	}
 	kg := kernel.Quantity{Unit: "KGM", Amount: 50 * packs}
+	if f.sea[q.ShipmentID] {
+		return fulapi.LoadIntent{TenantID: q.TenantID, ShipmentID: q.ShipmentID, Revision: int64(plan + 1), Status: status, PlanVersion: plan,
+			ConfirmedVersion: plan, CustomerPartyID: "P-1", LegalEntityID: "LE", TransportMode: fulapi.ModeSea, ContainerMode: fulapi.ContainerLCL,
+			Origin: unlocode("CNSHG"), Destination: unlocode("DEHAM"), LocationEdition: "TEST-EDITION",
+			DepartureWindow: kernel.ValidityInterval{From: f.at.Add(48 * time.Hour), Until: f.at.Add(120 * time.Hour)}, Packs: packs, GrossWeight: kg,
+			Parts: []fulapi.LoadIntentPart{{ObligationID: "OB-" + q.ShipmentID, ObligationVersion: 1, OrderID: "O-1", Packs: packs, PackageType: "CT", GrossWeight: kg}},
+			Stage: fulapi.StageMain, ConsolidationID: f.allocated[q.ShipmentID]}, nil
+	}
 	return fulapi.LoadIntent{TenantID: q.TenantID, ShipmentID: q.ShipmentID, Revision: int64(plan + 1), Status: status, PlanVersion: plan,
 		ConfirmedVersion: plan, CustomerPartyID: "P-1", LegalEntityID: "LE", TransportMode: fulapi.ModeAir, Origin: unlocode("CNPVG"),
 		Destination: unlocode("USJFK"), OriginIATA: "PVG", DestinationIATA: "JFK", LocationEdition: "TEST-EDITION",
@@ -165,7 +174,7 @@ func newFixture(t *testing.T) *fixture {
 	at := time.Now().UTC().Add(-24 * time.Hour).Truncate(time.Microsecond) // business times lie in the past (T1)
 	f := &fixture{db: testDB(t), at: at, tenant: "cargo-phy-" + time.Now().UTC().Format("20060102T150405.000000000"),
 		ful: &fulStub{at: at, plan: map[string]int{}, packs: map[string]int64{}, status: map[string]string{}, allocated: map[string]string{},
-			asked: map[int][]string{}}}
+			sea: map[string]bool{}, asked: map[int][]string{}}}
 	module, err := phymodule.New(f.db, f.ful, policy{}, phymodule.WithLocations(locationStub{}), phymodule.WithEquipment(equipmentStub{}))
 	if err != nil {
 		t.Fatal(err)

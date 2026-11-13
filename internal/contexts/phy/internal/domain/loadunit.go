@@ -3,8 +3,11 @@ package domain
 import (
 	"errors"
 	"fmt"
+	"math"
 	"regexp"
 	"time"
+
+	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
 // A planned load unit is an entity of the consolidation (PLAN_LOAD_UNIT, REMOVE_PLANNED_LOAD_UNIT): a unit the
@@ -28,7 +31,40 @@ type (
 var (
 	ErrInvalidLoadUnit = errors.New("phy: invalid load unit")
 	ErrLoadUnitKind    = errors.New("phy: PHY_LOAD_UNIT_KIND: the consolidation takes no load unit of that kind")
+	ErrLoadUnitInUse   = errors.New("phy: PHY_LOAD_UNIT_IN_USE: the load unit has its stuffing")
 )
+
+// gramsPer and cubicCmPer convert the weights and volumes a container's limits are checked against (UN/ECE
+// Recommendation 20 codes).
+var (
+	gramsPer   = map[kernel.UnitCode]int64{"GRM": 1, "KGM": 1000, "TNE": 1000000}
+	cubicCmPer = map[kernel.UnitCode]int64{"CMQ": 1, "DMQ": 1000, "LTR": 1000, "MTQ": 1000000}
+)
+
+// checkable reports whether a line's weight, and its volume if it gives one, convert to grams and cubic centimetres.
+func checkable(l LoadLine) bool {
+	_, weight := gramsPer[l.GrossWeight.Unit]
+	_, volume := cubicCmPer[l.Volume.Unit]
+	return weight && (l.Volume == (kernel.Quantity{}) || volume)
+}
+
+// thousandths writes an amount in thousandths as a decimal, such as 32250.000 for 32,250,000 grams in kilograms.
+func thousandths(n int64) string { return fmt.Sprintf("%d.%03d", n/1000, n%1000) }
+
+// scaled multiplies an amount by a factor, capped at math.MaxInt64; addCapped adds two amounts likewise.
+func scaled(amount, factor int64) int64 {
+	if amount > 0 && factor > 0 && amount > math.MaxInt64/factor {
+		return math.MaxInt64
+	}
+	return amount * factor
+}
+
+func addCapped(a, b int64) int64 {
+	if b > 0 && a > math.MaxInt64-b {
+		return math.MaxInt64
+	}
+	return a + b
+}
 
 var sizeTypeCode = regexp.MustCompile(`^[0-9A-Z]{2}[A-Z][0-9A-Z]$`)
 
@@ -86,9 +122,9 @@ func (c *Consolidation) PlanLoadUnit(kind LoadUnitKind, limits UnitLimits, by st
 	return u.No, nil
 }
 
-// RemovePlannedLoadUnit removes a planned unit with a reason, while the consolidation is OPEN or CLOSED. Nothing is
-// loaded into units before stuffing, which will refuse the removal of a unit with cargo in it.
-func (c *Consolidation) RemovePlannedLoadUnit(no int, reason, by string, at time.Time) error {
+// RemovePlannedLoadUnit removes a planned unit with a reason, while the consolidation is OPEN or CLOSED and no
+// stuffing is opened on the unit (inUse, read under the consolidation's lock).
+func (c *Consolidation) RemovePlannedLoadUnit(no int, reason, by string, at time.Time, inUse bool) error {
 	if s := c.Current().State; s != StateOpen && s != StateClosed {
 		return ErrInvalidTransition
 	}
@@ -97,6 +133,9 @@ func (c *Consolidation) RemovePlannedLoadUnit(no int, reason, by string, at time
 	}
 	if !text(reason) {
 		return fmt.Errorf("%w: a removal gives its reason (500 characters)", ErrInvalidChange)
+	}
+	if inUse {
+		return fmt.Errorf("%w: unit %d", ErrLoadUnitInUse, no)
 	}
 	if err := c.changeable(by, at); err != nil {
 		return err

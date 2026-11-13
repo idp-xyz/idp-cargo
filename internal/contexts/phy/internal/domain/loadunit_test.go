@@ -106,17 +106,17 @@ func TestLoadUnitLifecycle(t *testing.T) {
 		"unit zero":           {0, "rolled", t0.Add(2 * time.Hour), ErrInvalidLoadUnit},
 		"before its planning": {1, "rolled", t0.Add(30 * time.Minute), ErrInvalidChange},
 	} {
-		if err := c.RemovePlannedLoadUnit(tc.no, tc.reason, "ops-1", tc.at); !errors.Is(err, tc.want) {
+		if err := c.RemovePlannedLoadUnit(tc.no, tc.reason, "ops-1", tc.at, false); !errors.Is(err, tc.want) {
 			t.Fatalf("%s: %v, want %v", name, err, tc.want)
 		}
 	}
 	if len(c.Pending()) != 0 || len(c.LiveLoadUnits()) != 2 {
 		t.Fatal("a refused removal changed the consolidation")
 	}
-	if err := c.RemovePlannedLoadUnit(1, "cargo fits one 40ft", "ops-2", t0.Add(2*time.Hour)); err != nil {
+	if err := c.RemovePlannedLoadUnit(1, "cargo fits one 40ft", "ops-2", t0.Add(2*time.Hour), false); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.RemovePlannedLoadUnit(1, "again", "ops-2", t0.Add(2*time.Hour)); !errors.Is(err, ErrInvalidLoadUnit) {
+	if err := c.RemovePlannedLoadUnit(1, "again", "ops-2", t0.Add(2*time.Hour), false); !errors.Is(err, ErrInvalidLoadUnit) {
 		t.Fatalf("second removal = %v", err)
 	}
 	c.Stamp(t0.Add(3 * time.Hour))
@@ -139,7 +139,7 @@ func TestLoadUnitLifecycle(t *testing.T) {
 	if err != nil || no != 3 {
 		t.Fatal(no, err)
 	}
-	if err = c.RemovePlannedLoadUnit(3, "planned by mistake", "ops-1", t0.Add(4*time.Hour)); err != nil {
+	if err = c.RemovePlannedLoadUnit(3, "planned by mistake", "ops-1", t0.Add(4*time.Hour), false); err != nil {
 		t.Fatal(err)
 	}
 	c.Stamp(t0.Add(5 * time.Hour))
@@ -157,7 +157,7 @@ func TestLoadUnitLifecycle(t *testing.T) {
 	if got := r.State().LoadUnits; len(got) != 3 || got[0].RemoveReason != "cargo fits one 40ft" || len(r.AddedLoadUnits()) != 0 {
 		t.Fatalf("restored %+v", got)
 	}
-	if err = r.RemovePlannedLoadUnit(1, "again", "ops-1", t0.Add(6*time.Hour)); !errors.Is(err, ErrInvalidLoadUnit) {
+	if err = r.RemovePlannedLoadUnit(1, "again", "ops-1", t0.Add(6*time.Hour), false); !errors.Is(err, ErrInvalidLoadUnit) {
 		t.Fatal(err)
 	}
 }
@@ -213,7 +213,9 @@ func TestNothingIsDatedBeforeALoadUnitChange(t *testing.T) {
 			_, err := c.PlanLoadUnit(UnitContainer, unit22G1, "ops-1", at)
 			return err
 		},
-		"remove": func(c *Consolidation, at time.Time) error { return c.RemovePlannedLoadUnit(1, "rolled", "ops-1", at) },
+		"remove": func(c *Consolidation, at time.Time) error {
+			return c.RemovePlannedLoadUnit(1, "rolled", "ops-1", at, false)
+		},
 	} {
 		c := planned(t)
 		if err := change(c, early); !errors.Is(err, ErrInvalidChange) {
@@ -225,7 +227,7 @@ func TestNothingIsDatedBeforeALoadUnitChange(t *testing.T) {
 	}
 	// A removal moves the bound on too.
 	c := planned(t)
-	if err := c.RemovePlannedLoadUnit(1, "rolled", "ops-1", t0.Add(6*time.Hour)); err != nil {
+	if err := c.RemovePlannedLoadUnit(1, "rolled", "ops-1", t0.Add(6*time.Hour), false); err != nil {
 		t.Fatal(err)
 	}
 	if err := c.Cancel("vessel omitted the port", "ops-1", t0.Add(5*time.Hour+30*time.Minute), 0, 0); !errors.Is(err, ErrInvalidChange) {

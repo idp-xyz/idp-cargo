@@ -10,18 +10,26 @@ import (
 	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
-// PHY V0.2: the tender of a consolidation's houses, as a load execution. A loaded or tendered fact needs its own
-// evidence; it is never derived from a booking, a membership or a plan (UL-04, DDD-011). Corrections are
-// reversal lines (DDD-014); a fact that breaks a rule PHY cannot enforce on the carrier is recorded and flagged,
-// never refused (G06-05). Stuffing a container and building up a ULD need load units and come with SEA.
+// PHY V0.2: the tender of a consolidation's houses, as a load execution; PHY V0.3 adds the stuffing of a planned
+// container. A loaded or tendered fact needs its own evidence; it is never derived from a booking, a membership or
+// a plan (UL-04, DDD-011). Corrections are reversal lines (DDD-014); a fact that breaks a rule PHY cannot enforce
+// on the carrier is recorded and flagged, never refused (G06-05). Building up a ULD comes with ULD load units.
 
 type LoadExecutionID string
 
-// ExecutionKind is how cargo is loaded. N1 tenders only: loose AIR cargo to the airline terminal, or the houses
-// of a co-load to the co-loader's CFS (OD-3). STUFFING and BUILD_UP come with load units.
+// ExecutionKind is how cargo is loaded: a TENDER of loose AIR cargo to the airline terminal or of a co-load's
+// houses to the co-loader's CFS (OD-3), or the STUFFING of a planned container of an own-container LCL
+// consolidation at the forwarder's CFS (PHY V0.3). BUILD_UP comes with ULD load units.
 type ExecutionKind string
 
-const ExecutionTender ExecutionKind = "TENDER"
+const (
+	ExecutionTender   ExecutionKind = "TENDER"
+	ExecutionStuffing ExecutionKind = "STUFFING"
+)
+
+// EvidenceSeal is the source of a stuffing's closing evidence: the seal applied to the container, its number the
+// reference. The seal itself, its party and its history, are SEA's.
+const EvidenceSeal = "SEAL"
 
 // ExecutionState is a load execution's state.
 type ExecutionState string
@@ -35,7 +43,9 @@ const (
 
 var (
 	ErrInvalidExecution  = errors.New("phy: invalid load execution")
-	ErrKindNotTendered   = errors.New("phy: only AIR_CONSOL and SEA_LCL_COLOAD consolidations are tendered; stuffing comes with load units")
+	ErrKindNotTendered   = errors.New("phy: only AIR_CONSOL and SEA_LCL_COLOAD consolidations are tendered; SEA_LCL_OWN ones are stuffed")
+	ErrKindNotStuffed    = errors.New("phy: PHY_NOT_STUFFED: only planned containers of SEA_LCL_OWN consolidations are stuffed")
+	ErrNotFrozen         = errors.New("phy: PHY_HOUSES_NOT_FROZEN: a container is stuffed once the consolidation is CLOSED, its houses frozen")
 	ErrNotLoading        = errors.New("phy: the load execution is not loading")
 	ErrInvalidLoad       = errors.New("phy: invalid load line, reversal or hold")
 	ErrOnHold            = errors.New("phy: the load execution has a hold placed")
@@ -206,7 +216,8 @@ type LoadExecutionState struct {
 	ConsolidationID  ConsolidationID
 	Kind             ExecutionKind
 	Mode             Mode
-	Facility         Facility // where the cargo is tendered: the airline terminal or the co-loader's CFS
+	Facility         Facility // where the cargo is tendered or stuffed: the airline terminal, the co-loader's CFS or the forwarder's
+	LoadUnitNo       int      // the planned load unit a STUFFING fills; none for a TENDER
 	State            ExecutionState
 	OpenedBy         string
 	OpenedAt         time.Time
@@ -257,7 +268,7 @@ func OpenLoadExecution(tenant TenantID, id LoadExecutionID, c *Consolidation, ki
 		return nil, ErrInvalidExecution
 	}
 	if kind != ExecutionTender {
-		return nil, fmt.Errorf("%w: kind %q; STUFFING and BUILD_UP come with load units", ErrInvalidExecution, kind)
+		return nil, fmt.Errorf("%w: kind %q; a STUFFING opens on its load unit, BUILD_UP comes with ULD load units", ErrInvalidExecution, kind)
 	}
 	if k := c.State().Kind; k != KindAirConsol && k != KindSeaLCLCoload {
 		return nil, ErrKindNotTendered
@@ -275,6 +286,39 @@ func OpenLoadExecution(tenant TenantID, id LoadExecutionID, c *Consolidation, ki
 	x := &LoadExecution{state: LoadExecutionState{TenantID: tenant, ExecutionID: id, ConsolidationID: c.ID(), Kind: kind, Mode: c.Mode(),
 		Facility: facility, State: ExecutionOpen, OpenedBy: by, OpenedAt: at.UTC()}}
 	x.record(eventLoadExecutionOpened, at, "", "", 0, "")
+	return x, nil
+}
+
+// OpenStuffing opens the stuffing of a planned container of a CLOSED own-container LCL consolidation (its houses
+// frozen) at a facility of its origin, the forwarder's CFS. A unit takes one stuffing: taken reports whether an
+// execution was opened on it already. Business time is not before the unit was planned.
+func OpenStuffing(tenant TenantID, id LoadExecutionID, c *Consolidation, unitNo int, facility Facility, taken bool, by string, at time.Time) (*LoadExecution, error) {
+	if c == nil || !identifier(string(tenant)) || !identifier(string(id)) || c.Tenant() != tenant || !facility.valid() || blank(by) || at.IsZero() {
+		return nil, ErrInvalidExecution
+	}
+	if c.State().Kind != KindSeaLCLOwn {
+		return nil, ErrKindNotStuffed
+	}
+	current := c.Current()
+	if current.State != StateClosed {
+		return nil, fmt.Errorf("%w: it is %s", ErrNotFrozen, current.State)
+	}
+	if unitNo < 1 || unitNo > len(c.state.LoadUnits) || c.state.LoadUnits[unitNo-1].Status != UnitPlanned ||
+		c.state.LoadUnits[unitNo-1].Kind != UnitContainer {
+		return nil, fmt.Errorf("%w: no planned container %d", ErrInvalidLoadUnit, unitNo)
+	}
+	if taken {
+		return nil, fmt.Errorf("%w: unit %d has its stuffing", ErrLoadUnitInUse, unitNo)
+	}
+	if facility.Location != current.Route.Origin {
+		return nil, fmt.Errorf("%w: the facility lies at %s, the consolidation departs %s", ErrInvalidExecution, facility.Location.Code, current.Route.Origin.Code)
+	}
+	if at.Before(c.state.LoadUnits[unitNo-1].PlannedAt) {
+		return nil, ErrInvalidChange
+	}
+	x := &LoadExecution{state: LoadExecutionState{TenantID: tenant, ExecutionID: id, ConsolidationID: c.ID(), Kind: ExecutionStuffing, Mode: c.Mode(),
+		Facility: facility, LoadUnitNo: unitNo, State: ExecutionOpen, OpenedBy: by, OpenedAt: at.UTC()}}
+	x.record(eventLoadExecutionOpened, at, "", "", unitNo, "")
 	return x, nil
 }
 
@@ -315,6 +359,9 @@ func (x *LoadExecution) Load(in LoadLine, c *Consolidation, lot *CargoLot, entry
 	}
 	if s := c.Current().State; s != StateOpen && s != StateClosed {
 		return ErrInvalidTransition
+	}
+	if x.state.Kind == ExecutionStuffing && c.Current().State != StateClosed {
+		return fmt.Errorf("%w: it is %s", ErrNotFrozen, c.Current().State)
 	}
 	if !entry.Live() || entry.ConsolidationID != x.state.ConsolidationID {
 		return fmt.Errorf("%w: %s in %s", ErrNotAttached, lot.Shipment(), x.state.ConsolidationID)
@@ -357,6 +404,10 @@ func (x *LoadExecution) Load(in LoadLine, c *Consolidation, lot *CargoLot, entry
 		}
 		line.Basis, line.MeasurementNo = BasisApportioned, m.No
 	}
+	if x.state.Kind == ExecutionStuffing && !checkable(line) {
+		return fmt.Errorf("%w: a container's limits are checked against weights in GRM, KGM or TNE and volumes in CMQ, DMQ, LTR or MTQ",
+			ErrInvalidLoad)
+	}
 	if err := x.changeable(by, at); err != nil {
 		return err
 	}
@@ -367,7 +418,43 @@ func (x *LoadExecution) Load(in LoadLine, c *Consolidation, lot *CargoLot, entry
 		s := lot.state.Screenings[len(lot.state.Screenings)-1]
 		x.HoldForScreening(lot.ID(), s.Evidence, by, at)
 	}
+	if x.state.Kind == ExecutionStuffing {
+		x.holdIfOverLimits(c.state.LoadUnits[x.state.LoadUnitNo-1].Limits, line.Evidence, by, at)
+	}
 	return nil
+}
+
+// holdIfOverLimits holds a stuffing whose container, its tare and its live cargo, weighs more than the type's
+// default maximum gross, or whose live cargo takes more than its capacity (volumes not given are not counted). The
+// line is recorded either way (G06-05); an OVERWEIGHT hold already placed is not placed again. The limits are
+// defaults: the container's plate (SEA's) may allow more, which releasing the hold with its evidence records.
+func (x *LoadExecution) holdIfOverLimits(l UnitLimits, evidence Evidence, by string, at time.Time) {
+	for _, h := range x.state.Holds {
+		if h.Placed() && h.Reason == HoldOverweight {
+			return
+		}
+	}
+	var weight, volume int64
+	for _, line := range x.state.Lines {
+		_, w, v := x.lineLive(line.No)
+		weight = addCapped(weight, scaled(w, gramsPer[line.GrossWeight.Unit]))
+		if line.Volume != (kernel.Quantity{}) {
+			volume = addCapped(volume, scaled(v, cubicCmPer[line.Volume.Unit]))
+		}
+	}
+	gross := addCapped(weight, scaled(l.TareKg, 1000))
+	var text string
+	switch {
+	case gross > scaled(l.MaxGrossKg, 1000):
+		text = fmt.Sprintf("unit %d (%s): tare and cargo %s kg over the default maximum gross %d kg (edition %s)", x.state.LoadUnitNo, l.TypeCode,
+			thousandths(gross), l.MaxGrossKg, l.Edition)
+	case volume > l.CapacityCM3:
+		text = fmt.Sprintf("unit %d (%s): cargo %s m3 over the default capacity %s m3 (edition %s)", x.state.LoadUnitNo, l.TypeCode,
+			thousandths(volume/1000), thousandths(l.CapacityCM3/1000), l.Edition)
+	default:
+		return
+	}
+	x.hold(Hold{Reason: HoldOverweight, Text: text, Evidence: evidence}, by, at)
 }
 
 // apportion is the part of a lot's measure that packs of received take: their share rounded down, or, for the
@@ -523,7 +610,8 @@ func (x *LoadExecution) ReleaseHold(no int, evidence Evidence, lotOutcome Outcom
 }
 
 // Close closes a loading execution with its closing evidence: the tender receipt of the airline terminal or the
-// co-loader's CFS.
+// co-loader's CFS, or for a stuffing the container's seal (source SEAL, the seal number as reference), with cargo
+// in the container.
 func (x *LoadExecution) Close(evidence Evidence, by string, at time.Time) error {
 	if x.state.State == ExecutionOnHold {
 		return ErrOnHold
@@ -533,6 +621,14 @@ func (x *LoadExecution) Close(evidence Evidence, by string, at time.Time) error 
 	}
 	if !evidence.valid(at) {
 		return ErrInvalidEvidence
+	}
+	if x.state.Kind == ExecutionStuffing {
+		if evidence.Source != EvidenceSeal {
+			return fmt.Errorf("%w: a stuffing closes with the container's seal (source %s)", ErrInvalidEvidence, EvidenceSeal)
+		}
+		if x.Tendered() == 0 {
+			return fmt.Errorf("%w: nothing is stuffed in the container", ErrInvalidLoad)
+		}
 	}
 	if err := x.changeable(by, at); err != nil {
 		return err
@@ -763,8 +859,13 @@ func RestoreLoadExecution(st LoadExecutionState) (*LoadExecution, error) {
 	x := &LoadExecution{state: st, stored: [5]int{len(st.Lines), len(st.Reversals), len(st.Holds), len(st.CarrierEvidence), len(st.Discrepancies)}}
 	bad := func(what string) (*LoadExecution, error) { return nil, fmt.Errorf("%w: %s", ErrInvalidExecution, what) }
 	if !identifier(string(st.TenantID)) || !identifier(string(st.ExecutionID)) || !identifier(string(st.ConsolidationID)) ||
-		st.Kind != ExecutionTender || !st.Mode.Valid() || !st.Facility.valid() || blank(st.OpenedBy) || st.OpenedAt.IsZero() {
+		(st.Kind != ExecutionTender && st.Kind != ExecutionStuffing) || (st.Kind == ExecutionStuffing) != (st.LoadUnitNo > 0) ||
+		st.LoadUnitNo < 0 || (st.Kind == ExecutionStuffing && st.Mode != ModeSea) || !st.Mode.Valid() || !st.Facility.valid() ||
+		blank(st.OpenedBy) || st.OpenedAt.IsZero() {
 		return bad("identity")
+	}
+	if st.Kind == ExecutionStuffing && st.State == ExecutionClosed && st.CloseEvidence.Source != EvidenceSeal {
+		return bad("a stuffing closed without its seal")
 	}
 	started, closed := !st.StartedAt.IsZero(), !st.ClosedAt.IsZero()
 	switch st.State {

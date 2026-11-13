@@ -275,7 +275,7 @@ func TestPlanAndRemoveInOneTransaction(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if err = c.RemovePlannedLoadUnit(no, "planned by mistake", "ops-1", f.at.Add(time.Hour)); err != nil {
+		if err = c.RemovePlannedLoadUnit(no, "planned by mistake", "ops-1", f.at.Add(time.Hour), false); err != nil {
 			return err
 		}
 		c.Stamp(time.Now().UTC().Truncate(time.Microsecond))
@@ -353,18 +353,10 @@ func TestLoadUnitsKeptFromTheMigrator(t *testing.T) {
 	if _, err := f.module.PlanLoadUnit(ctx, f.planUnit("plan-1", "C-S", 1, "22G1")); err != nil {
 		t.Fatal(err)
 	}
-	dsn := os.Getenv("IDP_CARGO_MIGRATOR_DSN")
-	if dsn == "" {
-		if os.Getenv("CI") != "" {
-			t.Fatal("IDP_CARGO_MIGRATOR_DSN required in CI; skipping forbidden")
-		}
+	conn := f.migrator(t)
+	if conn == nil {
 		t.Skip("set IDP_CARGO_MIGRATOR_DSN to test the trigger as the migrator role")
 	}
-	conn, err := pgx.Connect(ctx, dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer conn.Close(ctx)
 	for name, sql := range map[string]string{
 		"limits":  `UPDATE cargo_phy.planned_load_unit SET tare_kg = 1 WHERE tenant_id = $1`,
 		"type":    `UPDATE cargo_phy.planned_load_unit SET type_code = '42G1' WHERE tenant_id = $1`,
@@ -375,4 +367,23 @@ func TestLoadUnitsKeptFromTheMigrator(t *testing.T) {
 			t.Errorf("%s: %v (state %s), want 23001", name, err, sqlState(err))
 		}
 	}
+}
+
+// migrator connects as the migrator role, which owns the tables and bypasses row level security; nil when no DSN is
+// set outside CI.
+func (f *fixture) migrator(t *testing.T) *pgx.Conn {
+	t.Helper()
+	dsn := os.Getenv("IDP_CARGO_MIGRATOR_DSN")
+	if dsn == "" {
+		if os.Getenv("CI") != "" {
+			t.Fatal("IDP_CARGO_MIGRATOR_DSN required in CI; skipping forbidden")
+		}
+		return nil
+	}
+	conn, err := pgx.Connect(context.Background(), dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close(context.Background()) })
+	return conn
 }

@@ -203,6 +203,12 @@ type ExecutionRead struct {
 // tenders, which never changes, so that a command locks it first; Load locks the execution FOR UPDATE; Read
 // takes no lock. ByConsolidation reads a consolidation's executions; WithLiveLot the ids of the LOADING or
 // ON_HOLD executions with live packs of a lot; HouseLoaded a house's live loaded packs in a consolidation.
+// UnitUse is the stuffing opened on a load unit: the unit is IN_USE while it is not CLOSED, and CLOSED with it.
+type UnitUse struct {
+	ExecutionID phy.LoadExecutionID
+	State       phy.ExecutionState
+}
+
 type ExecutionStore interface {
 	Insert(context.Context, *phy.LoadExecution) (int64, error)
 	Consolidation(context.Context, phy.TenantID, phy.LoadExecutionID) (phy.ConsolidationID, error)
@@ -213,6 +219,7 @@ type ExecutionStore interface {
 	ByShipment(context.Context, phy.TenantID, phy.ShipmentID) ([]ExecutionRead, error)
 	WithLiveLot(context.Context, phy.TenantID, phy.CargoLotID) ([]phy.LoadExecutionID, error)
 	HouseLoaded(context.Context, phy.TenantID, phy.ConsolidationID, phy.ShipmentID) (int64, error)
+	UnitUses(context.Context, phy.TenantID, phy.ConsolidationID) (map[int]UnitUse, error)
 }
 
 type Receipts interface {

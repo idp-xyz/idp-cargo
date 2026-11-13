@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"go.idp.xyz/idp-cargo/internal/contexts/phy/api"
+	"go.idp.xyz/idp-cargo/internal/contexts/phy/internal/application"
 	"go.idp.xyz/idp-cargo/internal/contexts/phy/internal/domain"
 	"go.idp.xyz/idp-cargo/internal/kernel"
 )
@@ -52,8 +53,14 @@ func (m *Module) GetPhysicalCostBasis(ctx context.Context, q api.GetPhysicalCost
 		out.Houses = append(out.Houses, house)
 	}
 	slices.SortFunc(out.Houses, func(a, b api.HouseCostBasis) int { return strings.Compare(a.ShipmentID, b.ShipmentID) })
+	uses := map[int]application.UnitUse{}
+	for _, r := range executions {
+		if st := r.Execution.State(); st.LoadUnitNo > 0 {
+			uses[st.LoadUnitNo] = application.UnitUse{ExecutionID: st.ExecutionID, State: st.State}
+		}
+	}
 	for _, u := range c.LiveLoadUnits() {
-		out.LoadUnits = append(out.LoadUnits, loadUnit(u))
+		out.LoadUnits = append(out.LoadUnits, loadUnit(u, uses))
 	}
 	return out, nil
 }

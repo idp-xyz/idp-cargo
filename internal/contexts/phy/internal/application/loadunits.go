@@ -70,7 +70,9 @@ type RemovePlannedLoadUnitCommand struct {
 	OccurredAt       time.Time
 }
 
-// RemovePlannedLoadUnit removes a planned load unit with a reason. The receipt's item is the unit's number.
+// RemovePlannedLoadUnit removes a planned load unit with a reason, refused once a stuffing is opened on it (read
+// under the consolidation's FOR UPDATE lock, which an opening's FOR SHARE lock waits for). The receipt's item is the
+// unit's number.
 type RemovePlannedLoadUnit struct{ Deps }
 
 func (h RemovePlannedLoadUnit) Handle(ctx context.Context, c RemovePlannedLoadUnitCommand) (Receipt, error) {
@@ -82,7 +84,12 @@ func (h RemovePlannedLoadUnit) Handle(ctx context.Context, c RemovePlannedLoadUn
 		return Receipt{}, err
 	}
 	return h.changeConsolidationItem(ctx, c.Scope, c.CommandID, hash, entered, c.ConsolidationID, c.ExpectedRevision,
-		func(_ context.Context, consol *phy.Consolidation) (int, error) {
-			return c.UnitNo, consol.RemovePlannedLoadUnit(c.UnitNo, c.Reason, c.Scope.ActorID, c.OccurredAt)
+		func(txCtx context.Context, consol *phy.Consolidation) (int, error) {
+			uses, err := h.Executions.UnitUses(txCtx, c.Scope.TenantID, c.ConsolidationID)
+			if err != nil {
+				return 0, err
+			}
+			_, inUse := uses[c.UnitNo]
+			return c.UnitNo, consol.RemovePlannedLoadUnit(c.UnitNo, c.Reason, c.Scope.ActorID, c.OccurredAt, inUse)
 		})
 }

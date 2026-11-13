@@ -193,6 +193,8 @@ const (
 	LoadUnitContainer = "CONTAINER"
 
 	UnitStatusPlanned = "PLANNED"
+	UnitStatusInUse   = "IN_USE" // its stuffing is open
+	UnitStatusClosed  = "CLOSED" // its stuffing is closed: the container is sealed
 	UnitStatusRemoved = "REMOVED"
 )
 
