@@ -3,6 +3,7 @@ package http
 import (
 	nethttp "net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"time"
 
@@ -505,6 +506,10 @@ func (h handlers) evaluateRates(w nethttp.ResponseWriter, r *nethttp.Request) {
 	}
 	c, ok := begin(w, r, body.OccurredAt)
 	if !ok {
+		return
+	}
+	if slices.Contains(body.Sides, api.SideBuy) && !seesCosts(c.who) {
+		httpapi.WriteProblem(w, r, nethttp.StatusForbidden, "FORBIDDEN", "rating the BUY side shows supplier costs: it needs rate:ReadBuyRates")
 		return
 	}
 	rc, err := h.s.EvaluateRates(r.Context(), api.EvaluateRates{CommandID: c.id, TenantID: c.who.TenantID, ActorID: c.who.ActorID,

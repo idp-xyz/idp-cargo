@@ -13,28 +13,30 @@ import (
 // command on the quote expects. A ONE_OFF quote's totals are in the quote currency (each line converted at the quote's
 // rates); an AGREEMENT prices by lane with its customer card and has no lines or totals.
 type Quote struct {
-	QuoteID         string
-	Revision        int64
-	Kind            string
-	Status          string // AWAITING_APPROVAL, PRICED, ACCEPTED or EXPIRED
-	LegalEntityID   string
-	Customer        CustomerRef // the revision ORG confirmed at pricing, or at acceptance once accepted
-	RecipientRole   string
-	Currency        kernel.CurrencyCode
-	Lines           []QuoteViewLine
-	ExchangeRates   []ExchangeRate
-	Terms           CommercialTerms
-	Validity        kernel.ValidityInterval
-	Scope           *QuoteScope
-	Agreement       *AgreementRef
-	SellTotal       kernel.Money
-	CostTotal       kernel.Money
-	MarginFloorBP   int
-	ApprovalReasons []string
-	Author          string
-	Approval        *QuoteApproval
-	Acceptance      *QuoteAcceptance
-	ExpiredAt       time.Time
+	QuoteID       string
+	Revision      int64
+	Kind          string
+	Status        string // AWAITING_APPROVAL, PRICED, ACCEPTED or EXPIRED
+	LegalEntityID string
+	Customer      CustomerRef // the revision ORG confirmed at pricing, or at acceptance once accepted
+	RecipientRole string
+	Currency      kernel.CurrencyCode
+	Lines         []QuoteViewLine
+	ExchangeRates []ExchangeRate
+	Terms         CommercialTerms
+	// ServiceLevelUnlisted is true when Terms.ServiceLevel was recorded as free text before the service-level list (C8).
+	ServiceLevelUnlisted bool
+	Validity             kernel.ValidityInterval
+	Scope                *QuoteScope
+	Agreement            *AgreementRef
+	SellTotal            kernel.Money
+	CostTotal            kernel.Money
+	MarginFloorBP        int
+	ApprovalReasons      []string
+	Author               string
+	Approval             *QuoteApproval
+	Acceptance           *QuoteAcceptance
+	ExpiredAt            time.Time
 }
 
 // QuoteViewLine is a line of a Quote: SnapshotLineV3 with its cost.

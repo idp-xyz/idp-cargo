@@ -42,7 +42,8 @@ func (h ApproveQuotePrice) Handle(ctx context.Context, c ApproveQuotePriceComman
 		return Receipt{}, err
 	}
 	if author == c.Scope.ActorID && h.Auth.RequireQuoteAction(ctx, c.Scope, ActionApproveOwnQuotePrice, c.QuoteID) != nil {
-		return Receipt{}, rate.ErrSelfApproval
+		// a permission the author lacks (R3): refused as unauthorized, a replay of an earlier self-approval too
+		return Receipt{}, fmt.Errorf("%w: %w", ErrUnauthorized, rate.ErrSelfApproval)
 	}
 	hash, err := requestHash(c)
 	if err != nil {

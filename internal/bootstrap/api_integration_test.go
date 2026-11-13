@@ -316,6 +316,7 @@ func TestHTTPRateCardsOnPostgres(t *testing.T) {
 	buyer := mint("buyer-1", "rate:Read", "rate:MaintainBuyRates")
 	manager := mint("pricing-manager", "rate:Read", "rate:MaintainSellRates", "rate:ApproveTariff")
 	sales := mint("sales-1", "rate:Read", "rate:EvaluateRates")
+	analyst := mint("analyst-1", "rate:Read", "rate:EvaluateRates", "rate:ReadBuyRates")
 	auditor := mint("auditor-1", "rate:Read", "rate:ReadBuyRates")
 	reader := mint("reader-1", "rate:Read")
 	when := func(t time.Time) string { return `"occurred_at":"` + t.Format(time.RFC3339) + `"` }
@@ -443,12 +444,15 @@ func TestHTTPRateCardsOnPostgres(t *testing.T) {
 		"origin":"CNSHA","destination":"DEHAM","service_level":"STANDARD","commodity":"GENERAL","cargo":{"pieces":4,"gross_grams":800000,
 		"volume_cm3":2500000},` + when(at.Add(time.Hour)) + `}`
 	c.expect("an evaluation without permission", c.do("POST", "/v1/rate-evaluations", pricing, evaluate, "Idempotency-Key", "evaluate-0"), 403, "FORBIDDEN")
-	if r := ok("evaluated", c.do("POST", "/v1/rate-evaluations", sales, evaluate, "Idempotency-Key", "evaluate"), 201, ""); r.header.Get("Location") !=
+	// rating the BUY side shows supplier costs: sales, without rate:ReadBuyRates, is refused; the analyst rates both
+	c.expect("the BUY side rated by sales", c.do("POST", "/v1/rate-evaluations", sales, evaluate, "Idempotency-Key", "evaluate-sales"), 403,
+		"FORBIDDEN")
+	if r := ok("evaluated", c.do("POST", "/v1/rate-evaluations", analyst, evaluate, "Idempotency-Key", "evaluate"), 201, ""); r.header.Get("Location") !=
 		"/v1/rate-snapshots/RS-LCL" {
 		t.Fatalf("Location %q", r.header.Get("Location"))
 	}
-	ok("the evaluation replayed", c.do("POST", "/v1/rate-evaluations", sales, evaluate, "Idempotency-Key", "evaluate"), 201, "")
-	c.expect("the evaluation replayed by one who lost the permission", c.do("POST", "/v1/rate-evaluations", mint("sales-1", "rate:Read"), evaluate,
+	ok("the evaluation replayed", c.do("POST", "/v1/rate-evaluations", analyst, evaluate, "Idempotency-Key", "evaluate"), 201, "")
+	c.expect("the evaluation replayed by one who lost the permission", c.do("POST", "/v1/rate-evaluations", mint("analyst-1", "rate:Read"), evaluate,
 		"Idempotency-Key", "evaluate"), 403, "FORBIDDEN")
 	// sales sees the SELL side of the snapshot only; the auditor sees the costs
 	if s := ok("the snapshot for sales", c.do("GET", "/v1/rate-snapshots/RS-LCL", sales, ""), 200, ""); len(s.body["lines"].([]any)) != 2 ||
@@ -470,7 +474,7 @@ func TestHTTPRateCardsOnPostgres(t *testing.T) {
 	c.expect("an unknown snapshot", c.do("GET", "/v1/rate-snapshots/RS-NONE", sales, ""), 404, "NOT_FOUND")
 	c.expect("another tenant's snapshot", c.do("GET", "/v1/rate-snapshots/RS-LCL", stranger, ""), 404, "NOT_FOUND")
 	// a lane no card prices: gaps, without amounts
-	ok("a lane without cards", c.do("POST", "/v1/rate-evaluations", sales, strings.Replace(strings.Replace(evaluate, `"RS-LCL"`, `"RS-GAP"`, 1),
+	ok("a lane without cards", c.do("POST", "/v1/rate-evaluations", analyst, strings.Replace(strings.Replace(evaluate, `"RS-LCL"`, `"RS-GAP"`, 1),
 		`"DEHAM"`, `"USNYC"`, 1), "Idempotency-Key", "evaluate-gap"), 201, "")
 	gaps := ok("the gaps", c.do("GET", "/v1/rate-snapshots/RS-GAP", auditor, ""), 200, "").body["lines"].([]any)
 	if len(gaps) == 0 {
@@ -525,8 +529,10 @@ func TestHTTPQuotesOnPostgres(t *testing.T) {
 		}
 		return token
 	}
-	sales := mint("sales-1", "rate:Read", "rate:CreateQuote", "rate:ExpireQuote")
+	sales := mint("sales-1", "rate:Read", "rate:CreateQuote", "rate:ExpireQuote", "rate:EvaluateRates")
 	salesApprover := mint("sales-1", "rate:Read", "rate:ApproveQuotePrice")
+	analyst := mint("analyst-1", "rate:Read", "rate:EvaluateRates", "rate:ReadBuyRates")
+	buyer := mint("buyer-1", "rate:Read", "rate:MaintainBuyRates")
 	approver := mint("manager-1", "rate:Read", "rate:ApproveQuotePrice")
 	acceptor := mint("sales-2", "rate:Read", "rate:AcceptQuote")
 	when := func(t time.Time) string { return `"occurred_at":"` + t.Format(time.RFC3339) + `"` }
@@ -574,13 +580,22 @@ func TestHTTPQuotesOnPostgres(t *testing.T) {
 		t.Fatalf("the creator's view: %v", mine)
 	}
 	theirs := ok("the quote for the approver", c.do("GET", "/v1/quotes/Q-1", approver, ""), 200, `"1"`).body
-	if theirs["margin_bp"] != 1000.0 || theirs["margin_floor_bp"] != 2000.0 || theirs["cost_total"].(map[string]any)["minor"] != 90000.0 {
-		t.Fatalf("the approver's view: %v", theirs)
+	if theirs["margin_bp"] != 1000.0 || theirs["margin_floor_bp"] != 2000.0 || theirs["cost_total"].(map[string]any)["minor"] != 90000.0 ||
+		theirs["lines"].([]any)[0].(map[string]any)["cost"] != nil {
+		t.Fatalf("the approver's view (the margin, no line costs): %v", theirs)
+	}
+	for name, token := range map[string]string{"an analyst": analyst, "a buyer": buyer} {
+		if q := ok("the quote for "+name, c.do("GET", "/v1/quotes/Q-1", token, ""), 200, "").body; q["lines"].([]any)[0].(map[string]any)["cost"] == nil ||
+			q["margin_bp"] != 1000.0 {
+			t.Fatalf("%s sees line costs: %v", name, q)
+		}
 	}
 	c.expect("a snapshot before acceptance", c.do("GET", "/v1/quotes/Q-1/snapshot", sales, ""), 422, "")
 	approve := `{"reason_ref":"strategic account 2026-11",` + when(now) + `}`
 	c.expect("its author approving without ApproveOwnQuotePrice", c.do("POST", "/v1/quotes/Q-1/approve-price", salesApprover, approve,
-		"Idempotency-Key", "approve-own", "If-Match", `"1"`), 422, "")
+		"Idempotency-Key", "approve-own", "If-Match", `"1"`), 403, "FORBIDDEN")
+	c.expect("an approval without If-Match", c.do("POST", "/v1/quotes/Q-1/approve-price", approver, approve, "Idempotency-Key", "approve-y"), 428,
+		"PRECONDITION_REQUIRED")
 	c.expect("an approval by one who may not", c.do("POST", "/v1/quotes/Q-1/approve-price", sales, approve, "Idempotency-Key", "approve-x",
 		"If-Match", `"1"`), 403, "FORBIDDEN")
 	ok("approved", c.do("POST", "/v1/quotes/Q-1/approve-price", approver, approve, "Idempotency-Key", "approve", "If-Match", `"1"`), 200, `"2"`)
@@ -612,6 +627,32 @@ func TestHTTPQuotesOnPostgres(t *testing.T) {
 	c.expect("an expiry replayed by one who lost the permission", c.do("POST", "/v1/quotes/Q-2/expire", mint("sales-1", "rate:Read"),
 		"{"+when(now)+"}", "Idempotency-Key", "expire-2", "If-Match", `"1"`), 403, "FORBIDDEN")
 	c.expect("an unknown quote", c.do("GET", "/v1/quotes/NO-QUOTE", sales, ""), 404, "NOT_FOUND")
+	c.expect("the snapshot of an unknown quote", c.do("GET", "/v1/quotes/NO-QUOTE/snapshot", sales, ""), 404, "NOT_FOUND")
+
+	// a self-approval with ApproveOwnQuotePrice is flagged; replayed once that permission is withdrawn, refused
+	own := mint("sales-3", "rate:Read", "rate:CreateQuote", "rate:ApproveQuotePrice", "rate:ApproveOwnQuotePrice")
+	ok("a quote of sales-3", c.do("POST", "/v1/quotes", own, quote("Q-3", now.Add(-time.Hour), now.Add(7*24*time.Hour), now.Add(-time.Minute)),
+		"Idempotency-Key", "quote-3"), 201, `"1"`)
+	ok("self-approved", c.do("POST", "/v1/quotes/Q-3/approve-price", own, approve, "Idempotency-Key", "approve-3", "If-Match", `"1"`), 200, `"2"`)
+	if q := ok("Q-3", c.do("GET", "/v1/quotes/Q-3", own, ""), 200, `"2"`).body; q["approval"].(map[string]any)["self_approved"] != true {
+		t.Fatalf("not flagged: %v", q)
+	}
+	c.expect("the self-approval replayed without ApproveOwnQuotePrice", c.do("POST", "/v1/quotes/Q-3/approve-price",
+		mint("sales-3", "rate:Read", "rate:ApproveQuotePrice"), approve, "Idempotency-Key", "approve-3", "If-Match", `"1"`), 403, "FORBIDDEN")
+
+	// supplier costs stay out of what sales may create: rating the BUY side, or a quote taking its costs from a snapshot that
+	// rated it, needs rate:ReadBuyRates (whether such a quote needs approval would give the costs away, one quote at a time)
+	lane := `"legal_entity_id":"LE","customer_party_id":"party-a","mode":"AIR","container_mode":"LOOSE","origin":"CNPVG","destination":"DEFRA",
+		"service_level":"STANDARD","commodity":"GENERAL","cargo":{"pieces":2,"gross_grams":150000},` + when(now.Add(-2*time.Minute))
+	c.expect("the BUY side rated by sales", c.do("POST", "/v1/rate-evaluations", sales, `{"snapshot_id":"RS-S","purpose":"QUOTE_LINE",
+		"sides":["SELL","BUY"],`+lane+`}`, "Idempotency-Key", "evaluate-s"), 403, "FORBIDDEN")
+	ok("both sides rated by the analyst", c.do("POST", "/v1/rate-evaluations", analyst, `{"snapshot_id":"RS-Q","purpose":"QUOTE_LINE",
+		"sides":["SELL","BUY"],`+lane+`}`, "Idempotency-Key", "evaluate-q"), 201, "")
+	rated := fmt.Sprintf(`{"quote_id":"Q-4","legal_entity_id":"LE","customer_party_id":"party-a","currency":"CNY","lines":[{"charge_code":"AIR_FREIGHT",
+		"source":"RATED","snapshot_id":"RS-Q"}],"terms":{"service_level":"STANDARD"},"valid_from":%q,"valid_until":%q,%s}`,
+		now.Add(-time.Hour).Format(time.RFC3339), now.Add(7*24*time.Hour).Format(time.RFC3339), when(now.Add(-time.Minute)))
+	c.expect("a quote taking costs from a BUY snapshot, by sales", c.do("POST", "/v1/quotes", sales, rated, "Idempotency-Key", "quote-4"), 403,
+		"FORBIDDEN")
 	stranger, err := MintDevToken(cfg, uniqueTenant("cargo-api-other-"), "sales-9", []string{"rate:*"}, time.Hour)
 	if err != nil {
 		t.Fatal(err)

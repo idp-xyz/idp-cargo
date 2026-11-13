@@ -1,8 +1,11 @@
 package http
 
 import (
+	"context"
+	"math/big"
 	nethttp "net/http"
 	"net/url"
+	"slices"
 	"time"
 
 	"go.idp.xyz/idp-cargo/internal/contexts/rate/api"
@@ -11,12 +14,13 @@ import (
 	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
-// QuoteService is what the quote routes call: RATE's quote commands, its quote read model and snapshots, and the
-// service-level list.
+// QuoteService is what the quote routes call: RATE's quote commands, its quote read model and snapshots, the
+// service-level list, and the rate snapshots its rated lines name.
 type QuoteService interface {
 	api.Commands
 	api.Queries
 	api.QuoteQueries
+	GetRateSnapshot(ctx context.Context, q api.GetRateSnapshot) (api.RateSnapshot, error)
 }
 
 func registerQuotes(mux *nethttp.ServeMux, s QuoteService) {
@@ -32,10 +36,31 @@ func registerQuotes(mux *nethttp.ServeMux, s QuoteService) {
 
 type quoteHandlers struct{ s QuoteService }
 
-// seesQuoteCosts reports whether the principal may see a quote's costs and margin: who may see supplier costs, and
-// who approves prices, which turns on the margin.
-func seesQuoteCosts(p identity.Principal) bool {
+// seesQuoteMargin reports whether the principal may see a quote's cost total and margin: who may see supplier costs,
+// and who approves prices, which turns on the margin. Line costs, which can be a supplier's exact rate, need seesCosts.
+func seesQuoteMargin(p identity.Principal) bool {
 	return seesCosts(p) || identity.Allowed(p, bc, api.ActionApproveQuotePrice)
+}
+
+// takesCosts refuses a quote whose rated lines name a rate snapshot that rated the BUY side, to one who may not see
+// supplier costs: such a quote takes its costs from the snapshot, and whether it then needs approval would let its
+// creator find the costs out, one quote at a time.
+func (h quoteHandlers) takesCosts(w nethttp.ResponseWriter, r *nethttp.Request, p identity.Principal, snapshots []string) bool {
+	if seesCosts(p) {
+		return false
+	}
+	for _, id := range snapshots {
+		s, err := h.s.GetRateSnapshot(r.Context(), api.GetRateSnapshot{TenantID: p.TenantID, SnapshotID: id})
+		if err != nil {
+			continue // RATE answers for a snapshot it does not have
+		}
+		if slices.Contains(s.Sides, api.SideBuy) {
+			httpapi.WriteProblem(w, r, nethttp.StatusForbidden, "FORBIDDEN",
+				"a quote taking supplier costs from a rate snapshot needs rate:ReadBuyRates")
+			return true
+		}
+	}
+	return false
 }
 
 func (m money) kernel() kernel.Money {
@@ -53,10 +78,11 @@ type exchangeRate struct {
 }
 
 type terms struct {
-	IncotermsRule    string `json:"incoterms_rule,omitempty"`
-	IncotermsVersion string `json:"incoterms_version,omitempty"`
-	NamedPlace       string `json:"named_place,omitempty"`
-	ServiceLevel     string `json:"service_level,omitempty"`
+	IncotermsRule        string `json:"incoterms_rule,omitempty"`
+	IncotermsVersion     string `json:"incoterms_version,omitempty"`
+	NamedPlace           string `json:"named_place,omitempty"`
+	ServiceLevel         string `json:"service_level,omitempty"`
+	ServiceLevelUnlisted bool   `json:"service_level_unlisted,omitempty"` // free text recorded before the list (C8); never sent
 }
 
 type scope struct {
@@ -125,6 +151,15 @@ func (h quoteHandlers) createQuote(w nethttp.ResponseWriter, r *nethttp.Request)
 	if !ok {
 		return
 	}
+	var snapshots []string
+	for _, l := range body.Lines {
+		if l.SnapshotID != "" && !slices.Contains(snapshots, l.SnapshotID) {
+			snapshots = append(snapshots, l.SnapshotID)
+		}
+	}
+	if h.takesCosts(w, r, c.who, snapshots) {
+		return
+	}
 	cmd := api.CreateQuote{CommandID: c.id, TenantID: c.who.TenantID, ActorID: c.who.ActorID, QuoteID: body.QuoteID, Kind: body.Kind,
 		LegalEntityID: body.LegalEntityID, CustomerPartyID: body.CustomerPartyID, RecipientRole: body.RecipientRole,
 		Currency: kernel.CurrencyCode(body.Currency), Terms: api.CommercialTerms{IncotermsRule: body.Terms.IncotermsRule,
@@ -176,6 +211,7 @@ type quoteLine struct {
 	RateScale       int    `json:"rate_scale,omitempty"`
 	Quantity        int64  `json:"quantity,omitempty"`
 	CodeVersion     *int   `json:"code_version,omitempty"`
+	CodeUnlisted    bool   `json:"code_unlisted,omitempty"` // a free-text code of a quote priced before the catalogue
 }
 
 func exchangeRates(rates []api.ExchangeRate) []exchangeRate {
@@ -202,12 +238,20 @@ func agreementView(a *api.AgreementRef) *agreementRef {
 	return &agreementRef{RateCardID: a.RateCardID, Version: a.Version}
 }
 
-func termsView(t api.CommercialTerms) terms {
-	return terms{IncotermsRule: t.IncotermsRule, IncotermsVersion: t.IncotermsVersion, NamedPlace: t.NamedPlace, ServiceLevel: t.ServiceLevel}
+func termsView(t api.CommercialTerms, unlisted bool) terms {
+	return terms{IncotermsRule: t.IncotermsRule, IncotermsVersion: t.IncotermsVersion, NamedPlace: t.NamedPlace, ServiceLevel: t.ServiceLevel,
+		ServiceLevelUnlisted: unlisted}
 }
 
-// GET /v1/quotes/{quote}: the quote as it stands; ETag its revision. Costs, the cost total and the margin only to a
-// reader who may see them (rate:ReadBuyRates, rate:MaintainBuyRates or rate:ApproveQuotePrice).
+// marginBP is margin × 10000 / sell, truncated toward zero, exactly for any amounts.
+func marginBP(margin, sell int64) int64 {
+	n := new(big.Int).Mul(big.NewInt(margin), big.NewInt(10_000))
+	return n.Quo(n, big.NewInt(sell)).Int64()
+}
+
+// GET /v1/quotes/{quote}: the quote as it stands; ETag its revision. The cost total and the margin only to a reader who
+// may see supplier costs (rate:ReadBuyRates, rate:MaintainBuyRates) or approves prices (rate:ApproveQuotePrice); line
+// costs only to the former.
 func (h quoteHandlers) getQuote(w nethttp.ResponseWriter, r *nethttp.Request) {
 	p, ok := reader(w, r)
 	if !ok {
@@ -218,12 +262,12 @@ func (h quoteHandlers) getQuote(w nethttp.ResponseWriter, r *nethttp.Request) {
 		httpapi.Fail(w, r, kinds, err)
 		return
 	}
-	costs := seesQuoteCosts(p)
+	costs, margin := seesCosts(p), seesQuoteMargin(p)
 	lines := make([]quoteLine, 0, len(q.Lines))
 	for _, l := range q.Lines {
 		line := quoteLine{ChargeCode: l.ChargeCode, Sell: moneyView(l.Amount), InQuoteCurrency: moneyView(l.InQuoteCurrency), Discount: l.Discount,
 			Source: l.Source, SnapshotID: l.SnapshotID, Basis: l.Basis, Unit: l.Unit, Rate: l.Rate, RateScale: l.RateScale, Quantity: l.Quantity,
-			CodeVersion: l.CodeVersion}
+			CodeVersion: l.CodeVersion, CodeUnlisted: l.CodeUnlisted}
 		if costs {
 			c := moneyView(l.Cost)
 			line.Cost = &c
@@ -232,7 +276,8 @@ func (h quoteHandlers) getQuote(w nethttp.ResponseWriter, r *nethttp.Request) {
 	}
 	out := map[string]any{"quote_id": q.QuoteID, "revision": q.Revision, "kind": q.Kind, "status": q.Status, "legal_entity_id": q.LegalEntityID,
 		"customer": map[string]any{"party_id": q.Customer.PartyID, "party_revision": q.Customer.PartyRevision}, "recipient_role": q.RecipientRole,
-		"currency": string(q.Currency), "lines": lines, "exchange_rates": exchangeRates(q.ExchangeRates), "terms": termsView(q.Terms),
+		"currency": string(q.Currency), "lines": lines, "exchange_rates": exchangeRates(q.ExchangeRates),
+		"terms":      termsView(q.Terms, q.ServiceLevelUnlisted),
 		"valid_from": q.Validity.From, "valid_until": q.Validity.Until, "approval_reasons": orEmpty(q.ApprovalReasons), "author": q.Author}
 	if sc := scopeView(q.Scope); sc != nil {
 		out["scope"] = sc
@@ -242,12 +287,12 @@ func (h quoteHandlers) getQuote(w nethttp.ResponseWriter, r *nethttp.Request) {
 	}
 	if q.Kind != api.QuoteAgreement {
 		out["sell_total"] = moneyView(q.SellTotal)
-		if costs {
+		if margin {
 			out["cost_total"], out["margin_floor_bp"] = moneyView(q.CostTotal), q.MarginFloorBP
-			margin := q.SellTotal.Minor - q.CostTotal.Minor
-			out["margin"] = money{Currency: string(q.SellTotal.Currency), Minor: margin}
+			m := q.SellTotal.Minor - q.CostTotal.Minor
+			out["margin"] = money{Currency: string(q.SellTotal.Currency), Minor: m}
 			if q.SellTotal.Minor > 0 {
-				out["margin_bp"] = margin * 10_000 / q.SellTotal.Minor
+				out["margin_bp"] = marginBP(m, q.SellTotal.Minor)
 			}
 		}
 	}
@@ -281,12 +326,12 @@ func (h quoteHandlers) getSnapshot(w nethttp.ResponseWriter, r *nethttp.Request)
 	for _, l := range s.Lines {
 		lines = append(lines, quoteLine{ChargeCode: l.ChargeCode, Sell: moneyView(l.Amount), InQuoteCurrency: moneyView(l.InQuoteCurrency),
 			Discount: l.Discount, Source: l.Source, SnapshotID: l.SnapshotID, Basis: l.Basis, Unit: l.Unit, Rate: l.Rate, RateScale: l.RateScale,
-			Quantity: l.Quantity, CodeVersion: l.CodeVersion})
+			Quantity: l.Quantity, CodeVersion: l.CodeVersion, CodeUnlisted: l.CodeUnlisted})
 	}
 	out := map[string]any{"quote_id": s.QuoteID, "quote_revision": s.QuoteRevision, "kind": s.Kind, "legal_entity_id": s.LegalEntityID,
 		"customer": map[string]any{"party_id": s.Customer.PartyID, "party_revision": s.Customer.PartyRevision}, "recipient_role": s.RecipientRole,
 		"currency": string(s.Currency), "lines": lines, "exchange_rates": exchangeRates(s.ExchangeRates), "rounding": s.Rounding,
-		"terms": termsView(s.Terms), "valid_from": s.Validity.From, "valid_until": s.Validity.Until,
+		"terms": termsView(s.Terms, s.ServiceLevelUnlisted), "valid_from": s.Validity.From, "valid_until": s.Validity.Until,
 		"price_approval_reasons": orEmpty(s.PriceApprovalReasons), "price_approved_by": s.PriceApprovedBy, "price_self_approved": s.PriceSelfApproved,
 		"accepted_at": s.AcceptedAt, "acceptance_recorded_at": s.AcceptanceRecordedAt, "acceptance_evidence_kind": s.AcceptanceEvidenceKind,
 		"acceptance_evidence_ref": s.AcceptanceEvidenceRef}

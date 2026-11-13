@@ -29,7 +29,7 @@ func (m *Module) GetQuote(ctx context.Context, q api.GetQuote) (api.Quote, error
 		LegalEntityID: string(s.LegalEntityID), Customer: api.CustomerRef{PartyID: s.Customer.PartyID, PartyRevision: s.Customer.PartyRevision},
 		RecipientRole: string(s.Recipient), Currency: s.Currency, Validity: s.Validity, MarginFloorBP: s.MarginFloorBP, Author: s.Author,
 		Terms: api.CommercialTerms{IncotermsRule: t.IncotermsRule, IncotermsVersion: t.IncotermsVersion, NamedPlace: t.NamedPlace,
-			ServiceLevel: t.ServiceLevel}, ExpiredAt: s.ExpiredAt, Lines: []api.QuoteViewLine{}}
+			ServiceLevel: t.ServiceLevel}, ServiceLevelUnlisted: t.ServiceLevelUnlisted, ExpiredAt: s.ExpiredAt, Lines: []api.QuoteViewLine{}}
 	if a := s.Acceptance; a != nil {
 		out.Customer.PartyRevision = a.CustomerRevision
 		out.Acceptance = &api.QuoteAcceptance{AcceptedBy: a.AcceptedBy, AcceptedAt: a.AcceptedAt, RecordedAt: a.RecordedAt,
