@@ -150,8 +150,8 @@ func (c *Consolidation) Amend(route Route, departure, cutOff time.Time, reason, 
 // (PHY V0.3, design: "planned totals within the physical envelope or an accepted overrun reason"): their default
 // maximum gross less tare, and their capacity (volumes not planned are not counted). A plan over it, or in a unit
 // PHY does not convert, closes only with an overrun reason, which the CLOSED version keeps (PHY_ENVELOPE_EXCEEDED);
-// a plan within it, or a consolidation without units, takes none. The envelope is checked at the close; units
-// changed later do not reopen it.
+// a plan within it, or a consolidation without units, takes none. The reason records the plan against the units live
+// at the close: a unit planned, or removed with its own reason, while CLOSED is not checked again until the next close.
 func (c *Consolidation) Close(houses []CargoScope, lastAttached time.Time, overrun, by string, at time.Time) error {
 	if c.state.State != StateOpen {
 		return ErrInvalidTransition

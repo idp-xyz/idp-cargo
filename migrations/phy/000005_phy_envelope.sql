@@ -3,8 +3,9 @@
 -- within the physical envelope or an accepted overrun reason"). With load units planned, the live houses' planned
 -- gross weight and volume are checked against the live units' default maximum gross less tare and their capacity;
 -- a plan over it, or in a unit PHY does not convert, closes only with an overrun reason, which the CLOSED version
--- keeps; a plan within it, or a consolidation without units, takes none. Versions written before keep no reason on
--- their close.
+-- keeps; a plan within it, or a consolidation without units, takes none. The reason records the plan against the
+-- units live at the close: a unit planned or removed while CLOSED (with its own removal reason) is not checked
+-- again until the next close. Versions written before keep no reason on their close.
 
 ALTER TABLE cargo_phy.consolidation_version
   DROP CONSTRAINT consolidation_version_reason,
@@ -21,8 +22,9 @@ CREATE FUNCTION cargo_phy.cubic_cm(unit text, amount bigint) RETURNS numeric LAN
     WHEN 'FTQ' THEN 28316.846592 END)
 $fn$;
 
--- A CLOSED version keeps an overrun reason exactly when the live houses' plan exceeds the live units' envelope. The
--- consolidation row is locked first, as its commands lock it, so no house or unit changes meanwhile.
+-- A CLOSED version is written with an overrun reason exactly when the live houses' plan exceeds the live units'
+-- envelope at that moment. It runs after consolidation_version_rules, which locks the consolidation row first, as its
+-- commands lock it, so no house or unit changes meanwhile; the lock is taken here too.
 CREATE FUNCTION cargo_phy.check_close_envelope() RETURNS trigger LANGUAGE plpgsql AS $fn$
 DECLARE
   unit_count bigint;
@@ -52,5 +54,5 @@ BEGIN
   END IF;
   RETURN NEW;
 END $fn$;
-CREATE TRIGGER consolidation_version_envelope BEFORE INSERT ON cargo_phy.consolidation_version
+CREATE TRIGGER consolidation_version_rules_envelope BEFORE INSERT ON cargo_phy.consolidation_version
   FOR EACH ROW EXECUTE FUNCTION cargo_phy.check_close_envelope();
