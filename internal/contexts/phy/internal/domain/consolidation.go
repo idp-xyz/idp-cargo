@@ -219,7 +219,8 @@ func (c *Consolidation) Reconcile(members []MemberCheck, openExecutions, openDis
 
 // Admit checks that a house may join the consolidation now: the consolidation is OPEN, and FUL reports the
 // shipment PLANNED, of the consolidation's mode, origin and destination (OD-8), its departure window
-// containing the planned departure, and of the operating legal entity (OD-10).
+// containing the planned departure, and of the operating legal entity (OD-10). An LCL consolidation takes no shipment
+// FUL plans as FCL (N1-PHY OD-9); one whose container mode is not planned yet is taken, as before.
 func (c *Consolidation) Admit(i LoadIntent) error {
 	current := c.Current()
 	switch {
@@ -231,6 +232,8 @@ func (c *Consolidation) Admit(i LoadIntent) error {
 		return fmt.Errorf("%w: %s is %s", ErrIntentNotPlanned, i.ShipmentID, i.Status)
 	case i.Mode != c.state.Mode:
 		return fmt.Errorf("%w: %s is %s, the consolidation %s", ErrModeMismatch, i.ShipmentID, i.Mode, c.state.Mode)
+	case (c.state.Kind == KindSeaLCLOwn || c.state.Kind == KindSeaLCLCoload) && i.ContainerMode == "FCL":
+		return fmt.Errorf("%w: %s", ErrFCLHouse, i.ShipmentID)
 	case !i.Route.sameLocations(current.Route):
 		return fmt.Errorf("%w: %s runs %s-%s, the consolidation %s-%s", ErrRouteMismatch, i.ShipmentID, i.Route.Origin.Code,
 			i.Route.Destination.Code, current.Route.Origin.Code, current.Route.Destination.Code)

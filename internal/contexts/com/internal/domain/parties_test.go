@@ -199,3 +199,30 @@ func TestSetPartyAndChangeTransport(t *testing.T) {
 		t.Fatalf("set party on a cancelled order: %v", err)
 	}
 }
+
+// N1-PHY OD-9: an order requests LCL or FCL on SEA and LOOSE on AIR, with its mode; a change is a transport version.
+func TestContainerModeOfTheOrder(t *testing.T) {
+	for name, tr := range map[string]Transport{
+		"FCL on an air order":          {Mode: ModeAir, ContainerMode: ContainerFCL},
+		"LOOSE on a sea order":         {Mode: ModeSea, ContainerMode: ContainerLoose},
+		"a container mode, no mode":    {ContainerMode: ContainerLCL},
+		"a container mode on road":     {Mode: ModeRoad, ContainerMode: ContainerLCL},
+		"an unknown container mode":    {Mode: ModeSea, ContainerMode: "BULK"},
+		"a container mode in capitals": {Mode: ModeSea, ContainerMode: "lcl"},
+	} {
+		d := draft(palletLine)
+		d.Transport = tr
+		if _, err := RecordOrder(d, 0, recordAt, recordAt); !errors.Is(err, ErrInvalidOrder) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	for _, tr := range []Transport{{Mode: ModeSea, ContainerMode: ContainerLCL}, {Mode: ModeSea, ContainerMode: ContainerFCL},
+		{Mode: ModeAir, ContainerMode: ContainerLoose}, {Mode: ModeSea}} {
+		d := draft(palletLine)
+		d.Transport = tr
+		o, err := RecordOrder(d, 0, recordAt, recordAt)
+		if err != nil || o.Transport() != tr {
+			t.Fatalf("%+v: %+v %v", tr, o, err)
+		}
+	}
+}

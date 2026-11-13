@@ -29,7 +29,7 @@ func (l LoadIntents) LoadIntent(ctx context.Context, tenant phy.TenantID, shipme
 		return phy.LoadIntent{}, fmt.Errorf("%w: FUL answered for another shipment or stage", phy.ErrInvalidIntent)
 	}
 	intent := phy.LoadIntent{ShipmentID: shipment, Revision: got.Revision, Status: phy.IntentStatus(got.Status), PlanVersion: got.PlanVersion,
-		LegalEntityID: got.LegalEntityID, Mode: phy.Mode(got.TransportMode),
+		LegalEntityID: got.LegalEntityID, Mode: phy.Mode(got.TransportMode), ContainerMode: got.ContainerMode,
 		Route: phy.Route{Origin: got.Origin, Destination: got.Destination, OriginIATA: got.OriginIATA, DestinationIATA: got.DestinationIATA,
 			LocationEdition: got.LocationEdition},
 		DepartureWindow: got.DepartureWindow, Scope: phy.CargoScope{Packs: got.Packs, GrossWeight: got.GrossWeight, Volume: got.Volume},

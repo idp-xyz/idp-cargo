@@ -95,6 +95,9 @@ type ObligationSnapshotV3 struct {
 	// RequestedTransportMode is the transport mode the order currently requests (C11; COM V0.6), empty when
 	// the order requests none. FUL plans the obligation only in a shipment of that mode.
 	RequestedTransportMode string
+	// RequestedContainerMode is the container mode the order currently requests (decision N1-PHY OD-9), empty when it
+	// requests none: FUL plans the obligation only in a shipment of that container mode.
+	RequestedContainerMode string
 }
 
 // GetObligationSnapshot asks for one version of an obligation. TenantID must come from a verified

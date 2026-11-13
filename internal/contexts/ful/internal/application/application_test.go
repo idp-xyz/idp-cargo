@@ -106,8 +106,8 @@ type comFake struct {
 }
 
 // RequestedMode reports no requested mode: the fake orders leave the mode to FUL.
-func (c *comFake) RequestedMode(context.Context, ful.TenantID, ful.ObligationID, int64) (ful.TransportMode, error) {
-	return "", nil
+func (c *comFake) RequestedMode(context.Context, ful.TenantID, ful.ObligationID, int64) (Requested, error) {
+	return Requested{}, nil
 }
 
 func (c *comFake) Plannable(_ context.Context, _ ful.TenantID, id ful.ObligationID, version int64, shipment ful.ShipmentID) (ful.ObligationRef, error) {

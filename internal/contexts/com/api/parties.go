@@ -54,11 +54,20 @@ const (
 	ActionReleaseOrderPartyLock = "ReleaseOrderPartyLock"
 )
 
-// Transport is the requested transport mode and movement type of an order; either may be empty.
+// Transport is the requested transport mode, movement type and container mode of an order; each may be empty.
+// ContainerMode (decision N1-PHY OD-9) is LCL or FCL on SEA, LOOSE on AIR, and none on ROAD or RAIL yet.
 type Transport struct {
-	Mode     string
-	Movement string
+	Mode          string
+	Movement      string
+	ContainerMode string `json:",omitzero"`
 }
+
+// Container modes of an order's transport.
+const (
+	ContainerLCL   = "LCL"
+	ContainerFCL   = "FCL"
+	ContainerLoose = "LOOSE"
+)
 
 // Address is an address given on the order to override ORG (C9).
 type Address struct {

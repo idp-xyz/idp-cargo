@@ -75,12 +75,22 @@ type AmendShipmentPlan struct {
 	ShipmentID       string
 	ExpectedRevision int64
 	TransportMode    string // ModeAir, ModeSea, ModeRoad or ModeRail
-	Origin           kernel.LocationCode
-	Destination      kernel.LocationCode
-	DepartureWindow  kernel.ValidityInterval
-	Reason           string
-	OccurredAt       time.Time
+	// ContainerMode (decision N1-PHY OD-9) is LCL or FCL on SEA, LOOSE on AIR, empty otherwise or when not yet planned;
+	// it must agree with what the shipment's orders request.
+	ContainerMode   string `json:",omitzero"`
+	Origin          kernel.LocationCode
+	Destination     kernel.LocationCode
+	DepartureWindow kernel.ValidityInterval
+	Reason          string
+	OccurredAt      time.Time
 }
+
+// Container modes of a plan's route (decision N1-PHY OD-9).
+const (
+	ContainerLCL   = "LCL"
+	ContainerFCL   = "FCL"
+	ContainerLoose = "LOOSE"
+)
 
 // ConfirmShipmentPlan confirms the latest plan version. The route must be complete, and COM must
 // re-confirm every planned obligation ACTIVE, at its planned version and reserved for the shipment.

@@ -316,6 +316,7 @@ func classify(err error) error {
 		errors.Is(err, domain.ErrInvalidTransition), errors.Is(err, domain.ErrInvalidChange), errors.Is(err, domain.ErrNotOpen),
 		errors.Is(err, domain.ErrHousesAttached), errors.Is(err, domain.ErrNoHouses), errors.Is(err, domain.ErrInvalidIntent),
 		errors.Is(err, domain.ErrIntentNotPlanned), errors.Is(err, domain.ErrModeMismatch), errors.Is(err, domain.ErrRouteMismatch),
+		errors.Is(err, domain.ErrFCLHouse),
 		errors.Is(err, domain.ErrWindowMismatch), errors.Is(err, domain.ErrOtherLegalEntity), errors.Is(err, domain.ErrInvalidMembership),
 		errors.Is(err, domain.ErrAlreadyAttached), errors.Is(err, domain.ErrNotAttached), errors.Is(err, domain.ErrSameConsolidation),
 		errors.Is(err, domain.ErrInvalidReason), errors.Is(err, domain.ErrNothingToRefresh), errors.Is(err, domain.ErrShipmentNotCancelled),

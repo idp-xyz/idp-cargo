@@ -70,6 +70,7 @@ type ShipmentPlanSnapshotV2 struct {
 	CustomerPartyID  string
 	LegalEntityID    string
 	TransportMode    string
+	ContainerMode    string // N1-PHY OD-9; empty when not planned
 	Origin           kernel.LocationCode
 	Destination      kernel.LocationCode
 	DepartureWindow  kernel.ValidityInterval
@@ -126,6 +127,7 @@ type LoadIntent struct {
 	CustomerPartyID   string
 	LegalEntityID     string
 	TransportMode     string
+	ContainerMode     string // N1-PHY OD-9: LCL or FCL on SEA, LOOSE on AIR; empty when not planned
 	Origin            kernel.LocationCode
 	Destination       kernel.LocationCode
 	OriginIATA        string

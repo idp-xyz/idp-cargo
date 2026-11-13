@@ -40,22 +40,23 @@ func (o Obligations) Plannable(ctx context.Context, tenant ful.TenantID, id ful.
 	return ful.ObligationRef{
 		ObligationID: id, ObligationVersion: version, OrderID: s.OrderID, CustomerPartyID: s.Customer.PartyID,
 		LegalEntityID: s.LegalEntityID, Packs: s.Packs, PackageType: s.PackageType, GrossWeight: s.GrossWeight, Volume: s.Volume,
-		Description: s.Description, RequestedMode: ful.TransportMode(s.RequestedTransportMode), QuoteID: s.QuoteID, QuoteRevision: s.QuoteRevision,
+		Description: s.Description, RequestedMode: ful.TransportMode(s.RequestedTransportMode),
+		RequestedContainerMode: ful.ContainerMode(s.RequestedContainerMode), QuoteID: s.QuoteID, QuoteRevision: s.QuoteRevision,
 	}, nil
 }
 
-// RequestedMode returns the transport mode the order of an obligation version requests (C11), as COM's
-// ObligationSnapshotV3 reports it, whatever the version's status or reservations.
-func (o Obligations) RequestedMode(ctx context.Context, tenant ful.TenantID, id ful.ObligationID, version int64) (ful.TransportMode, error) {
+// RequestedMode returns the transport mode (C11) and container mode (N1-PHY OD-9) the order of an obligation version
+// requests, as COM's ObligationSnapshotV3 reports them, whatever the version's status or reservations.
+func (o Obligations) RequestedMode(ctx context.Context, tenant ful.TenantID, id ful.ObligationID, version int64) (app.Requested, error) {
 	s, err := o.COM.GetObligationSnapshotV3(ctx, comapi.GetObligationSnapshot{TenantID: string(tenant), ObligationID: string(id), Version: version})
 	if errors.Is(err, comapi.ErrNotFound) || errors.Is(err, comapi.ErrRejected) {
-		return "", fmt.Errorf("%w: %v", app.ErrNotPlannable, err)
+		return app.Requested{}, fmt.Errorf("%w: %v", app.ErrNotPlannable, err)
 	}
 	if err != nil {
-		return "", err
+		return app.Requested{}, err
 	}
 	if s.TenantID != string(tenant) || s.ObligationID != string(id) || s.ObligationVersion != version {
-		return "", fmt.Errorf("%w: COM answered for another obligation version", app.ErrNotPlannable)
+		return app.Requested{}, fmt.Errorf("%w: COM answered for another obligation version", app.ErrNotPlannable)
 	}
-	return ful.TransportMode(s.RequestedTransportMode), nil
+	return app.Requested{Mode: ful.TransportMode(s.RequestedTransportMode), ContainerMode: ful.ContainerMode(s.RequestedContainerMode)}, nil
 }

@@ -80,6 +80,7 @@ type planRow struct {
 	PlanNo            int       `json:"plan_no"`
 	Change            string    `json:"change"`
 	TransportMode     string    `json:"transport_mode"`
+	ContainerMode     string    `json:"container_mode"`
 	OriginScheme      string    `json:"origin_scheme"`
 	OriginCode        string    `json:"origin_code"`
 	DestinationScheme string    `json:"destination_scheme"`
@@ -255,7 +256,7 @@ func readShipment(ctx context.Context, q queryRower, tenant ful.TenantID, id ful
 	}
 	for _, p := range plans {
 		st.Plans = append(st.Plans, ful.PlanVersion{No: p.PlanNo, Change: ful.PlanChange(p.Change),
-			Route: ful.Route{Mode: ful.TransportMode(p.TransportMode),
+			Route: ful.Route{Mode: ful.TransportMode(p.TransportMode), ContainerMode: ful.ContainerMode(p.ContainerMode),
 				Origin:      kernel.LocationCode{Scheme: kernel.LocationScheme(p.OriginScheme), Code: p.OriginCode},
 				Destination: kernel.LocationCode{Scheme: kernel.LocationScheme(p.DestinationScheme), Code: p.DestinationCode},
 				Departure:   kernel.ValidityInterval{From: utc(p.DepartureFrom), Until: utc(p.DepartureUntil)},
@@ -379,13 +380,13 @@ func (s ShipmentStore) writeAdded(ctx context.Context, q bentopg.Executor, shipm
 		}
 		if _, err := q.Exec(ctx, `INSERT INTO cargo_ful.shipment_plan_version (tenant_id,shipment_id,plan_no,change,transport_mode,
             origin_scheme,origin_code,destination_scheme,destination_code,departure_from,departure_until,scope_packs,scope_weight_unit,
-            scope_weight,scope_volume_unit,scope_volume,reason,written_by,written_at,origin_iata,destination_iata,location_edition,entered_at)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)`,
+            scope_weight,scope_volume_unit,scope_volume,reason,written_by,written_at,origin_iata,destination_iata,location_edition,entered_at,
+            container_mode) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)`,
 			string(st.TenantID), string(st.ShipmentID), p.No, string(p.Change), orNull(string(r.Mode)),
 			originScheme, originCode, destinationScheme, destinationCode, orNull(r.Departure.From), orNull(r.Departure.Until),
 			p.Scope.Packs, string(p.Scope.GrossWeight.Unit), p.Scope.GrossWeight.Amount, orNull(string(p.Scope.Volume.Unit)),
 			orNull(p.Scope.Volume.Amount), orNull(p.Reason), p.By, p.At, orNull(r.OriginIATA), orNull(r.DestinationIATA),
-			orNull(r.LocationEdition), orNull(p.EnteredAt)); err != nil {
+			orNull(r.LocationEdition), orNull(p.EnteredAt), orNull(string(r.ContainerMode))); err != nil {
 			return err
 		}
 	}
