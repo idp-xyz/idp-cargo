@@ -87,17 +87,22 @@ func (m *Module) CreateQuote(ctx context.Context, cmd api.CreateQuote) (api.Rece
 		rates = append(rates, domain.ExchangeRate{From: r.From, Rate: r.Rate, Scale: r.Scale, FromDigits: r.FromDigits,
 			QuoteDigits: r.QuoteDigits, Source: r.Source, AsOf: stored(r.AsOf)})
 	}
+	var agreement *domain.AgreementRef
+	if a := cmd.Agreement; a != nil {
+		agreement = &domain.AgreementRef{RateCardID: domain.RateCardID(a.RateCardID), Version: a.Version}
+	}
 	t := cmd.Terms
 	receipt, err := application.CreateQuote{
 		Deps: m.deps(cmd.TenantID, cmd.CommandID), Customers: orgacl.Customers{ORG: m.org}, Margins: margins{m.margins},
-		Codes: postgres.ChargeCodeStore{DB: m.db}, Snapshots: postgres.SnapshotStore{DB: m.db},
+		Codes: postgres.ChargeCodeStore{DB: m.db}, Snapshots: postgres.SnapshotStore{DB: m.db}, Cards: postgres.RateCardStore{DB: m.db},
+		Agreements: postgres.QuoteStore{DB: m.db},
 	}.Handle(ctx, application.CreateQuoteCommand{
 		CommandID: cmd.CommandID, Scope: scope(cmd.TenantID, cmd.ActorID), QuoteID: domain.QuoteID(cmd.QuoteID),
 		LegalEntityID: domain.LegalEntityID(cmd.LegalEntityID), CustomerPartyID: cmd.CustomerPartyID,
 		Recipient: domain.RecipientRole(cmd.RecipientRole), Currency: cmd.Currency, Lines: lines, ExchangeRates: rates,
 		Terms:      domain.CommercialTerms{IncotermsRule: t.IncotermsRule, IncotermsVersion: t.IncotermsVersion, NamedPlace: t.NamedPlace, ServiceLevel: t.ServiceLevel},
 		Validity:   kernel.ValidityInterval{From: stored(cmd.Validity.From), Until: stored(cmd.Validity.Until)},
-		QuoteScope: quoteScope, OccurredAt: stored(cmd.OccurredAt),
+		QuoteScope: quoteScope, Kind: domain.QuoteKind(cmd.Kind), Agreement: agreement, OccurredAt: stored(cmd.OccurredAt),
 	})
 	return toReceipt(receipt, err)
 }
@@ -111,7 +116,8 @@ func (m *Module) ApproveQuotePrice(ctx context.Context, cmd api.ApproveQuotePric
 }
 
 func (m *Module) AcceptQuote(ctx context.Context, cmd api.AcceptQuote) (api.Receipt, error) {
-	receipt, err := application.AcceptQuote{Deps: m.deps(cmd.TenantID, cmd.CommandID), Customers: orgacl.Customers{ORG: m.org}}.Handle(ctx, application.AcceptQuoteCommand{
+	receipt, err := application.AcceptQuote{Deps: m.deps(cmd.TenantID, cmd.CommandID), Customers: orgacl.Customers{ORG: m.org},
+		Cards: postgres.RateCardStore{DB: m.db}, Agreements: postgres.QuoteStore{DB: m.db}}.Handle(ctx, application.AcceptQuoteCommand{
 		CommandID: cmd.CommandID, Scope: scope(cmd.TenantID, cmd.ActorID), QuoteID: domain.QuoteID(cmd.QuoteID),
 		ExpectedRevision: cmd.ExpectedRevision, EvidenceKind: domain.EvidenceKind(cmd.EvidenceKind), EvidenceRef: cmd.EvidenceRef,
 		OccurredAt: stored(cmd.OccurredAt),
@@ -137,13 +143,27 @@ func (m *Module) accepted(ctx context.Context, q api.GetQuoteSnapshot) (*domain.
 	return quote, revision, nil
 }
 
+// oneOff reads an accepted ONE_OFF quote: an AGREEMENT has no fixed lines or total, so QuoteSnapshot v1 and v2 and a
+// QUOTE_ACCEPTED basis do not answer for it (QuoteSnapshotV3 does, and its shipments are rated with its customer card).
+func (m *Module) oneOff(ctx context.Context, q api.GetQuoteSnapshot) (*domain.Quote, int64, error) {
+	quote, revision, err := m.accepted(ctx, q)
+	if err != nil {
+		return nil, 0, err
+	}
+	if quote.Kind() == domain.KindAgreement {
+		return nil, 0, fmt.Errorf("%w: quote %s is an AGREEMENT: QuoteSnapshotV3 answers for it, and its shipments are rated with its customer card",
+			api.ErrRejected, q.QuoteID)
+	}
+	return quote, revision, nil
+}
+
 // GetPricingBasis answers PricingBasis v1: of purpose QUOTE_ACCEPTED, built from the accepted revision, or a rated
 // basis as issued.
 func (m *Module) GetPricingBasis(ctx context.Context, q api.GetPricingBasis) (api.PricingBasis, error) {
 	if q.BasisID != "" {
 		return m.ratedBasis(ctx, q)
 	}
-	quote, revision, err := m.accepted(ctx, api.GetQuoteSnapshot{TenantID: q.TenantID, QuoteID: q.QuoteID})
+	quote, revision, err := m.oneOff(ctx, api.GetQuoteSnapshot{TenantID: q.TenantID, QuoteID: q.QuoteID})
 	if err != nil {
 		return api.PricingBasis{}, err
 	}
@@ -163,7 +183,7 @@ func (m *Module) GetPricingBasis(ctx context.Context, q api.GetPricingBasis) (ap
 }
 
 func (m *Module) GetQuoteSnapshotV2(ctx context.Context, q api.GetQuoteSnapshot) (api.QuoteSnapshotV2, error) {
-	quote, revision, err := m.accepted(ctx, q)
+	quote, revision, err := m.oneOff(ctx, q)
 	if err != nil {
 		return api.QuoteSnapshotV2{}, err
 	}
@@ -240,7 +260,7 @@ func (m *Module) ListServiceLevels(ctx context.Context, q api.ListServiceLevels)
 }
 
 func (m *Module) GetQuoteSnapshot(ctx context.Context, q api.GetQuoteSnapshot) (api.QuoteSnapshot, error) {
-	quote, revision, err := m.accepted(ctx, q)
+	quote, revision, err := m.oneOff(ctx, q)
 	if err != nil {
 		return api.QuoteSnapshot{}, err
 	}
@@ -336,7 +356,8 @@ func classify(err error) error {
 		errors.Is(err, kernel.ErrOutsideRecordWindow), errors.Is(err, domain.ErrInvalidChargeCode), errors.Is(err, domain.ErrChargeCodeUnknown),
 		errors.Is(err, domain.ErrChargeCodeExists), errors.Is(err, domain.ErrInvalidRateCard), errors.Is(err, domain.ErrVersionOverlap),
 		errors.Is(err, domain.ErrNotPublishable), errors.Is(err, domain.ErrInvalidEvaluation), errors.Is(err, application.ErrPartyNotConfirmed),
-		errors.Is(err, application.ErrLocationRefused), errors.Is(err, application.ErrValidFromTooEarly), errors.Is(err, domain.ErrInvalidBasis):
+		errors.Is(err, application.ErrLocationRefused), errors.Is(err, application.ErrValidFromTooEarly), errors.Is(err, domain.ErrInvalidBasis),
+		errors.Is(err, application.ErrVersionQuoted), errors.Is(err, domain.ErrLaneTaken):
 		kind = api.ErrRejected
 	default:
 		return err

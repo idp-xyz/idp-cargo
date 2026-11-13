@@ -23,7 +23,9 @@ type AcceptQuoteCommand struct {
 // is frozen.
 type AcceptQuote struct {
 	Deps
-	Customers Customers
+	Customers  Customers
+	Cards      RateCardStore   // AGREEMENT quotes
+	Agreements AgreementQuotes // AGREEMENT quotes
 }
 
 func (h AcceptQuote) Handle(ctx context.Context, c AcceptQuoteCommand) (Receipt, error) {
@@ -73,7 +75,51 @@ func (h AcceptQuote) Handle(ctx context.Context, c AcceptQuoteCommand) (Receipt,
 		if err = quote.Accept(c.Scope.ActorID, c.EvidenceKind, c.EvidenceRef, customer.PartyRevision, c.OccurredAt, recorded); err != nil {
 			return nil, 0, err
 		}
+		if quote.Kind() == rate.KindAgreement {
+			if err = h.publishAgreement(txCtx, c.Scope, quote, recorded); err != nil {
+				return nil, 0, err
+			}
+		}
 		newRevision, err := h.Quotes.Save(txCtx, quote, revision)
 		return quote, newRevision, err
 	})
+}
+
+// publishAgreement publishes the customer card version of an accepted AGREEMENT in the acceptance's transaction, with
+// the acceptance as its evidence (RB16): whoever recorded the acceptance publishes it, at the recording time. The
+// version keeps the validity the customer accepted; rating uses it only at business times within the record window.
+// No lane of it may meet a lane another of the customer's cards rates then (RATE_LANE_TAKEN).
+func (h AcceptQuote) publishAgreement(ctx context.Context, s Scope, q *rate.Quote, recorded time.Time) error {
+	if h.Cards == nil || h.Agreements == nil {
+		return ErrMissingDependency
+	}
+	st := q.State()
+	card, revision, err := h.Cards.Load(ctx, st.TenantID, st.Agreement.RateCardID)
+	if err != nil {
+		return err
+	}
+	// another agreement of the customer accepted meanwhile may rate one of the lanes (checked again at commit)
+	others, err := customerVersions(ctx, h.Cards, h.Agreements, st.TenantID, st.LegalEntityID, st.Customer.PartyID)
+	if err != nil {
+		return err
+	}
+	for _, v := range card.State().Versions { // Load read the entries of the card's DRAFT
+		if v.No == st.Agreement.Version {
+			if err = rate.CheckCustomerLanes(st.Agreement.RateCardID, v, others); err != nil {
+				return err
+			}
+		}
+	}
+	if err = card.PublishAgreement(st.Agreement.Version, st.QuoteID, st.Validity, s.ActorID, recorded); err != nil {
+		return err
+	}
+	if _, err = h.Cards.Save(ctx, card, revision); err != nil {
+		return err
+	}
+	for _, e := range card.Pending() {
+		if err = h.Outbox.EnqueueRATEEvent(ctx, e); err != nil {
+			return err
+		}
+	}
+	return nil
 }

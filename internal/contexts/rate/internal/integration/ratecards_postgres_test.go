@@ -70,6 +70,7 @@ type cardPolicy struct{ quotePolicy }
 func (cardPolicy) AuthorizeQuoteAction(_ context.Context, _, actor, action, _ string) error {
 	switch {
 	case actor == "intruder",
+		action == api.ActionMaintainSellRates && actor == "sales-junior",
 		action == api.ActionApproveTariff && actor != "pricing-manager" && actor != "pricing-lead",
 		action == api.ActionApproveOwnTariff && actor != "pricing-lead":
 		return errors.New("test policy: forbidden")

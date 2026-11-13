@@ -419,7 +419,28 @@ func (c *RateCard) Publish(no int, cat Catalogue, p Publication) error {
 	case c.state.Scope == ScopeTariff && slices.Contains(v.Preparers, p.ApprovedBy) != p.SelfApprove:
 		return fmt.Errorf("%w: the approval of a version its approver drafted or set is a self-approval", ErrNotPublishable)
 	}
-	if err := checkEntries(c.state, *v); err != nil {
+	if err := checkPublishable(c.state, *v, cat); err != nil {
+		return err
+	}
+	for _, o := range c.state.Versions {
+		if eff, ok := o.Effective(); o.No != no && ok && eff.overlaps(v.Validity) {
+			return fmt.Errorf("%w: version %d", ErrVersionOverlap, o.No)
+		}
+	}
+	v.Status, v.PublishedBy, v.PublishedAt = VersionPublished, p.By, p.At.UTC()
+	if c.state.Scope == ScopeTariff {
+		v.ApprovedBy, v.SelfApproved = p.ApprovedBy, p.SelfApprove
+	}
+	c.mark(no, false)
+	c.pending = append(c.pending, Event{Type: EventRateCardVersionPublished, At: v.PublishedAt, TenantID: c.state.TenantID,
+		SubjectID: string(c.state.RateCardID), Version: no})
+	return nil
+}
+
+// checkPublishable checks what publication needs of a version's entries: each complete, its service level listed, and
+// its charge codes listed, active, applying to the entry's mode and not discounts (R9).
+func checkPublishable(st RateCardState, v RateCardVersion, cat Catalogue) error {
+	if err := checkEntries(st, v); err != nil {
 		return err
 	}
 	for _, e := range v.Entries {
@@ -445,18 +466,6 @@ func (c *RateCard) Publish(no int, cat Catalogue, p Publication) error {
 			}
 		}
 	}
-	for _, o := range c.state.Versions {
-		if eff, ok := o.Effective(); o.No != no && ok && eff.overlaps(v.Validity) {
-			return fmt.Errorf("%w: version %d", ErrVersionOverlap, o.No)
-		}
-	}
-	v.Status, v.PublishedBy, v.PublishedAt = VersionPublished, p.By, p.At.UTC()
-	if c.state.Scope == ScopeTariff {
-		v.ApprovedBy, v.SelfApproved = p.ApprovedBy, p.SelfApprove
-	}
-	c.mark(no, false)
-	c.pending = append(c.pending, Event{Type: EventRateCardVersionPublished, At: v.PublishedAt, TenantID: c.state.TenantID,
-		SubjectID: string(c.state.RateCardID), Version: no})
 	return nil
 }
 

@@ -1,4 +1,4 @@
-// Package rate is COM's anticorruption layer for RATE: it turns QuoteSnapshot v2 into the accepted quote
+// Package rate is COM's anticorruption layer for RATE: it turns QuoteSnapshotV3 into the accepted quote
 // an order relies on, with a hash of the exact terms, and asks RATE whether a service level is listed.
 package rate
 
@@ -14,13 +14,16 @@ import (
 	app "go.idp.xyz/idp-cargo/internal/contexts/com/internal/application"
 	com "go.idp.xyz/idp-cargo/internal/contexts/com/internal/domain"
 	rateapi "go.idp.xyz/idp-cargo/internal/contexts/rate/api"
+	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
-// Quotes reads accepted quotes through RATE's query side. Call it outside COM's transactions.
+// Quotes reads accepted quotes through RATE's query side, as QuoteSnapshotV3. A ONE_OFF order keeps relying on the
+// QuoteSnapshot v2 that V3 carries (the same terms and hash as before); an AGREEMENT order relies on V3: it has no
+// total COM could count against, and its validity bounds the orders (OD-5). Call it outside COM's transactions.
 type Quotes struct{ RATE rateapi.Queries }
 
 func (q Quotes) AcceptedQuote(ctx context.Context, tenant com.TenantID, quoteID string) (com.AcceptedQuote, error) {
-	s, err := q.RATE.GetQuoteSnapshotV2(ctx, rateapi.GetQuoteSnapshot{TenantID: string(tenant), QuoteID: quoteID})
+	s, err := q.RATE.GetQuoteSnapshotV3(ctx, rateapi.GetQuoteSnapshot{TenantID: string(tenant), QuoteID: quoteID})
 	if errors.Is(err, rateapi.ErrRejected) || errors.Is(err, rateapi.ErrNotFound) {
 		// RATE's answer is kept as text only, so its error kinds never become COM's: an unknown quote
 		// rejects the order, it does not make the order "not found".
@@ -32,7 +35,20 @@ func (q Quotes) AcceptedQuote(ctx context.Context, tenant com.TenantID, quoteID 
 	if s.TenantID != string(tenant) || s.QuoteID != quoteID {
 		return com.AcceptedQuote{}, fmt.Errorf("%w: RATE answered for another quote", app.ErrQuoteNotAccepted)
 	}
-	hash, err := TermsHashV2(s)
+	contract, kind, total := com.QuoteSnapshotV2, com.QuoteOneOff, s.Total
+	var hash string
+	switch s.Kind {
+	case rateapi.QuoteOneOff:
+		hash, err = TermsHashV2(s.QuoteSnapshotV2)
+	case rateapi.QuoteAgreement:
+		if s.Agreement == nil || s.Total != (kernel.Money{}) {
+			return com.AcceptedQuote{}, fmt.Errorf("%w: RATE answered an agreement without its card or with a total", app.ErrQuoteNotAccepted)
+		}
+		contract, kind, total = com.QuoteSnapshotV3, com.QuoteAgreement, kernel.Money{Currency: s.Currency}
+		hash, err = TermsHashV3(s)
+	default:
+		return com.AcceptedQuote{}, fmt.Errorf("%w: quote kind %q", app.ErrQuoteNotAccepted, s.Kind)
+	}
 	if err != nil {
 		return com.AcceptedQuote{}, err
 	}
@@ -40,10 +56,10 @@ func (q Quotes) AcceptedQuote(ctx context.Context, tenant com.TenantID, quoteID 
 	return com.AcceptedQuote{
 		QuoteID: s.QuoteID, QuoteRevision: s.QuoteRevision, LegalEntityID: com.LegalEntityID(s.LegalEntityID),
 		CustomerPartyID: s.Customer.PartyID, CustomerRevision: s.Customer.PartyRevision, RecipientRole: s.RecipientRole,
-		Total: s.Total, Validity: s.Validity, AcceptedAt: s.AcceptedAt, EvidenceRef: s.AcceptanceEvidenceRef,
+		Total: total, Validity: s.Validity, AcceptedAt: s.AcceptedAt, EvidenceRef: s.AcceptanceEvidenceRef,
 		Terms: com.CommercialTerms{IncotermsRule: t.IncotermsRule, IncotermsVersion: t.IncotermsVersion, NamedPlace: t.NamedPlace,
 			ServiceLevel: t.ServiceLevel},
-		TermsContract: com.QuoteSnapshotV2, TermsHash: hash,
+		TermsContract: contract, TermsHash: hash, Kind: kind,
 	}, nil
 }
 
@@ -127,6 +143,19 @@ func money(currency string, minor int64) canonicalMoney {
 
 // TermsHashV2 is the hex SHA-256 of the canonical JSON encoding of a QuoteSnapshot v2.
 func TermsHashV2(s rateapi.QuoteSnapshotV2) (string, error) {
+	c, err := canonicalV2(s)
+	if err != nil {
+		return "", err
+	}
+	blob, err := json.Marshal(c)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(blob)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func canonicalV2(s rateapi.QuoteSnapshotV2) (canonicalSnapshot, error) {
 	c := canonicalSnapshot{
 		Contract: com.QuoteSnapshotV2, TenantID: s.TenantID, QuoteID: s.QuoteID, QuoteRevision: s.QuoteRevision,
 		LegalEntityID: s.LegalEntityID, CustomerPartyID: s.Customer.PartyID, CustomerRevision: s.Customer.PartyRevision,
@@ -146,6 +175,36 @@ func TermsHashV2(s rateapi.QuoteSnapshotV2) (string, error) {
 		c.ExchangeRates = append(c.ExchangeRates, canonicalRate{From: string(r.From), Rate: r.Rate, Scale: r.Scale, FromDigits: r.FromDigits,
 			QuoteDigits: r.QuoteDigits, Source: r.Source, AsOf: instant(r.AsOf)})
 	}
+	return c, nil
+}
+
+type canonicalAgreement struct {
+	RateCardID    string `json:"rate_card_id"`
+	Version       int    `json:"version"`
+	Mode          string `json:"mode"`
+	ContainerMode string `json:"container_mode"`
+}
+
+// canonicalSnapshotV3 is what TermsHashV3 covers of an AGREEMENT's QuoteSnapshotV3: the v2 encoding (no lines, an empty
+// total) with the kind, the customer card version and the mode.
+type canonicalSnapshotV3 struct {
+	canonicalSnapshot
+	Kind      string             `json:"kind"`
+	Agreement canonicalAgreement `json:"agreement"`
+}
+
+// TermsHashV3 is the hex SHA-256 of the canonical JSON encoding of an AGREEMENT's QuoteSnapshotV3.
+func TermsHashV3(s rateapi.QuoteSnapshotV3) (string, error) {
+	if s.Agreement == nil || s.Scope == nil {
+		return "", fmt.Errorf("%w: an agreement names its card and mode", app.ErrQuoteNotAccepted)
+	}
+	v2, err := canonicalV2(s.QuoteSnapshotV2)
+	if err != nil {
+		return "", err
+	}
+	v2.Contract = com.QuoteSnapshotV3
+	c := canonicalSnapshotV3{canonicalSnapshot: v2, Kind: s.Kind, Agreement: canonicalAgreement{RateCardID: s.Agreement.RateCardID,
+		Version: s.Agreement.Version, Mode: s.Scope.Mode, ContainerMode: s.Scope.ContainerMode}}
 	blob, err := json.Marshal(c)
 	if err != nil {
 		return "", err

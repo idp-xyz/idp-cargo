@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
 var day = 24 * time.Hour
@@ -322,6 +324,38 @@ func TestRestoreReplaysLineVersionsInOrder(t *testing.T) {
 		s := o.State()
 		edit(&s)
 		if _, err := RestoreOrder(s); !errors.Is(err, ErrInvalidOrder) {
+			t.Errorf("%s: err = %v", name, err)
+		}
+	}
+}
+
+// Orders on an AGREEMENT quote (RATE V0.5 part 3b, OD-5 A): any number within the agreement's validity, under
+// QuoteSnapshotV3, with no total; ONE_OFF quotes keep their total and count.
+func TestAgreementOrdersAreNotCountedAgainstThePolicy(t *testing.T) {
+	agreement := func() OrderDraft {
+		d := draft(palletLine)
+		d.Quote.Kind, d.Quote.TermsContract, d.Quote.Total = QuoteAgreement, QuoteSnapshotV3, kernel.Money{Currency: d.Quote.Total.Currency}
+		return d
+	}
+	o, err := RecordOrder(agreement(), 7, recordAt, recordAt)
+	if err != nil {
+		t.Fatalf("an eighth order on an agreement under the built-in policy: %v", err)
+	}
+	if _, err = RestoreOrder(o.State()); err != nil {
+		t.Fatalf("restored: %v", err)
+	}
+	if _, err = RecordOrder(agreement(), 0, at.Add(14*day), at.Add(14*day)); !errors.Is(err, ErrOutsideQuoteValidity) {
+		t.Fatalf("after the agreement's validity: %v", err)
+	}
+	for name, edit := range map[string]func(*OrderDraft){
+		"an agreement with a total":     func(d *OrderDraft) { d.Quote.Total.Minor = 100 },
+		"an agreement under v2":         func(d *OrderDraft) { d.Quote.TermsContract = QuoteSnapshotV2 },
+		"a ONE_OFF quote without total": func(d *OrderDraft) { d.Quote.Kind = QuoteOneOff },
+		"a quote of another kind":       func(d *OrderDraft) { d.Quote.Kind = "FRAMEWORK" },
+	} {
+		d := agreement()
+		edit(&d)
+		if _, err := RecordOrder(d, 0, recordAt, recordAt); !errors.Is(err, ErrInvalidOrder) {
 			t.Errorf("%s: err = %v", name, err)
 		}
 	}

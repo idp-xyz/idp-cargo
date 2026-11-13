@@ -18,6 +18,7 @@ var (
 	ErrPartyNotConfirmed = errors.New("rate application: RATE_PARTY_ROLE: ORG does not confirm the party in a role the card needs")
 	ErrLocationRefused   = errors.New("rate application: RATE_LOCATION: the location reference data does not resolve the location for the mode")
 	ErrValidFromTooEarly = errors.New("rate application: a version may not start before the record window")
+	ErrVersionQuoted     = errors.New("rate application: RATE_VERSION_QUOTED: an AGREEMENT quote prices with this draft; its rates change once the quote expired")
 )
 
 // Supplier roles a SUPPLIER card's party is confirmed in, and the recipient roles a quote goes to (R7), in which a
@@ -87,15 +88,21 @@ type BasisStore interface {
 	Read(ctx context.Context, tenant rate.TenantID, id string) (*rate.PricingBasis, error)
 }
 
+// AgreementQuotes tells which AGREEMENT quote that has not expired names a card version, if any.
+type AgreementQuotes interface {
+	QuotedBy(ctx context.Context, tenant rate.TenantID, card rate.RateCardID, version int) (rate.QuoteID, bool, error)
+}
+
 // CardDeps are the ports of the catalogue, card, rating and estimate commands.
 type CardDeps struct {
 	Deps
-	Codes     ChargeCodeStore
-	Cards     RateCardStore
-	Snapshots SnapshotStore
-	Bases     BasisStore
-	Parties   Parties
-	Locations Locations
+	Codes      ChargeCodeStore
+	Cards      RateCardStore
+	Snapshots  SnapshotStore
+	Bases      BasisStore
+	Parties    Parties
+	Locations  Locations
+	Agreements AgreementQuotes
 }
 
 type pendingAggregate interface {
@@ -370,7 +377,7 @@ type SetEntriesCommand struct {
 }
 
 func (d CardDeps) SetRateCardEntries(ctx context.Context, c SetEntriesCommand) (Receipt, error) {
-	if d.Locations == nil {
+	if d.Locations == nil || d.Agreements == nil {
 		return Receipt{}, ErrMissingDependency
 	}
 	entries := slices.Clone(c.Entries)
@@ -396,7 +403,15 @@ func (d CardDeps) SetRateCardEntries(ctx context.Context, c SetEntriesCommand) (
 		return nil
 	}
 	return d.changeCard(ctx, c.Scope, c.CommandID, c.OccurredAt, c, c.RateCardID, c.ExpectedRevision, resolve,
-		func(_ context.Context, card *rate.RateCard, at time.Time) error {
+		func(txCtx context.Context, card *rate.RateCard, at time.Time) error {
+			// an AGREEMENT quote prices with the draft as it named it: its rates are fixed until the quote expires
+			quote, quoted, err := d.Agreements.QuotedBy(txCtx, c.Scope.TenantID, c.RateCardID, c.Version)
+			if err != nil {
+				return err
+			}
+			if quoted {
+				return fmt.Errorf("%w: version %d of card %s is quoted by agreement %s", ErrVersionQuoted, c.Version, c.RateCardID, quote)
+			}
 			return card.SetEntries(c.Version, entries, c.Scope.ActorID, at)
 		})
 }

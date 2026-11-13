@@ -114,13 +114,16 @@ type SnapshotLineV3 struct {
 	CodeUnlisted bool
 }
 
-// QuoteSnapshotV3 is QuoteSnapshotV2 with the quote's kind (ONE_OFF; AGREEMENT comes with RATE V0.5 part 3b), its scope
-// and the V0.5 line details. Like v2 it carries no costs or margins; v2 and v1 stay published.
+// QuoteSnapshotV3 is QuoteSnapshotV2 with the quote's kind, its scope and the V0.5 line details. An AGREEMENT prices by
+// lane with its customer card (Agreement, published by the acceptance), not by lines: it has no lines and an empty
+// Total, and COM takes no commitment amount from it (OD-5); only V3 answers for it. Like v2 it carries no costs or
+// margins; v2 and v1 stay published for ONE_OFF quotes.
 type QuoteSnapshotV3 struct {
 	QuoteSnapshotV2
-	Kind  string
-	Scope *QuoteScope
-	Lines []SnapshotLineV3
+	Kind      string
+	Scope     *QuoteScope
+	Agreement *AgreementRef
+	Lines     []SnapshotLineV3
 }
 
 // QuoteSnapshotV3Queries answers QuoteSnapshotV3.
@@ -140,6 +143,7 @@ type GetQuoteSnapshot struct {
 type Queries interface {
 	GetQuoteSnapshot(ctx context.Context, q GetQuoteSnapshot) (QuoteSnapshot, error)
 	GetQuoteSnapshotV2(ctx context.Context, q GetQuoteSnapshot) (QuoteSnapshotV2, error)
+	QuoteSnapshotV3Queries
 	GetServiceLevel(ctx context.Context, q GetServiceLevel) (ServiceLevel, error)
 	ListServiceLevels(ctx context.Context, q ListServiceLevels) ([]ServiceLevel, error)
 }

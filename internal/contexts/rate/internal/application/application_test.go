@@ -391,3 +391,19 @@ func TestCreateQuoteSnapshotReadFailures(t *testing.T) {
 		t.Fatalf("a snapshot not recorded: %v", err)
 	}
 }
+
+// A command that names the default kind ONE_OFF and its retry that leaves it out are one command: the retry replays.
+func TestCreateQuoteKindOneOffReplays(t *testing.T) {
+	f := newFixture()
+	h := CreateQuote{Deps: f.deps, Customers: f.customers, Codes: starterCodes{}, Snapshots: noSnapshots{}, Margins: floorFake(0)}
+	named := createCommand("create-kind")
+	named.Kind = rate.KindOneOff
+	first, err := h.Handle(context.Background(), named)
+	if err != nil {
+		t.Fatal(err)
+	}
+	omitted := createCommand("create-kind")
+	if again, err := h.Handle(context.Background(), omitted); err != nil || again != first {
+		t.Fatalf("the retry: %+v %v, first %+v", again, err, first)
+	}
+}

@@ -30,7 +30,8 @@ func WithLocations(l refapi.Locations) Option { return func(m *Module) { m.locat
 
 func (m *Module) cardDeps(tenant, commandID string) application.CardDeps {
 	d := application.CardDeps{Deps: m.deps(tenant, commandID), Codes: postgres.ChargeCodeStore{DB: m.db}, Cards: postgres.RateCardStore{DB: m.db},
-		Snapshots: postgres.SnapshotStore{DB: m.db}, Bases: postgres.BasisStore{DB: m.db}, Parties: orgacl.Parties{ORG: m.org}}
+		Agreements: postgres.QuoteStore{DB: m.db},
+		Snapshots:  postgres.SnapshotStore{DB: m.db}, Bases: postgres.BasisStore{DB: m.db}, Parties: orgacl.Parties{ORG: m.org}}
 	if m.locations != nil {
 		d.Locations = refacl.Locations{Ref: m.locations}
 	}
