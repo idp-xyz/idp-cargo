@@ -16,23 +16,28 @@ type Reads struct {
 	Discrepancies  DiscrepancyList
 }
 
-// Consolidation reads a consolidation with its live houses.
-func (r Reads) Consolidation(ctx context.Context, tenant phy.TenantID, id phy.ConsolidationID) (*phy.Consolidation, int64, []House, error) {
+// Consolidation reads a consolidation with its live houses and the stuffings of its load units.
+func (r Reads) Consolidation(ctx context.Context, tenant phy.TenantID, id phy.ConsolidationID) (*phy.Consolidation, int64, []House,
+	map[int]UnitUse, error) {
 	if tenant == "" || id == "" {
-		return nil, 0, nil, ErrInvalidQuery
+		return nil, 0, nil, nil, ErrInvalidQuery
 	}
 	var c *phy.Consolidation
 	var revision int64
 	var houses []House
+	var uses map[int]UnitUse
 	err := r.Tx.WithinTransaction(ctx, func(txCtx context.Context) error {
 		var err error
 		if c, revision, err = r.Consolidations.Read(txCtx, tenant, id); err != nil {
 			return err
 		}
-		houses, err = r.Consolidations.LiveHouses(txCtx, tenant, id)
+		if houses, err = r.Consolidations.LiveHouses(txCtx, tenant, id); err != nil {
+			return err
+		}
+		uses, err = r.Executions.UnitUses(txCtx, tenant, id)
 		return err
 	})
-	return c, revision, houses, err
+	return c, revision, houses, uses, err
 }
 
 // Membership reads a shipment's membership ledger and, when an entry is live, its consolidation.

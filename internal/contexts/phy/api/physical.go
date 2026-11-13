@@ -152,8 +152,14 @@ type CloseCargoLot struct {
 	OccurredAt       time.Time
 }
 
-// Load execution kinds; N1 tenders only.
-const ExecutionTender = "TENDER"
+// Load execution kinds: a TENDER of loose cargo or of a co-load's houses, or the STUFFING of a planned container
+// (PHY V0.3), whose closing evidence is the container's seal (source EvidenceSeal, the seal number as reference).
+const (
+	ExecutionTender   = "TENDER"
+	ExecutionStuffing = "STUFFING"
+
+	EvidenceSeal = "SEAL"
+)
 
 // Load execution states.
 const (
@@ -186,16 +192,23 @@ const (
 	LoadOffloaded = "OFFLOADED"     // the carrier offloaded pieces
 )
 
-// OpenLoadExecution opens a tender of an AIR_CONSOL or SEA_LCL_COLOAD consolidation, OPEN or CLOSED, at a
-// facility of its origin: the airline terminal or the co-loader's CFS.
+// OpenLoadExecution opens a load execution at a facility of the consolidation's origin:
+//   - a TENDER of an AIR_CONSOL or SEA_LCL_COLOAD consolidation, OPEN or CLOSED, at the airline terminal or the
+//     co-loader's CFS; it names no load unit;
+//   - the STUFFING of a planned container (LoadUnitNo) of a CLOSED SEA_LCL_OWN consolidation, at the forwarder's
+//     CFS (PHY V0.3). A unit takes one stuffing; its cargo is checked against the unit's limits as it is stuffed: a
+//     line taking the container, its tare and cargo, over the default maximum gross, or its cargo over the capacity,
+//     is recorded and holds the execution (OVERWEIGHT), which a release with its evidence (such as the plate)
+//     lifts. Weights are in GRM, KGM or TNE and volumes in CMQ, DMQ, LTR or MTQ.
 type OpenLoadExecution struct {
 	CommandID       string
 	TenantID        string
 	ActorID         string
 	ExecutionID     string
 	ConsolidationID string
-	Kind            string // ExecutionTender
+	Kind            string // ExecutionTender or ExecutionStuffing
 	Facility        Facility
+	LoadUnitNo      int // the planned container a STUFFING fills
 	OccurredAt      time.Time
 }
 
@@ -507,6 +520,7 @@ type LoadExecution struct {
 	Kind            string
 	Mode            string
 	Facility        Facility
+	LoadUnitNo      int // the container a STUFFING fills (PHY V0.3)
 	State           string
 	TenderedPacks   int64
 	OpenedAt        time.Time
@@ -593,6 +607,7 @@ type TenderEvidence struct {
 	Kind              string
 	State             string
 	Facility          Facility
+	LoadUnitNo        int // the container of a STUFFING (PHY V0.3), whose seal is the closing evidence
 	LoadedPacks       int64
 	GrossWeight       kernel.Quantity
 	Volume            kernel.Quantity

@@ -75,7 +75,13 @@ type RecordCargoMeasurementCommand struct {
 	OccurredAt       time.Time
 }
 
-// RecordCargoMeasurement adds a measurement version of a lot.
+// RecordCargoMeasurement adds a measurement version of a lot. A stuffing loading or on hold with live packs of the
+// lot is checked again against its container's limits with the new measure (HoldIfOverLimits): their consolidations
+// are locked FOR SHARE and the stuffings FOR UPDATE, in id order, before the lot, as RecordScreeningResult does;
+// tenders are not locked. If the stuffings with live packs of the lot changed meanwhile, the command is a conflict
+// and the caller tries again.
+// A lot measured again after its container was sealed changes the measures PHY publishes; the container's verified
+// gross mass is SEA's (VGM).
 type RecordCargoMeasurement struct{ Deps }
 
 func (h RecordCargoMeasurement) Handle(ctx context.Context, c RecordCargoMeasurementCommand) (Receipt, error) {
@@ -86,11 +92,84 @@ func (h RecordCargoMeasurement) Handle(ctx context.Context, c RecordCargoMeasure
 	if err = h.authorizeLot(ctx, c.Scope, ActionRecordCargoMeasurement, c.LotID); err != nil {
 		return Receipt{}, err
 	}
-	return h.changeLot(ctx, c.Scope, c.CommandID, hash, entered, c.LotID, c.ExpectedRevision, func(_ context.Context, l *phy.CargoLot) (int, error) {
-		if err := l.Measure(c.Measurement, c.Scope.ActorID, c.OccurredAt); err != nil {
-			return 0, err
+	var live []phy.LoadExecutionID
+	consolidations := map[phy.LoadExecutionID]phy.ConsolidationID{}
+	if err = h.Tx.WithinTransaction(ctx, func(txCtx context.Context) error {
+		if live, err = h.Executions.StuffingsWithLiveLot(txCtx, c.Scope.TenantID, c.LotID); err != nil {
+			return err
 		}
-		return len(l.State().Measurements), nil
+		for _, id := range live {
+			if consolidations[id], err = h.Executions.Consolidation(txCtx, c.Scope.TenantID, id); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		return Receipt{}, err
+	}
+	return h.write(ctx, c.Scope, c.CommandID, hash, func(txCtx context.Context) (Receipt, aggregate, error) {
+		tenant := c.Scope.TenantID
+		var ids []phy.ConsolidationID
+		for _, id := range live {
+			ids = append(ids, consolidations[id])
+		}
+		slices.Sort(ids)
+		consols := map[phy.ConsolidationID]*phy.Consolidation{}
+		for _, id := range slices.Compact(ids) {
+			consol, _, err := h.Consolidations.LoadShared(txCtx, tenant, id)
+			if err != nil {
+				return Receipt{}, nil, err
+			}
+			consols[id] = consol
+		}
+		var executions []ExecutionRead
+		for _, id := range live {
+			x, revision, err := h.Executions.Load(txCtx, tenant, id)
+			if err != nil {
+				return Receipt{}, nil, err
+			}
+			executions = append(executions, ExecutionRead{Execution: x, Revision: revision})
+		}
+		l, revision, err := h.Lots.Load(txCtx, tenant, c.LotID)
+		if err != nil {
+			return Receipt{}, nil, err
+		}
+		if revision != c.ExpectedRevision {
+			return Receipt{}, nil, phy.ErrConflict
+		}
+		if err = l.Measure(c.Measurement, c.Scope.ActorID, c.OccurredAt); err != nil {
+			return Receipt{}, nil, err
+		}
+		changed := group{l}
+		if len(live) > 0 {
+			now, err := h.Executions.StuffingsWithLiveLot(txCtx, tenant, c.LotID)
+			if err != nil {
+				return Receipt{}, nil, err
+			}
+			if !slices.Equal(now, live) {
+				return Receipt{}, nil, fmt.Errorf("%w: the stuffings loading lot %s changed; try again", phy.ErrConflict, c.LotID)
+			}
+		}
+		for _, r := range executions {
+			x := r.Execution
+			if x.State().Kind != phy.ExecutionStuffing {
+				continue
+			}
+			lots, err := h.stuffedLots(txCtx, tenant, x, l)
+			if err != nil {
+				return Receipt{}, nil, err
+			}
+			if x.HoldIfOverLimits(consols[x.Consolidation()], lots, c.Measurement.Evidence, c.Scope.ActorID, c.OccurredAt) {
+				x.Stamp(entered)
+				if _, err = h.Executions.Save(txCtx, x, r.Revision); err != nil {
+					return Receipt{}, nil, err
+				}
+				changed = append(changed, x)
+			}
+		}
+		l.Stamp(entered)
+		revision, err = h.Lots.Save(txCtx, l, revision)
+		return Receipt{LotID: c.LotID, NewRevision: revision, ItemNo: len(l.State().Measurements)}, changed, err
 	})
 }
 

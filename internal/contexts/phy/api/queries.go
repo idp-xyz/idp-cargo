@@ -59,8 +59,8 @@ type Member struct {
 }
 
 // PlannedLoadUnit is a load unit planned for a consolidation, with the limits of its type frozen from the
-// equipment reference data (TEU in tenths; kilograms; cubic centimetres) and the edition. Removed units keep their
-// number and say why.
+// equipment reference data (TEU in tenths; kilograms; cubic centimetres) and the edition. A unit is IN_USE while
+// its stuffing is open and CLOSED once it is closed (sealed); removed units keep their number and say why.
 type PlannedLoadUnit struct {
 	UnitNo           int
 	Kind             string // LoadUnitContainer
@@ -70,7 +70,8 @@ type PlannedLoadUnit struct {
 	TareKg           int64
 	CapacityCM3      int64
 	EquipmentEdition string
-	Status           string // UnitStatusPlanned or UnitStatusRemoved
+	Status           string // UnitStatusPlanned, UnitStatusInUse, UnitStatusClosed or UnitStatusRemoved
+	ExecutionID      string // the stuffing opened on the unit
 	PlannedAt        time.Time
 	RemoveReason     string
 	RemovedAt        time.Time

@@ -26,6 +26,7 @@ type executionRow struct {
 	TransportMode           string    `json:"transport_mode"`
 	FacilityLocation        string    `json:"facility_location"`
 	FacilityCode            string    `json:"facility_code"`
+	LoadUnitNo              int       `json:"load_unit_no"`
 	State                   string    `json:"state"`
 	OpenedBy                string    `json:"opened_by"`
 	OpenedAt                time.Time `json:"opened_at"`
@@ -154,7 +155,8 @@ func readExecution(ctx context.Context, q queryRower, tenant phy.TenantID, id ph
 	}
 	st := phy.LoadExecutionState{TenantID: tenant, ExecutionID: id, ConsolidationID: phy.ConsolidationID(root.ConsolidationID),
 		Kind: phy.ExecutionKind(root.Kind), Mode: phy.Mode(root.TransportMode),
-		Facility: phy.Facility{Location: unlocode(root.FacilityLocation), Code: root.FacilityCode}, State: phy.ExecutionState(root.State),
+		Facility: phy.Facility{Location: unlocode(root.FacilityLocation), Code: root.FacilityCode}, LoadUnitNo: root.LoadUnitNo,
+		State:    phy.ExecutionState(root.State),
 		OpenedBy: root.OpenedBy, OpenedAt: utc(root.OpenedAt), OpenedEnteredAt: utc(root.OpenedEnteredAt),
 		StartedBy: root.StartedBy, StartedAt: utc(root.StartedAt), StartedEnteredAt: utc(root.StartedEnteredAt),
 		ClosedBy: root.ClosedBy, ClosedAt: utc(root.ClosedAt), ClosedEnteredAt: utc(root.ClosedEnteredAt),
@@ -239,6 +241,30 @@ func (s ExecutionStore) Read(ctx context.Context, tenant phy.TenantID, id phy.Lo
 	return readExecution(ctx, q, tenant, id)
 }
 
+// UnitUses returns, by load unit, the stuffing opened on each of a consolidation's units.
+func (s ExecutionStore) UnitUses(ctx context.Context, tenant phy.TenantID, id phy.ConsolidationID) (map[int]app.UnitUse, error) {
+	q, err := s.DB.ReadExecutor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := q.Query(ctx, `SELECT load_unit_no, execution_id, state FROM cargo_phy.load_execution
+      WHERE tenant_id=$1 AND consolidation_id=$2 AND load_unit_no IS NOT NULL`, string(tenant), string(id))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int]app.UnitUse{}
+	for rows.Next() {
+		var no int
+		var execution, state string
+		if err = rows.Scan(&no, &execution, &state); err != nil {
+			return nil, err
+		}
+		out[no] = app.UnitUse{ExecutionID: phy.LoadExecutionID(execution), State: phy.ExecutionState(state)}
+	}
+	return out, rows.Err()
+}
+
 // ByConsolidation reads a consolidation's executions, by execution id.
 func (s ExecutionStore) ByConsolidation(ctx context.Context, tenant phy.TenantID, id phy.ConsolidationID) ([]app.ExecutionRead, error) {
 	return s.list(ctx, tenant, `SELECT execution_id FROM cargo_phy.load_execution WHERE tenant_id=$1 AND consolidation_id=$2 ORDER BY execution_id`, string(id))
@@ -276,6 +302,15 @@ func (s ExecutionStore) list(ctx context.Context, tenant phy.TenantID, sql strin
 
 // WithLiveLot returns the LOADING or ON_HOLD executions with live packs of a lot, by execution id.
 func (s ExecutionStore) WithLiveLot(ctx context.Context, tenant phy.TenantID, lot phy.CargoLotID) ([]phy.LoadExecutionID, error) {
+	return s.withLiveLot(ctx, tenant, lot, "")
+}
+
+// StuffingsWithLiveLot returns the LOADING or ON_HOLD stuffings with live packs of a lot, by execution id.
+func (s ExecutionStore) StuffingsWithLiveLot(ctx context.Context, tenant phy.TenantID, lot phy.CargoLotID) ([]phy.LoadExecutionID, error) {
+	return s.withLiveLot(ctx, tenant, lot, string(phy.ExecutionStuffing))
+}
+
+func (s ExecutionStore) withLiveLot(ctx context.Context, tenant phy.TenantID, lot phy.CargoLotID, kind string) ([]phy.LoadExecutionID, error) {
 	q, err := s.DB.ReadExecutor(ctx)
 	if err != nil {
 		return nil, err
@@ -285,8 +320,8 @@ func (s ExecutionStore) WithLiveLot(ctx context.Context, tenant phy.TenantID, lo
       SELECT l.execution_id FROM cargo_phy.load_line l
         JOIN cargo_phy.load_execution x ON x.tenant_id=l.tenant_id AND x.execution_id=l.execution_id
         LEFT JOIN reversed r ON r.execution_id=l.execution_id AND r.line_no=l.line_no
-      WHERE l.tenant_id=$1 AND l.lot_id=$2 AND x.state IN ('LOADING','ON_HOLD')
-      GROUP BY l.execution_id HAVING sum(l.packs - coalesce(r.packs, 0)) > 0 ORDER BY l.execution_id`, string(tenant), string(lot))
+      WHERE l.tenant_id=$1 AND l.lot_id=$2 AND x.state IN ('LOADING','ON_HOLD') AND ($3='' OR x.kind=$3)
+      GROUP BY l.execution_id HAVING sum(l.packs - coalesce(r.packs, 0)) > 0 ORDER BY l.execution_id`, string(tenant), string(lot), kind)
 	if err != nil {
 		return nil, err
 	}
@@ -317,12 +352,15 @@ func (s ExecutionStore) Insert(ctx context.Context, x *phy.LoadExecution) (int64
 	st := x.State()
 	var revision int64
 	err = q.QueryRow(ctx, `INSERT INTO cargo_phy.load_execution (tenant_id,execution_id,consolidation_id,kind,transport_mode,facility_location,
-        facility_code,state,opened_by,opened_at,opened_entered_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING revision`,
+        facility_code,load_unit_no,state,opened_by,opened_at,opened_entered_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING revision`,
 		string(st.TenantID), string(st.ExecutionID), string(st.ConsolidationID), string(st.Kind), string(st.Mode), st.Facility.Location.Code,
-		st.Facility.Code, string(st.State), st.OpenedBy, st.OpenedAt, st.OpenedEnteredAt).Scan(&revision)
+		st.Facility.Code, orNull(st.LoadUnitNo), string(st.State), st.OpenedBy, st.OpenedAt, st.OpenedEnteredAt).Scan(&revision)
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "load_execution_pkey" {
 		return 0, fmt.Errorf("%w: load execution %s", bentorepo.ErrAlreadyExists, st.ExecutionID)
+	}
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "load_execution_one_per_unit" {
+		return 0, fmt.Errorf("%w: unit %d of consolidation %s", phy.ErrLoadUnitInUse, st.LoadUnitNo, st.ConsolidationID)
 	}
 	if err != nil {
 		return 0, err

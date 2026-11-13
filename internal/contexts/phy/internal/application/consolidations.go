@@ -214,11 +214,11 @@ func (h ReopenConsolidation) Handle(ctx context.Context, c ReopenConsolidationCo
 	}
 	return h.changeConsolidation(ctx, c.Scope, c.CommandID, hash, entered, c.ConsolidationID, c.ExpectedRevision,
 		func(txCtx context.Context, consol *phy.Consolidation) error {
-			_, tendered, err := h.executions(txCtx, c.Scope.TenantID, c.ConsolidationID)
+			_, tendered, stuffed, err := h.executions(txCtx, c.Scope.TenantID, c.ConsolidationID)
 			if err != nil {
 				return err
 			}
-			return consol.Reopen(c.Reason, c.Scope.ActorID, c.OccurredAt, tendered)
+			return consol.Reopen(c.Reason, c.Scope.ActorID, c.OccurredAt, tendered, stuffed)
 		})
 }
 
@@ -248,7 +248,7 @@ func (h CancelConsolidation) Handle(ctx context.Context, c CancelConsolidationCo
 			if err != nil {
 				return err
 			}
-			open, _, err := h.executions(txCtx, c.Scope.TenantID, c.ConsolidationID)
+			open, _, _, err := h.executions(txCtx, c.Scope.TenantID, c.ConsolidationID)
 			if err != nil {
 				return err
 			}
@@ -259,10 +259,10 @@ func (h CancelConsolidation) Handle(ctx context.Context, c CancelConsolidationCo
 // executions counts a consolidation's load executions that are not closed and the live packs its closed ones
 // tendered. Under the consolidation's FOR UPDATE lock they do not change, since every execution command locks
 // it FOR SHARE first.
-func (d Deps) executions(ctx context.Context, tenant phy.TenantID, id phy.ConsolidationID) (open int, tendered int64, err error) {
+func (d Deps) executions(ctx context.Context, tenant phy.TenantID, id phy.ConsolidationID) (open int, tendered int64, stuffed phy.Stuffed, err error) {
 	list, err := d.Executions.ByConsolidation(ctx, tenant, id)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, phy.Stuffed{}, err
 	}
 	for _, x := range list {
 		if x.Execution.Current() == phy.ExecutionClosed {
@@ -270,8 +270,16 @@ func (d Deps) executions(ctx context.Context, tenant phy.TenantID, id phy.Consol
 		} else {
 			open++
 		}
+		if x.Execution.State().Kind == phy.ExecutionStuffing {
+			if x.Execution.Current() == phy.ExecutionClosed {
+				stuffed.Sealed++
+			}
+			if last := x.Execution.LastChange(); last.After(stuffed.Last) {
+				stuffed.Last = last
+			}
+		}
 	}
-	return open, tendered, nil
+	return open, tendered, stuffed, nil
 }
 
 type ReconcileConsolidationCommand struct {

@@ -42,11 +42,12 @@ const (
 
 // EventPayload is the JSON payload of every PHY event: identifiers only, never names, addresses, contacts,
 // goods descriptions, master and house numbers or carrier message bodies (rule C3, privacy assessment V1.2).
-// Consolidation events carry the consolidation version, and load unit events the unit as the item; house events the membership entry, the consolidation
-// the house is in or left, the one it came from on a transfer, and the reason code. Cargo lot events carry the
-// lot, its shipment and the item (receipt line, measurement version, screening result or discrepancy); load
-// execution events the execution, its consolidation, the shipment and lot a line or hold is about, the item
-// (line, reversal, hold, carrier evidence or discrepancy) and a reason, hold, fact, kind or resolution code.
+// Consolidation events carry the consolidation version, and load unit events the unit as the item; house events
+// the membership entry, the consolidation the house is in or left, the one it came from on a transfer, and the
+// reason code. Cargo lot events carry the lot, its shipment and the item (receipt line, measurement version,
+// screening result or discrepancy); load execution events the execution, its consolidation, the shipment and lot a
+// line or hold is about, the item (line, reversal, hold, carrier evidence or discrepancy; for the opening of a
+// stuffing, its load unit) and a reason, hold, fact, kind or resolution code.
 type EventPayload struct {
 	TenantID            string `json:"tenant_id"`
 	SubjectID           string `json:"subject_id"`

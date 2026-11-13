@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	phy "go.idp.xyz/idp-cargo/internal/contexts/phy/internal/domain"
@@ -15,10 +16,12 @@ type OpenLoadExecutionCommand struct {
 	ConsolidationID phy.ConsolidationID
 	Kind            phy.ExecutionKind
 	Facility        phy.Facility
+	LoadUnitNo      int `json:",omitzero"` // the unit a STUFFING fills; left out of the hash of a tender, as before
 	OccurredAt      time.Time
 }
 
-// OpenLoadExecution opens a tender of a consolidation, under the consolidation's FOR SHARE lock.
+// OpenLoadExecution opens a tender of a consolidation, or the stuffing of one of its planned containers, under the
+// consolidation's FOR SHARE lock. Two stuffings of one unit opened at once meet the database's one-per-unit index.
 type OpenLoadExecution struct{ Deps }
 
 func (h OpenLoadExecution) Handle(ctx context.Context, c OpenLoadExecutionCommand) (Receipt, error) {
@@ -34,13 +37,28 @@ func (h OpenLoadExecution) Handle(ctx context.Context, c OpenLoadExecutionComman
 		if err != nil {
 			return Receipt{}, nil, err
 		}
-		x, err := phy.OpenLoadExecution(c.Scope.TenantID, c.ExecutionID, consol, c.Kind, c.Facility, c.Scope.ActorID, c.OccurredAt)
-		if err != nil {
-			return Receipt{}, nil, err
+		var x *phy.LoadExecution
+		if c.Kind == phy.ExecutionStuffing {
+			uses, err := h.Executions.UnitUses(txCtx, c.Scope.TenantID, c.ConsolidationID)
+			if err != nil {
+				return Receipt{}, nil, err
+			}
+			_, taken := uses[c.LoadUnitNo]
+			x, err = phy.OpenStuffing(c.Scope.TenantID, c.ExecutionID, consol, c.LoadUnitNo, c.Facility, taken, c.Scope.ActorID, c.OccurredAt)
+			if err != nil {
+				return Receipt{}, nil, err
+			}
+		} else {
+			if c.LoadUnitNo != 0 {
+				return Receipt{}, nil, fmt.Errorf("%w: a tender names no load unit", phy.ErrInvalidExecution)
+			}
+			if x, err = phy.OpenLoadExecution(c.Scope.TenantID, c.ExecutionID, consol, c.Kind, c.Facility, c.Scope.ActorID, c.OccurredAt); err != nil {
+				return Receipt{}, nil, err
+			}
 		}
 		x.Stamp(entered)
 		revision, err := h.Executions.Insert(txCtx, x)
-		return Receipt{ExecutionID: c.ExecutionID, ConsolidationID: c.ConsolidationID, NewRevision: revision}, x, err
+		return Receipt{ExecutionID: c.ExecutionID, ConsolidationID: c.ConsolidationID, NewRevision: revision, ItemNo: x.State().LoadUnitNo}, x, err
 	})
 }
 
@@ -124,8 +142,35 @@ func (h RecordCargoLoaded) Handle(ctx context.Context, c RecordCargoLoadedComman
 		if err = x.Load(line, consol, lot, live, lotLoaded, houseLoaded, c.Scope.ActorID, c.OccurredAt); err != nil {
 			return 0, err
 		}
+		if x.State().Kind == phy.ExecutionStuffing {
+			lots, err := h.stuffedLots(txCtx, tenant, x, lot)
+			if err != nil {
+				return 0, err
+			}
+			x.HoldIfOverLimits(consol, lots, c.Evidence, c.Scope.ActorID, c.OccurredAt)
+		}
 		return len(x.Lines()), nil
 	})
+}
+
+// stuffedLots reads the lots of a stuffing's lines for its limits check; locked is a lot the command holds already.
+// A lot measured meanwhile re-checks the stuffing itself, under the stuffing's lock (RecordCargoMeasurement).
+func (d Deps) stuffedLots(ctx context.Context, tenant phy.TenantID, x *phy.LoadExecution, locked *phy.CargoLot) (map[phy.CargoLotID]*phy.CargoLot, error) {
+	lots := map[phy.CargoLotID]*phy.CargoLot{}
+	if locked != nil {
+		lots[locked.ID()] = locked
+	}
+	for _, line := range x.Lines() {
+		if _, ok := lots[line.LotID]; ok {
+			continue
+		}
+		l, _, err := d.Lots.Read(ctx, tenant, line.LotID)
+		if err != nil {
+			return nil, err
+		}
+		lots[line.LotID] = l
+	}
+	return lots, nil
 }
 
 type RecordCargoUnloadedCommand struct {
@@ -209,11 +254,15 @@ type CloseLoadExecutionCommand struct {
 	Evidence phy.Evidence
 }
 
-// CloseLoadExecution closes a tender with the receipt of the airline terminal or the co-loader's CFS.
+// CloseLoadExecution closes a tender with the receipt of the airline terminal or the co-loader's CFS, or seals a
+// stuffing while its consolidation, locked FOR SHARE, is CLOSED.
 type CloseLoadExecution struct{ Deps }
 
 func (h CloseLoadExecution) Handle(ctx context.Context, c CloseLoadExecutionCommand) (Receipt, error) {
-	return h.execute(ctx, c.ExecutionCommand, c, ActionCloseLoadExecution, func(_ context.Context, _ *phy.Consolidation, x *phy.LoadExecution) (int, error) {
+	return h.execute(ctx, c.ExecutionCommand, c, ActionCloseLoadExecution, func(_ context.Context, consol *phy.Consolidation, x *phy.LoadExecution) (int, error) {
+		if x.State().Kind == phy.ExecutionStuffing {
+			return 0, x.Seal(consol, c.Evidence, c.Scope.ActorID, c.OccurredAt)
+		}
 		return 0, x.Close(c.Evidence, c.Scope.ActorID, c.OccurredAt)
 	})
 }

@@ -78,7 +78,7 @@ func TestTheModelEmitsThePublishedEventTypes(t *testing.T) {
 		m.Transfer(a, b, intent(1, domain.IntentPlanned), domain.ReasonShutOut, "", "ops", at),
 		m.Refresh(b, intent(2, domain.IntentPlanned), "ops", at),
 		b.Close(1, at, "ops", at),
-		b.Reopen("late cargo", "ops", at, 0),
+		b.Reopen("late cargo", "ops", at, 0, domain.Stuffed{}),
 		m.Detach(b, domain.ReasonCustomerRequest, "", "ops", at),
 		a.Cancel("no cargo", "ops", at, 0, 0),
 	); err != nil {

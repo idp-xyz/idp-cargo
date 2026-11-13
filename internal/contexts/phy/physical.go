@@ -75,7 +75,7 @@ func (m *Module) OpenLoadExecution(ctx context.Context, cmd api.OpenLoadExecutio
 	r, err := application.OpenLoadExecution{Deps: m.deps(cmd.TenantID, cmd.CommandID)}.Handle(ctx,
 		application.OpenLoadExecutionCommand{CommandID: cmd.CommandID, Scope: scope(cmd.TenantID, cmd.ActorID),
 			ExecutionID: domain.LoadExecutionID(cmd.ExecutionID), ConsolidationID: domain.ConsolidationID(cmd.ConsolidationID),
-			Kind: domain.ExecutionKind(cmd.Kind), Facility: facility(cmd.Facility), OccurredAt: stored(cmd.OccurredAt)})
+			Kind: domain.ExecutionKind(cmd.Kind), Facility: facility(cmd.Facility), LoadUnitNo: cmd.LoadUnitNo, OccurredAt: stored(cmd.OccurredAt)})
 	return toReceipt(r, err)
 }
 
@@ -202,7 +202,7 @@ func (m *Module) GetPhysicalLoadEvidence(ctx context.Context, q api.GetPhysicalL
 	for _, r := range executions {
 		v := executionView(r)
 		t := api.TenderEvidence{ExecutionID: v.ExecutionID, Revision: v.Revision, ConsolidationID: v.ConsolidationID, Kind: v.Kind, State: v.State,
-			Facility: v.Facility, ClosedAt: v.ClosedAt, CloseEvidence: v.CloseEvidence}
+			Facility: v.Facility, LoadUnitNo: v.LoadUnitNo, ClosedAt: v.ClosedAt, CloseEvidence: v.CloseEvidence}
 		for _, l := range v.Lines {
 			if l.ShipmentID == q.ShipmentID {
 				t.Lines = append(t.Lines, l)
@@ -267,8 +267,9 @@ func executionView(r application.ExecutionRead) api.LoadExecution {
 	st := x.State()
 	out := api.LoadExecution{TenantID: string(st.TenantID), ExecutionID: string(st.ExecutionID), Revision: r.Revision,
 		ConsolidationID: string(st.ConsolidationID), Kind: string(st.Kind), Mode: string(st.Mode),
-		Facility: api.Facility{Location: st.Facility.Location, Code: st.Facility.Code}, State: string(st.State), TenderedPacks: x.Tendered(),
-		OpenedAt: st.OpenedAt, StartedAt: st.StartedAt, ClosedAt: st.ClosedAt}
+		Facility: api.Facility{Location: st.Facility.Location, Code: st.Facility.Code}, LoadUnitNo: st.LoadUnitNo, State: string(st.State),
+		TenderedPacks: x.Tendered(),
+		OpenedAt:      st.OpenedAt, StartedAt: st.StartedAt, ClosedAt: st.ClosedAt}
 	if !st.ClosedAt.IsZero() {
 		out.CloseEvidence = evidenceView(st.CloseEvidence)
 	}
@@ -309,7 +310,7 @@ func executionView(r application.ExecutionRead) api.LoadExecution {
 
 // physicalRejection reports whether err is a business rule of cargo lots or load executions.
 func physicalRejection(err error) bool {
-	for _, kind := range []error{domain.ErrInvalidLot, domain.ErrLotInForce, domain.ErrInvalidEvidence, domain.ErrInvalidReceipt, domain.ErrNoMeasurement,
+	for _, kind := range []error{domain.ErrKindNotStuffed, domain.ErrNotFrozen, domain.ErrLoadUnitInUse, domain.ErrInvalidLot, domain.ErrLotInForce, domain.ErrInvalidEvidence, domain.ErrInvalidReceipt, domain.ErrNoMeasurement,
 		domain.ErrOpenDiscrepancy, domain.ErrUnaccounted, domain.ErrScreeningForAir, domain.ErrNotResolvable, domain.ErrLiveLoadLines,
 		domain.ErrConservation, domain.ErrExecutionsClosed, domain.ErrNotReconciled, domain.ErrInvalidExecution, domain.ErrKindNotTendered,
 		domain.ErrNotLoading, domain.ErrInvalidLoad, domain.ErrOnHold, domain.ErrHoldNotReleasable, domain.ErrInvalidCarrier,

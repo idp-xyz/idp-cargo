@@ -197,7 +197,7 @@ func (m *Module) RemovePlannedLoadUnit(ctx context.Context, cmd api.RemovePlanne
 }
 
 func (m *Module) GetConsolidation(ctx context.Context, q api.GetConsolidation) (api.Consolidation, error) {
-	c, revision, houses, err := m.reads(q.TenantID).Consolidation(ctx, domain.TenantID(q.TenantID), domain.ConsolidationID(q.ConsolidationID))
+	c, revision, houses, uses, err := m.reads(q.TenantID).Consolidation(ctx, domain.TenantID(q.TenantID), domain.ConsolidationID(q.ConsolidationID))
 	if err != nil {
 		return api.Consolidation{}, classify(err)
 	}
@@ -215,16 +215,24 @@ func (m *Module) GetConsolidation(ctx context.Context, q api.GetConsolidation) (
 			Volume: e.Scope.Volume, AttachedAt: e.At})
 	}
 	for _, u := range st.LoadUnits {
-		out.LoadUnits = append(out.LoadUnits, loadUnit(u))
+		out.LoadUnits = append(out.LoadUnits, loadUnit(u, uses))
 	}
 	return out, nil
 }
 
-func loadUnit(u domain.PlannedLoadUnit) api.PlannedLoadUnit {
+// loadUnit is a unit as published: PLANNED, IN_USE while its stuffing is open, CLOSED once it is closed, or REMOVED.
+func loadUnit(u domain.PlannedLoadUnit, uses map[int]application.UnitUse) api.PlannedLoadUnit {
 	l := u.Limits
-	return api.PlannedLoadUnit{UnitNo: u.No, Kind: string(u.Kind), TypeCode: l.TypeCode, TEUTenths: l.TEUTenths, MaxGrossKg: l.MaxGrossKg,
+	out := api.PlannedLoadUnit{UnitNo: u.No, Kind: string(u.Kind), TypeCode: l.TypeCode, TEUTenths: l.TEUTenths, MaxGrossKg: l.MaxGrossKg,
 		TareKg: l.TareKg, CapacityCM3: l.CapacityCM3, EquipmentEdition: l.Edition, Status: string(u.Status), PlannedAt: u.PlannedAt,
 		RemoveReason: u.RemoveReason, RemovedAt: u.RemovedAt}
+	if use, ok := uses[u.No]; ok && u.Status == domain.UnitPlanned {
+		out.ExecutionID, out.Status = string(use.ExecutionID), api.UnitStatusInUse
+		if use.State == domain.ExecutionClosed {
+			out.Status = api.UnitStatusClosed
+		}
+	}
+	return out
 }
 
 func (m *Module) GetConsolMembership(ctx context.Context, q api.GetConsolMembership) (api.ConsolMembership, error) {

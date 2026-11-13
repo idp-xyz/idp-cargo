@@ -99,10 +99,10 @@ func TestConsolidationLifecycle(t *testing.T) {
 	if err := c.Cancel("x", "ops-1", t0.Add(3*time.Hour), 0, 0); !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("cancel a closed consolidation: %v", err)
 	}
-	if err := c.Reopen("", "ops-1", t0.Add(3*time.Hour), 0); !errors.Is(err, ErrInvalidChange) {
+	if err := c.Reopen("", "ops-1", t0.Add(3*time.Hour), 0, Stuffed{}); !errors.Is(err, ErrInvalidChange) {
 		t.Fatalf("reopen without a reason: %v", err)
 	}
-	if err := c.Reopen("late booking", "ops-1", t0.Add(3*time.Hour), 0); err != nil {
+	if err := c.Reopen("late booking", "ops-1", t0.Add(3*time.Hour), 0, Stuffed{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := c.Cancel("no cargo", "ops-1", t0.Add(4*time.Hour), 1, 0); !errors.Is(err, ErrHousesAttached) {
