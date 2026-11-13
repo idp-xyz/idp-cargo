@@ -10,6 +10,7 @@ import (
 
 	bentopg "go.idp.xyz/idp-bento-go/postgres"
 	"go.idp.xyz/idp-cargo/internal/contexts/fin/api"
+	fulapi "go.idp.xyz/idp-cargo/internal/contexts/ful/api"
 	rateapi "go.idp.xyz/idp-cargo/internal/contexts/rate/api"
 	"go.idp.xyz/idp-cargo/internal/kernel"
 )
@@ -240,4 +241,35 @@ func TestEstimatesRaceForOneJob(t *testing.T) {
 			t.Fatalf("round %d: lost with %v", round, err)
 		}
 	})
+}
+
+// A job priced by its quote on a planned shipment that carries that quote only takes the quote re-evaluated on the
+// shipment's cargo, and its basis names the plan version (RATE V0.5 part 3b-2, OD-7 A); on a shipment shared with
+// another quote the quote applies as quoted.
+func TestQuoteBasisOnShipmentOnPostgres(t *testing.T) {
+	a := creditorWorld(t)
+	ctx, f := a.ctx, a.fixture
+	f.w.mu.Lock()
+	c := f.w.drivers["SH-B"]
+	c.ShipmentID, c.Orders = "SH-C", []fulapi.CostOrder{{OrderID: "O-C", QuoteID: "Q-1", QuoteRevision: 2, Packs: 4},
+		{OrderID: "O-D", QuoteID: "Q-2", QuoteRevision: 1, Packs: 2}}
+	f.w.drivers["SH-C"] = c
+	f.w.mu.Unlock()
+	a.must(f.module.OpenFreightJob(ctx, api.OpenFreightJob{CommandID: "open-JOB-C", TenantID: f.tenant, ActorID: "fin-1", JobID: "JOB-C", ShipmentID: "SH-C",
+		OccurredAt: a.hours(1)}))
+	a.must(f.module.ApplyPricingBasis(ctx, api.ApplyPricingBasis{CommandID: "quote-A", TenantID: f.tenant, ActorID: "fin-1", JobID: "JOB-A",
+		ExpectedRevision: 2, QuoteID: "Q-1", OrderID: "O-A", OccurredAt: a.hours(2)}))
+	a.must(f.module.ApplyPricingBasis(ctx, api.ApplyPricingBasis{CommandID: "quote-C", TenantID: f.tenant, ActorID: "fin-1", JobID: "JOB-C",
+		ExpectedRevision: 1, QuoteID: "Q-1", OrderID: "O-C", OccurredAt: a.hours(2)}))
+	var got string
+	if err := f.within(t, func(ctx context.Context, e bentopg.Executor) error {
+		return e.QueryRow(ctx, `SELECT string_agg(job_id||' '||basis_id||' '||coalesce(plan_version::text,'-'),'|' ORDER BY job_id) FROM cargo_fin.job_basis
+          WHERE tenant_id=$1`, f.tenant).Scan(&got)
+	}); err != nil || got != "JOB-A QUOTE:Q-1@2/SH-A@2 2|JOB-C QUOTE:Q-1@2 -" {
+		t.Fatalf("quote bases: %s %v", got, err)
+	}
+	job, err := f.module.GetFreightJob(ctx, api.GetFreightJob{TenantID: f.tenant, JobID: "JOB-A"})
+	if err != nil || len(job.Bases) != 1 || job.Bases[0].PlanVersion != 2 {
+		t.Fatalf("the job's basis: %+v %v", job.Bases, err)
+	}
 }

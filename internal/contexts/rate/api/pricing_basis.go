@@ -41,6 +41,10 @@ type PricingLine struct {
 	HasSell         bool
 	HasCost         bool
 	CreditorPartyID string
+	// A quote's line re-evaluated on a shipment (OD-7): Quantity base units of Unit at the quote's frozen rate.
+	Reevaluated bool
+	Unit        string
+	Quantity    int64
 }
 
 // PricingGap is a charge a rated basis lacks: RATE could not rate it (GapNoRate, GapCallForPricing, GapBaseMissing,
@@ -51,8 +55,9 @@ type PricingGap struct {
 	Gap        string
 }
 
-// PricingBasis is PricingBasis v1. BasisID is QUOTE:<quote>@<revision> for an accepted quote, the id FIN chose for a
-// rated one. ExchangeRates are the quote's frozen rates, for pricing only: FIN converts at its own rates (R8). A rated
+// PricingBasis is PricingBasis v1. BasisID is QUOTE:<quote>@<revision> for an accepted quote, QUOTE:<quote>@<revision>/
+// <shipment>@<plan version> for one re-evaluated on a shipment (whose subject is then that shipment), the id FIN chose
+// for a rated one. ExchangeRates are the quote's frozen rates, for pricing only: FIN converts at its own rates (R8). A rated
 // basis names its subject (the shipment and plan version, or the consolidation and revision), the snapshot it was
 // built from and its gaps; Customer is empty for a CONSOL_COST_ESTIMATE.
 type PricingBasis struct {
@@ -82,6 +87,17 @@ type GetPricingBasis struct {
 	TenantID string
 	QuoteID  string
 	BasisID  string
+	// Shipment, with QuoteID, asks for the accepted ONE_OFF quote on the cargo a shipment carries (N1-RATE OD-7 A): its
+	// per-unit lines re-evaluated at the quote's frozen rates on the quantity shipped, its lump sums as quoted. The basis
+	// is QUOTE:<quote>@<revision>/<shipment>@<plan version> and names the shipment as its subject.
+	Shipment *ShippedCargo
+}
+
+// ShippedCargo is the cargo a shipment carries, at a plan version, for re-evaluating a quote on it.
+type ShippedCargo struct {
+	ShipmentID  string
+	PlanVersion int64
+	Cargo       Cargo
 }
 
 // PricingBasisQueries is RATE's read side for FIN.

@@ -4,10 +4,13 @@ package rate
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	bentopg "go.idp.xyz/idp-bento-go/postgres"
 	bentooutbox "go.idp.xyz/idp-bento-go/postgres/outbox"
@@ -171,15 +174,44 @@ func (m *Module) GetPricingBasis(ctx context.Context, q api.GetPricingBasis) (ap
 	out := api.PricingBasis{TenantID: string(s.TenantID), BasisID: fmt.Sprintf("QUOTE:%s@%d", s.QuoteID, revision), Purpose: api.BasisQuoteAccepted,
 		QuoteID: string(s.QuoteID), QuoteRevision: revision, LegalEntityID: string(s.LegalEntityID),
 		Customer: api.CustomerRef{PartyID: s.Customer.PartyID, PartyRevision: a.CustomerRevision}, Currency: s.Currency, AcceptedAt: a.AcceptedAt}
+	shipped := make([]domain.ShippedLine, len(s.Lines))
 	for i, l := range s.Lines {
-		out.Lines = append(out.Lines, api.PricingLine{LineNo: i + 1, ChargeCode: string(l.ChargeCode), Sell: l.Sell, Cost: l.Cost, Discount: l.Discount(),
-			Source: api.SourceQuote, HasSell: true, HasCost: l.Cost.Minor != 0})
+		shipped[i] = domain.ShippedLine{LineNo: i + 1, ChargeCode: l.ChargeCode, Sell: l.Sell, Cost: l.Cost}
+	}
+	if sh := q.Shipment; sh != nil {
+		if strings.TrimSpace(sh.ShipmentID) == "" || sh.PlanVersion < 1 {
+			return api.PricingBasis{}, fmt.Errorf("%w: a shipment and its plan version", api.ErrRejected)
+		}
+		c := sh.Cargo
+		if err = m.reader(ctx, q.TenantID, func(txCtx context.Context) (err error) {
+			shipped, err = application.QuoteOnShipment{Snapshots: postgres.SnapshotStore{DB: m.db}, Cards: postgres.RateCardStore{DB: m.db}}.Lines(txCtx, quote,
+				domain.Cargo{Pieces: c.Pieces, GrossGrams: c.GrossGrams, VolumeCM3: c.VolumeCM3, Documents: c.Documents})
+			return err
+		}); err != nil {
+			return api.PricingBasis{}, err
+		}
+		out.BasisID = quoteBasisID(fmt.Sprintf("QUOTE:%s@%d/%s@%d", s.QuoteID, revision, sh.ShipmentID, sh.PlanVersion))
+		out.SubjectKind, out.SubjectID, out.SubjectVersion = "SHIPMENT", sh.ShipmentID, sh.PlanVersion
+	}
+	for _, l := range shipped {
+		out.Lines = append(out.Lines, api.PricingLine{LineNo: l.LineNo, ChargeCode: string(l.ChargeCode), Sell: l.Sell, Cost: l.Cost,
+			Discount: l.Sell.Minor < 0, Source: api.SourceQuote, HasSell: true, HasCost: l.Cost.Minor != 0, Reevaluated: l.Reevaluated,
+			Unit: string(l.Unit), Quantity: l.Quantity})
 	}
 	for _, r := range s.ExchangeRates {
 		out.ExchangeRates = append(out.ExchangeRates, api.ExchangeRate{From: r.From, Rate: r.Rate, Scale: r.Scale, FromDigits: r.FromDigits,
 			QuoteDigits: r.QuoteDigits, Source: r.Source, AsOf: r.AsOf})
 	}
 	return out, nil
+}
+
+// quoteBasisID keeps a re-evaluated quote's basis id within 128 characters, as FIN stores it: a longer one is hashed.
+func quoteBasisID(id string) string {
+	if utf8.RuneCountInString(id) <= 128 {
+		return id
+	}
+	sum := sha256.Sum256([]byte(id))
+	return "QUOTE:" + hex.EncodeToString(sum[:20])
 }
 
 func (m *Module) GetQuoteSnapshotV2(ctx context.Context, q api.GetQuoteSnapshot) (api.QuoteSnapshotV2, error) {

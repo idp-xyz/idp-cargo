@@ -186,7 +186,8 @@ type Shipments interface {
 	CostDriver(ctx context.Context, tenant fin.TenantID, shipment string) (CostDriver, error)
 }
 
-// PricingBasis is what FIN reads of RATE's PricingBasis v1 of purpose QUOTE_ACCEPTED.
+// PricingBasis is what FIN reads of RATE's PricingBasis v1 of purpose QUOTE_ACCEPTED. PlanVersion is the shipment plan
+// version RATE re-evaluated the quote on (N1-RATE OD-7 A); 0 for the quote as quoted.
 type PricingBasis struct {
 	BasisID          string
 	QuoteID          string
@@ -194,12 +195,24 @@ type PricingBasis struct {
 	LegalEntityID    string
 	CustomerPartyID  string
 	CustomerRevision int64
+	PlanVersion      int
 	Lines            []fin.BasisLine
 }
 
-// Pricing reads RATE's PricingBasis v1 (RATE -> FIN), outside FIN's transactions.
+// ShippedCargo is the cargo of a shipment at a plan version, as FUL plans it, on which RATE re-evaluates a quote's
+// per-unit lines (OD-7 A).
+type ShippedCargo struct {
+	ShipmentID  string
+	PlanVersion int
+	Pieces      int64
+	GrossGrams  int64
+	VolumeCM3   int64
+}
+
+// Pricing reads RATE's PricingBasis v1 (RATE -> FIN), outside FIN's transactions: an accepted quote as quoted, or, with
+// shipped, re-evaluated on the cargo shipped.
 type Pricing interface {
-	QuoteBasis(ctx context.Context, tenant fin.TenantID, quote string) (PricingBasis, error)
+	QuoteBasis(ctx context.Context, tenant fin.TenantID, quote string, shipped *ShippedCargo) (PricingBasis, error)
 }
 
 // Directory reads ORG (ORG -> FIN), outside FIN's transactions: whether a legal entity is VERIFIED, the revision of

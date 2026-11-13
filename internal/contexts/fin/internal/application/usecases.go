@@ -453,7 +453,8 @@ func (d Deps) change(ctx context.Context, c Command, ask func(context.Context, *
 }
 
 // ApplyBasis applies an accepted quote to the job for one of the shipment's orders: FIN reads FUL's CostDriver v1
-// and RATE's PricingBasis v1 first (T3).
+// and RATE's PricingBasis v1 first (T3). On a planned shipment that carries the quote only, RATE re-evaluates the
+// quote's per-unit lines on the shipment's cargo at the quote's frozen rates (N1-RATE OD-7 A).
 func (d Deps) ApplyBasis(ctx context.Context, c Command, quote, order string) (Receipt, error) {
 	if d.Shipments == nil || d.Pricing == nil {
 		return Receipt{}, ErrMissingDependency
@@ -474,7 +475,21 @@ func (d Deps) ApplyBasis(ctx context.Context, c Command, quote, order string) (R
 		if held == nil || driver.LegalEntityID != st.LegalEntityID || driver.Status == "CANCELLED" {
 			return fmt.Errorf("%w: FUL reports no part of order %s under quote %s in shipment %s", fin.ErrNotPriceable, order, quote, st.ShipmentID)
 		}
-		if basis, err = d.Pricing.QuoteBasis(ctx, c.Scope.TenantID, quote); err != nil {
+		// OD-7 A: a planned shipment that carries this quote only is priced on its own cargo, the quote's per-unit lines
+		// at their frozen rates; a shipment shared with other quotes keeps the quoted amounts, its cargo being theirs too
+		var shipped *ShippedCargo
+		if driver.Status == "PLANNED" && driver.PlanVersion > 0 && onlyQuote(driver.Orders, quote, held.QuoteRevision) {
+			gross, err := fin.Grams(driver.GrossWeight)
+			if err != nil {
+				return err
+			}
+			volume, err := fin.CubicCm(driver.Volume)
+			if err != nil {
+				return err
+			}
+			shipped = &ShippedCargo{ShipmentID: st.ShipmentID, PlanVersion: driver.PlanVersion, Pieces: driver.Packs, GrossGrams: gross, VolumeCM3: volume}
+		}
+		if basis, err = d.Pricing.QuoteBasis(ctx, c.Scope.TenantID, quote, shipped); err != nil {
 			return err
 		}
 		switch {
@@ -483,13 +498,25 @@ func (d Deps) ApplyBasis(ctx context.Context, c Command, quote, order string) (R
 		case basis.QuoteRevision != held.QuoteRevision:
 			return fmt.Errorf("%w: FUL planned the order on quote revision %d, RATE answers revision %d", fin.ErrNotPriceable, held.QuoteRevision,
 				basis.QuoteRevision)
+		case shipped != nil && basis.PlanVersion != shipped.PlanVersion, shipped == nil && basis.PlanVersion != 0:
+			return fmt.Errorf("%w: RATE re-evaluated the quote on plan version %d", ErrUnknownSource, basis.PlanVersion)
 		}
 		return nil
 	}, func(_ context.Context, j *fin.FreightJob, p *fin.FinancePolicy) (Receipt, error) {
-		b := fin.Basis{BasisID: basis.BasisID, QuoteID: basis.QuoteID, QuoteRevision: basis.QuoteRevision, OrderID: order}
+		b := fin.Basis{BasisID: basis.BasisID, QuoteID: basis.QuoteID, QuoteRevision: basis.QuoteRevision, OrderID: order, PlanVersion: basis.PlanVersion}
 		err := j.ApplyBasis(b, basis.CustomerPartyID, basis.CustomerRevision, basis.Lines, p, c.Scope.ActorID, c.OccurredAt)
 		return Receipt{Version: len(j.State().Bases)}, err
 	})
+}
+
+// onlyQuote reports whether every order part of a shipment is under the quote's revision.
+func onlyQuote(orders []CostOrder, quote string, revision int64) bool {
+	for _, o := range orders {
+		if o.QuoteID != quote || o.QuoteRevision != revision {
+			return false
+		}
+	}
+	return len(orders) > 0
 }
 
 // LineInput is a manual line as asked.
