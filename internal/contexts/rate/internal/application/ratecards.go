@@ -265,14 +265,18 @@ func (d CardDeps) CreateRateCard(ctx context.Context, c CreateRateCardCommand) (
 	if d.Cards == nil || d.Parties == nil {
 		return Receipt{}, ErrMissingDependency
 	}
+	draft := c.Card
+	draft.TenantID, draft.PartyRevision = c.Scope.TenantID, 0
+	// authorized before a replay too: a replay answers only an actor still allowed, and a key in use tells no one else
+	if err := d.check(ctx, c.Scope, c.CommandID, c.OccurredAt); err != nil {
+		return Receipt{}, err
+	}
+	if err := d.allow(ctx, c.Scope, maintain(draft.Side), string(draft.RateCardID)); err != nil {
+		return Receipt{}, err
+	}
 	hash, recorded, stored, replayed, err := d.begin(ctx, c.Scope, c.CommandID, c.OccurredAt, c)
 	if err != nil || replayed {
 		return stored, err
-	}
-	draft := c.Card
-	draft.TenantID, draft.PartyRevision = c.Scope.TenantID, 0
-	if err = d.allow(ctx, c.Scope, maintain(draft.Side), string(draft.RateCardID)); err != nil {
-		return Receipt{}, err
 	}
 	switch draft.Scope {
 	case rate.ScopeCustomer:
@@ -297,15 +301,15 @@ func (d CardDeps) CreateRateCard(ctx context.Context, c CreateRateCardCommand) (
 }
 
 // changeCard loads the card under its lock at the expected revision, checks the actor may maintain its side, applies
-// the change and saves it.
+// the change and saves it. The card is read and the actor authorized (with authorize, when given) before a replay is
+// answered: a replay answers only an actor still allowed, and a key in use tells no one else.
 func (d CardDeps) changeCard(ctx context.Context, s Scope, commandID string, occurredAt time.Time, command any, id rate.RateCardID, expected int64,
-	prepare func(context.Context, rate.RateCardState) error, apply func(context.Context, *rate.RateCard, time.Time) error) (Receipt, error) {
+	authorize, prepare func(context.Context, rate.RateCardState) error, apply func(context.Context, *rate.RateCard, time.Time) error) (Receipt, error) {
 	if d.Cards == nil {
 		return Receipt{}, ErrMissingDependency
 	}
-	hash, recorded, stored, replayed, err := d.begin(ctx, s, commandID, occurredAt, command)
-	if err != nil || replayed {
-		return stored, err
+	if err := d.check(ctx, s, commandID, occurredAt); err != nil {
+		return Receipt{}, err
 	}
 	card, _, err := d.readCard(ctx, s.TenantID, id)
 	if err != nil {
@@ -314,6 +318,15 @@ func (d CardDeps) changeCard(ctx context.Context, s Scope, commandID string, occ
 	seen := card.State()
 	if err = d.allow(ctx, s, maintain(seen.Side), string(id)); err != nil {
 		return Receipt{}, err
+	}
+	if authorize != nil {
+		if err = authorize(ctx, seen); err != nil {
+			return Receipt{}, err
+		}
+	}
+	hash, recorded, stored, replayed, err := d.begin(ctx, s, commandID, occurredAt, command)
+	if err != nil || replayed {
+		return stored, err
 	}
 	if prepare != nil {
 		if err = prepare(ctx, seen); err != nil {
@@ -365,7 +378,7 @@ type DraftVersionCommand struct {
 }
 
 func (d CardDeps) DraftRateCardVersion(ctx context.Context, c DraftVersionCommand) (Receipt, error) {
-	return d.changeCard(ctx, c.Scope, c.CommandID, c.OccurredAt, c, c.RateCardID, c.ExpectedRevision, nil,
+	return d.changeCard(ctx, c.Scope, c.CommandID, c.OccurredAt, c, c.RateCardID, c.ExpectedRevision, nil, nil,
 		func(txCtx context.Context, card *rate.RateCard, at time.Time) error {
 			var copied []rate.RateEntry
 			if c.CopyFrom != 0 {
@@ -420,7 +433,7 @@ func (d CardDeps) SetRateCardEntries(ctx context.Context, c SetEntriesCommand) (
 		}
 		return nil
 	}
-	return d.changeCard(ctx, c.Scope, c.CommandID, c.OccurredAt, c, c.RateCardID, c.ExpectedRevision, resolve,
+	return d.changeCard(ctx, c.Scope, c.CommandID, c.OccurredAt, c, c.RateCardID, c.ExpectedRevision, nil, resolve,
 		func(txCtx context.Context, card *rate.RateCard, at time.Time) error {
 			// an AGREEMENT quote prices with the draft as it named it: its rates are fixed until the quote expires
 			quote, quoted, err := d.Agreements.QuotedBy(txCtx, c.Scope.TenantID, c.RateCardID, c.Version)
@@ -457,7 +470,14 @@ func (d CardDeps) PublishRateCardVersion(ctx context.Context, c PublishVersionCo
 		_, err := d.Parties.ConfirmRole(ctx, st.TenantID, st.PartyID, st.LegalEntityID, SupplierRoles, c.OccurredAt)
 		return err
 	}
-	return d.changeCard(ctx, c.Scope, c.CommandID, c.OccurredAt, c, c.RateCardID, c.ExpectedRevision, confirm,
+	// the pricing manager publishes a tariff; a replay asks it too
+	approver := func(ctx context.Context, st rate.RateCardState) error {
+		if st.Scope != rate.ScopeTariff {
+			return nil
+		}
+		return d.allow(ctx, c.Scope, ActionApproveTariff, string(c.RateCardID))
+	}
+	return d.changeCard(ctx, c.Scope, c.CommandID, c.OccurredAt, c, c.RateCardID, c.ExpectedRevision, approver, confirm,
 		func(txCtx context.Context, card *rate.RateCard, at time.Time) error {
 			st := card.State()
 			p := rate.Publication{By: c.Scope.ActorID, At: at}
@@ -517,7 +537,7 @@ type WithdrawVersionCommand struct {
 }
 
 func (d CardDeps) WithdrawRateCardVersion(ctx context.Context, c WithdrawVersionCommand) (Receipt, error) {
-	return d.changeCard(ctx, c.Scope, c.CommandID, c.OccurredAt, c, c.RateCardID, c.ExpectedRevision, nil,
+	return d.changeCard(ctx, c.Scope, c.CommandID, c.OccurredAt, c, c.RateCardID, c.ExpectedRevision, nil, nil,
 		func(_ context.Context, card *rate.RateCard, at time.Time) error {
 			return card.Withdraw(c.Version, c.Reason, c.Scope.ActorID, at)
 		})
@@ -545,16 +565,20 @@ func (d CardDeps) evaluate(ctx context.Context, s Scope, commandID string, occur
 	if d.Cards == nil || d.Snapshots == nil || d.Parties == nil || d.Locations == nil || (basisID != "" && d.Bases == nil) {
 		return Receipt{}, ErrMissingDependency
 	}
-	hash, recorded, stored, replayed, err := d.begin(ctx, s, commandID, occurredAt, command)
-	if err != nil || replayed {
-		return stored, err
-	}
 	subject := snapshotID
 	if basisID != "" {
 		subject = basisID
 	}
-	if err = d.allow(ctx, s, ActionEvaluateRates, subject); err != nil {
+	// authorized before a replay too
+	if err := d.check(ctx, s, commandID, occurredAt); err != nil {
 		return Receipt{}, err
+	}
+	if err := d.allow(ctx, s, ActionEvaluateRates, subject); err != nil {
+		return Receipt{}, err
+	}
+	hash, recorded, stored, replayed, err := d.begin(ctx, s, commandID, occurredAt, command)
+	if err != nil || replayed {
+		return stored, err
 	}
 	in := input
 	in.At = occurredAt

@@ -3,7 +3,9 @@
 package bootstrap
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -12,6 +14,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	orgapi "go.idp.xyz/idp-cargo/internal/contexts/org/api"
 )
 
 type apiClient struct {
@@ -270,5 +274,140 @@ func TestHTTPRetriesOnPostgres(t *testing.T) {
 	r := c.do("POST", "/v1/charge-codes", maintainer, `{"code":7}`, "Idempotency-Key", "race-type")
 	if detail, _ := r.body["detail"].(string); r.status != 400 || strings.Contains(detail, "Go") || strings.Contains(detail, "struct") {
 		t.Fatalf("a wrong type: %d %v", r.status, r.body)
+	}
+}
+
+// RATE's cards through the HTTP API with the real ORG and location data: a SELL tariff and a co-loader's BUY card
+// opened, drafted, filled and published, each by the permission its side and step need (the pricing manager approves
+// the tariff, and a replay asks it again), rated into a snapshot, read back and withdrawn.
+func TestHTTPRateCardsOnPostgres(t *testing.T) {
+	ctx := context.Background()
+	p := openPlatform(t)
+	cfg := APIConfig{TokenKey: []byte("api-test-key-of-thirty-two-bytes!!"), TokenIssuer: "idp-cargo-test", TokenAudience: "idp-cargo-api",
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), MarginFloorBP: 2000}
+	h, err := p.API(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	c := apiClient{t: t, srv: srv}
+	tenant := uniqueTenant("cargo-api-cards-")
+	seedORG(t, p, tenant, "coloader")
+	org, err := p.ORG(allowAll{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Now().UTC().Add(-48 * time.Hour).Truncate(time.Second)
+	if _, err = org.ApproveRole(ctx, orgapi.ApproveRole{CommandID: "role-coloader", TenantID: tenant, ActorID: "org-officer", LegalEntityID: "LE",
+		PartyID: "coloader", ExpectedRevision: 1, RoleCode: "CO_LOADER", ValidFrom: at, ValidUntil: at.Add(365 * 24 * time.Hour),
+		EvidenceRef: "co-loading agreement", OccurredAt: at}); err != nil {
+		t.Fatal(err)
+	}
+	mint := func(actor string, perms ...string) string {
+		t.Helper()
+		token, err := MintDevToken(cfg, tenant, actor, perms, time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return token
+	}
+	pricing := mint("pricing-1", "rate:Read", "rate:MaintainSellRates")
+	buyer := mint("buyer-1", "rate:Read", "rate:MaintainBuyRates")
+	manager := mint("pricing-manager", "rate:Read", "rate:MaintainSellRates", "rate:ApproveTariff")
+	sales := mint("sales-1", "rate:Read", "rate:EvaluateRates")
+	when := func(t time.Time) string { return `"occurred_at":"` + t.Format(time.RFC3339) + `"` }
+	ok := func(name string, r apiResponse, status int, etag string) apiResponse {
+		t.Helper()
+		if r.status != status || (etag != "" && r.header.Get("ETag") != etag) {
+			t.Fatalf("%s: %d %v %v", name, r.status, r.header, r.body)
+		}
+		return r
+	}
+	lcl := func(rate int) string {
+		return fmt.Sprintf(`{"entries":[{"mode":"SEA","container_mode":"LCL","origin":"CNSHA","destination":"DEHAM","service_level":"STANDARD",
+		  "commodity":"GENERAL","lines":[{"charge_code":"OCEAN_FREIGHT","currency":"USD","calculator":"PER_UNIT","unit":"FREIGHT_TONNE","rate":%d},
+		  {"charge_code":"CFS_HANDLING","currency":"CNY","calculator":"PER_UNIT","unit":"FREIGHT_TONNE","rate":12000,"minimum":15000}]}],%s}`, rate, when(at))
+	}
+	c.expect("a SELL card by a buyer", c.do("POST", "/v1/rate-cards", buyer, `{"rate_card_id":"T-X","side":"SELL","scope":"TARIFF",
+		"legal_entity_id":"LE","name":"x",`+when(at)+`}`, "Idempotency-Key", "card-x"), 403, "FORBIDDEN")
+	for _, card := range []struct{ id, side, scope, party, token string }{
+		{"T-SEA", "SELL", "TARIFF", "", pricing}, {"S-SHA-HAM", "BUY", "SUPPLIER", "coloader", buyer}} {
+		r := ok("create "+card.id, c.do("POST", "/v1/rate-cards", card.token, fmt.Sprintf(`{"rate_card_id":%q,"side":%q,"scope":%q,
+			"legal_entity_id":"LE","party_id":%q,"name":%q,%s}`, card.id, card.side, card.scope, card.party, card.id, when(at)),
+			"Idempotency-Key", "card-"+card.id), 201, `"1"`)
+		if r.header.Get("Location") != "/v1/rate-cards/"+card.id {
+			t.Fatalf("Location %q", r.header.Get("Location"))
+		}
+		ok("draft "+card.id, c.do("POST", "/v1/rate-cards/"+card.id+"/versions", card.token, `{"valid_from":"`+at.Format(time.RFC3339)+
+			`","currency":"USD","source_ref":"tariff 2026-11",`+when(at)+`}`, "Idempotency-Key", "draft-"+card.id, "If-Match", `"1"`), 201, `"2"`)
+		rate := 5000
+		if card.side == "BUY" {
+			rate = 3500
+		}
+		ok("entries "+card.id, c.do("PUT", "/v1/rate-cards/"+card.id+"/versions/1/entries", card.token, lcl(rate), "Idempotency-Key",
+			"set-"+card.id, "If-Match", `"2"`), 200, `"3"`)
+	}
+	v := ok("version", c.do("GET", "/v1/rate-cards/T-SEA/versions/1", pricing, ""), 200, "")
+	entries, _ := v.body["entries"].([]any)
+	if len(entries) != 1 || v.body["status"] != "DRAFT" {
+		t.Fatalf("the draft: %v", v.body)
+	}
+	if e := entries[0].(map[string]any); e["origin"] != "CNSHG" || e["edition"] == "" || len(e["lines"].([]any)) != 2 ||
+		e["lines"].([]any)[1].(map[string]any)["no"] != 2.0 {
+		t.Fatalf("CNSHA for SEA resolves to the port CNSHG, lines numbered: %v", e)
+	}
+	c.expect("a tariff published by its preparer without approval", c.do("POST", "/v1/rate-cards/T-SEA/versions/1/publish", pricing, "{"+when(at.Add(time.Minute))+"}",
+		"Idempotency-Key", "publish-T-SEA-0", "If-Match", `"3"`), 403, "FORBIDDEN")
+	publish := "{" + when(at.Add(time.Minute)) + "}"
+	ok("the manager publishes", c.do("POST", "/v1/rate-cards/T-SEA/versions/1/publish", manager, publish, "Idempotency-Key", "publish-T-SEA",
+		"If-Match", `"3"`), 200, `"4"`)
+	ok("the publication replayed", c.do("POST", "/v1/rate-cards/T-SEA/versions/1/publish", manager, publish, "Idempotency-Key", "publish-T-SEA",
+		"If-Match", `"3"`), 200, `"4"`)
+	c.expect("the publication replayed by one who may not approve", c.do("POST", "/v1/rate-cards/T-SEA/versions/1/publish", pricing, publish,
+		"Idempotency-Key", "publish-T-SEA", "If-Match", `"3"`), 403, "FORBIDDEN")
+	ok("the co-loader's card published", c.do("POST", "/v1/rate-cards/S-SHA-HAM/versions/1/publish", buyer, publish, "Idempotency-Key",
+		"publish-S", "If-Match", `"3"`), 200, `"4"`)
+	c.expect("entries of a published version", c.do("PUT", "/v1/rate-cards/T-SEA/versions/1/entries", pricing, lcl(6000), "Idempotency-Key",
+		"set-again", "If-Match", `"4"`), 422, "")
+	for _, bad := range []string{"0", "01", "x"} {
+		c.expect("version "+bad, c.do("GET", "/v1/rate-cards/T-SEA/versions/"+bad, pricing, ""), 404, "NOT_FOUND")
+	}
+	card := ok("the tariff", c.do("GET", "/v1/rate-cards/T-SEA", pricing, ""), 200, `"4"`)
+	if vs, _ := card.body["versions"].([]any); len(vs) != 1 || vs[0].(map[string]any)["status"] != "PUBLISHED" ||
+		vs[0].(map[string]any)["approved_by"] != "pricing-manager" {
+		t.Fatalf("the tariff: %v", card.body)
+	}
+	if cards, _ := ok("SELL cards", c.do("GET", "/v1/rate-cards?side=SELL", pricing, ""), 200, "").body["rate_cards"].([]any); len(cards) != 1 {
+		t.Fatalf("SELL cards: %v", cards)
+	}
+	c.expect("a bad valid_at", c.do("GET", "/v1/rate-cards?valid_at=yesterday", pricing, ""), 400, "MALFORMED_REQUEST")
+
+	// 0.8 t and 2.5 m3: 2.5 W/M; SELL 125.00 USD and CNY 300.00 CFS; BUY 87.50 USD
+	evaluate := `{"snapshot_id":"RS-LCL","purpose":"QUOTE_LINE","legal_entity_id":"LE","sides":["SELL","BUY"],"mode":"SEA","container_mode":"LCL",
+		"origin":"CNSHA","destination":"DEHAM","service_level":"STANDARD","commodity":"GENERAL","cargo":{"pieces":4,"gross_grams":800000,
+		"volume_cm3":2500000},` + when(at.Add(time.Hour)) + `}`
+	c.expect("an evaluation without permission", c.do("POST", "/v1/rate-evaluations", pricing, evaluate, "Idempotency-Key", "evaluate-0"), 403, "FORBIDDEN")
+	if r := ok("evaluated", c.do("POST", "/v1/rate-evaluations", sales, evaluate, "Idempotency-Key", "evaluate"), 201, ""); r.header.Get("Location") !=
+		"/v1/rate-snapshots/RS-LCL" {
+		t.Fatalf("Location %q", r.header.Get("Location"))
+	}
+	s := ok("the snapshot", c.do("GET", "/v1/rate-snapshots/RS-LCL", sales, ""), 200, "")
+	want := map[string]float64{"SELL OCEAN_FREIGHT": 12_500, "SELL CFS_HANDLING": 30_000, "BUY OCEAN_FREIGHT": 8_750, "BUY CFS_HANDLING": 30_000}
+	lines, _ := s.body["lines"].([]any)
+	if len(lines) != 4 || s.body["origin"] != "CNSHG" {
+		t.Fatalf("the snapshot: %v", s.body)
+	}
+	for _, l := range lines {
+		m := l.(map[string]any)
+		if amount := m["amount"].(map[string]any); amount["minor"] != want[m["side"].(string)+" "+m["charge_code"].(string)] || m["quantity"] != 2500.0 {
+			t.Errorf("line %v", m)
+		}
+	}
+	ok("withdrawn", c.do("POST", "/v1/rate-cards/T-SEA/versions/1/withdraw", pricing, `{"reason":"replaced by the 2027 tariff",`+
+		when(time.Now().UTC())+`}`, "Idempotency-Key", "withdraw", "If-Match", `"4"`), 200, `"5"`)
+	if vs := ok("the tariff withdrawn", c.do("GET", "/v1/rate-cards/T-SEA", pricing, ""), 200, `"5"`).body["versions"].([]any); vs[0].(map[string]any)["status"] !=
+		"WITHDRAWN" {
+		t.Fatalf("withdrawn: %v", vs)
 	}
 }
