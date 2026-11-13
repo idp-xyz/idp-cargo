@@ -37,9 +37,9 @@ const MaxFapiaoNotes = 200
 
 var (
 	ErrFapiaoCovers   = errors.New("fin: FIN_FAPIAO_COVERS: a fapiao record requested or issued covers the debit note; record the fapiao failed, or its red-letter fapiao, first")
-	ErrFapiaoNumber   = errors.New("fin: FIN_FAPIAO_NUMBER_USED: the legal entity recorded this fapiao number already")
+	ErrFapiaoNumber   = errors.New("fin: FIN_FAPIAO_NUMBER_USED: this fapiao number was recorded already (the platform's numbers are unique nationwide)")
 	ErrNotFapiaoable  = errors.New("fin: FIN_NOT_FAPIAOABLE: not issued debit notes of the legal entity and debtor with an amount to put on a fapiao")
-	fapiaoNumberRegex = regexp.MustCompile(`^[0-9]{8,20}$`)
+	fapiaoNumberRegex = regexp.MustCompile(`^[0-9]{20}$`)
 )
 
 const (
@@ -67,8 +67,9 @@ type FapiaoNote struct {
 	Amounts       []TaxAmount
 }
 
-// CoveredNote is a debit note a record covers, with the amounts it contributes. Released is set once the record failed
-// or was red-lettered: the note may then be covered again or credited.
+// CoveredNote is a debit note a record covers, with the amounts it puts on the fapiao (its pass-through disbursements
+// stay off it, and credit notes may reverse them while the note is covered). Released is set once the record failed or
+// was red-lettered: the note may then be covered again or credited.
 type CoveredNote struct {
 	InvoiceID   string
 	Number      string
@@ -135,8 +136,8 @@ type FapiaoState struct {
 }
 
 // Lines groups the covered amounts by tax treatment and rate, in that order, with the VAT a taxable amount includes
-// (rounded half up once per rate); pass-through disbursements are left off the fapiao and answered apart.
-func (s FapiaoState) Lines() (lines []FapiaoLine, excluded []TaxAmount) {
+// (rounded half up once per rate).
+func (s FapiaoState) Lines() (lines []FapiaoLine) {
 	type key struct {
 		treatment string
 		rate      int
@@ -162,10 +163,6 @@ func (s FapiaoState) Lines() (lines []FapiaoLine, excluded []TaxAmount) {
 		if gross == 0 {
 			continue
 		}
-		if k.treatment == TaxPassThrough {
-			excluded = append(excluded, TaxAmount{Treatment: k.treatment, Local: gross})
-			continue
-		}
 		var vat int64
 		if k.treatment == TaxTaxable && k.rate > 0 && gross > 0 {
 			den := int64(10_000 + k.rate)
@@ -173,13 +170,12 @@ func (s FapiaoState) Lines() (lines []FapiaoLine, excluded []TaxAmount) {
 		}
 		lines = append(lines, FapiaoLine{Treatment: k.treatment, RateBP: k.rate, Gross: gross, Net: gross - vat, VAT: vat})
 	}
-	return lines, excluded
+	return lines
 }
 
 // Total is what the fapiao states in all: the amount with tax and the VAT it includes.
 func (s FapiaoState) Total() (gross, vat int64) {
-	lines, _ := s.Lines()
-	for _, l := range lines {
+	for _, l := range s.Lines() {
 		gross, vat = gross+l.Gross, vat+l.VAT
 	}
 	return gross, vat
@@ -208,8 +204,8 @@ type FapiaoInput struct {
 }
 
 // RequestFapiao asks for a fapiao on issued debit notes of one legal entity and one Chinese enterprise debtor, none
-// covered by another live record (REQUEST_FAPIAO): in CNY; a SPECIAL fapiao only without exempt amounts; with an amount
-// to put on it (pass-through disbursements left off), none of its treatments below zero.
+// covered by another live record (REQUEST_FAPIAO): in CNY; each note with an amount to put on it (its pass-through
+// disbursements stay off), none of the fapiao's treatments below zero; a SPECIAL fapiao only without exempt amounts.
 func RequestFapiao(tenant TenantID, in FapiaoInput, notes []FapiaoNote, by string, at time.Time) (*FapiaoRecord, error) {
 	p := in.Profile
 	switch {
@@ -240,9 +236,12 @@ func RequestFapiao(tenant TenantID, in FapiaoInput, notes []FapiaoNote, by strin
 		seen[n.InvoiceID] = true
 		c := CoveredNote{InvoiceID: n.InvoiceID, Number: n.Number, InvoiceDate: n.InvoiceDate}
 		for _, a := range n.Amounts {
-			if a.Local != 0 {
+			if a.Local != 0 && a.Treatment != TaxPassThrough {
 				c.Amounts = append(c.Amounts, a)
 			}
+		}
+		if len(c.Amounts) == 0 {
+			return nil, fmt.Errorf("%w: debit note %s puts nothing on a fapiao (pass-through disbursements stay off it)", ErrNotFapiaoable, n.Number)
 		}
 		r.state.Notes = append(r.state.Notes, c)
 	}
@@ -264,9 +263,8 @@ func RequestFapiao(tenant TenantID, in FapiaoInput, notes []FapiaoNote, by strin
 			}
 		}
 	}
-	lines, _ := r.state.Lines()
 	gross, _ := r.state.Total()
-	for _, l := range lines {
+	for _, l := range r.state.Lines() {
 		switch {
 		case l.Gross < 0:
 			return nil, fmt.Errorf("%w: the %s amounts come to %d, below zero", ErrNotFapiaoable, l.Treatment, l.Gross)
@@ -280,14 +278,15 @@ func RequestFapiao(tenant TenantID, in FapiaoInput, notes []FapiaoNote, by strin
 	return r, nil
 }
 
-// evidence checks platform evidence recorded at at: a fapiao number of 8 to 20 digits, a civil date not after the day
-// it is recorded and not more than 366 days before, an evidence reference and an optional confirmation reference.
+// evidence checks platform evidence recorded at at: the 20-digit number of a fully digital e-invoice (数电票, the
+// platform's only kind since 2024-12-01), a civil date not after the day it is recorded and not more than 366 days
+// before, an evidence reference and an optional confirmation reference.
 func evidence(e PlatformEvidence, by string, at time.Time) error {
 	switch {
 	case blank(by) || at.IsZero():
 		return fmt.Errorf("%w: a record names its author and time", ErrInvalid)
 	case !fapiaoNumberRegex.MatchString(e.Number):
-		return fmt.Errorf("%w: a fapiao number is 8 to 20 digits (20 for a fully digital e-invoice)", ErrInvalid)
+		return fmt.Errorf("%w: a fapiao number is the 20 digits of a fully digital e-invoice", ErrInvalid)
 	case !date(e.On) || at.Before(e.On.Add(-14*time.Hour)) || !at.Before(e.On.Add(maxReceiptAge+36*time.Hour)):
 		return fmt.Errorf("%w: the fapiao date is not after the day it is recorded and not more than 366 days before", ErrInvalid)
 	case !receiptEvidencePattern.MatchString(e.EvidenceRef), e.ConfirmationRef != "" && !receiptEvidencePattern.MatchString(e.ConfirmationRef):
@@ -336,9 +335,9 @@ func (r *FapiaoRecord) RecordFailed(reason, by string, at time.Time) error {
 	return nil
 }
 
-// RecordRedLetter records the red-letter fapiao that reversed the issued one, with its confirmation form where the
-// rules require one and a reason (RECORD_RED_LETTER): credit notes may then reverse the debit notes, and a new record
-// may cover them.
+// RecordRedLetter records the red-letter fapiao that reversed the issued one, with the reference of its red-letter
+// information confirmation form (红字发票信息确认单, filled in for every fully digital red-letter fapiao) and a reason
+// (RECORD_RED_LETTER): credit notes may then reverse the debit notes, and a new record may cover them.
 func (r *FapiaoRecord) RecordRedLetter(e PlatformEvidence, reason, by string, at time.Time) error {
 	st := &r.state
 	switch {
@@ -346,6 +345,8 @@ func (r *FapiaoRecord) RecordRedLetter(e PlatformEvidence, reason, by string, at
 		return fmt.Errorf("%w: fapiao record %s is %s", ErrInvalidTransition, st.FapiaoID, st.State)
 	case !text(reason) || utf8.RuneCountInString(reason) > 500:
 		return fmt.Errorf("%w: a red-letter fapiao gives its reason (500 characters)", ErrInvalid)
+	case e.ConfirmationRef == "":
+		return fmt.Errorf("%w: a red-letter fapiao names its confirmation form", ErrInvalid)
 	}
 	if err := evidence(e, by, at); err != nil {
 		return err

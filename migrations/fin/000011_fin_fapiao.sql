@@ -3,7 +3,8 @@
 -- freezes the buyer data of the debtor's billing profile version. The national e-invoice platform issues the fapiao; an
 -- authorized operator records its number, date and evidence (ISSUED), or its failure (FAILED), and later the red-letter
 -- fapiao that reverses it (RED_LETTERED). A debit note is covered by at most one record that is requested or issued, and
--- no credit note reverses it while it is. Accounting records, kept 30 years and never erased.
+-- no credit note reverses a line of it the fapiao states (all but pass-through disbursements) while it is. Accounting
+-- records, kept 30 years and never erased.
 
 CREATE TABLE cargo_fin.fapiao_record (
  tenant_id text NOT NULL CHECK (length(btrim(tenant_id)) BETWEEN 1 AND 128),
@@ -26,7 +27,7 @@ CREATE TABLE cargo_fin.fapiao_record (
  requested_by text NOT NULL CHECK (length(btrim(requested_by)) > 0),
  requested_at timestamptz NOT NULL,
  entered_at timestamptz NOT NULL,
- issued_number text CHECK (issued_number ~ '^[0-9]{8,20}$'),
+ issued_number text CHECK (issued_number ~ '^[0-9]{20}$'),
  issued_on date,
  issued_evidence_ref text CHECK (issued_evidence_ref ~ '^[A-Za-z0-9]([A-Za-z0-9 ._:/#-]{0,198}[A-Za-z0-9._:/#-])?$'),
  issued_by text CHECK (length(btrim(issued_by)) > 0),
@@ -36,7 +37,7 @@ CREATE TABLE cargo_fin.fapiao_record (
  failed_by text CHECK (length(btrim(failed_by)) > 0),
  failed_at timestamptz,
  failed_entered_at timestamptz,
- red_number text CHECK (red_number ~ '^[0-9]{8,20}$'),
+ red_number text CHECK (red_number ~ '^[0-9]{20}$'),
  red_on date,
  red_evidence_ref text CHECK (red_evidence_ref ~ '^[A-Za-z0-9]([A-Za-z0-9 ._:/#-]{0,198}[A-Za-z0-9._:/#-])?$'),
  red_confirmation_ref text CHECK (red_confirmation_ref ~ '^[A-Za-z0-9]([A-Za-z0-9 ._:/#-]{0,198}[A-Za-z0-9._:/#-])?$'),
@@ -48,6 +49,7 @@ CREATE TABLE cargo_fin.fapiao_record (
  created_at timestamptz NOT NULL DEFAULT now(),
  updated_at timestamptz NOT NULL DEFAULT now(),
  PRIMARY KEY (tenant_id, fapiao_id),
+ FOREIGN KEY (tenant_id, debtor_party_id, profile_version) REFERENCES cargo_fin.billing_profile_version (tenant_id, debtor_party_id, version_no),
  CONSTRAINT fapiao_record_state CHECK (
    ((state IN ('ISSUED','RED_LETTERED')) = (issued_number IS NOT NULL)) AND (issued_number IS NULL) = (issued_on IS NULL)
    AND (issued_number IS NULL) = (issued_evidence_ref IS NULL) AND (issued_number IS NULL) = (issued_by IS NULL)
@@ -57,7 +59,7 @@ CREATE TABLE cargo_fin.fapiao_record (
    AND ((state = 'RED_LETTERED') = (red_number IS NOT NULL)) AND (red_number IS NULL) = (red_on IS NULL)
    AND (red_number IS NULL) = (red_evidence_ref IS NULL) AND (red_number IS NULL) = (red_reason IS NULL)
    AND (red_number IS NULL) = (red_by IS NULL) AND (red_number IS NULL) = (red_at IS NULL) AND (red_number IS NULL) = (red_entered_at IS NULL)
-   AND (red_number IS NOT NULL OR red_confirmation_ref IS NULL)
+   AND (red_number IS NULL) = (red_confirmation_ref IS NULL)
    AND (red_number IS NULL OR (red_number <> issued_number AND red_on >= issued_on AND red_at >= issued_at))
    AND (issued_at IS NULL OR issued_at >= requested_at) AND (failed_at IS NULL OR failed_at >= requested_at)),
  CONSTRAINT fapiao_record_bank CHECK ((bank_name IS NULL) = (bank_account IS NULL))
@@ -77,26 +79,28 @@ CREATE TABLE cargo_fin.fapiao_covered_note (
 -- a debit note is covered by one record that is requested or issued
 CREATE UNIQUE INDEX fapiao_covered_note_once ON cargo_fin.fapiao_covered_note (tenant_id, invoice_id) WHERE NOT released;
 
--- What a covered debit note contributes per tax treatment and rate (0 for none), in CNY: its lines not reversed.
+-- What a covered debit note puts on the fapiao per tax treatment and rate (0 for none), in CNY: its lines not reversed,
+-- pass-through disbursements left off.
 CREATE TABLE cargo_fin.fapiao_covered_amount (
  tenant_id text NOT NULL,
  fapiao_id text NOT NULL,
  invoice_id text NOT NULL,
- treatment text NOT NULL CHECK (treatment IN ('EXEMPT_INTL_FREIGHT_FORWARDING','TAXABLE','PASS_THROUGH_DISBURSEMENT')),
+ treatment text NOT NULL CHECK (treatment IN ('EXEMPT_INTL_FREIGHT_FORWARDING','TAXABLE')),
  rate_bp integer NOT NULL CHECK (CASE treatment WHEN 'TAXABLE' THEN rate_bp BETWEEN 1 AND 3000 ELSE rate_bp = 0 END),
  local_minor bigint NOT NULL CHECK (local_minor <> 0 AND abs(local_minor) <= 1000000000000000),
  PRIMARY KEY (tenant_id, fapiao_id, invoice_id, treatment, rate_bp),
  FOREIGN KEY (tenant_id, fapiao_id, invoice_id) REFERENCES cargo_fin.fapiao_covered_note (tenant_id, fapiao_id, invoice_id)
 );
 
--- The platform's fapiao numbers a legal entity recorded, issued and red-letter alike: each once.
+-- The platform's fapiao numbers a tenant recorded, issued and red-letter alike: each once (fully digital e-invoice
+-- numbers are unique nationwide).
 CREATE TABLE cargo_fin.fapiao_number (
  tenant_id text NOT NULL,
  legal_entity_id text NOT NULL,
- number text NOT NULL CHECK (number ~ '^[0-9]{8,20}$'),
+ number text NOT NULL CHECK (number ~ '^[0-9]{20}$'),
  fapiao_id text NOT NULL,
  kind text NOT NULL CHECK (kind IN ('ISSUED','RED_LETTER')),
- PRIMARY KEY (tenant_id, legal_entity_id, number),
+ PRIMARY KEY (tenant_id, number),
  UNIQUE (tenant_id, fapiao_id, kind),
  FOREIGN KEY (tenant_id, fapiao_id) REFERENCES cargo_fin.fapiao_record (tenant_id, fapiao_id)
 );
@@ -165,27 +169,30 @@ CREATE TRIGGER fapiao_covered_amount_immutable BEFORE UPDATE OR DELETE ON cargo_
 CREATE TRIGGER fapiao_number_immutable BEFORE UPDATE OR DELETE ON cargo_fin.fapiao_number
   FOR EACH ROW EXECUTE FUNCTION cargo_fin.reject_fapiao_change();
 
--- At commit, as a record is written or moves on: requested on a CN_ENTERPRISE billing profile version it equals, in the
--- legal entity's functional currency, with covered notes whose amounts give its totals (pass-through disbursements left
--- off; the VAT of each taxable rate rounded half up once); a SPECIAL fapiao without exempt amounts; issued and
--- red-letter numbers recorded once per legal entity with the move; a failed or red-lettered record releases its notes.
+-- At commit, as a record is written or moves on: requested on the debtor's latest billing profile version, of a
+-- CN_ENTERPRISE buyer, which it equals, in the legal entity's functional currency, with covered notes whose amounts give
+-- its totals (the VAT of each taxable rate rounded half up once); a SPECIAL fapiao without exempt amounts; issued on or
+-- after the covered notes' dates; issued and red-letter numbers recorded with the move; a failed or red-lettered record
+-- releases its notes.
 CREATE FUNCTION cargo_fin.check_fapiao_record_at_commit() RETURNS trigger LANGUAGE plpgsql AS $fn$
 DECLARE gross bigint; vat bigint;
 BEGIN
   IF TG_OP = 'INSERT' THEN
     SELECT coalesce(sum(s), 0), coalesce(sum(CASE WHEN treatment = 'TAXABLE' AND s > 0 THEN (s * rate_bp + (10000 + rate_bp) / 2) / (10000 + rate_bp) ELSE 0 END), 0)
       INTO gross, vat FROM (SELECT a.treatment, a.rate_bp, sum(a.local_minor)::bigint s FROM cargo_fin.fapiao_covered_amount a
-        WHERE a.tenant_id = NEW.tenant_id AND a.fapiao_id = NEW.fapiao_id AND a.treatment <> 'PASS_THROUGH_DISBURSEMENT' GROUP BY a.treatment, a.rate_bp) g;
+        WHERE a.tenant_id = NEW.tenant_id AND a.fapiao_id = NEW.fapiao_id GROUP BY a.treatment, a.rate_bp) g;
     IF NOT EXISTS (SELECT 1 FROM cargo_fin.billing_profile_version v WHERE v.tenant_id = NEW.tenant_id AND v.debtor_party_id = NEW.debtor_party_id
          AND v.version_no = NEW.profile_version AND v.buyer_kind = 'CN_ENTERPRISE' AND v.title = NEW.buyer_title AND v.taxpayer_number = NEW.taxpayer_number
          AND v.registered_address IS NOT DISTINCT FROM NEW.buyer_address AND v.registered_phone IS NOT DISTINCT FROM NEW.buyer_phone
          AND v.bank_name IS NOT DISTINCT FROM NEW.bank_name AND v.bank_account IS NOT DISTINCT FROM NEW.bank_account)
+       OR EXISTS (SELECT 1 FROM cargo_fin.billing_profile_version v WHERE v.tenant_id = NEW.tenant_id AND v.debtor_party_id = NEW.debtor_party_id
+         AND v.version_no > NEW.profile_version)
        OR NOT EXISTS (SELECT 1 FROM cargo_fin.finance_policy p WHERE p.tenant_id = NEW.tenant_id AND p.legal_entity_id = NEW.legal_entity_id
          AND p.functional_currency = NEW.currency)
        OR NOT EXISTS (SELECT 1 FROM cargo_fin.fapiao_covered_note c WHERE c.tenant_id = NEW.tenant_id AND c.fapiao_id = NEW.fapiao_id)
        OR gross <> NEW.gross_minor OR vat <> NEW.vat_minor
        OR EXISTS (SELECT 1 FROM (SELECT a.treatment, a.rate_bp, sum(a.local_minor)::bigint s FROM cargo_fin.fapiao_covered_amount a
-         WHERE a.tenant_id = NEW.tenant_id AND a.fapiao_id = NEW.fapiao_id AND a.treatment <> 'PASS_THROUGH_DISBURSEMENT' GROUP BY a.treatment, a.rate_bp) g
+         WHERE a.tenant_id = NEW.tenant_id AND a.fapiao_id = NEW.fapiao_id GROUP BY a.treatment, a.rate_bp) g
          WHERE g.s < 0 OR (NEW.fapiao_type = 'SPECIAL' AND g.treatment = 'EXEMPT_INTL_FREIGHT_FORWARDING' AND g.s <> 0)) THEN
       RAISE EXCEPTION 'cargo_fin: fapiao record %/% is not its billing profile version, covered notes and totals', NEW.tenant_id, NEW.fapiao_id
         USING ERRCODE = 'check_violation', CONSTRAINT = 'fapiao_record_consistent';
@@ -196,8 +203,12 @@ BEGIN
      OR (NEW.red_number IS NOT NULL AND NOT EXISTS (SELECT 1 FROM cargo_fin.fapiao_number n WHERE n.tenant_id = NEW.tenant_id
         AND n.legal_entity_id = NEW.legal_entity_id AND n.number = NEW.red_number AND n.fapiao_id = NEW.fapiao_id AND n.kind = 'RED_LETTER'))
      OR (NEW.state IN ('FAILED','RED_LETTERED') AND EXISTS (SELECT 1 FROM cargo_fin.fapiao_covered_note c WHERE c.tenant_id = NEW.tenant_id
-        AND c.fapiao_id = NEW.fapiao_id AND NOT c.released)) THEN
-    RAISE EXCEPTION 'cargo_fin: fapiao record %/% records its numbers and releases its notes as it moves on', NEW.tenant_id, NEW.fapiao_id
+        AND c.fapiao_id = NEW.fapiao_id AND NOT c.released))
+     OR (NEW.issued_on IS NOT NULL AND EXISTS (SELECT 1 FROM cargo_fin.fapiao_covered_note c JOIN cargo_fin.debtor_invoice n
+        ON n.tenant_id = c.tenant_id AND n.invoice_id = c.invoice_id WHERE c.tenant_id = NEW.tenant_id AND c.fapiao_id = NEW.fapiao_id
+        AND n.invoice_date > NEW.issued_on)) THEN
+    RAISE EXCEPTION 'cargo_fin: fapiao record %/% is issued on or after its notes, records its numbers and releases its notes as it moves on',
+      NEW.tenant_id, NEW.fapiao_id
       USING ERRCODE = 'check_violation', CONSTRAINT = 'fapiao_record_consistent';
   END IF;
   RETURN NULL;
@@ -232,8 +243,8 @@ END $fn$;
 CREATE TRIGGER fapiao_number_with_record BEFORE INSERT ON cargo_fin.fapiao_number FOR EACH ROW EXECUTE FUNCTION cargo_fin.check_fapiao_number();
 
 -- At commit, with the debit note's job locked first (so that its credit notes and fapiao records take turns): a covered
--- note is an ISSUED debit note of the record's legal entity and debtor, and contributes per treatment and rate exactly
--- what its lines not reversed bill.
+-- note is an ISSUED debit note of the record's legal entity and debtor, and puts on the fapiao per treatment and rate
+-- exactly what its lines not reversed bill, pass-through disbursements left off, and something.
 CREATE FUNCTION cargo_fin.check_fapiao_covered_note_at_commit() RETURNS trigger LANGUAGE plpgsql AS $fn$
 BEGIN
   PERFORM 1 FROM cargo_fin.freight_job j WHERE j.tenant_id = NEW.tenant_id
@@ -241,9 +252,12 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM cargo_fin.debtor_invoice n JOIN cargo_fin.fapiao_record r ON r.tenant_id = n.tenant_id AND r.fapiao_id = NEW.fapiao_id
        WHERE n.tenant_id = NEW.tenant_id AND n.invoice_id = NEW.invoice_id AND n.kind = 'DEBIT_NOTE' AND n.state = 'ISSUED'
          AND n.legal_entity_id = r.legal_entity_id AND n.debtor_party_id = r.debtor_party_id)
+     OR NOT EXISTS (SELECT 1 FROM cargo_fin.fapiao_covered_amount a WHERE a.tenant_id = NEW.tenant_id AND a.fapiao_id = NEW.fapiao_id
+         AND a.invoice_id = NEW.invoice_id)
      OR EXISTS (
        (SELECT l.treatment, coalesce(l.rate_bp, 0), sum(l.local_minor)::bigint FROM cargo_fin.debtor_invoice_line l
          WHERE l.tenant_id = NEW.tenant_id AND (l.invoice_id = NEW.invoice_id OR l.credits_invoice_id = NEW.invoice_id)
+           AND l.treatment <> 'PASS_THROUGH_DISBURSEMENT'
          GROUP BY l.treatment, coalesce(l.rate_bp, 0) HAVING sum(l.local_minor) <> 0
         EXCEPT SELECT a.treatment, a.rate_bp, a.local_minor FROM cargo_fin.fapiao_covered_amount a
          WHERE a.tenant_id = NEW.tenant_id AND a.fapiao_id = NEW.fapiao_id AND a.invoice_id = NEW.invoice_id)
@@ -252,6 +266,7 @@ BEGIN
          WHERE a.tenant_id = NEW.tenant_id AND a.fapiao_id = NEW.fapiao_id AND a.invoice_id = NEW.invoice_id
         EXCEPT SELECT l.treatment, coalesce(l.rate_bp, 0), sum(l.local_minor)::bigint FROM cargo_fin.debtor_invoice_line l
          WHERE l.tenant_id = NEW.tenant_id AND (l.invoice_id = NEW.invoice_id OR l.credits_invoice_id = NEW.invoice_id)
+           AND l.treatment <> 'PASS_THROUGH_DISBURSEMENT'
          GROUP BY l.treatment, coalesce(l.rate_bp, 0) HAVING sum(l.local_minor) <> 0)) THEN
     RAISE EXCEPTION 'cargo_fin: debit note %/% is not an issued note of the record''s legal entity and debtor, or contributes other amounts',
       NEW.tenant_id, NEW.invoice_id USING ERRCODE = 'check_violation', CONSTRAINT = 'fapiao_covers_issued_notes';
@@ -261,22 +276,23 @@ END $fn$;
 CREATE CONSTRAINT TRIGGER fapiao_covers_issued_notes AFTER INSERT ON cargo_fin.fapiao_covered_note
   DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION cargo_fin.check_fapiao_covered_note_at_commit();
 
--- At commit, with the job locked first: no credit note reverses a debit note a requested or issued fapiao record covers
--- (the red-letter fapiao is recorded first, CN e-invoice rules).
-CREATE FUNCTION cargo_fin.check_credit_note_fapiao_at_commit() RETURNS trigger LANGUAGE plpgsql AS $fn$
+-- At commit, with the job locked first: no credit note line reverses a line a fapiao states (all but pass-through
+-- disbursements) of a debit note a requested or issued fapiao record covers (the red-letter fapiao is recorded first,
+-- CN e-invoice rules).
+CREATE FUNCTION cargo_fin.check_credit_line_fapiao_at_commit() RETURNS trigger LANGUAGE plpgsql AS $fn$
 BEGIN
-  IF NEW.kind <> 'CREDIT_NOTE' THEN
+  IF NEW.credits_invoice_id IS NULL OR NEW.treatment = 'PASS_THROUGH_DISBURSEMENT' THEN
     RETURN NULL;
   END IF;
   PERFORM 1 FROM cargo_fin.freight_job j WHERE j.tenant_id = NEW.tenant_id AND j.job_id = NEW.job_id FOR NO KEY UPDATE;
   IF EXISTS (SELECT 1 FROM cargo_fin.fapiao_covered_note c WHERE c.tenant_id = NEW.tenant_id AND c.invoice_id = NEW.credits_invoice_id AND NOT c.released) THEN
-    RAISE EXCEPTION 'cargo_fin: credit note %/% reverses debit note % that a fapiao record covers', NEW.tenant_id, NEW.invoice_id, NEW.credits_invoice_id
-      USING ERRCODE = 'check_violation', CONSTRAINT = 'fapiao_covers_debit_note';
+    RAISE EXCEPTION 'cargo_fin: credit note %/% reverses a line of debit note % that a fapiao record covers', NEW.tenant_id, NEW.invoice_id,
+      NEW.credits_invoice_id USING ERRCODE = 'check_violation', CONSTRAINT = 'fapiao_covers_debit_note';
   END IF;
   RETURN NULL;
 END $fn$;
-CREATE CONSTRAINT TRIGGER debtor_invoice_fapiao AFTER INSERT ON cargo_fin.debtor_invoice
-  DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION cargo_fin.check_credit_note_fapiao_at_commit();
+CREATE CONSTRAINT TRIGGER debtor_invoice_line_fapiao AFTER INSERT ON cargo_fin.debtor_invoice_line
+  DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION cargo_fin.check_credit_line_fapiao_at_commit();
 
 DO $tables$
 DECLARE tbl text;

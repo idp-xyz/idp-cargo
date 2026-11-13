@@ -23,18 +23,23 @@ const fapiaoColumns = `legal_entity_id,debtor_party_id,debtor_revision,fapiao_ty
   red_at,red_entered_at,revision`
 
 func (s FapiaoStore) Load(ctx context.Context, tenant fin.TenantID, id string) (*fin.FapiaoRecord, int64, error) {
-	return readFapiao(ctx, s.DB, tenant, id, " FOR NO KEY UPDATE")
-}
-
-func (s FapiaoStore) Read(ctx context.Context, tenant fin.TenantID, id string) (*fin.FapiaoRecord, int64, error) {
-	return readFapiao(ctx, s.DB, tenant, id, "")
-}
-
-func readFapiao(ctx context.Context, db *bentopg.DB, tenant fin.TenantID, id, lock string) (*fin.FapiaoRecord, int64, error) {
-	q, err := db.ReadExecutor(ctx)
+	q, err := s.DB.RequireExecutor(ctx)
 	if err != nil {
 		return nil, 0, err
 	}
+	return readFapiao(ctx, q, tenant, id, " FOR NO KEY UPDATE")
+}
+
+func (s FapiaoStore) Read(ctx context.Context, tenant fin.TenantID, id string) (*fin.FapiaoRecord, int64, error) {
+	q, err := s.DB.ReadExecutor(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+	return readFapiao(ctx, q, tenant, id, "")
+}
+
+func readFapiao(ctx context.Context, q bentopg.Querier, tenant fin.TenantID, id, lock string) (*fin.FapiaoRecord, int64, error) {
+	var err error
 	st := fin.FapiaoState{TenantID: tenant, FapiaoID: id}
 	var currency string
 	var address, phone, bank, account, issuedNumber, issuedOn, issuedRef, issuedBy, failReason, failedBy *string
@@ -328,7 +333,7 @@ func (s FapiaoStore) OfDebtor(ctx context.Context, tenant fin.TenantID, legalEnt
 	var out []*fin.FapiaoRecord
 	var revisions []int64
 	for _, id := range ids {
-		r, revision, err := s.Read(ctx, tenant, id)
+		r, revision, err := readFapiao(ctx, q, tenant, id, "")
 		if err != nil {
 			return nil, nil, err
 		}

@@ -57,24 +57,32 @@ func (d Deps) RequestFapiao(ctx context.Context, c Command, in fin.FapiaoInput, 
 		if err != nil {
 			return Receipt{}, nil, err
 		}
-		known := map[string]bool{}
-		for _, n := range notes {
-			known[n.InvoiceID] = true
-		}
-		for _, id := range invoiceIDs {
-			if !known[id] {
-				return Receipt{}, nil, fmt.Errorf("%w: debit note %s", bentorepo.ErrNotFound, id)
+		if len(notes) != len(invoiceIDs) {
+			known := map[string]bool{}
+			for _, n := range notes {
+				known[n.InvoiceID] = true
 			}
-			if other, covered, err := d.Fapiao.Covering(txCtx, c.Scope.TenantID, id); err != nil || covered {
-				if err == nil {
-					err = fmt.Errorf("%w: debit note %s, by fapiao record %s", fin.ErrFapiaoCovers, id, other)
+			for _, id := range invoiceIDs {
+				if !known[id] {
+					return Receipt{}, nil, fmt.Errorf("%w: debit note %s", bentorepo.ErrNotFound, id)
 				}
-				return Receipt{}, nil, err
 			}
 		}
 		r, err := fin.RequestFapiao(c.Scope.TenantID, in, notes, c.Scope.ActorID, c.OccurredAt)
 		if err != nil {
 			return Receipt{}, nil, err
+		}
+		// the notes are the legal entity's and the debtor's: only then is another record covering one named
+		for _, id := range invoiceIDs {
+			other, covered, err := d.Fapiao.Covering(txCtx, c.Scope.TenantID, id)
+			switch {
+			case err != nil:
+				return Receipt{}, nil, err
+			case covered && other == in.ID: // this record, committed by the same request a moment ago or by another one
+				return Receipt{}, nil, fmt.Errorf("%w: fapiao record %s exists", fin.ErrConflict, in.ID)
+			case covered:
+				return Receipt{}, nil, fmt.Errorf("%w: debit note %s, by fapiao record %s", fin.ErrFapiaoCovers, id, other)
+			}
 		}
 		r.Stamp(entered)
 		revision, err := d.Fapiao.Insert(txCtx, r)

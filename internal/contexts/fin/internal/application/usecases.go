@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/big"
 	"regexp"
+	"slices"
 	"time"
 
 	bentorepo "go.idp.xyz/idp-bento-go/repository"
@@ -314,11 +315,12 @@ func (d Deps) IssueDebitNote(ctx context.Context, c Command, in DebitNoteAsk) (R
 	})
 }
 
-// IssueCreditNote reverses lines of a debit note of the job, which no requested or issued fapiao record covers: the
-// red-letter fapiao comes first (FB6). With the job locked, fapiao requests on its notes wait their turn.
+// IssueCreditNote reverses lines of a debit note of the job. Lines on a fapiao (all but pass-through disbursements) are
+// reversed only while no requested or issued fapiao record covers the note: the red-letter fapiao comes first (FB6).
+// With the job locked, fapiao requests on its notes wait their turn.
 func (d Deps) IssueCreditNote(ctx context.Context, c Command, in fin.CreditNoteInput) (Receipt, error) {
 	return d.change(ctx, c, nil, func(txCtx context.Context, j *fin.FreightJob, p *fin.FinancePolicy) (Receipt, error) {
-		if d.Fapiao != nil {
+		if d.Fapiao != nil && onFapiao(j, in) {
 			if fapiao, covered, err := d.Fapiao.Covering(txCtx, c.Scope.TenantID, in.DebitNoteID); err != nil || covered {
 				if err == nil {
 					err = fmt.Errorf("%w: debit note %s, by fapiao record %s", fin.ErrFapiaoCovers, in.DebitNoteID, fapiao)
@@ -332,6 +334,22 @@ func (d Deps) IssueCreditNote(ctx context.Context, c Command, in fin.CreditNoteI
 		notes := j.State().Notes
 		return Receipt{Number: notes[len(notes)-1].Number}, nil
 	})
+}
+
+// onFapiao reports whether a credit note reverses a line of the debit note that a fapiao states: one not a pass-through
+// disbursement (lines the note lacks are the domain's to refuse).
+func onFapiao(j *fin.FreightJob, in fin.CreditNoteInput) bool {
+	for _, n := range j.State().Notes {
+		if n.ID != in.DebitNoteID {
+			continue
+		}
+		for _, l := range n.Lines {
+			if slices.Contains(in.LineNos, l.No) && l.Tax.Treatment != fin.TaxPassThrough {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // policy reads the legal entity's policy in a write transaction, holding it FOR SHARE.

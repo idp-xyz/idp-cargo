@@ -44,15 +44,15 @@ func TestRequestFapiao(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := r.State()
-	if st.State != FapiaoRequested || len(st.Notes) != 2 || st.Notes[0].InvoiceID != "DN-1" || st.Buyer.Title != "上海甲贸易有限公司" ||
+	if st.State != FapiaoRequested || len(st.Notes) != 2 || st.Notes[0].InvoiceID != "DN-1" || len(st.Notes[0].Amounts) != 2 || st.Buyer.Title != "上海甲贸易有限公司" ||
 		st.Buyer.TaxpayerNumber != "91310000MA1FL8TQ2X" || st.Buyer.ProfileVersion != 2 || st.Buyer.BankAccount != "4567 8901 2345" || !st.Live() {
 		t.Fatalf("requested: %+v", st)
 	}
-	lines, excluded := st.Lines()
-	// 400.00 at 6%: VAT 22.64 (40,000 × 600 / 10,600 = 2,264.15); 50.00 at 9%: VAT 4.13 (412.84)
+	lines := st.Lines()
+	// the disbursement left off; 400.00 at 6%: VAT 22.64 (40,000 × 600 / 10,600 = 2,264.15); 50.00 at 9%: VAT 4.13 (412.84)
 	want := []FapiaoLine{{TaxExemptIntlFreight, 0, 864_000, 864_000, 0}, {TaxTaxable, 600, 40_000, 37_736, 2_264}, {TaxTaxable, 900, 5_000, 4_587, 413}}
-	if len(lines) != len(want) || len(excluded) != 1 || excluded[0] != (TaxAmount{TaxPassThrough, 0, 15_000}) {
-		t.Fatalf("lines %+v, excluded %+v", lines, excluded)
+	if len(lines) != len(want) {
+		t.Fatalf("lines %+v", lines)
 	}
 	for i := range want {
 		if lines[i] != want[i] {
@@ -65,7 +65,7 @@ func TestRequestFapiao(t *testing.T) {
 	// half up: 10.60 at 6% includes 0.60 exactly; 0.53 includes 0.03 (3.0)
 	for gross, vat := range map[int64]int64{1_060: 60, 53: 3, 1: 0, 9: 1} {
 		s := FapiaoState{Notes: []CoveredNote{{Amounts: []TaxAmount{{TaxTaxable, 600, gross}}}}}
-		if lines, _ := s.Lines(); lines[0].VAT != vat {
+		if lines := s.Lines(); lines[0].VAT != vat {
 			t.Errorf("%d at 6%%: VAT %d, want %d", gross, lines[0].VAT, vat)
 		}
 	}
@@ -116,6 +116,10 @@ func TestRequestFapiao(t *testing.T) {
 	refused("the notes over the largest amount", fapiaoInput(), big, ErrNotFapiaoable)
 	twice := append(fapiaoNotes(), fapiaoNotes()[0])
 	refused("a note twice", fapiaoInput(), twice, ErrInvalid)
+	// a note with a disbursement only puts nothing on the fapiao, beside another note too
+	only := fapiaoNotes()
+	only[0].Amounts = []TaxAmount{{TaxPassThrough, 0, 15_000}}
+	refused("a disbursement only beside another note", fapiaoInput(), only, ErrNotFapiaoable)
 }
 
 // A requested record is issued (number, date, evidence) or fails; an issued one is red-lettered with its own number,
@@ -134,6 +138,8 @@ func TestFapiaoLifecycle(t *testing.T) {
 	r := request(t)
 	for name, change := range map[string]func(*PlatformEvidence){
 		"a short number":            func(e *PlatformEvidence) { e.Number = "1234567" },
+		"an 8-digit number":         func(e *PlatformEvidence) { e.Number = "12345678" },
+		"a 21-digit number":         func(e *PlatformEvidence) { e.Number = "263120000000123456789" },
 		"letters in the number":     func(e *PlatformEvidence) { e.Number = "2631200000001234567A" },
 		"dated before DN-2":         func(e *PlatformEvidence) { e.On = day("2026-11-11") },
 		"dated after it is entered": func(e *PlatformEvidence) { e.On = day("2026-11-14") },
@@ -172,6 +178,11 @@ func TestFapiaoLifecycle(t *testing.T) {
 	}
 	if err := r.RecordRedLetter(red, "", "bill-2", hour(34)); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("no reason: %v", err)
+	}
+	unconfirmed := red
+	unconfirmed.ConfirmationRef = ""
+	if err := r.RecordRedLetter(unconfirmed, "wrong buyer title", "bill-2", hour(34)); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("no confirmation form: %v", err)
 	}
 	if err := r.RecordRedLetter(red, "wrong buyer title", "bill-2", hour(34)); err != nil {
 		t.Fatal(err)

@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"go.idp.xyz/idp-cargo/internal/contexts/fin/api"
+	"go.idp.xyz/idp-cargo/internal/contexts/fin/internal/application"
 	"go.idp.xyz/idp-cargo/internal/contexts/fin/internal/domain"
 	"go.idp.xyz/idp-cargo/internal/kernel"
 )
@@ -56,15 +57,10 @@ func fapiaoView(r *domain.FapiaoRecord, revision int64) api.FapiaoRecord {
 	out := api.FapiaoRecord{TenantID: string(st.TenantID), FapiaoID: st.FapiaoID, Revision: revision, LegalEntityID: st.LegalEntityID,
 		DebtorPartyID: st.DebtorPartyID, DebtorRevision: st.DebtorRevision, Type: st.Type, State: st.State, ProfileVersion: b.ProfileVersion,
 		BuyerTitle: b.Title, TaxpayerNumber: b.TaxpayerNumber, BuyerAddress: b.Address, BuyerPhone: b.Phone, BankName: b.BankName,
-		BankAccount: b.BankAccount, Gross: money(gross), VAT: money(vat), Lines: []api.FapiaoLine{}, Excluded: []api.FapiaoAmount{},
-		Notes: []api.FapiaoCoveredNote{}, RequestedBy: st.RequestedBy, RequestedAt: st.RequestedAt, FailReason: st.FailReason, FailedBy: st.FailedBy,
+		BankAccount: b.BankAccount, Gross: money(gross), VAT: money(vat), Lines: []api.FapiaoLine{}, Notes: []api.FapiaoCoveredNote{}, RequestedBy: st.RequestedBy, RequestedAt: st.RequestedAt, FailReason: st.FailReason, FailedBy: st.FailedBy,
 		FailedAt: st.FailedAt, RedReason: st.RedReason}
-	lines, excluded := st.Lines()
-	for _, l := range lines {
+	for _, l := range st.Lines() {
 		out.Lines = append(out.Lines, api.FapiaoLine{Treatment: l.Treatment, RateBP: l.RateBP, Gross: money(l.Gross), Net: money(l.Net), VAT: money(l.VAT)})
-	}
-	for _, a := range excluded {
-		out.Excluded = append(out.Excluded, api.FapiaoAmount{Treatment: a.Treatment, RateBP: a.RateBP, Amount: money(a.Local)})
 	}
 	for _, n := range st.Notes {
 		v := api.FapiaoCoveredNote{InvoiceID: n.InvoiceID, Number: n.Number, InvoiceDate: dateView(n.InvoiceDate), Amounts: []api.FapiaoAmount{},
@@ -102,6 +98,9 @@ func (m *Module) GetFapiaoRecord(ctx context.Context, q api.GetFapiaoRecord) (ap
 }
 
 func (m *Module) ListFapiaoRecords(ctx context.Context, q api.ListFapiaoRecords) ([]api.FapiaoRecord, error) {
+	if q.TenantID == "" || q.LegalEntityID == "" || q.DebtorPartyID == "" {
+		return nil, classify(application.ErrInvalidQuery)
+	}
 	d := m.deps(q.TenantID, "")
 	out := []api.FapiaoRecord{}
 	err := d.Reader(ctx, func(txCtx context.Context) error {

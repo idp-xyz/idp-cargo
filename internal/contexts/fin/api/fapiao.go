@@ -21,14 +21,16 @@ const (
 	FapiaoRecordRedLettered = "RED_LETTERED"
 )
 
-// RequestFapiao asks for a fapiao on issued debit notes (1 to 200) of one legal entity to one debtor, none covered by
-// another requested or issued record (FIN_FAPIAO_COVERS). The debtor holds a debtor role for the legal entity in ORG and
-// has a CN_ENTERPRISE billing profile whose current version still names it as ORG does (FIN_BILLING_PROFILE_STALE); the record
-// freezes that version's buyer data. A fapiao is in CNY, the legal entity's functional currency (FIN_NOT_FAPIAOABLE
-// otherwise, as for notes of another legal entity or debtor, or with nothing to put on a fapiao). Each note contributes
-// its lines not reversed by credit notes, per tax treatment and rate; pass-through disbursements stay off the fapiao,
-// and a SPECIAL fapiao takes no exempt international freight forwarding. While the record is requested or issued, no
-// credit note reverses its notes.
+// RequestFapiao asks for a fapiao on issued debit notes (1 to 200, each named once) of one legal entity to one debtor,
+// none covered by another requested or issued record (FIN_FAPIAO_COVERS). The debtor holds a debtor role for the legal
+// entity in ORG and has a CN_ENTERPRISE billing profile whose current version still names it as ORG does
+// (FIN_BILLING_PROFILE_STALE); the record freezes that version's buyer data. A fapiao is in CNY, the legal entity's
+// functional currency (FIN_NOT_FAPIAOABLE otherwise, as for notes of another legal entity or debtor). Each note puts on
+// the fapiao its lines not reversed by credit notes, per tax treatment and rate, leaving its pass-through disbursements
+// off; a note with nothing else is FIN_NOT_FAPIAOABLE, and a SPECIAL fapiao takes no exempt international freight
+// forwarding. While the record is requested or issued, no credit note reverses a line of its notes that the fapiao
+// states (pass-through disbursements may be credited). A request retried while the first is still committing hears
+// ErrConflict and replays its receipt when sent again.
 type RequestFapiao struct {
 	CommandID     string
 	TenantID      string
@@ -41,10 +43,11 @@ type RequestFapiao struct {
 	OccurredAt    time.Time
 }
 
-// FapiaoEvidence is what the platform answered: the fapiao number (8 to 20 digits; 20 for a fully digital e-invoice,
-// 全电发票), its civil date (YYYY-MM-DD), not after the day it is recorded and not more than 366 days before, and a
-// reference to the evidence kept (such as the platform file's hash), never free text. A legal entity records a number
-// once, issued or red-letter alike (FIN_FAPIAO_NUMBER_USED).
+// FapiaoEvidence is what the platform answered: the fapiao number (the 20 digits of a fully digital e-invoice, 数电票,
+// the platform's only kind since 2024-12-01), its civil date (YYYY-MM-DD), not after the day it is recorded and not
+// more than 366 days before, and a reference to the evidence kept (such as the platform file's hash), never free text.
+// The platform's numbers are unique nationwide, so a tenant records a number once, issued or red-letter alike
+// (FIN_FAPIAO_NUMBER_USED).
 type FapiaoEvidence struct {
 	Number      string
 	Date        string
@@ -76,8 +79,9 @@ type RecordFapiaoFailed struct {
 }
 
 // RecordRedLetter records the red-letter fapiao (红字发票) that reversed an ISSUED record's fapiao, with its own number,
-// dated not before it, the reference of the red-letter confirmation form (红字信息确认单) where the rules require one,
-// and a reason: credit notes may then reverse the notes, and a new record may cover them.
+// dated not before it, the reference of its red-letter information confirmation form (红字发票信息确认单, filled in for
+// every fully digital red-letter fapiao) and a reason: credit notes may then reverse the notes, and a new record may
+// cover them.
 type RecordRedLetter struct {
 	CommandID        string
 	TenantID         string
@@ -100,7 +104,7 @@ type FapiaoLine struct {
 	VAT       kernel.Money
 }
 
-// FapiaoAmount is what a covered note contributes in a tax treatment and rate.
+// FapiaoAmount is what a covered note puts on the fapiao in a tax treatment and rate.
 type FapiaoAmount struct {
 	Treatment string
 	RateBP    int
@@ -127,7 +131,7 @@ type FapiaoRecordEvidence struct {
 }
 
 // FapiaoRecord is a fapiao asked for on debit notes with the buyer data it was asked with and what the platform
-// answered. Lines leave out pass-through disbursements, which Excluded lists.
+// answered.
 type FapiaoRecord struct {
 	TenantID       string
 	FapiaoID       string
@@ -147,7 +151,6 @@ type FapiaoRecord struct {
 	Gross          kernel.Money
 	VAT            kernel.Money
 	Lines          []FapiaoLine
-	Excluded       []FapiaoAmount
 	Notes          []FapiaoCoveredNote
 	RequestedBy    string
 	RequestedAt    time.Time
