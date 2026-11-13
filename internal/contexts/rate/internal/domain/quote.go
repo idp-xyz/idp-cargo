@@ -91,12 +91,14 @@ type Line struct {
 	Sell       kernel.Money
 	Cost       kernel.Money
 	// V0.5 part 3a: where the price comes from, how it was priced, and the catalogue version of the code (0 for a starter
-	// code the tenant never changed); CodeUnlisted marks a free-text code of a quote priced before the catalogue.
-	Source       LineSource
-	Rated        *RatedRef
-	Basis        LineBasis
-	CodeVersion  int
-	CodeUnlisted bool
+	// code the tenant never changed; nil for a line priced before the catalogue); CodeUnlisted marks a free-text code of a
+	// quote priced before the catalogue. They are left out of a command's request hash when unset, so that commands
+	// recorded before V0.5 hash as they did.
+	Source       LineSource `json:",omitzero"`
+	Rated        *RatedRef  `json:",omitzero"`
+	Basis        LineBasis  `json:",omitzero"`
+	CodeVersion  *int       `json:",omitzero"`
+	CodeUnlisted bool       `json:",omitzero"`
 }
 
 // Discount reports whether the line lowers the price.

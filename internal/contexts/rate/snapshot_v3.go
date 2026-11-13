@@ -10,13 +10,14 @@ import (
 var _ api.QuoteSnapshotV3Queries = (*Module)(nil)
 
 // GetQuoteSnapshotV3 answers QuoteSnapshotV3 of an accepted quote: QuoteSnapshotV2 with the kind, the scope and the V0.5
-// line details (RATE V0.5 part 3a). Quotes priced before V0.5 read as ONE_OFF, without a scope, with MANUAL lump sums.
+// line details (RATE V0.5 part 3a), from one read of the quote. Quotes priced before V0.5 read as ONE_OFF, without a
+// scope, with MANUAL lump sums and no catalogue version.
 func (m *Module) GetQuoteSnapshotV3(ctx context.Context, q api.GetQuoteSnapshot) (api.QuoteSnapshotV3, error) {
-	v2, err := m.GetQuoteSnapshotV2(ctx, q)
+	quote, revision, err := m.accepted(ctx, q)
 	if err != nil {
 		return api.QuoteSnapshotV3{}, err
 	}
-	quote, _, err := m.accepted(ctx, q)
+	v2, err := snapshotV2(quote, revision)
 	if err != nil {
 		return api.QuoteSnapshotV3{}, err
 	}
@@ -29,12 +30,16 @@ func (m *Module) GetQuoteSnapshotV3(ctx context.Context, q api.GetQuoteSnapshot)
 	}
 	for i, l := range s.Lines {
 		line := api.SnapshotLineV3{SnapshotLineV2: v2.Lines[i], Source: string(domain.SourceManual), Basis: domain.BasisLumpSum,
-			CodeVersion: l.CodeVersion, CodeUnlisted: l.CodeUnlisted}
+			CodeUnlisted: l.CodeUnlisted}
+		if v := l.CodeVersion; v != nil {
+			version := *v
+			line.CodeVersion = &version
+		}
 		if l.Source != "" {
 			line.Source = string(l.Source)
 		}
 		if r := l.Rated; r != nil {
-			line.SnapshotID, line.RatedSell, line.OverrideReason = r.SnapshotID, r.RatedSell, r.OverrideReason
+			line.SnapshotID = r.SnapshotID
 		}
 		if l.Basis.Kind == domain.BasisPerUnit {
 			line.Basis, line.Unit, line.Rate, line.RateScale, line.Quantity = l.Basis.Kind, string(l.Basis.Unit), l.Basis.Rate.Minor, l.Basis.Rate.Scale,

@@ -2,9 +2,11 @@ package application
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
+	bentorepo "go.idp.xyz/idp-bento-go/repository"
 	rate "go.idp.xyz/idp-cargo/internal/contexts/rate/internal/domain"
 	"go.idp.xyz/idp-cargo/internal/kernel"
 )
@@ -82,6 +84,10 @@ func (h CreateQuote) Handle(ctx context.Context, c CreateQuoteCommand) (Receipt,
 			return Receipt{}, err
 		}
 	}
+	if threshold < 0 || threshold > 10000 {
+		return Receipt{}, fmt.Errorf("%w: the rate card discount threshold of %s is %d basis points, not 0 to 10000", rate.ErrInvalidQuote,
+			c.LegalEntityID, threshold)
+	}
 	return h.write(ctx, c.Scope, c.CommandID, hash, func(txCtx context.Context) (*rate.Quote, int64, error) {
 		draft := rate.QuoteDraft{TenantID: c.Scope.TenantID, QuoteID: c.QuoteID, LegalEntityID: c.LegalEntityID, Customer: customer, Recipient: recipient,
 			Currency: c.Currency, Lines: append([]rate.Line(nil), c.Lines...), ExchangeRates: c.ExchangeRates, Terms: c.Terms, Validity: c.Validity,
@@ -101,13 +107,19 @@ func (h CreateQuote) Handle(ctx context.Context, c CreateQuoteCommand) (Receipt,
 // priceLines completes the draft's lines: every code is a listed, active code of the catalogue (applying to the scope's
 // mode), and a rated line takes its rated sell, its cost when a BUY line priced it and its basis from a RateSnapshot of
 // purpose QUOTE_LINE recorded for the quote's legal entity, customer, scope and service level within the record window
-// before the quote. A quote without a scope takes the lane and cargo of its rated lines' snapshot.
+// before the quote, for no other subject than the quote. A snapshot's SELL line prices one line of the quote. A quote
+// without a scope takes the lane and cargo of its rated lines' snapshot.
 func (h CreateQuote) priceLines(ctx context.Context, d *rate.QuoteDraft, at time.Time) error {
 	codes, err := h.Codes.List(ctx, d.TenantID)
 	if err != nil {
 		return err
 	}
+	type snapshotLine struct {
+		snapshot string
+		line     int
+	}
 	snapshots := map[string]rate.RateSnapshotState{}
+	used := map[snapshotLine]bool{}
 	for i := range d.Lines {
 		l := &d.Lines[i]
 		code, ok := listed(codes).ChargeCode(l.ChargeCode)
@@ -115,9 +127,10 @@ func (h CreateQuote) priceLines(ctx context.Context, d *rate.QuoteDraft, at time
 		case !ok:
 			return fmt.Errorf("%w: %s", rate.ErrChargeCodeUnknown, l.ChargeCode)
 		case !code.Active:
-			return fmt.Errorf("%w: charge code %s is inactive", rate.ErrInvalidQuote, l.ChargeCode)
+			return fmt.Errorf("%w: %s is inactive", rate.ErrChargeCodeUnknown, l.ChargeCode)
 		}
-		l.CodeVersion = code.Version
+		version := code.Version
+		l.CodeVersion = &version
 		if l.Source == "" {
 			l.Source = rate.SourceManual
 		}
@@ -130,8 +143,11 @@ func (h CreateQuote) priceLines(ctx context.Context, d *rate.QuoteDraft, at time
 		st, ok := snapshots[l.Rated.SnapshotID]
 		if !ok {
 			s, err := h.Snapshots.Read(ctx, d.TenantID, l.Rated.SnapshotID)
-			if err != nil {
-				return fmt.Errorf("%w: snapshot %s: %v", rate.ErrInvalidQuote, l.Rated.SnapshotID, err)
+			switch {
+			case errors.Is(err, bentorepo.ErrNotFound):
+				return fmt.Errorf("%w: snapshot %s is not recorded", rate.ErrInvalidQuote, l.Rated.SnapshotID)
+			case err != nil:
+				return fmt.Errorf("rate: reading snapshot %s: %w", l.Rated.SnapshotID, err)
 			}
 			st = s.State()
 			if err = h.fits(d, st, at); err != nil {
@@ -141,16 +157,13 @@ func (h CreateQuote) priceLines(ctx context.Context, d *rate.QuoteDraft, at time
 		}
 		rated := *l.Rated
 		rated.SellLineNo, rated.CostLineNo = 0, 0
+		var sell rate.SnapshotLine
 		for _, sl := range st.Lines {
 			if sl.ChargeCode != l.ChargeCode || sl.Gap != rate.GapNone {
 				continue
 			}
 			if sl.Side == rate.SideSell {
-				rated.SellLineNo, rated.RatedSell = sl.LineNo, sl.Amount
-				l.Basis = rate.LineBasis{Kind: rate.BasisLumpSum}
-				if sl.Calculator == rate.CalcPerUnit {
-					l.Basis = rate.LineBasis{Kind: rate.BasisPerUnit, Unit: sl.Unit, Rate: sl.Rate, Quantity: sl.Charged}
-				}
+				sell, rated.SellLineNo, rated.RatedSell = sl, sl.LineNo, sl.Amount
 			} else {
 				rated.CostLineNo, l.Cost = sl.LineNo, sl.Amount
 			}
@@ -158,8 +171,18 @@ func (h CreateQuote) priceLines(ctx context.Context, d *rate.QuoteDraft, at time
 		if rated.SellLineNo == 0 {
 			return fmt.Errorf("%w: snapshot %s rated no sell of %s", rate.ErrInvalidQuote, rated.SnapshotID, l.ChargeCode)
 		}
+		key := snapshotLine{rated.SnapshotID, rated.SellLineNo}
+		if used[key] {
+			return fmt.Errorf("%w: line %d of snapshot %s prices one line of a quote", rate.ErrInvalidQuote, rated.SellLineNo, rated.SnapshotID)
+		}
+		used[key] = true
 		if l.Source == rate.SourceRated {
 			l.Sell = rated.RatedSell
+		}
+		// rate on quantity is the sell only for a RATED line that no minimum or maximum bounded; any other is a lump sum
+		l.Basis = rate.LineBasis{Kind: rate.BasisLumpSum}
+		if l.Source == rate.SourceRated && sell.Calculator == rate.CalcPerUnit && !sell.MinimumApplied && !sell.MaximumApplied {
+			l.Basis = rate.LineBasis{Kind: rate.BasisPerUnit, Unit: sell.Unit, Rate: sell.Rate, Quantity: sell.Charged}
 		}
 		l.Rated = &rated
 	}
@@ -188,6 +211,8 @@ func (h CreateQuote) fits(d *rate.QuoteDraft, st rate.RateSnapshotState, at time
 	switch {
 	case in.Purpose != rate.PurposeQuoteLine || in.LegalEntityID != d.LegalEntityID || in.Customer.PartyID != d.Customer.PartyID:
 		return fmt.Errorf("%w: snapshot %s rates another purpose, legal entity or customer", rate.ErrInvalidQuote, st.SnapshotID)
+	case in.SubjectKind != "" && (in.SubjectKind != "QUOTE" || in.SubjectID != string(d.QuoteID)):
+		return fmt.Errorf("%w: snapshot %s was recorded for %s %s", rate.ErrInvalidQuote, st.SnapshotID, in.SubjectKind, in.SubjectID)
 	case *d.Scope != scope || in.ServiceLevel != d.Terms.ServiceLevel:
 		return fmt.Errorf("%w: snapshot %s rates another lane, cargo or service level than the quote", rate.ErrInvalidQuote, st.SnapshotID)
 	case in.At.After(at) || at.Sub(in.At) > h.Window.MaxBackdate:

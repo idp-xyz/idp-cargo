@@ -10,14 +10,16 @@ func scopeAir() *QuoteScope {
 	return &QuoteScope{Mode: ModeAir, ContainerMode: ContainerLoose, Origin: "CNPVG", Destination: "DEFRA", Cargo: Cargo{Pieces: 2, GrossGrams: 100_000}}
 }
 
+// ratedLine is a line rated at 10.00 per chargeable kg on 100 kg, sold at sell: RATED and per unit when sell is the
+// rated sell, else overridden as a lump sum.
 func ratedLine(code ChargeCode, rated, sell int64, reason string) Line {
-	source := SourceRated
-	if sell != rated {
-		source = SourceRatedOverridden
-	}
-	return Line{ChargeCode: code, Sell: usd(sell), Cost: usd(10_000), Source: source,
+	l := Line{ChargeCode: code, Sell: usd(sell), Cost: usd(10_000), Source: SourceRated,
 		Rated: &RatedRef{SnapshotID: "RS-1", SellLineNo: 1, RatedSell: usd(rated), OverrideReason: reason},
-		Basis: LineBasis{Kind: BasisPerUnit, Unit: UnitKgChargeable, Rate: UnitRate{Minor: 1000}, Quantity: 100_000}}
+		Basis: LineBasis{Kind: BasisPerUnit, Unit: UnitKgChargeable, Rate: UnitRate{Minor: rated / 100}, Quantity: 100_000}}
+	if sell != rated {
+		l.Source, l.Basis = SourceRatedOverridden, LineBasis{Kind: BasisLumpSum}
+	}
+	return l
 }
 
 // Rated and overridden quote lines (RATE V0.5 part 3a).
@@ -59,7 +61,26 @@ func TestRatedQuoteLines(t *testing.T) {
 			return l
 		}(),
 		"a manual line naming a snapshot": func() Line { l := ratedLine("AIR_FREIGHT", 1, 1, ""); l.Source = SourceManual; return l }(),
-		"a per-unit basis without a unit": func() Line { l := ratedLine("AIR_FREIGHT", 1, 1, ""); l.Basis.Unit = UnitNone; return l }(),
+		"a per-unit basis without a unit": func() Line { l := ratedLine("AIR_FREIGHT", 100, 100, ""); l.Basis.Unit = UnitNone; return l }(),
+		"a per-unit basis that is not the sell": func() Line {
+			l := ratedLine("AIR_FREIGHT", 100_000, 100_000, "")
+			l.Basis.Quantity = 99_999
+			return l
+		}(),
+		"an override priced per unit": func() Line {
+			l := ratedLine("AIR_FREIGHT", 100_000, 100_000, "")
+			l.Source, l.Sell, l.Rated.OverrideReason, l.Basis.Quantity = SourceRatedOverridden, usd(90_000), "spot", 90_000
+			return l
+		}(),
+		"a manual line priced per unit": {ChargeCode: "AIR_FREIGHT", Sell: usd(100_000), Cost: usd(0),
+			Basis: LineBasis{Kind: BasisPerUnit, Unit: UnitKgChargeable, Rate: UnitRate{Minor: 1000}, Quantity: 100_000}},
+		"an override with a blank reason": ratedLine("AIR_FREIGHT", 100_000, 90_000, "\t\u3000"),
+		"a negative code version": func() Line {
+			l := ratedLine("AIR_FREIGHT", 100_000, 100_000, "")
+			v := -1
+			l.CodeVersion = &v
+			return l
+		}(),
 		"an unlisted code on a new quote": {ChargeCode: "FREIGHT", Sell: usd(1), Cost: usd(0), CodeUnlisted: true},
 		"a code of another form":          {ChargeCode: "freight", Sell: usd(1), Cost: usd(0)},
 	} {

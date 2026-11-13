@@ -106,10 +106,7 @@ func readQuote(ctx context.Context, db *bentopg.DB, tenant rate.TenantID, id rat
 		}
 		l := rate.Line{ChargeCode: rate.ChargeCode(code), Sell: kernel.Money{Currency: kernel.CurrencyCode(sellCurrency), Minor: sell},
 			Cost: kernel.Money{Currency: kernel.CurrencyCode(costCurrency), Minor: cost}, Source: rate.LineSource(source), CodeUnlisted: codeUnlisted,
-			Basis: rate.LineBasis{Kind: basis}}
-		if codeVersion != nil {
-			l.CodeVersion = *codeVersion
-		}
+			Basis: rate.LineBasis{Kind: basis}, CodeVersion: codeVersion}
 		if snapshot != nil {
 			l.Rated = &rate.RatedRef{SnapshotID: *snapshot, SellLineNo: *sellLine, RatedSell: kernel.Money{Currency: kernel.CurrencyCode(*ratedCurrency),
 				Minor: *ratedSell}, OverrideReason: deref(reason)}
@@ -212,9 +209,9 @@ func (s QuoteStore) Insert(ctx context.Context, quote *rate.Quote) (int64, error
 		if basis == rate.BasisPerUnit {
 			unit, unitRate, scale, quantity = string(l.Basis.Unit), l.Basis.Rate.Minor, l.Basis.Rate.Scale, l.Basis.Quantity
 		}
-		var codeVersion any = l.CodeVersion
-		if l.CodeUnlisted {
-			codeVersion = nil
+		var codeVersion any
+		if l.CodeVersion != nil {
+			codeVersion = *l.CodeVersion
 		}
 		if _, err = q.Exec(ctx, `INSERT INTO cargo_rate.quote_line (tenant_id,quote_id,line_no,charge_code,sell_currency,sell_minor,cost_currency,cost_minor,
             source,snapshot_id,sell_snapshot_line_no,cost_snapshot_line_no,rated_sell_currency,rated_sell_minor,override_reason,basis,basis_unit,

@@ -96,23 +96,22 @@ type ListServiceLevels struct {
 	TenantID string
 }
 
-// SnapshotLineV3 is a line of QuoteSnapshotV3: SnapshotLineV2 with where its price comes from (Source; for a rated line
-// the snapshot and the rated sell, for an overridden one also the reason), its basis (LUMP_SUM, or PER_UNIT with the
-// unit, the rate in minor units times 10^-RateScale and the quantity it was priced on), the catalogue version of its code,
-// and whether the code was recorded unlisted before the catalogue. No costs.
+// SnapshotLineV3 is a line of QuoteSnapshotV3: SnapshotLineV2 with where its price comes from (Source, and for a rated
+// line the snapshot it was rated in), its basis (LUMP_SUM, or PER_UNIT with the unit, the rate in minor units times
+// 10^-RateScale and the quantity it was priced on, which reproduce Amount), the catalogue version of its code (nil for a
+// line priced before the catalogue), and whether the code was recorded unlisted before the catalogue. No costs, and
+// nothing of how far an overridden line was moved from its rated sell.
 type SnapshotLineV3 struct {
 	SnapshotLineV2
-	Source         string
-	SnapshotID     string
-	RatedSell      kernel.Money
-	OverrideReason string
-	Basis          string
-	Unit           string
-	Rate           int64
-	RateScale      int
-	Quantity       int64
-	CodeVersion    int
-	CodeUnlisted   bool
+	Source       string
+	SnapshotID   string
+	Basis        string
+	Unit         string
+	Rate         int64
+	RateScale    int
+	Quantity     int64
+	CodeVersion  *int
+	CodeUnlisted bool
 }
 
 // QuoteSnapshotV3 is QuoteSnapshotV2 with the quote's kind (ONE_OFF; AGREEMENT comes with RATE V0.5 part 3b), its scope

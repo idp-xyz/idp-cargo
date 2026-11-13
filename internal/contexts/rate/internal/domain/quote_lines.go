@@ -2,6 +2,7 @@ package domain
 
 import (
 	"fmt"
+	"math/big"
 	"math/bits"
 	"strings"
 	"unicode/utf8"
@@ -34,7 +35,9 @@ const (
 	BasisPerUnit = "PER_UNIT"
 )
 
-// LineBasis is how a line was priced: a lump sum, or Rate per Unit on Quantity base units.
+// LineBasis is how a line was priced: a lump sum, or Rate per Unit on Quantity base units. A line is priced per unit only
+// when it is RATED from a PER_UNIT snapshot line that no minimum or maximum bounded, so that its rate on its quantity is
+// its sell; a manual line, an overridden one and one a minimum or maximum bounded are lump sums.
 type LineBasis struct {
 	Kind     string
 	Unit     RateUnit
@@ -115,16 +118,33 @@ func (l Line) validateSource(scope *QuoteScope) error {
 			return fmt.Errorf("%w: a lump sum has no unit", ErrInvalidQuote)
 		}
 	case BasisPerUnit:
-		if !b.Unit.Valid() || b.Rate.Minor < 0 || b.Rate.Scale < 0 || b.Rate.Scale > 6 || b.Quantity < 0 || b.Quantity > MaxQuantity {
+		switch amount, ok := b.amount(); {
+		case l.Source != SourceRated:
+			return fmt.Errorf("%w: only a RATED line %s is priced per unit; a manual or overridden one is a lump sum", ErrInvalidQuote, l.ChargeCode)
+		case !b.Unit.Valid() || b.Rate.Minor < 0 || b.Rate.Scale < 0 || b.Rate.Scale > 6 || b.Quantity < 1:
 			return fmt.Errorf("%w: a per-unit basis names its unit, rate and quantity", ErrInvalidQuote)
+		case !ok || amount != l.Sell.Minor:
+			return fmt.Errorf("%w: the per-unit basis of %s does not reproduce its sell", ErrInvalidQuote, l.ChargeCode)
 		}
 	default:
 		return fmt.Errorf("%w: line basis %q", ErrInvalidQuote, b.Kind)
 	}
-	if l.CodeUnlisted && l.CodeVersion != 0 {
+	switch v := l.CodeVersion; {
+	case v != nil && *v < 0:
+		return fmt.Errorf("%w: code version %d", ErrInvalidQuote, *v)
+	case l.CodeUnlisted && v != nil:
 		return fmt.Errorf("%w: an unlisted code has no catalogue version", ErrInvalidQuote)
 	}
 	return nil
+}
+
+// amount is what a per-unit basis prices: Rate per Unit on Quantity base units, rounded half away from zero once, as
+// RATE rates a PER_UNIT line that no minimum or maximum bounds.
+func (b LineBasis) amount() (int64, bool) {
+	den := new(big.Int).Mul(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(b.Rate.Scale)), nil), big.NewInt(b.Unit.Base()))
+	num := new(big.Int).Mul(big.NewInt(b.Rate.Minor), big.NewInt(b.Quantity))
+	rounded := new(big.Int).Quo(new(big.Int).Add(new(big.Int).Mul(num, big.NewInt(2)), den), new(big.Int).Mul(den, big.NewInt(2)))
+	return rounded.Int64(), rounded.IsInt64()
 }
 
 // rateCardDiscount reports whether an overridden line sells below its rated sell by more than thresholdBP basis points

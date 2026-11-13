@@ -214,7 +214,8 @@ func TestAcceptedQuoteCannotBeChangedInPostgres(t *testing.T) {
 		})
 	}
 	for _, tc := range []struct{ sql, state, why string }{
-		{`UPDATE cargo_rate.quote SET author='someone-else' WHERE tenant_id=$1`, "23001", "the trigger guards accepted quotes"},
+		{`UPDATE cargo_rate.quote SET status='PRICED' WHERE tenant_id=$1`, "23001", "the trigger guards accepted quotes"},
+		{`UPDATE cargo_rate.quote SET author='someone-else' WHERE tenant_id=$1`, "42501", "the application role changes only what moves a quote on"},
 		{`UPDATE cargo_rate.quote_line SET sell_minor=1 WHERE tenant_id=$1`, "42501", "the application role cannot change lines"},
 		{`DELETE FROM cargo_rate.quote WHERE tenant_id=$1`, "42501", "the application role cannot delete quotes"},
 	} {

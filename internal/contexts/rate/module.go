@@ -167,6 +167,11 @@ func (m *Module) GetQuoteSnapshotV2(ctx context.Context, q api.GetQuoteSnapshot)
 	if err != nil {
 		return api.QuoteSnapshotV2{}, err
 	}
+	return snapshotV2(quote, revision)
+}
+
+// snapshotV2 is QuoteSnapshotV2 of an accepted quote read at revision.
+func snapshotV2(quote *domain.Quote, revision int64) (api.QuoteSnapshotV2, error) {
 	total, _, err := quote.Totals()
 	if err != nil {
 		return api.QuoteSnapshotV2{}, classify(err)

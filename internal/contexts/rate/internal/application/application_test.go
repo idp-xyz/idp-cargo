@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	bentorepo "go.idp.xyz/idp-bento-go/repository"
 	rate "go.idp.xyz/idp-cargo/internal/contexts/rate/internal/domain"
 	"go.idp.xyz/idp-cargo/internal/kernel"
 )
@@ -86,7 +87,6 @@ func (a *authFake) RequireQuoteAction(_ context.Context, _ Scope, action QuoteAc
 	return a.fail
 }
 
-// clockFake is the time RATE records a command at.
 // starterCodes is the catalogue of a tenant that changed nothing: the starter list; noSnapshots knows none.
 type starterCodes struct{}
 
@@ -106,9 +106,18 @@ type noSnapshots struct{}
 
 func (noSnapshots) Insert(context.Context, *rate.RateSnapshot) error { return nil }
 func (noSnapshots) Read(context.Context, rate.TenantID, string) (*rate.RateSnapshot, error) {
-	return nil, errors.New("no snapshot")
+	return nil, bentorepo.ErrNotFound
 }
 
+// failingSnapshots cannot be read.
+type failingSnapshots struct{ err error }
+
+func (failingSnapshots) Insert(context.Context, *rate.RateSnapshot) error { return nil }
+func (s failingSnapshots) Read(context.Context, rate.TenantID, string) (*rate.RateSnapshot, error) {
+	return nil, s.err
+}
+
+// clockFake is the time RATE records a command at.
 type clockFake struct{ t time.Time }
 
 func (c *clockFake) Now() time.Time { return c.t }
@@ -330,5 +339,55 @@ func TestExpireQuote(t *testing.T) {
 	}
 	if got := fmt.Sprint(f.outbox.events); got != "[QuotePriced.v1 QuoteExpired.v1]" {
 		t.Fatalf("events %s", got)
+	}
+}
+
+// A CreateQuote command without the V0.5 line fields hashes as it did before them, so that a command recorded before
+// V0.5 and retried after it replays its receipt.
+func TestCreateQuoteHashKeptFromBeforeV05(t *testing.T) {
+	type lineV04 struct {
+		ChargeCode rate.ChargeCode
+		Sell       kernel.Money
+		Cost       kernel.Money
+	}
+	type commandV04 struct {
+		CommandID       string
+		Scope           Scope
+		QuoteID         rate.QuoteID
+		LegalEntityID   rate.LegalEntityID
+		CustomerPartyID string
+		Recipient       rate.RecipientRole `json:",omitzero"`
+		Currency        kernel.CurrencyCode
+		Lines           []lineV04
+		ExchangeRates   []rate.ExchangeRate  `json:",omitzero"`
+		Terms           rate.CommercialTerms `json:",omitzero"`
+		Validity        kernel.ValidityInterval
+		OccurredAt      time.Time
+	}
+	c := createCommand("create-1")
+	l := c.Lines[0]
+	old, err := requestHash(commandV04{CommandID: c.CommandID, Scope: c.Scope, QuoteID: c.QuoteID, LegalEntityID: c.LegalEntityID,
+		CustomerPartyID: c.CustomerPartyID, Currency: c.Currency, Lines: []lineV04{{ChargeCode: l.ChargeCode, Sell: l.Sell, Cost: l.Cost}},
+		Validity: c.Validity, OccurredAt: c.OccurredAt})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hash, err := requestHash(c); err != nil || hash != old {
+		t.Fatalf("hash %s, before V0.5 %s, %v", hash, old, err)
+	}
+}
+
+// A snapshot RATE cannot read fails the command with the cause; only a snapshot not recorded is a rejection.
+func TestCreateQuoteSnapshotReadFailures(t *testing.T) {
+	f := newFixture()
+	c := createCommand("create-rated")
+	c.Lines[0].Source, c.Lines[0].Rated = rate.SourceRated, &rate.RatedRef{SnapshotID: "RS-1"}
+	h := CreateQuote{Deps: f.deps, Customers: f.customers, Codes: starterCodes{}, Snapshots: failingSnapshots{context.DeadlineExceeded}, Margins: floorFake(0)}
+	if _, err := h.Handle(context.Background(), c); !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, rate.ErrInvalidQuote) {
+		t.Fatalf("a read failure: %v", err)
+	}
+	h.Snapshots = noSnapshots{}
+	if _, err := h.Handle(context.Background(), c); !errors.Is(err, rate.ErrInvalidQuote) {
+		t.Fatalf("a snapshot not recorded: %v", err)
 	}
 }
