@@ -35,6 +35,10 @@ func (h AcceptQuote) Handle(ctx context.Context, c AcceptQuoteCommand) (Receipt,
 	if h.Customers == nil {
 		return Receipt{}, ErrMissingDependency
 	}
+	// authorized before a replay too
+	if err := h.Auth.RequireQuoteAction(ctx, c.Scope, ActionAcceptQuote, c.QuoteID); err != nil {
+		return Receipt{}, fmt.Errorf("%w: %v", ErrUnauthorized, err)
+	}
 	hash, err := requestHash(c)
 	if err != nil {
 		return Receipt{}, err
@@ -45,9 +49,6 @@ func (h AcceptQuote) Handle(ctx context.Context, c AcceptQuoteCommand) (Receipt,
 	recorded, err := h.admit(c.OccurredAt)
 	if err != nil {
 		return Receipt{}, err
-	}
-	if err = h.Auth.RequireQuoteAction(ctx, c.Scope, ActionAcceptQuote, c.QuoteID); err != nil {
-		return Receipt{}, fmt.Errorf("%w: %v", ErrUnauthorized, err)
 	}
 	var priced rate.QuoteState
 	err = h.Tx.WithinTransaction(ctx, func(txCtx context.Context) error {
