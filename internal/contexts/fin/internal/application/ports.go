@@ -321,6 +321,23 @@ type CreditorPaymentStore interface {
 	OpenItems(ctx context.Context, tenant fin.TenantID, legalEntity, creditor string) ([]fin.PayableInvoice, error)
 }
 
+// FapiaoStore loads and writes fapiao records (FB6; Load locks the record row) and reads the debit notes they cover.
+type FapiaoStore interface {
+	Load(ctx context.Context, tenant fin.TenantID, fapiao string) (*fin.FapiaoRecord, int64, error)
+	Read(ctx context.Context, tenant fin.TenantID, fapiao string) (*fin.FapiaoRecord, int64, error)
+	// Insert writes a requested record; a debit note another live record covers is fin.ErrFapiaoCovers.
+	Insert(context.Context, *fin.FapiaoRecord) (int64, error)
+	// Save writes a move of the record; a number the legal entity recorded already is fin.ErrFapiaoNumber.
+	Save(context.Context, *fin.FapiaoRecord, int64) (int64, error)
+	// Notes locks the jobs of the debit notes, in order of job id, until the transaction ends, then reads what a request
+	// needs of each note: credit notes and fapiao requests on a job's notes take turns. Notes FIN does not know are left out.
+	Notes(ctx context.Context, tenant fin.TenantID, invoiceIDs []string) ([]fin.FapiaoNote, error)
+	// Covering answers the requested or issued record that covers a debit note, if any.
+	Covering(ctx context.Context, tenant fin.TenantID, invoiceID string) (string, bool, error)
+	// OfDebtor lists a debtor's records with a legal entity, in the order requested.
+	OfDebtor(ctx context.Context, tenant fin.TenantID, legalEntity, debtor string) ([]*fin.FapiaoRecord, []int64, error)
+}
+
 // Deps are the ports every FIN command uses.
 type Deps struct {
 	Tx TxRunner
@@ -352,6 +369,8 @@ type Deps struct {
 	Creditors CreditorInvoiceStore
 	// Payments holds creditor payments (FIN V0.6).
 	Payments CreditorPaymentStore
+	// Fapiao holds fapiao records (FIN V0.7); credit notes check it under their job's lock.
+	Fapiao FapiaoStore
 }
 
 // Command is what every FIN command carries: Subject is the legal entity, the job, <legal entity>/<debtor> or the

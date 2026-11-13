@@ -1447,7 +1447,8 @@ func Conflict(err error) bool {
 	case "finance_policy_consistent", "freight_job_consistent", "credit_account_consistent", "fin_records_with_parent", "freight_job_invoices_consistent",
 		"invoice_series_consistent", "billing_profile_consistent", "debtor_receipt_consistent", "debtor_invoice_settlement_consistent",
 		"creditor_invoice_consistent", "creditor_match_consistent", "accrual_consumption_consistent", "creditor_invoice_targets_open",
-		"consol_cost_pool_closable", "consol_cost_pool_open", "pool_apportionment_cost", "creditor_payment_consistent", "creditor_invoice_paid_within":
+		"consol_cost_pool_closable", "consol_cost_pool_open", "pool_apportionment_cost", "creditor_payment_consistent", "creditor_invoice_paid_within",
+		"fapiao_record_consistent", "fapiao_covers_issued_notes", "fapiao_covers_debit_note":
 		return true
 	}
 	return false
