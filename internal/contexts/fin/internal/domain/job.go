@@ -88,7 +88,7 @@ type ChargeLine struct {
 	Cost        []SideVersion
 }
 
-// Basis is a pricing basis applied to the job: a quote for one order of the shipment.
+// Basis is a pricing basis applied to the job: a quote for one order of the shipment, or a rated estimate.
 type Basis struct {
 	No            int
 	BasisID       string
@@ -96,7 +96,7 @@ type Basis struct {
 	QuoteID       string
 	QuoteRevision int64
 	OrderID       string
-	PlanVersion   int // SHIPMENT_ESTIMATE: the shipment plan version RATE rated
+	PlanVersion   int // the shipment plan version RATE rated (SHIPMENT_ESTIMATE) or re-evaluated the quote on (OD-7 A); 0 for a quote as quoted
 	By            string
 	At            time.Time
 	EnteredAt     time.Time

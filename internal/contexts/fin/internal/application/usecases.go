@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/big"
 	"regexp"
 	"time"
 
@@ -453,7 +454,8 @@ func (d Deps) change(ctx context.Context, c Command, ask func(context.Context, *
 }
 
 // ApplyBasis applies an accepted quote to the job for one of the shipment's orders: FIN reads FUL's CostDriver v1
-// and RATE's PricingBasis v1 first (T3).
+// and RATE's PricingBasis v1 first (T3). On a planned shipment that carries the quote only, RATE re-evaluates the
+// quote's per-unit lines on the shipment's cargo at the quote's frozen rates (N1-RATE OD-7 A).
 func (d Deps) ApplyBasis(ctx context.Context, c Command, quote, order string) (Receipt, error) {
 	if d.Shipments == nil || d.Pricing == nil {
 		return Receipt{}, ErrMissingDependency
@@ -474,7 +476,28 @@ func (d Deps) ApplyBasis(ctx context.Context, c Command, quote, order string) (R
 		if held == nil || driver.LegalEntityID != st.LegalEntityID || driver.Status == "CANCELLED" {
 			return fmt.Errorf("%w: FUL reports no part of order %s under quote %s in shipment %s", fin.ErrNotPriceable, order, quote, st.ShipmentID)
 		}
-		if basis, err = d.Pricing.QuoteBasis(ctx, c.Scope.TenantID, quote); err != nil {
+		// OD-7 A: a shipment that carries this quote only is priced on its own planned cargo, the quote's rated lines by
+		// the card lines they were rated from; a shipment shared with other quotes keeps the quoted amounts, its cargo
+		// being theirs too, as does one weighed or measured in a unit RATE cannot take
+		var shipped *ShippedCargo
+		if onlyQuote(driver.Orders, quote, held.QuoteRevision) {
+			if driver.Status != "PLANNED" || driver.PlanVersion < 1 {
+				return fmt.Errorf("%w: shipment %s is %s; its quote prices it on its planned cargo, once FUL planned it", fin.ErrNotPriceable, st.ShipmentID,
+					driver.Status)
+			}
+			gross, okGross, err := shippedGrams(driver.GrossWeight)
+			if err != nil {
+				return err
+			}
+			volume, okVolume, err := shippedCubicCm(driver.Volume)
+			if err != nil {
+				return err
+			}
+			if okGross && okVolume {
+				shipped = &ShippedCargo{ShipmentID: st.ShipmentID, PlanVersion: driver.PlanVersion, Pieces: driver.Packs, GrossGrams: gross, VolumeCM3: volume}
+			}
+		}
+		if basis, err = d.Pricing.QuoteBasis(ctx, c.Scope.TenantID, quote, shipped); err != nil {
 			return err
 		}
 		switch {
@@ -483,13 +506,66 @@ func (d Deps) ApplyBasis(ctx context.Context, c Command, quote, order string) (R
 		case basis.QuoteRevision != held.QuoteRevision:
 			return fmt.Errorf("%w: FUL planned the order on quote revision %d, RATE answers revision %d", fin.ErrNotPriceable, held.QuoteRevision,
 				basis.QuoteRevision)
+		case shipped != nil && basis.PlanVersion != shipped.PlanVersion, shipped == nil && basis.PlanVersion != 0:
+			return fmt.Errorf("%w: RATE re-evaluated the quote on plan version %d", ErrUnknownSource, basis.PlanVersion)
 		}
 		return nil
 	}, func(_ context.Context, j *fin.FreightJob, p *fin.FinancePolicy) (Receipt, error) {
-		b := fin.Basis{BasisID: basis.BasisID, QuoteID: basis.QuoteID, QuoteRevision: basis.QuoteRevision, OrderID: order}
+		b := fin.Basis{BasisID: basis.BasisID, QuoteID: basis.QuoteID, QuoteRevision: basis.QuoteRevision, OrderID: order, PlanVersion: basis.PlanVersion}
 		err := j.ApplyBasis(b, basis.CustomerPartyID, basis.CustomerRevision, basis.Lines, p, c.Scope.ActorID, c.OccurredAt)
 		return Receipt{Version: len(j.State().Bases)}, err
 	})
+}
+
+// shippedGrams reads a planned weight in grams: metric units as FIN converts them, pounds at 453.59237 g. ok is false
+// for a unit neither knows.
+func shippedGrams(q kernel.Quantity) (int64, bool, error) {
+	if q.Unit == "LBR" {
+		g, err := exactly(q.Amount, 45_359_237, 100_000)
+		return g, err == nil, err
+	}
+	g, err := fin.Grams(q)
+	if errors.Is(err, fin.ErrPoolUnit) && q.Amount >= 0 {
+		return 0, false, nil
+	}
+	return g, err == nil, err
+}
+
+// shippedCubicCm reads a planned volume in cubic centimetres: metric units as FIN converts them, cubic feet at
+// 28,316.846592 cm3. ok is false for a unit neither knows.
+func shippedCubicCm(q kernel.Quantity) (int64, bool, error) {
+	if q.Unit == "FTQ" {
+		v, err := exactly(q.Amount, 28_316_846_592, 1_000_000)
+		return v, err == nil, err
+	}
+	v, err := fin.CubicCm(q)
+	if errors.Is(err, fin.ErrPoolUnit) && q.Amount >= 0 {
+		return 0, false, nil
+	}
+	return v, err == nil, err
+}
+
+// exactly is amount × num / den rounded half away from zero, refused when negative or beyond int64.
+func exactly(amount, num, den int64) (int64, error) {
+	if amount < 0 {
+		return 0, fmt.Errorf("%w: a negative quantity %d", fin.ErrInvalid, amount)
+	}
+	r := new(big.Int).Mul(big.NewInt(amount), big.NewInt(num))
+	r.Add(r, big.NewInt(den/2)).Quo(r, big.NewInt(den))
+	if !r.IsInt64() {
+		return 0, fmt.Errorf("%w: quantity %d", fin.ErrInvalid, amount)
+	}
+	return r.Int64(), nil
+}
+
+// onlyQuote reports whether every order part of a shipment is under the quote's revision.
+func onlyQuote(orders []CostOrder, quote string, revision int64) bool {
+	for _, o := range orders {
+		if o.QuoteID != quote || o.QuoteRevision != revision {
+			return false
+		}
+	}
+	return len(orders) > 0
 }
 
 // LineInput is a manual line as asked.

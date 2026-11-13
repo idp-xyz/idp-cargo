@@ -188,6 +188,11 @@ func (w *world) GetPricingBasis(_ context.Context, q rateapi.GetPricingBasis) (r
 	if !ok {
 		return rateapi.PricingBasis{}, fmt.Errorf("%w: stub", rateapi.ErrRejected)
 	}
+	w.asked = append(w.asked, q)
+	if sh := q.Shipment; sh != nil { // as RATE names a quote re-evaluated on a shipment; the stub keeps the amounts
+		b.BasisID = fmt.Sprintf("%s/%s@%d", b.BasisID, sh.ShipmentID, sh.PlanVersion)
+		b.SubjectKind, b.SubjectID, b.SubjectVersion = "SHIPMENT", sh.ShipmentID, sh.PlanVersion
+	}
 	return b, nil
 }
 
