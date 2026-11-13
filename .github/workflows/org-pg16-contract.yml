@@ -139,6 +139,8 @@ jobs:
           GRANT UPDATE (reopened_by,reopen_reason,reopened_at,reopen_entered_at) ON cargo_fin.consol_cost_pool_closure TO cargo_app;
           GRANT UPDATE (state,cancel_reason,cancelled_by,cancelled_on,cancelled_at,cancel_entered_at,revision,updated_at) ON cargo_fin.creditor_payment TO cargo_app;
           GRANT UPDATE (reversed_by,reverse_reason,reversed_on,reversed_at,reverse_entered_at) ON cargo_fin.creditor_payment_allocation TO cargo_app;
+          GRANT UPDATE (state,issued_number,issued_on,issued_evidence_ref,issued_by,issued_at,issued_entered_at,failed_reason,failed_by,failed_at,failed_entered_at,red_number,red_on,red_evidence_ref,red_confirmation_ref,red_reason,red_by,red_at,red_entered_at,revision,updated_at) ON cargo_fin.fapiao_record TO cargo_app;
+          GRANT UPDATE (released) ON cargo_fin.fapiao_covered_note TO cargo_app;
           GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA bento TO cargo_app;
           GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA bento TO cargo_app;
           SQL

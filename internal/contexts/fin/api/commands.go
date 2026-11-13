@@ -567,14 +567,14 @@ type ApportionConsolCosts struct {
 
 // Receipt confirms a committed command; replaying the command returns it again. SubjectID is the legal entity
 // (policy), the job (job and note commands), the debtor (billing profile), <legal entity>/<debtor> (credit account),
-// the debtor receipt, the pool (pool commands), the creditor invoice or the creditor payment; Version is the rate entry recorded or ended,
+// the debtor receipt, the pool (pool commands), the creditor invoice, the creditor payment or the fapiao record; Version is the rate entry recorded or ended,
 // the tax treatment set, the series registered, the variance threshold set, the pricing basis applied, the charge line
 // recorded, the side version written (a release's too), the billing profile version, the terms version set, the hold
 // placed or released, the last allocation written or the one reversed, the pool cost line recorded, the cost version
 // written, the apportionment made, the closure made or reopened, the matches of an invoice, or its dispute opened or
 // resolved, the last allocation of a creditor payment written or the one reversed (0 for opening a policy, job or pool,
 // cancelling a job, issuing a note, recording or cancelling a debtor receipt, a creditor invoice or a creditor payment,
-// and approving a variance); Number is the number of a note issued. For a billing
+// approving a variance, and fapiao record commands); Number is the number of a note issued. For a billing
 // profile NewRevision is its version.
 type Receipt struct {
 	CommandID   string
@@ -627,6 +627,10 @@ type Commands interface {
 	AllocateCreditorPayment(ctx context.Context, cmd AllocateCreditorPayment) (Receipt, error)
 	ReverseCreditorPaymentAllocation(ctx context.Context, cmd ReverseCreditorPaymentAllocation) (Receipt, error)
 	CancelCreditorPayment(ctx context.Context, cmd CancelCreditorPayment) (Receipt, error)
+	RequestFapiao(ctx context.Context, cmd RequestFapiao) (Receipt, error)
+	RecordFapiaoIssued(ctx context.Context, cmd RecordFapiaoIssued) (Receipt, error)
+	RecordFapiaoFailed(ctx context.Context, cmd RecordFapiaoFailed) (Receipt, error)
+	RecordRedLetter(ctx context.Context, cmd RecordRedLetter) (Receipt, error)
 }
 
 // Actions an Authorizer decides on: the command names.
@@ -678,6 +682,11 @@ const (
 	ActionAllocateCreditorPayment          = "AllocateCreditorPayment"
 	ActionReverseCreditorPaymentAllocation = "ReverseCreditorPaymentAllocation"
 	ActionCancelCreditorPayment            = "CancelCreditorPayment"
+
+	ActionRequestFapiao      = "RequestFapiao"
+	ActionRecordFapiaoIssued = "RecordFapiaoIssued"
+	ActionRecordFapiaoFailed = "RecordFapiaoFailed"
+	ActionRecordRedLetter    = "RecordRedLetter"
 )
 
 // Authorizer decides whether a verified actor may perform an action on a subject.

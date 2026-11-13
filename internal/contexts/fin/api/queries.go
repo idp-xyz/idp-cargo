@@ -681,4 +681,6 @@ type Queries interface {
 	GetCreditorPayment(ctx context.Context, q GetCreditorPayment) (CreditorPayment, error)
 	ListCreditorPayments(ctx context.Context, q ListCreditorPayments) ([]CreditorPayment, error)
 	GetCreditorAccount(ctx context.Context, q GetCreditorAccount) (CreditorAccount, error)
+	GetFapiaoRecord(ctx context.Context, q GetFapiaoRecord) (FapiaoRecord, error)
+	ListFapiaoRecords(ctx context.Context, q ListFapiaoRecords) ([]FapiaoRecord, error)
 }

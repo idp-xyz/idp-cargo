@@ -777,6 +777,7 @@ func (m *Module) deps(tenant, commandID string) application.Deps {
 		Physical:       m.physical,
 		Creditors:      postgres.CreditorStore{DB: m.db},
 		Payments:       postgres.PaymentStore{DB: m.db},
+		Fapiao:         postgres.FapiaoStore{DB: m.db},
 	}
 }
 
@@ -822,7 +823,8 @@ func classify(err error) error {
 		errors.Is(err, domain.ErrAccrualClosed), errors.Is(err, domain.ErrMatchExceeds), errors.Is(err, domain.ErrMatchIncomplete),
 		errors.Is(err, domain.ErrMatchChargeCode), errors.Is(err, domain.ErrInvoiceNumber), errors.Is(err, domain.ErrVarianceApproval),
 		errors.Is(err, domain.ErrAccrualMatched), errors.Is(err, domain.ErrPoolNotClosable), errors.Is(err, domain.ErrTargetClosed),
-		errors.Is(err, domain.ErrFinalBehind), errors.Is(err, domain.ErrNotPayable), errors.Is(err, domain.ErrInvoicePaid):
+		errors.Is(err, domain.ErrFinalBehind), errors.Is(err, domain.ErrNotPayable), errors.Is(err, domain.ErrInvoicePaid),
+		errors.Is(err, domain.ErrFapiaoCovers), errors.Is(err, domain.ErrFapiaoNumber), errors.Is(err, domain.ErrNotFapiaoable):
 		kind = api.ErrRejected
 	default:
 		return err

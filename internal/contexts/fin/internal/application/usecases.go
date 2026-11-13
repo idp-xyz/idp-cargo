@@ -314,9 +314,18 @@ func (d Deps) IssueDebitNote(ctx context.Context, c Command, in DebitNoteAsk) (R
 	})
 }
 
-// IssueCreditNote reverses lines of a debit note of the job.
+// IssueCreditNote reverses lines of a debit note of the job, which no requested or issued fapiao record covers: the
+// red-letter fapiao comes first (FB6). With the job locked, fapiao requests on its notes wait their turn.
 func (d Deps) IssueCreditNote(ctx context.Context, c Command, in fin.CreditNoteInput) (Receipt, error) {
 	return d.change(ctx, c, nil, func(txCtx context.Context, j *fin.FreightJob, p *fin.FinancePolicy) (Receipt, error) {
+		if d.Fapiao != nil {
+			if fapiao, covered, err := d.Fapiao.Covering(txCtx, c.Scope.TenantID, in.DebitNoteID); err != nil || covered {
+				if err == nil {
+					err = fmt.Errorf("%w: debit note %s, by fapiao record %s", fin.ErrFapiaoCovers, in.DebitNoteID, fapiao)
+				}
+				return Receipt{}, err
+			}
+		}
 		if err := j.IssueCreditNote(in, p, d.draw(txCtx, c.Scope.TenantID, p), c.Scope.ActorID, c.OccurredAt); err != nil {
 			return Receipt{}, err
 		}

@@ -63,6 +63,10 @@ const (
 	CreditorPaymentAllocated          = "CreditorPaymentAllocated.v1"
 	CreditorPaymentAllocationReversed = "CreditorPaymentAllocationReversed.v1"
 	CreditorPaymentCancelled          = "CreditorPaymentCancelled.v1"
+
+	// Fapiao events have the fapiao record as subject and its debtor.
+	FapiaoIssued      = "FapiaoIssued.v1"
+	FapiaoRedLettered = "FapiaoRedLettered.v1"
 )
 
 // EventPayload is the JSON payload of every FIN event: identifiers and versions only, never amounts, names or tax
