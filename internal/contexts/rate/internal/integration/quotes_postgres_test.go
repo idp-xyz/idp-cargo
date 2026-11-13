@@ -166,7 +166,7 @@ func TestQuoteLifecycleOnPostgres(t *testing.T) {
 	}
 	approve := api.ApproveQuotePrice{CommandID: "approve-1", TenantID: f.tenant, ActorID: "sales-1", QuoteID: "Q-1",
 		ExpectedRevision: 1, ReasonRef: "margin-exception-1", OccurredAt: f.at.Add(time.Minute)}
-	if _, err = f.module.ApproveQuotePrice(ctx, approve); !errors.Is(err, api.ErrRejected) || !errors.Is(err, rate.ErrSelfApproval) {
+	if _, err = f.module.ApproveQuotePrice(ctx, approve); !errors.Is(err, api.ErrUnauthorized) || !errors.Is(err, rate.ErrSelfApproval) {
 		t.Fatalf("author approving: err = %v", err)
 	}
 	approve.CommandID, approve.ActorID = "approve-2", "manager-1"
