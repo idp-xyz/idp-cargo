@@ -40,7 +40,7 @@ func TestQuoteForAnApprovedCustomer(t *testing.T) {
 
 	quote := func(id, party string, sell, cost int64) rateapi.CreateQuote {
 		return rateapi.CreateQuote{CommandID: "create-" + id, TenantID: tenant, ActorID: "sales-1", QuoteID: id, LegalEntityID: "LE",
-			CustomerPartyID: party, Currency: "USD", Lines: []rateapi.QuoteLine{{ChargeCode: "FREIGHT", Sell: usd(sell), Cost: usd(cost)}},
+			CustomerPartyID: party, Currency: "USD", Lines: []rateapi.QuoteLine{{ChargeCode: "AIR_FREIGHT", Sell: usd(sell), Cost: usd(cost)}},
 			Validity: kernel.ValidityInterval{From: at, Until: at.Add(14 * 24 * time.Hour)}, OccurredAt: at.Add(time.Minute)}
 	}
 	if _, err = rateModule.CreateQuote(ctx, quote("Q-1", "party-s", 100_000, 90_000)); err != nil {

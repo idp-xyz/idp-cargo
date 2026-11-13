@@ -464,7 +464,7 @@ func TestTransportDocumentsWithEveryContext(t *testing.T) {
 	for _, x := range []struct {
 		code, treatment string
 		bp              int
-	}{{"FREIGHT", finapi.TaxExemptIntlFreight, 0}, {"DOC_FEE", finapi.TaxTaxable, 600}} {
+	}{{"AIR_FREIGHT", finapi.TaxExemptIntlFreight, 0}, {"DOC_FEE", finapi.TaxTaxable, 600}} {
 		policyStep("tax " + x.code)(finModule.SetChargeTaxTreatment(ctx, finapi.SetChargeTaxTreatment{CommandID: "fin-tax-" + x.code, TenantID: tenant,
 			ActorID: "tax-1", LegalEntityID: "LE", ExpectedRevision: policyRevision, ChargeCode: x.code, Treatment: x.treatment, RateBP: x.bp,
 			EffectiveFrom: taxFrom, OccurredAt: hours(28)}))

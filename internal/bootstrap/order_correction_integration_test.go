@@ -43,7 +43,7 @@ func TestOrderCorrectionPolicyAndTermsWithRealContexts(t *testing.T) {
 	fob := rateapi.CommercialTerms{IncotermsRule: "FOB", IncotermsVersion: "2020", NamedPlace: "Shanghai port"}
 	quote := rateapi.CreateQuote{CommandID: "create-Q-1", TenantID: tenant, ActorID: "sales-1", QuoteID: "Q-1", LegalEntityID: "LE",
 		CustomerPartyID: "party-a", RecipientRole: rateapi.RecipientOverseasAgent, Currency: "USD", Terms: fob,
-		Lines:    []rateapi.QuoteLine{{ChargeCode: "FREIGHT", Sell: usd(100_000), Cost: usd(50_000)}},
+		Lines:    []rateapi.QuoteLine{{ChargeCode: "AIR_FREIGHT", Sell: usd(100_000), Cost: usd(50_000)}},
 		Validity: kernel.ValidityInterval{From: at, Until: at.Add(14 * 24 * time.Hour)}, OccurredAt: at.Add(time.Minute)}
 	if _, err = rateModule.CreateQuote(ctx, quote); err != nil {
 		t.Fatal(err)

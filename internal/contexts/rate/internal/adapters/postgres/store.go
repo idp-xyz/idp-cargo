@@ -43,15 +43,19 @@ func readQuote(ctx context.Context, db *bentopg.DB, tenant rate.TenantID, id rat
 	var acceptedRevision *int64
 	var selfApproved, unlisted bool
 	var revision int64
+	var scopeMode, scopeContainer, scopeOrigin, scopeDestination, scopeVia, scopeCarrier *string
+	var scopePieces, scopeGross, scopeVolume, scopeDocuments *int64
 	err = q.QueryRow(ctx, `SELECT legal_entity_id,customer_party_id,customer_party_revision,recipient_role,currency,valid_from,valid_until,
         margin_floor_bp,author,status,approved_by,approved_at,approval_reason_ref,self_approved,
         accepted_by,accepted_at,accepted_recorded_at,acceptance_evidence_kind,acceptance_evidence_ref,accepted_customer_revision,
-        expired_at,incoterms_rule,incoterms_version,named_place,service_level,service_level_unlisted,revision
+        expired_at,incoterms_rule,incoterms_version,named_place,service_level,service_level_unlisted,revision,discount_threshold_bp,
+        scope_mode,scope_container_mode,scope_origin,scope_destination,scope_via,scope_carrier,scope_pieces,scope_gross_grams,scope_volume_cm3,scope_documents
       FROM cargo_rate.quote WHERE tenant_id=$1 AND quote_id=$2`+lock, string(tenant), string(id)).Scan(
 		&entity, &party, &s.Customer.PartyRevision, &recipient, &currency, &s.Validity.From, &s.Validity.Until,
 		&s.MarginFloorBP, &s.Author, &status, &approvedBy, &approvedAt, &approvalReason, &selfApproved,
 		&acceptedBy, &acceptedAt, &acceptedRecordedAt, &evidenceKind, &evidence, &acceptedRevision,
-		&expiredAt, &rule, &version, &place, &service, &unlisted, &revision)
+		&expiredAt, &rule, &version, &place, &service, &unlisted, &revision, &s.DiscountThresholdBP,
+		&scopeMode, &scopeContainer, &scopeOrigin, &scopeDestination, &scopeVia, &scopeCarrier, &scopePieces, &scopeGross, &scopeVolume, &scopeDocuments)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, 0, bentorepo.ErrNotFound
 	}
@@ -75,20 +79,48 @@ func readQuote(ctx context.Context, db *bentopg.DB, tenant rate.TenantID, id rat
 	if expiredAt != nil {
 		s.ExpiredAt = *expiredAt
 	}
-	rows, err := q.Query(ctx, `SELECT charge_code,sell_currency,sell_minor,cost_currency,cost_minor FROM cargo_rate.quote_line
-      WHERE tenant_id=$1 AND quote_id=$2 ORDER BY line_no`, string(tenant), string(id))
+	if scopeMode != nil {
+		s.Scope = &rate.QuoteScope{Mode: rate.Mode(*scopeMode), ContainerMode: rate.ContainerMode(deref(scopeContainer)), Origin: deref(scopeOrigin),
+			Destination: deref(scopeDestination), Via: deref(scopeVia), Carrier: deref(scopeCarrier),
+			Cargo: rate.Cargo{Pieces: *scopePieces, GrossGrams: *scopeGross, VolumeCM3: *scopeVolume, Documents: *scopeDocuments}}
+	}
+	rows, err := q.Query(ctx, `SELECT charge_code,sell_currency,sell_minor,cost_currency,cost_minor,source,snapshot_id,sell_snapshot_line_no,
+        cost_snapshot_line_no,rated_sell_currency,rated_sell_minor,override_reason,basis,basis_unit,basis_rate_minor,basis_rate_scale,basis_quantity,
+        code_version,code_unlisted
+      FROM cargo_rate.quote_line WHERE tenant_id=$1 AND quote_id=$2 ORDER BY line_no`, string(tenant), string(id))
 	if err != nil {
 		return nil, 0, err
 	}
 	for rows.Next() {
-		var code, sellCurrency, costCurrency string
+		var code, sellCurrency, costCurrency, source, basis string
 		var sell, cost int64
-		if err = rows.Scan(&code, &sellCurrency, &sell, &costCurrency, &cost); err != nil {
+		var snapshot, ratedCurrency, reason, unit *string
+		var sellLine, costLine, codeVersion *int
+		var ratedSell, unitRate, quantity *int64
+		var scale *int16
+		var codeUnlisted bool
+		if err = rows.Scan(&code, &sellCurrency, &sell, &costCurrency, &cost, &source, &snapshot, &sellLine, &costLine, &ratedCurrency, &ratedSell, &reason,
+			&basis, &unit, &unitRate, &scale, &quantity, &codeVersion, &codeUnlisted); err != nil {
 			rows.Close()
 			return nil, 0, err
 		}
-		s.Lines = append(s.Lines, rate.Line{ChargeCode: rate.ChargeCode(code), Sell: kernel.Money{Currency: kernel.CurrencyCode(sellCurrency), Minor: sell},
-			Cost: kernel.Money{Currency: kernel.CurrencyCode(costCurrency), Minor: cost}})
+		l := rate.Line{ChargeCode: rate.ChargeCode(code), Sell: kernel.Money{Currency: kernel.CurrencyCode(sellCurrency), Minor: sell},
+			Cost: kernel.Money{Currency: kernel.CurrencyCode(costCurrency), Minor: cost}, Source: rate.LineSource(source), CodeUnlisted: codeUnlisted,
+			Basis: rate.LineBasis{Kind: basis}}
+		if codeVersion != nil {
+			l.CodeVersion = *codeVersion
+		}
+		if snapshot != nil {
+			l.Rated = &rate.RatedRef{SnapshotID: *snapshot, SellLineNo: *sellLine, RatedSell: kernel.Money{Currency: kernel.CurrencyCode(*ratedCurrency),
+				Minor: *ratedSell}, OverrideReason: deref(reason)}
+			if costLine != nil {
+				l.Rated.CostLineNo = *costLine
+			}
+		}
+		if unit != nil {
+			l.Basis = rate.LineBasis{Kind: basis, Unit: rate.RateUnit(*unit), Rate: rate.UnitRate{Minor: *unitRate, Scale: int(*scale)}, Quantity: *quantity}
+		}
+		s.Lines = append(s.Lines, l)
 	}
 	rows.Close()
 	if err = rows.Err(); err != nil {
@@ -141,12 +173,19 @@ func (s QuoteStore) Insert(ctx context.Context, quote *rate.Quote) (int64, error
 	st := quote.State()
 	var revision int64
 	t := st.Terms
+	scope := make([]any, 10)
+	if sc := st.Scope; sc != nil {
+		scope = []any{string(sc.Mode), string(sc.ContainerMode), sc.Origin, sc.Destination, orNull(sc.Via), orNull(sc.Carrier), sc.Cargo.Pieces,
+			sc.Cargo.GrossGrams, sc.Cargo.VolumeCM3, sc.Cargo.Documents}
+	}
 	err = q.QueryRow(ctx, `INSERT INTO cargo_rate.quote (tenant_id,quote_id,legal_entity_id,customer_party_id,customer_party_revision,
-        recipient_role,currency,valid_from,valid_until,margin_floor_bp,author,status,incoterms_rule,incoterms_version,named_place,service_level)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING revision`,
-		string(st.TenantID), string(st.QuoteID), string(st.LegalEntityID), st.Customer.PartyID, st.Customer.PartyRevision,
-		string(st.Recipient), string(st.Currency), st.Validity.From, st.Validity.Until, st.MarginFloorBP, st.Author, string(st.Status),
-		orNull(t.IncotermsRule), orNull(t.IncotermsVersion), orNull(t.NamedPlace), orNull(t.ServiceLevel)).Scan(&revision)
+        recipient_role,currency,valid_from,valid_until,margin_floor_bp,author,status,incoterms_rule,incoterms_version,named_place,service_level,
+        discount_threshold_bp,scope_mode,scope_container_mode,scope_origin,scope_destination,scope_via,scope_carrier,scope_pieces,scope_gross_grams,
+        scope_volume_cm3,scope_documents)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27) RETURNING revision`,
+		append([]any{string(st.TenantID), string(st.QuoteID), string(st.LegalEntityID), st.Customer.PartyID, st.Customer.PartyRevision,
+			string(st.Recipient), string(st.Currency), st.Validity.From, st.Validity.Until, st.MarginFloorBP, st.Author, string(st.Status),
+			orNull(t.IncotermsRule), orNull(t.IncotermsVersion), orNull(t.NamedPlace), orNull(t.ServiceLevel), st.DiscountThresholdBP}, scope...)...).Scan(&revision)
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "quote_pkey" {
 		return 0, bentorepo.ErrAlreadyExists
@@ -155,9 +194,34 @@ func (s QuoteStore) Insert(ctx context.Context, quote *rate.Quote) (int64, error
 		return 0, err
 	}
 	for i, l := range st.Lines {
-		if _, err = q.Exec(ctx, `INSERT INTO cargo_rate.quote_line (tenant_id,quote_id,line_no,charge_code,sell_currency,sell_minor,cost_currency,cost_minor)
-          VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, string(st.TenantID), string(st.QuoteID), i+1, string(l.ChargeCode),
-			string(l.Sell.Currency), l.Sell.Minor, string(l.Cost.Currency), l.Cost.Minor); err != nil {
+		source := l.Source
+		if source == "" {
+			source = rate.SourceManual
+		}
+		var snapshot, sellLine, costLine, ratedCurrency, ratedSell, reason, unit, unitRate, scale, quantity any
+		if r := l.Rated; r != nil {
+			snapshot, sellLine, ratedCurrency, ratedSell, reason = r.SnapshotID, r.SellLineNo, string(r.RatedSell.Currency), r.RatedSell.Minor, orNull(r.OverrideReason)
+			if r.CostLineNo > 0 {
+				costLine = r.CostLineNo
+			}
+		}
+		basis := l.Basis.Kind
+		if basis == "" {
+			basis = rate.BasisLumpSum
+		}
+		if basis == rate.BasisPerUnit {
+			unit, unitRate, scale, quantity = string(l.Basis.Unit), l.Basis.Rate.Minor, l.Basis.Rate.Scale, l.Basis.Quantity
+		}
+		var codeVersion any = l.CodeVersion
+		if l.CodeUnlisted {
+			codeVersion = nil
+		}
+		if _, err = q.Exec(ctx, `INSERT INTO cargo_rate.quote_line (tenant_id,quote_id,line_no,charge_code,sell_currency,sell_minor,cost_currency,cost_minor,
+            source,snapshot_id,sell_snapshot_line_no,cost_snapshot_line_no,rated_sell_currency,rated_sell_minor,override_reason,basis,basis_unit,
+            basis_rate_minor,basis_rate_scale,basis_quantity,code_version,code_unlisted)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`, string(st.TenantID), string(st.QuoteID), i+1,
+			string(l.ChargeCode), string(l.Sell.Currency), l.Sell.Minor, string(l.Cost.Currency), l.Cost.Minor, string(source), snapshot, sellLine, costLine,
+			ratedCurrency, ratedSell, reason, basis, unit, unitRate, scale, quantity, codeVersion, l.CodeUnlisted); err != nil {
 			return 0, err
 		}
 	}

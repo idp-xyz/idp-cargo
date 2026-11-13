@@ -90,6 +90,13 @@ type Line struct {
 	ChargeCode ChargeCode
 	Sell       kernel.Money
 	Cost       kernel.Money
+	// V0.5 part 3a: where the price comes from, how it was priced, and the catalogue version of the code (0 for a starter
+	// code the tenant never changed); CodeUnlisted marks a free-text code of a quote priced before the catalogue.
+	Source       LineSource
+	Rated        *RatedRef
+	Basis        LineBasis
+	CodeVersion  int
+	CodeUnlisted bool
 }
 
 // Discount reports whether the line lowers the price.
@@ -140,6 +147,10 @@ type QuoteDraft struct {
 	Validity      kernel.ValidityInterval
 	MarginFloorBP int // minimum margin in basis points of the sell total
 	Author        string
+	// V0.5 part 3a: the lane and cargo the quote is priced for (required with a rated line), and how far below the rated
+	// sell, in basis points of it, an overridden line may sell before it needs approval (RATE_CARD_DISCOUNT).
+	Scope               *QuoteScope
+	DiscountThresholdBP int
 }
 
 // QuoteState is a stored quote, for persistence.
@@ -169,6 +180,11 @@ func PriceQuote(d QuoteDraft, at time.Time) (*Quote, error) {
 	if d.Terms.ServiceLevelUnlisted {
 		return nil, fmt.Errorf("%w: a new quote takes a service level from the list", ErrInvalidQuote)
 	}
+	for _, l := range d.Lines {
+		if l.CodeUnlisted || !ValidChargeCode(l.ChargeCode) {
+			return nil, fmt.Errorf("%w: a new line takes a code of the catalogue, not %q", ErrInvalidQuote, l.ChargeCode)
+		}
+	}
 	if !at.Before(d.Validity.Until) {
 		return nil, fmt.Errorf("%w: validity has already ended", ErrInvalidQuote)
 	}
@@ -190,13 +206,18 @@ func (d QuoteDraft) validate() error {
 	switch {
 	case blank(string(d.TenantID)), blank(string(d.QuoteID)), blank(string(d.LegalEntityID)), blank(d.Customer.PartyID),
 		d.Customer.PartyRevision < 1, !d.Recipient.Valid(), !d.Currency.Valid(), len(d.Lines) == 0, blank(d.Author),
-		d.MarginFloorBP < 0, d.MarginFloorBP > 10000:
+		d.MarginFloorBP < 0, d.MarginFloorBP > 10000, d.DiscountThresholdBP < 0, d.DiscountThresholdBP > 10000:
 		return ErrInvalidQuote
 	case !d.Validity.Valid() || d.Validity.Until.IsZero():
 		return fmt.Errorf("%w: a quote needs a bounded validity", ErrInvalidQuote)
 	}
 	if err := d.Terms.validate(); err != nil {
 		return err
+	}
+	if d.Scope != nil {
+		if err := d.Scope.validate(); err != nil {
+			return err
+		}
 	}
 	c, err := newConverter(d.Currency, d.ExchangeRates)
 	if err != nil {
@@ -206,6 +227,9 @@ func (d QuoteDraft) validate() error {
 	for _, l := range d.Lines {
 		if blank(string(l.ChargeCode)) || !l.Sell.Currency.Valid() || !l.Cost.Currency.Valid() || l.Cost.Minor < 0 || (l.Discount() && l.Cost.Minor != 0) {
 			return fmt.Errorf("%w: line %q", ErrInvalidQuote, l.ChargeCode)
+		}
+		if err := l.validateSource(d.Scope); err != nil {
+			return err
 		}
 		for _, m := range []kernel.Money{l.Sell, l.Cost} {
 			if _, err = c.convert(m); err != nil {
@@ -372,6 +396,12 @@ func (q *Quote) ApprovalReasons() ([]ApprovalReason, error) {
 			break
 		}
 	}
+	for _, l := range q.state.Lines {
+		if l.rateCardDiscount(q.state.DiscountThresholdBP) {
+			reasons = append(reasons, ReasonRateCardDiscount)
+			break
+		}
+	}
 	return reasons, nil
 }
 
@@ -398,6 +428,10 @@ func (q *Quote) BelowMarginFloor() (bool, error) {
 func (q *Quote) State() QuoteState {
 	s := q.state
 	s.Lines = append([]Line(nil), s.Lines...)
+	if s.Scope != nil {
+		scope := *s.Scope
+		s.Scope = &scope
+	}
 	s.ExchangeRates = append([]ExchangeRate(nil), s.ExchangeRates...)
 	if s.Approval != nil {
 		a := *s.Approval

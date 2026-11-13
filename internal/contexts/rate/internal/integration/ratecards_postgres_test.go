@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -21,6 +22,7 @@ import (
 	"go.idp.xyz/idp-cargo/internal/contexts/rate/api"
 	rate "go.idp.xyz/idp-cargo/internal/contexts/rate/internal/domain"
 	scope "go.idp.xyz/idp-cargo/internal/foundation/bento"
+	"go.idp.xyz/idp-cargo/internal/kernel"
 	refapi "go.idp.xyz/idp-cargo/internal/reference/api"
 )
 
@@ -815,6 +817,115 @@ INSERT INTO cargo_rate.pricing_basis_line (tenant_id,basis_id,line_no,charge_cod
 		err := c.statements(tc.sql)
 		var pgErr *pgconn.PgError
 		if !errors.As(err, &pgErr) || !strings.Contains(tc.state, pgErr.Code) || (tc.constraint != "" && pgErr.ConstraintName != tc.constraint) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+// RateCardDiscountBP lets an overridden quote line sell up to 5% below its rated sell without approval.
+func (cardPolicy) RateCardDiscountBP(context.Context, string, string) (int, error) { return 500, nil }
+
+// Rated quote lines on PostgreSQL (RATE V0.5 part 3a): a quote rated from a snapshot of the tariff, a line overridden
+// below the rated sell beyond the threshold awaiting approval, a manual line beside them, QuoteSnapshotV3, and what RATE
+// and the database refuse.
+func TestRatedQuoteLinesOnPostgres(t *testing.T) {
+	c := newCards(t)
+	publishedTariff(c)
+	evaluate := api.EvaluateRates{CommandID: "evaluate-q", TenantID: c.tenant, ActorID: "sales-1", SnapshotID: "RS-Q", Purpose: api.PurposeQuoteLine,
+		LegalEntityID: "LE", Sides: []string{api.SideSell}, CustomerPartyID: "acme", Mode: api.ModeAir, ContainerMode: api.ContainerLoose,
+		Origin: "CNPVG", Destination: "DEFRA", ServiceLevel: "STANDARD", Commodity: api.CommodityGeneral,
+		Cargo: api.Cargo{Pieces: 3, GrossGrams: 100_000, VolumeCM3: 900_000}, OccurredAt: c.h(4)}
+	c.must(c.module.EvaluateRates(c.ctx, evaluate))
+	tariffOnly := evaluate
+	tariffOnly.CommandID, tariffOnly.SnapshotID, tariffOnly.CustomerPartyID = "evaluate-t", "RS-T", ""
+	c.must(c.module.EvaluateRates(c.ctx, tariffOnly))
+	quote := func(id string, lines ...api.QuoteLine) api.CreateQuote {
+		return api.CreateQuote{CommandID: "create-" + id, TenantID: c.tenant, ActorID: "sales-1", QuoteID: id, LegalEntityID: "LE", CustomerPartyID: "acme",
+			Currency: "CNY", Lines: lines, Validity: kernel.ValidityInterval{From: c.h(5), Until: c.h(5 + 14*24)}, OccurredAt: c.h(5)}
+	}
+	rated := func(code string) api.QuoteLine {
+		return api.QuoteLine{ChargeCode: code, Source: api.LineRated, SnapshotID: "RS-Q", Cost: cny(0)}
+	}
+	freight := rated("AIR_FREIGHT")
+	freight.Cost = cny(220_000)
+	doc := api.QuoteLine{ChargeCode: "DOC_FEE", Source: api.LineRatedOverridden, SnapshotID: "RS-Q", Sell: cny(14_000), Cost: cny(0),
+		OverrideReason: "the customer's document fee agreed last year"}
+	pickup := api.QuoteLine{ChargeCode: "PICKUP", Sell: cny(20_000), Cost: cny(15_000)}
+	r := c.must(c.module.CreateQuote(c.ctx, quote("Q-R", freight, doc, rated("FUEL_SURCHARGE"), pickup)))
+	if r.NewRevision != 1 {
+		t.Fatalf("created: %+v", r)
+	}
+	c.must(c.module.ApproveQuotePrice(c.ctx, api.ApproveQuotePrice{CommandID: "approve-Q-R", TenantID: c.tenant, ActorID: "manager-1", QuoteID: "Q-R",
+		ExpectedRevision: 1, ReasonRef: "document fee as agreed", OccurredAt: c.h(6)}))
+	c.must(c.module.AcceptQuote(c.ctx, api.AcceptQuote{CommandID: "accept-Q-R", TenantID: c.tenant, ActorID: "sales-1", QuoteID: "Q-R", ExpectedRevision: 2,
+		EvidenceKind: api.EvidenceEmail, EvidenceRef: "mail of acme", OccurredAt: c.h(7)}))
+	v3, err := c.module.GetQuoteSnapshotV3(c.ctx, api.GetQuoteSnapshot{TenantID: c.tenant, QuoteID: "Q-R"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 150 kg in the 100 kg band at 20.00 = 3,000.00; the fuel 10% = 300.00; the document fee 150.00 overridden at 140.00
+	l := v3.Lines
+	switch {
+	case v3.Kind != "ONE_OFF" || v3.Scope == nil || v3.Scope.Origin != "CNPVG" || v3.Scope.Cargo.GrossGrams != 100_000 || v3.Terms.ServiceLevel != "STANDARD":
+		t.Fatalf("snapshot v3: %+v", v3)
+	case !slices.Contains(v3.PriceApprovalReasons, "RATE_CARD_DISCOUNT") || v3.Total != cny(364_000):
+		t.Fatalf("reasons and total: %+v %v", v3.PriceApprovalReasons, v3.Total)
+	case l[0].Source != api.LineRated || l[0].SnapshotID != "RS-Q" || l[0].Amount != cny(300_000) || l[0].Basis != "PER_UNIT" || l[0].Unit != api.UnitKgChargeable ||
+		l[0].Rate != 2000 || l[0].Quantity != 150_000:
+		t.Errorf("freight: %+v", l[0])
+	case l[1].Source != api.LineRatedOverridden || l[1].RatedSell != cny(15_000) || l[1].Amount != cny(14_000) || l[1].OverrideReason == "" || l[1].Basis != "LUMP_SUM":
+		t.Errorf("document fee: %+v", l[1])
+	case l[2].Amount != cny(30_000) || l[3].Source != api.LineManual || l[3].CodeVersion != 0 || l[3].CodeUnlisted:
+		t.Errorf("fuel and pickup: %+v %+v", l[2], l[3])
+	}
+
+	for name, tc := range map[string]struct {
+		lines []api.QuoteLine
+		text  string
+	}{
+		"a code the catalogue does not list": {[]api.QuoteLine{{ChargeCode: "FREIGHT", Sell: cny(1), Cost: cny(0)}}, "RATE_CHARGE_CODE_UNLISTED"},
+		"a snapshot of another customer": {[]api.QuoteLine{{ChargeCode: "AIR_FREIGHT", Source: api.LineRated, SnapshotID: "RS-T", Cost: cny(0)}},
+			"another purpose, legal entity or customer"},
+		"a code the snapshot did not rate": {[]api.QuoteLine{{ChargeCode: "PICKUP", Source: api.LineRated, SnapshotID: "RS-Q", Cost: cny(0)}}, "rated no sell"},
+		"an override without a reason": {[]api.QuoteLine{{ChargeCode: "DOC_FEE", Source: api.LineRatedOverridden, SnapshotID: "RS-Q", Sell: cny(1),
+			Cost: cny(0)}}, "reason"},
+		"a snapshot nobody recorded": {[]api.QuoteLine{{ChargeCode: "DOC_FEE", Source: api.LineRated, SnapshotID: "RS-NONE", Cost: cny(0)}}, "RS-NONE"},
+	} {
+		q := quote("Q-X", tc.lines...)
+		q.CommandID = "create-" + name
+		_, err := c.module.CreateQuote(c.ctx, q)
+		c.rejected(name, err, api.ErrRejected, tc.text)
+	}
+	other := quote("Q-S", freight)
+	other.Scope = &api.QuoteScope{Mode: api.ModeAir, ContainerMode: api.ContainerLoose, Origin: "CNPVG", Destination: "USLAX",
+		Cargo: api.Cargo{Pieces: 3, GrossGrams: 100_000, VolumeCM3: 900_000}}
+	_, err = c.module.CreateQuote(c.ctx, other)
+	c.rejected("a scope unlike the snapshot's", err, api.ErrRejected, "another lane")
+	c.must(c.module.DeactivateChargeCode(c.ctx, api.DeactivateChargeCode{CommandID: "deactivate-handling", TenantID: c.tenant, ActorID: "md-1",
+		Code: "HANDLING", ExpectedVersion: 0, OccurredAt: c.h(5)}))
+	_, err = c.module.CreateQuote(c.ctx, quote("Q-H", api.QuoteLine{ChargeCode: "HANDLING", Sell: cny(1), Cost: cny(0)}))
+	c.rejected("an inactive code", err, api.ErrRejected, "inactive")
+
+	quoteRow := `INSERT INTO cargo_rate.quote (tenant_id,quote_id,legal_entity_id,customer_party_id,customer_party_revision,recipient_role,currency,valid_from,
+        valid_until,margin_floor_bp,author,status,scope_mode,scope_container_mode,scope_origin,scope_destination,scope_pieces,scope_gross_grams,
+        scope_volume_cm3,scope_documents) VALUES ($1,'Q-P','LE','acme',3,'CUSTOMER','CNY',now(),now()+interval '1 day',0,'x','PRICED','AIR','LOOSE',
+        'CNPVG','DEFRA',3,100000,900000,0)`
+	for name, tc := range map[string]struct{ sql, constraint string }{
+		"a rated line unlike its snapshot": {quoteRow + `;
+INSERT INTO cargo_rate.quote_line (tenant_id,quote_id,line_no,charge_code,sell_currency,sell_minor,cost_currency,cost_minor,source,snapshot_id,
+            sell_snapshot_line_no,rated_sell_currency,rated_sell_minor,code_version) VALUES ($1,'Q-P',1,'AIR_FREIGHT','CNY',1,'CNY',0,'RATED','RS-Q',1,'CNY',1,0)`,
+			"quote_line_rated"},
+		"a manual line naming a snapshot": {quoteRow + `;
+INSERT INTO cargo_rate.quote_line (tenant_id,quote_id,line_no,charge_code,sell_currency,sell_minor,cost_currency,cost_minor,source,snapshot_id,code_version)
+            VALUES ($1,'Q-P',1,'PICKUP','CNY',1,'CNY',0,'MANUAL','RS-Q',0)`, "quote_line_source"},
+		"an override selling the rated amount": {quoteRow + `;
+INSERT INTO cargo_rate.quote_line (tenant_id,quote_id,line_no,charge_code,sell_currency,sell_minor,cost_currency,cost_minor,source,snapshot_id,
+            sell_snapshot_line_no,rated_sell_currency,rated_sell_minor,override_reason,code_version)
+            VALUES ($1,'Q-P',1,'DOC_FEE','CNY',15000,'CNY',0,'RATED_OVERRIDDEN','RS-Q',2,'CNY',15000,'x',0)`, "quote_line_source"},
+	} {
+		err := c.statements(tc.sql)
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.Code != "23514" || pgErr.ConstraintName != tc.constraint {
 			t.Errorf("%s: %v", name, err)
 		}
 	}

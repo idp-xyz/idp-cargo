@@ -47,7 +47,7 @@ func TestOrderFromAnAcceptedQuote(t *testing.T) {
 		t.Helper()
 		if _, err := rateModule.CreateQuote(ctx, rateapi.CreateQuote{CommandID: "create-" + id, TenantID: tenant, ActorID: "sales-1",
 			QuoteID: id, LegalEntityID: "LE", CustomerPartyID: "party-s", Currency: "USD",
-			Lines:    []rateapi.QuoteLine{{ChargeCode: "FREIGHT", Sell: usd(100_000), Cost: usd(50_000)}},
+			Lines:    []rateapi.QuoteLine{{ChargeCode: "AIR_FREIGHT", Sell: usd(100_000), Cost: usd(50_000)}},
 			Validity: kernel.ValidityInterval{From: at, Until: at.Add(14 * 24 * time.Hour)}, OccurredAt: at.Add(time.Minute)}); err != nil {
 			t.Fatal(err)
 		}

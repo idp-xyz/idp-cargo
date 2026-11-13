@@ -46,7 +46,7 @@ func TestAirPlanAgainstTheLocationReferenceData(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err = rateModule.CreateQuote(ctx, rateapi.CreateQuote{CommandID: "quote", TenantID: tenant, ActorID: "sales-1", QuoteID: "Q-1", LegalEntityID: "LE",
-		CustomerPartyID: "party-a", Currency: "USD", Lines: []rateapi.QuoteLine{{ChargeCode: "FREIGHT", Sell: usd(100_000), Cost: usd(50_000)}},
+		CustomerPartyID: "party-a", Currency: "USD", Lines: []rateapi.QuoteLine{{ChargeCode: "AIR_FREIGHT", Sell: usd(100_000), Cost: usd(50_000)}},
 		Validity: kernel.ValidityInterval{From: at, Until: at.Add(14 * 24 * time.Hour)}, OccurredAt: at.Add(time.Minute)}); err != nil {
 		t.Fatal(err)
 	}

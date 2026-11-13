@@ -21,7 +21,7 @@ func TestQuoteEventsMatchPublishedContract(t *testing.T) {
 	quote, err := domain.PriceQuote(domain.QuoteDraft{
 		TenantID: "T", QuoteID: "Q", LegalEntityID: "LE", Customer: domain.CustomerRef{PartyID: "P", PartyRevision: 2},
 		Recipient: domain.RecipientCustomer, Currency: "USD",
-		Lines:    []domain.Line{{ChargeCode: "FREIGHT", Sell: kernel.Money{Currency: "USD", Minor: 100}, Cost: kernel.Money{Currency: "USD", Minor: 50}}},
+		Lines:    []domain.Line{{ChargeCode: "AIR_FREIGHT", Sell: kernel.Money{Currency: "USD", Minor: 100}, Cost: kernel.Money{Currency: "USD", Minor: 50}}},
 		Validity: kernel.ValidityInterval{From: at, Until: at.Add(time.Hour)}, Author: "sales-1",
 	}, at)
 	if err != nil {
@@ -33,7 +33,7 @@ func TestQuoteEventsMatchPublishedContract(t *testing.T) {
 	expired, err := domain.PriceQuote(domain.QuoteDraft{
 		TenantID: "T", QuoteID: "Q", LegalEntityID: "LE", Customer: domain.CustomerRef{PartyID: "P", PartyRevision: 2},
 		Recipient: domain.RecipientCustomer, Currency: "USD",
-		Lines:    []domain.Line{{ChargeCode: "FREIGHT", Sell: kernel.Money{Currency: "USD", Minor: 100}, Cost: kernel.Money{Currency: "USD", Minor: 50}}},
+		Lines:    []domain.Line{{ChargeCode: "AIR_FREIGHT", Sell: kernel.Money{Currency: "USD", Minor: 100}, Cost: kernel.Money{Currency: "USD", Minor: 50}}},
 		Validity: kernel.ValidityInterval{From: at, Until: at.Add(time.Hour)}, Author: "sales-1",
 	}, at)
 	if err == nil {
