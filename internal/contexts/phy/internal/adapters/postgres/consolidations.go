@@ -199,17 +199,17 @@ func (s ConsolidationStore) Save(ctx context.Context, c *phy.Consolidation, expe
 	return revision, writeUnits(ctx, q, c)
 }
 
-// writeUnits inserts the load units planned since the consolidation was loaded and writes the removal of earlier ones.
+// writeUnits inserts the load units planned since the consolidation was loaded, as planned, then writes the removals
+// made since, a unit planned in the same transaction included.
 func writeUnits(ctx context.Context, q bentopg.Executor, c *phy.Consolidation) error {
 	st := c.State()
 	for _, u := range c.AddedLoadUnits() {
 		l := u.Limits
 		if _, err := q.Exec(ctx, `INSERT INTO cargo_phy.planned_load_unit (tenant_id,consolidation_id,unit_no,kind,type_code,equipment_edition,
-            teu_tenths,max_gross_kg,tare_kg,capacity_cm3,status,planned_by,planned_at,planned_entered_at,remove_reason,removed_by,removed_at,
-            remove_entered_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
+            teu_tenths,max_gross_kg,tare_kg,capacity_cm3,status,planned_by,planned_at,planned_entered_at)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'PLANNED',$11,$12,$13)`,
 			string(st.TenantID), string(st.ConsolidationID), u.No, string(u.Kind), l.TypeCode, l.Edition, l.TEUTenths, l.MaxGrossKg, l.TareKg,
-			l.CapacityCM3, string(u.Status), u.PlannedBy, u.PlannedAt, u.PlannedEnteredAt, orNull(u.RemoveReason), orNull(u.RemovedBy),
-			orNull(u.RemovedAt), orNull(u.RemoveEnteredAt)); err != nil {
+			l.CapacityCM3, u.PlannedBy, u.PlannedAt, u.PlannedEnteredAt); err != nil {
 			return err
 		}
 	}

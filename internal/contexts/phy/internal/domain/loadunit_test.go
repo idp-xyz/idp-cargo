@@ -133,7 +133,8 @@ func TestLoadUnitLifecycle(t *testing.T) {
 	}
 	c.Acknowledge()
 
-	// A unit planned and removed before the consolidation is written is written once, removed.
+	// A unit planned and removed before the consolidation is written is added and removed: the store writes it as
+	// planned, then its removal.
 	no, err := c.PlanLoadUnit(UnitContainer, unit22G1, "ops-1", t0.Add(4*time.Hour))
 	if err != nil || no != 3 {
 		t.Fatal(no, err)
@@ -143,7 +144,7 @@ func TestLoadUnitLifecycle(t *testing.T) {
 	}
 	c.Stamp(t0.Add(5 * time.Hour))
 	if added, removed := c.AddedLoadUnits(), c.RemovedLoadUnits(); len(added) != 1 || added[0].Status != UnitRemoved ||
-		added[0].RemoveEnteredAt.IsZero() || len(removed) != 0 {
+		added[0].RemoveEnteredAt.IsZero() || len(removed) != 1 || removed[0].No != 3 {
 		t.Fatalf("added %+v, removed %+v", added, removed)
 	}
 	c.Acknowledge()
@@ -187,5 +188,53 @@ func TestRestoreRefusesInvalidLoadUnits(t *testing.T) {
 	}
 	if _, err := RestoreConsolidation(good); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A load unit planned or removed is a change of the consolidation: nothing later may be dated before it.
+func TestNothingIsDatedBeforeALoadUnitChange(t *testing.T) {
+	planned := func(t *testing.T) *Consolidation {
+		c := seaConsol(t, "C-1", KindSeaLCLOwn)
+		if _, err := c.PlanLoadUnit(UnitContainer, unit22G1, "ops-1", t0.Add(5*time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	early := t0.Add(time.Hour)
+	for name, change := range map[string]func(*Consolidation, time.Time) error{
+		"cancel": func(c *Consolidation, at time.Time) error {
+			return c.Cancel("vessel omitted the port", "ops-1", at, 0, 0)
+		},
+		"close": func(c *Consolidation, at time.Time) error { return c.Close(1, t0, "ops-1", at) },
+		"amend": func(c *Consolidation, at time.Time) error {
+			return c.Amend(Route{}, t0.Add(80*time.Hour), t0.Add(70*time.Hour), "vessel change", "ops-1", at, 0)
+		},
+		"plan another": func(c *Consolidation, at time.Time) error {
+			_, err := c.PlanLoadUnit(UnitContainer, unit22G1, "ops-1", at)
+			return err
+		},
+		"remove": func(c *Consolidation, at time.Time) error { return c.RemovePlannedLoadUnit(1, "rolled", "ops-1", at) },
+	} {
+		c := planned(t)
+		if err := change(c, early); !errors.Is(err, ErrInvalidChange) {
+			t.Errorf("%s before the unit's planning: %v", name, err)
+		}
+		if err := change(c, t0.Add(5*time.Hour)); err != nil {
+			t.Errorf("%s at the unit's planning: %v", name, err)
+		}
+	}
+	// A removal moves the bound on too.
+	c := planned(t)
+	if err := c.RemovePlannedLoadUnit(1, "rolled", "ops-1", t0.Add(6*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Cancel("vessel omitted the port", "ops-1", t0.Add(5*time.Hour+30*time.Minute), 0, 0); !errors.Is(err, ErrInvalidChange) {
+		t.Fatalf("cancel before the removal: %v", err)
+	}
+	// A stored removal dated before its planning does not restore.
+	st := c.State()
+	st.LoadUnits[0].RemovedAt = t0.Add(4 * time.Hour)
+	if _, err := RestoreConsolidation(st); !errors.Is(err, ErrInvalidConsolidation) {
+		t.Fatalf("removal before planning restored: %v", err)
 	}
 }

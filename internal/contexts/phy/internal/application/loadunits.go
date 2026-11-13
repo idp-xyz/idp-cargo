@@ -31,14 +31,21 @@ type PlanLoadUnit struct {
 }
 
 func (h PlanLoadUnit) Handle(ctx context.Context, c PlanLoadUnitCommand) (Receipt, error) {
-	if h.Equipment == nil {
-		return Receipt{}, ErrMissingDependency
-	}
 	hash, entered, stored, replayed, err := h.begin(ctx, c.Scope, c.CommandID, c.OccurredAt, c)
 	if err != nil || replayed {
 		return stored, err
 	}
+	if h.Equipment == nil {
+		return Receipt{}, ErrMissingDependency
+	}
 	if err = h.authorize(ctx, c.Scope, ActionPlanLoadUnit, c.ConsolidationID); err != nil {
+		return Receipt{}, err
+	}
+	// The consolidation is read first, so that an unknown one is not found whatever the type.
+	if err = h.Tx.WithinTransaction(ctx, func(txCtx context.Context) error {
+		_, _, err := h.Consolidations.Read(txCtx, c.Scope.TenantID, c.ConsolidationID)
+		return err
+	}); err != nil {
 		return Receipt{}, err
 	}
 	var limits phy.UnitLimits

@@ -6,13 +6,20 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	bentopg "go.idp.xyz/idp-bento-go/postgres"
+	phymodule "go.idp.xyz/idp-cargo/internal/contexts/phy"
 	"go.idp.xyz/idp-cargo/internal/contexts/phy/api"
+	"go.idp.xyz/idp-cargo/internal/contexts/phy/internal/adapters/postgres"
+	phy "go.idp.xyz/idp-cargo/internal/contexts/phy/internal/domain"
+	scope "go.idp.xyz/idp-cargo/internal/foundation/bento"
 	refapi "go.idp.xyz/idp-cargo/internal/reference/api"
 )
 
@@ -93,7 +100,13 @@ func TestLoadUnitsOnPostgres(t *testing.T) {
 			c.ActorID = "intruder"
 			return c
 		}(), api.ErrUnauthorized},
-		"unknown consolidation": {f.planUnit("plan-404", "C-404", 1, "22G1"), api.ErrNotFound},
+		"unknown consolidation":          {f.planUnit("plan-404", "C-404", 1, "22G1"), api.ErrNotFound},
+		"unknown consolidation and type": {f.planUnit("plan-404-type", "C-404", 1, "99X9"), api.ErrNotFound},
+		"before the consolidation's latest change": {func() api.PlanLoadUnit {
+			c := f.planUnit("plan-early", "C-S", 3, "45G1")
+			c.OccurredAt = f.at.Add(30 * time.Minute)
+			return c
+		}(), api.ErrRejected},
 	} {
 		if r, err := f.module.PlanLoadUnit(ctx, tc.cmd); !errors.Is(err, tc.want) {
 			t.Errorf("%s: %+v, %v; want %v", name, r, err, tc.want)
@@ -151,7 +164,11 @@ func TestLoadUnitsOnPostgres(t *testing.T) {
 		t.Fatalf("events = %v", types)
 	}
 
-	// A cancelled consolidation keeps its units as they are.
+	// Nothing later is dated before a unit's planning or removal; a cancelled consolidation keeps its units as they are.
+	if _, err = f.module.CancelConsolidation(ctx, api.CancelConsolidation{CommandID: "cancel-early", TenantID: f.tenant, ActorID: "ops-1",
+		ConsolidationID: "C-S", ExpectedRevision: 4, Reason: "vessel omitted the port", OccurredAt: f.at.Add(90 * time.Minute)}); !errors.Is(err, api.ErrRejected) {
+		t.Fatalf("a cancel dated before the removal: %v", err)
+	}
 	if _, err = f.module.CancelConsolidation(ctx, api.CancelConsolidation{CommandID: "cancel", TenantID: f.tenant, ActorID: "ops-1",
 		ConsolidationID: "C-S", ExpectedRevision: 4, Reason: "vessel omitted the port", OccurredAt: f.at.Add(3 * time.Hour)}); err != nil {
 		t.Fatal(err)
@@ -239,5 +256,123 @@ func TestLoadUnitDatabaseRules(t *testing.T) {
 		return nil
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A unit planned and removed in one transaction is written as planned, then removed.
+func TestPlanAndRemoveInOneTransaction(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	f.createSea(t, "C-S", api.KindSeaLCLOwn)
+	store := postgres.ConsolidationStore{DB: f.db}
+	limits := phy.UnitLimits{TypeCode: "22G1", TEUTenths: 10, MaxGrossKg: 30480, TareKg: 2250, CapacityCM3: 33200000, Edition: equipmentS1}
+	if err := (scope.TenantTransactor{DB: f.db, Tenant: f.tenant}).WithinTransaction(ctx, func(txCtx context.Context) error {
+		c, revision, err := store.Load(txCtx, phy.TenantID(f.tenant), "C-S")
+		if err != nil {
+			return err
+		}
+		no, err := c.PlanLoadUnit(phy.UnitContainer, limits, "ops-1", f.at.Add(time.Hour))
+		if err != nil {
+			return err
+		}
+		if err = c.RemovePlannedLoadUnit(no, "planned by mistake", "ops-1", f.at.Add(time.Hour)); err != nil {
+			return err
+		}
+		c.Stamp(time.Now().UTC().Truncate(time.Microsecond))
+		_, err = store.Save(txCtx, c, revision)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	c := f.consolidation(t, "C-S")
+	if len(c.LoadUnits) != 1 || c.LoadUnits[0].Status != api.UnitStatusRemoved || c.LoadUnits[0].RemoveReason != "planned by mistake" || c.Revision != 2 {
+		t.Fatalf("consolidation: revision %d, units %+v", c.Revision, c.LoadUnits)
+	}
+}
+
+// A module without the equipment reference data still replays a committed plan, and refuses a new one.
+func TestPlanLoadUnitReplaysWithoutEquipment(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	f.createSea(t, "C-S", api.KindSeaLCLOwn)
+	first, err := f.module.PlanLoadUnit(ctx, f.planUnit("plan-1", "C-S", 1, "22G1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bare, err := phymodule.New(f.db, f.ful, policy{}, phymodule.WithLocations(locationStub{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again, err := bare.PlanLoadUnit(ctx, f.planUnit("plan-1", "C-S", 1, "22G1")); err != nil || again != first {
+		t.Fatalf("replay without equipment = %+v, %v; want %+v", again, err, first)
+	}
+	if _, err = bare.PlanLoadUnit(ctx, f.planUnit("plan-2", "C-S", 2, "42G1")); err == nil || errors.Is(err, api.ErrRejected) {
+		t.Fatalf("a new plan without equipment: %v", err)
+	}
+}
+
+// The database dates a unit's planning and removal and the consolidation's versions after one another.
+func TestLoadUnitTimesOnPostgres(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	f.createSea(t, "C-S", api.KindSeaLCLOwn)
+	plan := f.planUnit("plan-1", "C-S", 1, "22G1")
+	plan.OccurredAt = f.at.Add(5 * time.Hour)
+	if _, err := f.module.PlanLoadUnit(ctx, plan); err != nil {
+		t.Fatal(err)
+	}
+	for name, tc := range map[string]struct{ sql, constraint string }{
+		"a unit planned before the latest change": {`INSERT INTO cargo_phy.planned_load_unit (tenant_id,consolidation_id,unit_no,kind,type_code,
+            equipment_edition,teu_tenths,max_gross_kg,tare_kg,capacity_cm3,status,planned_by,planned_at,planned_entered_at)
+            SELECT $1,'C-S',2,'CONTAINER','22G1','` + equipmentS1 + `',10,30480,2250,33200000,'PLANNED','x',planned_at - interval '1 hour',now()
+            FROM cargo_phy.planned_load_unit WHERE tenant_id=$1 AND unit_no=1`, "planned_load_unit_time"},
+		"a removal before the latest change": {`UPDATE cargo_phy.planned_load_unit SET status='REMOVED', remove_reason='x', removed_by='x',
+            removed_at=planned_at - interval '1 hour', remove_entered_at=now() WHERE tenant_id=$1`, "planned_load_unit_time"},
+		"a version before a unit's planning": {`INSERT INTO cargo_phy.consolidation_version (tenant_id,consolidation_id,version_no,change,state,
+            origin_code,destination_code,location_edition,planned_departure,house_cut_off,reason,written_by,written_at,entered_at)
+            SELECT tenant_id,consolidation_id,2,'CANCELLED','CANCELLED',origin_code,destination_code,location_edition,planned_departure,
+              house_cut_off,'x','x',written_at + interval '1 hour',now()
+            FROM cargo_phy.consolidation_version WHERE tenant_id=$1 AND version_no=1`, "consolidation_version_after_units"},
+	} {
+		err := f.within(t, func(ctx context.Context, e bentopg.Executor) error {
+			_, err := e.Exec(ctx, tc.sql, f.tenant)
+			return err
+		})
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.Code != "23514" || pgErr.ConstraintName != tc.constraint {
+			t.Errorf("%s: %v, want %s", name, err, tc.constraint)
+		}
+	}
+}
+
+// The trigger keeps units even from a role the grants allow more: the migrator may neither rewrite nor delete one.
+func TestLoadUnitsKeptFromTheMigrator(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	f.createSea(t, "C-S", api.KindSeaLCLOwn)
+	if _, err := f.module.PlanLoadUnit(ctx, f.planUnit("plan-1", "C-S", 1, "22G1")); err != nil {
+		t.Fatal(err)
+	}
+	dsn := os.Getenv("IDP_CARGO_MIGRATOR_DSN")
+	if dsn == "" {
+		if os.Getenv("CI") != "" {
+			t.Fatal("IDP_CARGO_MIGRATOR_DSN required in CI; skipping forbidden")
+		}
+		t.Skip("set IDP_CARGO_MIGRATOR_DSN to test the trigger as the migrator role")
+	}
+	conn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(ctx)
+	for name, sql := range map[string]string{
+		"limits":  `UPDATE cargo_phy.planned_load_unit SET tare_kg = 1 WHERE tenant_id = $1`,
+		"type":    `UPDATE cargo_phy.planned_load_unit SET type_code = '42G1' WHERE tenant_id = $1`,
+		"planner": `UPDATE cargo_phy.planned_load_unit SET planned_by = 'someone else' WHERE tenant_id = $1`,
+		"delete":  `DELETE FROM cargo_phy.planned_load_unit WHERE tenant_id = $1`,
+	} {
+		if _, err := conn.Exec(ctx, sql, f.tenant); sqlState(err) != "23001" {
+			t.Errorf("%s: %v (state %s), want 23001", name, err, sqlState(err))
+		}
 	}
 }

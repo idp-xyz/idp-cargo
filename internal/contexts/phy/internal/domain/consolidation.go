@@ -261,11 +261,21 @@ func (c *Consolidation) change(change Change, reason, by string, at time.Time) e
 	return nil
 }
 
+// changeable checks who changes the consolidation and that the business time is not before its latest change: its
+// current version, or a load unit planned or removed since.
 func (c *Consolidation) changeable(by string, at time.Time) error {
-	if blank(by) || at.IsZero() || at.Before(c.Current().At) {
+	if blank(by) || at.IsZero() || at.Before(c.lastChange()) {
 		return ErrInvalidChange
 	}
 	return nil
+}
+
+func (c *Consolidation) lastChange() time.Time {
+	last := c.Current().At
+	for _, u := range c.state.LoadUnits {
+		last = later(later(last, u.PlannedAt), u.RemovedAt)
+	}
+	return last
 }
 
 func (c *Consolidation) add(v Version) {

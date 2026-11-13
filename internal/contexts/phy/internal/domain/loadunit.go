@@ -102,9 +102,6 @@ func (c *Consolidation) RemovePlannedLoadUnit(no int, reason, by string, at time
 		return err
 	}
 	u := &c.state.LoadUnits[no-1]
-	if at.Before(u.PlannedAt) {
-		return ErrInvalidChange
-	}
 	u.Status, u.RemoveReason, u.RemovedBy, u.RemovedAt = UnitRemoved, reason, by, at.UTC()
 	c.removed = append(c.removed, no)
 	c.unitEvent(eventLoadUnitRemoved, no, at)
@@ -128,8 +125,9 @@ func (c *Consolidation) LiveLoadUnits() []PlannedLoadUnit {
 	return out
 }
 
-// AddedLoadUnits returns the units planned since the consolidation was restored; RemovedLoadUnits the units removed
-// since then.
+// AddedLoadUnits returns the units planned since the consolidation was restored, as they now are; RemovedLoadUnits
+// the units removed since then, in the order removed. A unit planned and removed since is in both: the store writes
+// it as planned, then its removal.
 func (c *Consolidation) AddedLoadUnits() []PlannedLoadUnit {
 	return append([]PlannedLoadUnit(nil), c.state.LoadUnits[c.units:]...)
 }
@@ -137,9 +135,7 @@ func (c *Consolidation) AddedLoadUnits() []PlannedLoadUnit {
 func (c *Consolidation) RemovedLoadUnits() []PlannedLoadUnit {
 	var out []PlannedLoadUnit
 	for _, no := range c.removed {
-		if no <= c.units { // a unit planned and removed in one transaction is written once, removed
-			out = append(out, c.state.LoadUnits[no-1])
-		}
+		out = append(out, c.state.LoadUnits[no-1])
 	}
 	return out
 }
@@ -151,7 +147,8 @@ func validUnits(st ConsolidationState) bool {
 		removed := u.Status == UnitRemoved
 		if u.No != i+1 || u.Kind != UnitContainer || st.Kind != KindSeaLCLOwn || !u.Limits.valid() ||
 			(u.Status != UnitPlanned && !removed) || blank(u.PlannedBy) || u.PlannedAt.IsZero() ||
-			removed != text(u.RemoveReason) || removed == blank(u.RemovedBy) || removed == u.RemovedAt.IsZero() {
+			removed != text(u.RemoveReason) || removed == blank(u.RemovedBy) || removed == u.RemovedAt.IsZero() ||
+			(removed && u.RemovedAt.Before(u.PlannedAt)) {
 			return false
 		}
 	}

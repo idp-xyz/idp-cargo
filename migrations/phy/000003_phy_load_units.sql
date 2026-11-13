@@ -40,13 +40,16 @@ CREATE TABLE cargo_phy.planned_load_unit (
 
 -- A unit follows the consolidation's previous one, on an own-container LCL consolidation that is OPEN or CLOSED, with
 -- the limits its type has in the edition named. Only its removal is written later, once, while the consolidation is
--- OPEN or CLOSED. Units are never deleted. The consolidation row is locked first, as its commands lock it.
+-- OPEN or CLOSED. Units are never deleted. A planning or removal is a change of the consolidation: its business time
+-- is not before the consolidation's latest version or any unit planned or removed. The consolidation row is locked
+-- first, as its commands lock it.
 CREATE FUNCTION cargo_phy.check_planned_load_unit() RETURNS trigger LANGUAGE plpgsql AS $fn$
 DECLARE
   removal text[] := ARRAY['status','remove_reason','removed_by','removed_at','remove_entered_at'];
   c cargo_phy.consolidation;
   t cargo_ref.container_size_type;
   last integer;
+  latest timestamptz;
 BEGIN
   IF TG_OP = 'DELETE' THEN
     RAISE EXCEPTION 'cargo_phy: planned load units are kept' USING ERRCODE = 'restrict_violation';
@@ -59,6 +62,14 @@ BEGIN
   IF c.state IS NULL OR c.state NOT IN ('OPEN','CLOSED') THEN
     RAISE EXCEPTION 'cargo_phy: consolidation %/% is %; its load units are frozen', NEW.tenant_id, NEW.consolidation_id, c.state
       USING ERRCODE = 'check_violation', CONSTRAINT = 'planned_load_unit_frozen';
+  END IF;
+  SELECT greatest((SELECT max(written_at) FROM cargo_phy.consolidation_version v
+      WHERE v.tenant_id = NEW.tenant_id AND v.consolidation_id = NEW.consolidation_id),
+    (SELECT max(greatest(u.planned_at, u.removed_at)) FROM cargo_phy.planned_load_unit u
+      WHERE u.tenant_id = NEW.tenant_id AND u.consolidation_id = NEW.consolidation_id)) INTO latest;
+  IF (CASE TG_OP WHEN 'INSERT' THEN NEW.planned_at ELSE NEW.removed_at END) < latest THEN
+    RAISE EXCEPTION 'cargo_phy: load unit %/%/% is dated before the consolidation''s latest change', NEW.tenant_id, NEW.consolidation_id,
+      NEW.unit_no USING ERRCODE = 'check_violation', CONSTRAINT = 'planned_load_unit_time';
   END IF;
   IF TG_OP = 'UPDATE' THEN
     RETURN NEW;
@@ -74,6 +85,20 @@ BEGIN
 END $fn$;
 CREATE TRIGGER planned_load_unit_rules BEFORE INSERT OR UPDATE OR DELETE ON cargo_phy.planned_load_unit
   FOR EACH ROW EXECUTE FUNCTION cargo_phy.check_planned_load_unit();
+
+-- Likewise, a consolidation version is not dated before a unit's planning or removal. It runs after
+-- consolidation_version_rules, which locks the consolidation row.
+CREATE FUNCTION cargo_phy.check_version_after_units() RETURNS trigger LANGUAGE plpgsql AS $fn$
+BEGIN
+  IF EXISTS (SELECT 1 FROM cargo_phy.planned_load_unit u WHERE u.tenant_id = NEW.tenant_id AND u.consolidation_id = NEW.consolidation_id
+       AND greatest(u.planned_at, u.removed_at) > NEW.written_at) THEN
+    RAISE EXCEPTION 'cargo_phy: version % of consolidation %/% is dated before a load unit change', NEW.version_no, NEW.tenant_id,
+      NEW.consolidation_id USING ERRCODE = 'check_violation', CONSTRAINT = 'consolidation_version_after_units';
+  END IF;
+  RETURN NEW;
+END $fn$;
+CREATE TRIGGER consolidation_version_units BEFORE INSERT ON cargo_phy.consolidation_version
+  FOR EACH ROW EXECUTE FUNCTION cargo_phy.check_version_after_units();
 
 -- Tenant isolation as in the other PHY tables.
 ALTER TABLE cargo_phy.planned_load_unit ENABLE ROW LEVEL SECURITY;
