@@ -64,13 +64,16 @@ type ConsolidationState struct {
 	OperatingLegalEntityID string
 	State                  State
 	Versions               []Version
+	LoadUnits              []PlannedLoadUnit // planned load units, numbered in the order planned (V0.3)
 }
 
 // Consolidation is the aggregate root of a consolidation. Its identity is its own, never a MAWB, MBL,
 // booking or co-load bill number (G04-06). Versions are only added.
 type Consolidation struct {
 	state    ConsolidationState
-	versions int // versions already persisted
+	versions int   // versions already persisted
+	units    int   // load units already persisted
+	removed  []int // load units removed since then
 	pending  []Event
 }
 
@@ -258,11 +261,21 @@ func (c *Consolidation) change(change Change, reason, by string, at time.Time) e
 	return nil
 }
 
+// changeable checks who changes the consolidation and that the business time is not before its latest change: its
+// current version, or a load unit planned or removed since.
 func (c *Consolidation) changeable(by string, at time.Time) error {
-	if blank(by) || at.IsZero() || at.Before(c.Current().At) {
+	if blank(by) || at.IsZero() || at.Before(c.lastChange()) {
 		return ErrInvalidChange
 	}
 	return nil
+}
+
+func (c *Consolidation) lastChange() time.Time {
+	last := c.Current().At
+	for _, u := range c.state.LoadUnits {
+		last = later(later(last, u.PlannedAt), u.RemovedAt)
+	}
+	return last
 }
 
 func (c *Consolidation) add(v Version) {
@@ -277,17 +290,29 @@ func (c *Consolidation) add(v Version) {
 		ConsolidationID: c.state.ConsolidationID, Version: v.No})
 }
 
-// Stamp records when PHY entered the versions added since the consolidation was loaded (T1).
+// Stamp records when PHY entered the versions, load units and removals added since the consolidation was loaded (T1).
 func (c *Consolidation) Stamp(entered time.Time) {
 	for i := c.versions; i < len(c.state.Versions); i++ {
 		c.state.Versions[i].EnteredAt = entered.UTC()
+	}
+	for i := c.units; i < len(c.state.LoadUnits); i++ {
+		c.state.LoadUnits[i].PlannedEnteredAt = entered.UTC()
+	}
+	for _, no := range c.removed {
+		if u := &c.state.LoadUnits[no-1]; u.RemoveEnteredAt.IsZero() {
+			u.RemoveEnteredAt = entered.UTC()
+		}
 	}
 }
 
 // RestoreConsolidation rebuilds a stored consolidation without emitting events.
 func RestoreConsolidation(st ConsolidationState) (*Consolidation, error) {
 	st.Versions = append([]Version(nil), st.Versions...)
-	c := &Consolidation{state: st, versions: len(st.Versions)}
+	st.LoadUnits = append([]PlannedLoadUnit(nil), st.LoadUnits...)
+	c := &Consolidation{state: st, versions: len(st.Versions), units: len(st.LoadUnits)}
+	if !validUnits(st) {
+		return nil, fmt.Errorf("%w: load units", ErrInvalidConsolidation)
+	}
 	if !identifier(string(st.TenantID)) || !identifier(string(st.ConsolidationID)) || !identifier(st.OperatingLegalEntityID) ||
 		!st.Mode.Valid() || !st.Kind.fits(st.Mode) || len(st.Versions) == 0 {
 		return nil, ErrInvalidConsolidation
@@ -328,6 +353,7 @@ func (c *Consolidation) Current() Version { return c.state.Versions[len(c.state.
 func (c *Consolidation) State() ConsolidationState {
 	st := c.state
 	st.Versions = append([]Version(nil), st.Versions...)
+	st.LoadUnits = append([]PlannedLoadUnit(nil), st.LoadUnits...)
 	return st
 }
 
@@ -344,5 +370,5 @@ func (c *Consolidation) AddedVersions() []Version {
 // Acknowledge is permitted only after the transaction holding the consolidation and its Outbox events commits.
 func (c *Consolidation) Acknowledge() {
 	c.pending = nil
-	c.versions = len(c.state.Versions)
+	c.versions, c.units, c.removed = len(c.state.Versions), len(c.state.LoadUnits), nil
 }

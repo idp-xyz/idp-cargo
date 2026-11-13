@@ -34,6 +34,7 @@ import (
 	rateapi "go.idp.xyz/idp-cargo/internal/contexts/rate/api"
 	"go.idp.xyz/idp-cargo/internal/foundation/bento"
 	"go.idp.xyz/idp-cargo/internal/foundation/messaging"
+	"go.idp.xyz/idp-cargo/internal/reference/equipment"
 	"go.idp.xyz/idp-cargo/internal/reference/locations"
 )
 
@@ -132,7 +133,8 @@ func (p *Platform) FUL(com comapi.Queries, auth fulapi.Authorizer, opts ...ful.O
 }
 
 // PHY assembles the PHY bounded context for consolidations. ful is used only through LoadIntent v1
-// (relationship 7); routes are resolved against the location reference data (F2).
+// (relationship 7); routes are resolved against the location reference data (F2), load units against the
+// equipment reference data (PB8).
 func (p *Platform) PHY(ful fulapi.LoadIntentQueries, auth phyapi.Authorizer, opts ...phy.Option) (*phy.Module, error) {
 	db, err := p.newDB()
 	if err != nil {
@@ -142,7 +144,11 @@ func (p *Platform) PHY(ful fulapi.LoadIntentQueries, auth phyapi.Authorizer, opt
 	if err != nil {
 		return nil, err
 	}
-	return phy.New(db, ful, auth, append([]phy.Option{phy.WithLocations(locations)}, opts...)...)
+	equipment, err := p.Equipment()
+	if err != nil {
+		return nil, err
+	}
+	return phy.New(db, ful, auth, append([]phy.Option{phy.WithLocations(locations), phy.WithEquipment(equipment)}, opts...)...)
 }
 
 // FULAndPHY assembles FUL and PHY, which read each other's query sides: PHY reads FUL's LoadIntent v1 before it
@@ -283,6 +289,15 @@ func (p *Platform) Locations() (locations.Directory, error) {
 		return locations.Directory{}, err
 	}
 	return locations.New(db)
+}
+
+// Equipment assembles the read-only equipment reference data (PB8).
+func (p *Platform) Equipment() (equipment.Directory, error) {
+	db, err := p.newDB()
+	if err != nil {
+		return equipment.Directory{}, err
+	}
+	return equipment.New(db)
 }
 
 // RelayConfig configures the Outbox relay that publishes to an HTTP sink.

@@ -25,7 +25,7 @@ import (
 )
 
 // Module wires PHY's use cases to PostgreSQL through IDP-Bento-Go, to FUL's LoadIntent v1 and to the
-// location reference data.
+// location and equipment reference data.
 type Module struct {
 	db        *bentopg.DB
 	outbox    *bentooutbox.Store
@@ -34,6 +34,7 @@ type Module struct {
 	clock     bento.SystemClock
 	window    kernel.RecordWindow
 	locations application.Locations // nil until wired
+	equipment application.Equipment // nil until wired
 }
 
 // Option configures a Module.
@@ -49,6 +50,16 @@ func WithLocations(l refapi.Locations) Option {
 	return func(m *Module) {
 		if l != nil {
 			m.locations = refacl.Locations{Ref: l}
+		}
+	}
+}
+
+// WithEquipment gives PHY the equipment reference data that planned load units are resolved against (PB8).
+// Without it no load unit can be planned.
+func WithEquipment(e refapi.Equipment) Option {
+	return func(m *Module) {
+		if e != nil {
+			m.equipment = refacl.Equipment{Ref: e}
 		}
 	}
 }
@@ -169,6 +180,22 @@ func (m *Module) ReconcileConsolidation(ctx context.Context, cmd api.ReconcileCo
 	return toReceipt(r, err)
 }
 
+func (m *Module) PlanLoadUnit(ctx context.Context, cmd api.PlanLoadUnit) (api.Receipt, error) {
+	r, err := application.PlanLoadUnit{Deps: m.deps(cmd.TenantID, cmd.CommandID), Equipment: m.equipment}.Handle(ctx,
+		application.PlanLoadUnitCommand{CommandID: cmd.CommandID, Scope: scope(cmd.TenantID, cmd.ActorID),
+			ConsolidationID: domain.ConsolidationID(cmd.ConsolidationID), ExpectedRevision: cmd.ExpectedRevision,
+			Kind: domain.LoadUnitKind(cmd.Kind), TypeCode: cmd.TypeCode, OccurredAt: stored(cmd.OccurredAt)})
+	return toReceipt(r, err)
+}
+
+func (m *Module) RemovePlannedLoadUnit(ctx context.Context, cmd api.RemovePlannedLoadUnit) (api.Receipt, error) {
+	r, err := application.RemovePlannedLoadUnit{Deps: m.deps(cmd.TenantID, cmd.CommandID)}.Handle(ctx,
+		application.RemovePlannedLoadUnitCommand{CommandID: cmd.CommandID, Scope: scope(cmd.TenantID, cmd.ActorID),
+			ConsolidationID: domain.ConsolidationID(cmd.ConsolidationID), ExpectedRevision: cmd.ExpectedRevision, UnitNo: cmd.UnitNo,
+			Reason: cmd.Reason, OccurredAt: stored(cmd.OccurredAt)})
+	return toReceipt(r, err)
+}
+
 func (m *Module) GetConsolidation(ctx context.Context, q api.GetConsolidation) (api.Consolidation, error) {
 	c, revision, houses, err := m.reads(q.TenantID).Consolidation(ctx, domain.TenantID(q.TenantID), domain.ConsolidationID(q.ConsolidationID))
 	if err != nil {
@@ -187,7 +214,17 @@ func (m *Module) GetConsolidation(ctx context.Context, q api.GetConsolidation) (
 			FULRevision: e.FULRevision, PlanVersion: e.PlanVersion, Packs: e.Scope.Packs, GrossWeight: e.Scope.GrossWeight,
 			Volume: e.Scope.Volume, AttachedAt: e.At})
 	}
+	for _, u := range st.LoadUnits {
+		out.LoadUnits = append(out.LoadUnits, loadUnit(u))
+	}
 	return out, nil
+}
+
+func loadUnit(u domain.PlannedLoadUnit) api.PlannedLoadUnit {
+	l := u.Limits
+	return api.PlannedLoadUnit{UnitNo: u.No, Kind: string(u.Kind), TypeCode: l.TypeCode, TEUTenths: l.TEUTenths, MaxGrossKg: l.MaxGrossKg,
+		TareKg: l.TareKg, CapacityCM3: l.CapacityCM3, EquipmentEdition: l.Edition, Status: string(u.Status), PlannedAt: u.PlannedAt,
+		RemoveReason: u.RemoveReason, RemovedAt: u.RemovedAt}
 }
 
 func (m *Module) GetConsolMembership(ctx context.Context, q api.GetConsolMembership) (api.ConsolMembership, error) {
@@ -316,7 +353,8 @@ func classify(err error) error {
 		errors.Is(err, domain.ErrInvalidTransition), errors.Is(err, domain.ErrInvalidChange), errors.Is(err, domain.ErrNotOpen),
 		errors.Is(err, domain.ErrHousesAttached), errors.Is(err, domain.ErrNoHouses), errors.Is(err, domain.ErrInvalidIntent),
 		errors.Is(err, domain.ErrIntentNotPlanned), errors.Is(err, domain.ErrModeMismatch), errors.Is(err, domain.ErrRouteMismatch),
-		errors.Is(err, domain.ErrFCLHouse),
+		errors.Is(err, domain.ErrFCLHouse), errors.Is(err, domain.ErrInvalidLoadUnit), errors.Is(err, domain.ErrLoadUnitKind),
+		errors.Is(err, application.ErrEquipmentRefused),
 		errors.Is(err, domain.ErrWindowMismatch), errors.Is(err, domain.ErrOtherLegalEntity), errors.Is(err, domain.ErrInvalidMembership),
 		errors.Is(err, domain.ErrAlreadyAttached), errors.Is(err, domain.ErrNotAttached), errors.Is(err, domain.ErrSameConsolidation),
 		errors.Is(err, domain.ErrInvalidReason), errors.Is(err, domain.ErrNothingToRefresh), errors.Is(err, domain.ErrShipmentNotCancelled),

@@ -231,6 +231,8 @@ const (
 	eventConsolidationReopened   = "ConsolidationReopened.v1"
 	eventConsolidationCancelled  = "ConsolidationCancelled.v1"
 	eventConsolidationReconciled = "ConsolidationReconciled.v1"
+	eventLoadUnitPlanned         = "LoadUnitPlanned.v1"
+	eventLoadUnitRemoved         = "LoadUnitRemoved.v1"
 	eventHouseAttached           = "HouseAttached.v1"
 	eventHouseDetached           = "HouseDetached.v1"
 	eventHouseTransferred        = "HouseTransferred.v1"

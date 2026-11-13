@@ -58,8 +58,26 @@ type Member struct {
 	AttachedAt         time.Time
 }
 
-// Consolidation is a consolidation with its current version, its version history and its live houses. It
-// carries no names and no carrier references.
+// PlannedLoadUnit is a load unit planned for a consolidation, with the limits of its type frozen from the
+// equipment reference data (TEU in tenths; kilograms; cubic centimetres) and the edition. Removed units keep their
+// number and say why.
+type PlannedLoadUnit struct {
+	UnitNo           int
+	Kind             string // LoadUnitContainer
+	TypeCode         string
+	TEUTenths        int
+	MaxGrossKg       int64
+	TareKg           int64
+	CapacityCM3      int64
+	EquipmentEdition string
+	Status           string // UnitStatusPlanned or UnitStatusRemoved
+	PlannedAt        time.Time
+	RemoveReason     string
+	RemovedAt        time.Time
+}
+
+// Consolidation is a consolidation with its current version, its version history, its live houses and its
+// planned load units. It carries no names and no carrier references.
 type Consolidation struct {
 	TenantID               string
 	ConsolidationID        string
@@ -71,6 +89,7 @@ type Consolidation struct {
 	Current                ConsolidationVersion
 	Versions               []ConsolidationVersion
 	Members                []Member
+	LoadUnits              []PlannedLoadUnit // every unit planned, removed ones included (PHY V0.3)
 }
 
 // ConsolidationSnapshot is what ConsolMembership v1 tells of the consolidation a house is in.

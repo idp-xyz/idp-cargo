@@ -45,6 +45,8 @@ func (s CommandReceipts) Find(ctx context.Context, tenant phy.TenantID, id strin
 		item = *entry
 	}
 	switch kind {
+	case "Consolidation":
+		r.ItemNo = item
 	case "ConsolMembership":
 		r.ShipmentID, r.EntryNo = phy.ShipmentID(result), item
 	case "CargoLot":
@@ -60,7 +62,7 @@ func (s CommandReceipts) Save(ctx context.Context, tenant phy.TenantID, r app.Re
 	if err != nil {
 		return err
 	}
-	kind, result, entry := "Consolidation", string(r.ConsolidationID), any(nil)
+	kind, result, entry := "Consolidation", string(r.ConsolidationID), orNull(r.ItemNo)
 	switch {
 	case r.LotID != "":
 		kind, result, entry = "CargoLot", string(r.LotID), orNull(r.ItemNo)
