@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"errors"
 	"fmt"
 	"math/bits"
 	"slices"
@@ -27,6 +28,13 @@ const (
 // ReasonAgreementBelowFloor: a lane of an agreement sells below the margin floor against the valid buy rates at its
 // reference quantity, or no buy rate prices it there in full (OD-4).
 const ReasonAgreementBelowFloor ApprovalReason = "AGREEMENT_BELOW_FLOOR"
+
+// ErrLaneTaken: a lane of an agreement is already priced for the customer by another of its cards over the same time.
+var ErrLaneTaken = errors.New("rate: RATE_LANE_TAKEN: another of the customer's cards rates the lane then")
+
+// EventQuoteAgreementPublished is recorded with QuoteAccepted.v1 when an AGREEMENT is accepted and its customer card
+// version published.
+const EventQuoteAgreementPublished = "QuoteAgreementPublished.v1"
 
 // AgreementRef is the customer card version an AGREEMENT quote prices with.
 type AgreementRef struct {
@@ -132,59 +140,140 @@ func (c *RateCard) AgreementVersion(no int, entity LegalEntityID, customer strin
 	if err = checkPublishable(st, *v, cat); err != nil {
 		return RateCardVersion{}, err
 	}
+	for _, o := range st.Versions {
+		if eff, ok := o.Effective(); o.No != no && ok && eff.overlaps(v.Validity) {
+			return RateCardVersion{}, fmt.Errorf("%w: version %d of card %s rates during the agreement", ErrVersionOverlap, o.No, st.RateCardID)
+		}
+	}
 	out := *v
 	out.Entries = cloneEntries(v.Entries)
 	return out, nil
 }
 
-// CheckAgreementEntry rates one entry of an agreement's version at the reference cargo (OD-4): its SELL lines from the
-// entry alone, its cost from the supplier cards given (the entry's carrier's when it names one, else the lowest total,
-// OD-2 A), at the later of at and the entry's start. Each line is converted into the quote currency.
+// CheckAgreementEntry rates one entry of an agreement's version at the reference cargo (OD-4), at the later of at and
+// the entry's start: its SELL lines from the entry alone, and its cost from the supplier cards given, each card rated
+// on its own (only the entry's carrier's when it names one) and the lowest total taken among those rated in full, every
+// line converted into the quote currency at the quote's rates (OD-2 A, across currencies). A lane that no longer rates
+// at that time is refused.
 func CheckAgreementEntry(q QuoteDraft, card RateCardState, v RateCardVersion, e RateEntry, buys []PublishedVersion, at time.Time) (AgreementCheck, error) {
 	from := AgreementCheckTime(v, e, at)
-	in := EvaluationInput{Purpose: PurposeQuoteLine, LegalEntityID: q.LegalEntityID, Sides: []Side{SideSell, SideBuy}, Customer: q.Customer,
+	if w := e.window(v.Validity); !w.contains(from) {
+		return AgreementCheck{}, fmt.Errorf("%w: entry %d no longer rates at %s", ErrInvalidQuote, e.No, from.Format(time.RFC3339))
+	}
+	in := EvaluationInput{Purpose: PurposeQuoteLine, LegalEntityID: q.LegalEntityID, Sides: []Side{SideSell}, Customer: q.Customer,
 		Carrier: e.Carrier, Mode: e.Mode, ContainerMode: e.ContainerMode, Origin: e.Origin, Destination: e.Destination, Via: e.Via, Edition: e.Edition,
 		ServiceLevel: e.ServiceLevel, Commodity: e.Commodity, At: from, Cargo: ReferenceCargo(e.Mode)}
 	own := PublishedVersion{RateCardID: card.RateCardID, Side: SideSell, Scope: ScopeCustomer, LegalEntityID: card.LegalEntityID, PartyID: card.PartyID,
 		No: v.No, Validity: VersionValidity{From: from, Until: v.Validity.Until}, Entries: []RateEntry{e}}
-	versions := []PublishedVersion{own}
-	for _, b := range buys {
-		if b.Side == SideBuy && b.Scope == ScopeSupplier {
-			versions = append(versions, b)
-		}
-	}
-	_, lines, err := Evaluate(in, versions)
-	if err != nil {
-		return AgreementCheck{}, err
-	}
 	conv, err := newConverter(q.Currency, q.ExchangeRates)
 	if err != nil {
 		return AgreementCheck{}, err
 	}
-	check := AgreementCheck{EntryNo: e.No, At: from, Sell: kernel.Money{Currency: q.Currency}, Cost: kernel.Money{Currency: q.Currency}, CostRated: true}
-	for _, l := range lines {
-		if l.Gap != GapNone {
-			if l.Side == SideBuy {
-				check.CostRated = false
+	// sum converts the ungapped lines into the quote currency; complete is false when a line has a gap
+	sum := func(lines []SnapshotLine) (total kernel.Money, complete bool, err error) {
+		total, complete = kernel.Money{Currency: q.Currency}, true
+		for _, l := range lines {
+			if l.Gap != GapNone {
+				complete = false
+				continue
 			}
+			m, err := conv.convert(l.Amount)
+			if err != nil {
+				return kernel.Money{}, false, fmt.Errorf("%w (entry %d)", err, e.No)
+			}
+			if total, err = total.Add(m); err != nil {
+				return kernel.Money{}, false, err
+			}
+		}
+		return total, complete, nil
+	}
+	_, sellLines, err := Evaluate(in, []PublishedVersion{own})
+	if err != nil {
+		return AgreementCheck{}, err
+	}
+	sell, _, err := sum(sellLines)
+	if err != nil {
+		return AgreementCheck{}, err
+	}
+	check := AgreementCheck{EntryNo: e.No, At: from, Sell: sell, Cost: kernel.Money{Currency: q.Currency}}
+	byCard := map[RateCardID][]PublishedVersion{}
+	var ids []RateCardID
+	for _, b := range buys {
+		if b.Side != SideBuy || b.Scope != ScopeSupplier {
 			continue
 		}
-		m, err := conv.convert(l.Amount)
+		if byCard[b.RateCardID] == nil {
+			ids = append(ids, b.RateCardID)
+		}
+		byCard[b.RateCardID] = append(byCard[b.RateCardID], b)
+	}
+	slices.Sort(ids)
+	in.Sides = []Side{SideBuy}
+	for _, id := range ids {
+		_, lines, err := Evaluate(in, byCard[id])
 		if err != nil {
-			return AgreementCheck{}, fmt.Errorf("%w (entry %d)", err, e.No)
-		}
-		sum := &check.Sell
-		if l.Side == SideBuy {
-			sum = &check.Cost
-		}
-		if *sum, err = sum.Add(m); err != nil {
 			return AgreementCheck{}, err
 		}
-	}
-	if !check.CostRated {
-		check.Cost.Minor = 0
+		cost, complete, err := sum(lines)
+		if err != nil {
+			return AgreementCheck{}, err
+		}
+		if complete && (!check.CostRated || cost.Minor < check.Cost.Minor) {
+			check.Cost, check.CostRated = cost, true
+		}
 	}
 	return check, nil
+}
+
+// CustomerVersion is a version of one of the customer's CUSTOMER cards other than the agreement's: one that rates (its
+// effective window) or a DRAFT another AGREEMENT quote that has not expired names (its validity).
+type CustomerVersion struct {
+	RateCardID RateCardID
+	No         int
+	Window     VersionValidity
+	Entries    []RateEntry
+}
+
+// clip is the part of w within v; an open Until is unbounded.
+func clip(w, v VersionValidity) VersionValidity {
+	out := w
+	if v.From.After(out.From) {
+		out.From = v.From
+	}
+	if !v.Until.IsZero() && (out.Until.IsZero() || v.Until.Before(out.Until)) {
+		out.Until = v.Until
+	}
+	return out
+}
+
+func (v VersionValidity) empty() bool { return !v.Until.IsZero() && !v.From.Before(v.Until) }
+
+// lanesMeet reports whether two entries can rate the same evaluation: the same lane, service level and commodity, and
+// via and carrier equal where both name one.
+func lanesMeet(a, b RateEntry) bool {
+	return a.Mode == b.Mode && a.ContainerMode == b.ContainerMode && a.Origin == b.Origin && a.Destination == b.Destination &&
+		a.ServiceLevel == b.ServiceLevel && a.Commodity == b.Commodity && (a.Via == "" || b.Via == "" || a.Via == b.Via) &&
+		(a.Carrier == "" || b.Carrier == "" || a.Carrier == b.Carrier)
+}
+
+// CheckCustomerLanes refuses an agreement a lane of which meets a lane of another version of the customer's cards at
+// some instant both rate: rating would take one card's rate and leave the other's unused.
+func CheckCustomerLanes(card RateCardID, v RateCardVersion, others []CustomerVersion) error {
+	for _, e := range v.Entries {
+		w := clip(e.window(v.Validity), v.Validity)
+		for _, o := range others {
+			if o.RateCardID == card && o.No == v.No {
+				continue
+			}
+			for _, x := range o.Entries {
+				if xw := clip(x.window(o.Window), o.Window); lanesMeet(e, x) && !w.empty() && !xw.empty() && w.overlaps(xw) {
+					return fmt.Errorf("%w: entry %d meets entry %d of the customer's card %s version %d, which rates the lane then", ErrLaneTaken, e.No,
+						x.No, o.RateCardID, o.No)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // AgreementCheckTime is when a lane of an agreement is checked: the later of the quote's business time and the
@@ -197,9 +286,9 @@ func AgreementCheckTime(v RateCardVersion, e RateEntry, at time.Time) time.Time 
 }
 
 // PublishAgreement publishes a CUSTOMER version as its AGREEMENT quote is accepted: the version is still the DRAFT
-// the quote names, valid over the quote's validity, publishable, and no other version of the card rates at any
-// instant of its validity. The acceptance is the evidence; whoever recorded it publishes.
-func (c *RateCard) PublishAgreement(no int, quote QuoteID, validity kernel.ValidityInterval, cat Catalogue, by string, at time.Time) error {
+// the quote names, valid over the quote's validity, complete, and no other version of the card rates at any instant of
+// its validity. The acceptance is the evidence; whoever recorded it publishes.
+func (c *RateCard) PublishAgreement(no int, quote QuoteID, validity kernel.ValidityInterval, by string, at time.Time) error {
 	v, err := c.version(no)
 	if err != nil {
 		return err
@@ -216,7 +305,8 @@ func (c *RateCard) PublishAgreement(no int, quote QuoteID, validity kernel.Valid
 	case strings.TrimSpace(by) == "" || at.IsZero():
 		return fmt.Errorf("%w: a publication needs an actor and a time", ErrInvalidRateCard)
 	}
-	if err = checkPublishable(c.state, *v, cat); err != nil {
+	// the catalogue was checked when the agreement was priced, as at a publication: the customer accepted those rates
+	if err = checkEntries(c.state, *v); err != nil {
 		return err
 	}
 	for _, o := range c.state.Versions {

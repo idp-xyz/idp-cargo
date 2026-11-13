@@ -111,18 +111,53 @@ func TestAgreementQuotesOnPostgres(t *testing.T) {
 		t.Errorf("rated with the agreement: %s", got)
 	}
 
-	// an agreement whose lanes all keep the floor needs no approval
-	agreementCard(c, "C-ACME-DE", from, until, lane("DEFRA", freight(3000)))
-	c.must(c.module.CreateQuote(c.ctx, agreement(c, "Q-AG-DE", "C-ACME-DE", from, until)))
+	// an agreement whose lanes all keep the floor needs no approval: the DEFRA lane once Q-AG's agreement ends
+	later, end := until, until.Add(30*24*time.Hour)
+	agreementCard(c, "C-ACME-DE", later, end, lane("DEFRA", freight(3000)))
+	c.must(c.module.CreateQuote(c.ctx, agreement(c, "Q-AG-DE", "C-ACME-DE", later, end)))
 	if got := c.value(`SELECT status FROM cargo_rate.quote WHERE tenant_id=$1 AND quote_id='Q-AG-DE'`); got != "PRICED" {
 		t.Errorf("an agreement above the floor: %s", got)
 	}
+	// a lane the customer's agreements rate is not quoted again on another card over the same time, accepted or not
+	agreementCard(c, "C-ACME-2", from, until, lane("DEFRA", freight(2500)))
+	_, err = c.module.CreateQuote(c.ctx, agreement(c, "Q-AG-3", "C-ACME-2", from, until))
+	c.rejected("the lane of an accepted agreement", err, api.ErrRejected, "RATE_LANE_TAKEN")
+	agreementCard(c, "C-ACME-3", later, end, lane("DEFRA", freight(2500)))
+	_, err = c.module.CreateQuote(c.ctx, agreement(c, "Q-AG-4", "C-ACME-3", later, end))
+	c.rejected("the lane of a quoted agreement", err, api.ErrRejected, "RATE_LANE_TAKEN")
+	express := lane("DEFRA", freight(2500))
+	express.ServiceLevel = "EXPRESS"
+	agreementCard(c, "C-ACME-X", from, until, express)
+	c.must(c.module.CreateQuote(c.ctx, agreement(c, "Q-AG-X", "C-ACME-X", from, until)))
+	// a version of the card that rates during the agreement is found when it is priced, not when it is accepted
+	c.must(c.module.DraftRateCardVersion(c.ctx, c.draft("C-ACME", from.Add(24*time.Hour), until, 0, "sales-1")))
+	c.must(c.module.SetRateCardEntries(c.ctx, c.set("C-ACME", 2, "sales-1", lane("AEDXB", freight(3000)))))
+	second := agreement(c, "Q-AG-V2", "C-ACME", from.Add(24*time.Hour), until)
+	second.Agreement.Version = 2
+	_, err = c.module.CreateQuote(c.ctx, second)
+	c.rejected("over a published version of the card", err, api.ErrRejected, "rates during the agreement")
+	// naming a draft needs the right to maintain sell rates
+	agreementCard(c, "C-ACME-J", from, until, lane("AEDXB", freight(3000)))
+	junior := agreement(c, "Q-AG-J", "C-ACME-J", from, until)
+	junior.ActorID = "sales-junior"
+	_, err = c.module.CreateQuote(c.ctx, junior)
+	c.rejected("without the right to maintain sell rates", err, api.ErrUnauthorized, "forbidden")
+	// a code deactivated after the agreement was priced does not stop its acceptance: the customer accepted those rates
+	handling := lane("CNSHA", api.RateLine{ChargeCode: "HANDLING", Currency: "CNY", Calculator: api.CalcFlat, Rate: 5_000})
+	agreementCard(c, "C-HANDLING", from, until, handling)
+	c.must(c.module.CreateQuote(c.ctx, agreement(c, "Q-AG-H", "C-HANDLING", from, until)))
+	c.must(c.module.DeactivateChargeCode(c.ctx, api.DeactivateChargeCode{CommandID: "deactivate-handling", TenantID: c.tenant, ActorID: "md-1",
+		Code: "HANDLING", ExpectedVersion: 0, OccurredAt: c.h(6)}))
+	c.must(c.module.ApproveQuotePrice(c.ctx, api.ApproveQuotePrice{CommandID: "approve-Q-AG-H", TenantID: c.tenant, ActorID: "manager-1", QuoteID: "Q-AG-H",
+		ExpectedRevision: 1, ReasonRef: "handling only", OccurredAt: c.h(7)}))
+	c.must(c.module.AcceptQuote(c.ctx, api.AcceptQuote{CommandID: "accept-Q-AG-H", TenantID: c.tenant, ActorID: "sales-1", QuoteID: "Q-AG-H", ExpectedRevision: 2,
+		EvidenceKind: api.EvidenceEmail, EvidenceRef: "agreed", OccurredAt: c.h(7)}))
 	// once an agreement expired unaccepted, its draft changes and is quoted again
-	agreementCard(c, "C-SHORT", c.h(5), c.h(10), lane("DEFRA", freight(3000)))
+	agreementCard(c, "C-SHORT", c.h(5), c.h(10), lane("AEDXB", freight(3000)))
 	c.must(c.module.CreateQuote(c.ctx, agreement(c, "Q-SHORT", "C-SHORT", c.h(5), c.h(10))))
 	c.must(c.module.ExpireQuote(c.ctx, api.ExpireQuote{CommandID: "expire-Q-SHORT", TenantID: c.tenant, ActorID: "rate-scheduler", QuoteID: "Q-SHORT",
 		ExpectedRevision: 1, OccurredAt: c.h(10)}))
-	c.must(c.module.SetRateCardEntries(c.ctx, c.set("C-SHORT", 1, "sales-1", lane("DEFRA", freight(3500)))))
+	c.must(c.module.SetRateCardEntries(c.ctx, c.set("C-SHORT", 1, "sales-1", lane("AEDXB", freight(3500)))))
 
 	n := 0
 	for name, tc := range map[string]struct {
@@ -141,7 +176,9 @@ func TestAgreementQuotesOnPostgres(t *testing.T) {
 		"a sea agreement":     {func(q *api.CreateQuote) { q.Scope.Mode, q.Scope.ContainerMode = api.ModeSea, api.ContainerLCL }, "the agreement SEA LCL"},
 	} {
 		n++
-		agreementCard(c, fmt.Sprintf("C-X-%d", n), from, until, lane("DEFRA", freight(3000)))
+		free := lane("USLAX", freight(3000)) // a lane none of the customer's agreements rates
+		free.Origin = "AEDXB"
+		agreementCard(c, fmt.Sprintf("C-X-%d", n), from, until, free)
 		q := agreement(c, "Q-X", fmt.Sprintf("C-X-%d", n), from, until)
 		q.CommandID = "create-" + name
 		tc.edit(&q)
@@ -174,8 +211,15 @@ func TestAgreementQuotesOnPostgres(t *testing.T) {
             now()+interval '1 day',0,'x','PRICED')` + ";\n" + `INSERT INTO cargo_rate.quote_line (tenant_id,quote_id,line_no,charge_code,sell_currency,
             sell_minor,cost_currency,cost_minor,code_version) VALUES ($1,'Q-D6',1,'PICKUP','CNY',100,'CNY',0,0)` + ";\n" + checkRow("Q-D6", 1), "23514",
 			"quote_agreement_consistent"},
-		"a lane check added to an agreement later": {checkRow("Q-AG-DE", 2), "23514", "quote_written_once"},
-		"a second agreement on a quoted version":   {agreementRow("Q-D7", "C-ACME-DE") + ";\n" + checkRow("Q-D7", 1), "23505", "quote_agreement_version_once"},
+		"a lane check added later, of an entry its version lacks": {checkRow("Q-AG-DE", 2), "23514", "quote_agreement_consistent"},
+		"a second agreement on a quoted version":                  {agreementRow("Q-D7", "C-ACME-DE") + ";\n" + checkRow("Q-D7", 1), "23505", "quote_agreement_version_once"},
+		"SET CONSTRAINTS ALL IMMEDIATE, then a line and an unknown lane": {"SET CONSTRAINTS ALL IMMEDIATE;\n" + `WITH q AS (` + agreementRow("Q-D8", "C-DB") +
+			` RETURNING tenant_id, quote_id) INSERT INTO cargo_rate.quote_agreement_check (tenant_id,quote_id,entry_no,checked_at,sell_minor,cost_minor)
+            SELECT tenant_id, quote_id, 1, now(), 100, 50 FROM q` + ";\n" + checkRow("Q-D8", 7), "23514", "quote_agreement_consistent"},
+		"an agreement without its mode": {strings.Replace(agreementRow("Q-D9", "C-DB"), "'AIR','LOOSE','AGREEMENT'", "NULL,NULL,'AGREEMENT'", 1) + ";\n" +
+			checkRow("Q-D9", 1), "23514", "quote_scope"},
+		"a sea agreement over an air draft": {strings.Replace(agreementRow("Q-D10", "C-DB"), "'AIR','LOOSE','AGREEMENT'", "'SEA','LCL','AGREEMENT'", 1) +
+			";\n" + checkRow("Q-D10", 1), "23514", "quote_agreement_consistent"},
 		"a customer version published without its agreement": {`UPDATE cargo_rate.rate_card_version SET status='PUBLISHED',published_by='x',
             published_at=now() WHERE tenant_id=$1 AND rate_card_id='C-DB' AND version_no=1`, "23514", "rate_version_publishable"},
 		"an entry added to a quoted draft": {`INSERT INTO cargo_rate.rate_entry (tenant_id,rate_card_id,version_no,entry_no,mode,container_mode,origin,
@@ -185,6 +229,14 @@ func TestAgreementQuotesOnPostgres(t *testing.T) {
 	} {
 		refused(t, name, c.statements(tc.sql), tc.code, tc.constraint)
 	}
+	// written past RATE, an agreement on a lane the customer's accepted agreement rates is not published by its acceptance
+	if err := c.statements(agreementRow("Q-D11", "C-DB") + ";\n" + checkRow("Q-D11", 1)); err != nil {
+		t.Fatal(err)
+	}
+	refused(t, "an accepted agreement on a lane taken", c.statements(`UPDATE cargo_rate.quote SET status='ACCEPTED',accepted_by='x',accepted_at=valid_from,
+        accepted_recorded_at=now(),acceptance_evidence_kind='EMAIL',acceptance_evidence_ref='m',accepted_customer_revision=3,revision=revision+1,
+        updated_at=now() WHERE tenant_id=$1 AND quote_id='Q-D11'`+";\n"+`UPDATE cargo_rate.rate_card_version SET status='PUBLISHED',published_by='x',
+        published_at=now() WHERE tenant_id=$1 AND rate_card_id='C-DB' AND version_no=1`), "23514", "rate_customer_lane_taken")
 }
 
 // An AGREEMENT quote created while the draft's entries are replaced (8 rounds, head starts alternated): the quote is

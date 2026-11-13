@@ -39,7 +39,7 @@ BEGIN
   PERFORM pg_advisory_xact_lock(hashtextextended('cargo_com.quote:' || NEW.tenant_id || '/' || NEW.quote_id, 0));
   IF EXISTS (SELECT 1 FROM cargo_com.customer_order WHERE tenant_id = NEW.tenant_id AND quote_id = NEW.quote_id AND quote_kind <> NEW.quote_kind) THEN
     RAISE EXCEPTION 'cargo_com: quote %/% backs orders of another kind', NEW.tenant_id, NEW.quote_id
-      USING ERRCODE = 'check_violation', CONSTRAINT = 'customer_order_quote_kind';
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'customer_order_quote_one_kind';
   END IF;
   IF NEW.quote_kind = 'ONE_OFF' THEN
     SELECT count(*) INTO live FROM cargo_com.customer_order

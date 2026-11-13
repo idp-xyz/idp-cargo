@@ -156,28 +156,105 @@ func TestAgreements(t *testing.T) {
 	}
 
 	// accepting publishes the version, once, over the quote's validity, and not over another version
-	if err = card.PublishAgreement(1, "Q-1", kernel.ValidityInterval{From: d.Validity.From, Until: d.Validity.Until.Add(time.Hour)}, catalogue{},
+	if err = card.PublishAgreement(1, "Q-1", kernel.ValidityInterval{From: d.Validity.From, Until: d.Validity.Until.Add(time.Hour)},
 		"sales-2", at); !errors.Is(err, ErrNotPublishable) {
 		t.Fatalf("another validity: %v", err)
 	}
-	if err = card.PublishAgreement(1, "Q-1", d.Validity, catalogue{}, "sales-2", at); err != nil {
+	if err = card.PublishAgreement(1, "Q-1", d.Validity, "sales-2", at); err != nil {
 		t.Fatal(err)
 	}
 	if v := card.State().Versions[0]; v.Status != VersionPublished || v.PublishedBy != "sales-2" || v.ApprovedBy != "" || len(card.Pending()) != 1 {
 		t.Fatalf("published: %+v", v)
 	}
-	if err = card.PublishAgreement(1, "Q-1", d.Validity, catalogue{}, "sales-2", at); !errors.Is(err, ErrInvalidTransition) {
+	if err = card.PublishAgreement(1, "Q-1", d.Validity, "sales-2", at); !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("twice: %v", err)
 	}
 	if _, err = card.DraftVersion(VersionInput{Validity: VersionValidity{From: d.Validity.From.Add(24 * time.Hour), Until: d.Validity.Until}, Currency: "CNY"},
 		[]RateEntry{airEntry(1, airFreight(1))}, "sales-1", at); err != nil {
 		t.Fatal(err)
 	}
-	if err = card.PublishAgreement(2, "Q-2", kernel.ValidityInterval{From: d.Validity.From.Add(24 * time.Hour), Until: d.Validity.Until}, catalogue{},
+	if err = card.PublishAgreement(2, "Q-2", kernel.ValidityInterval{From: d.Validity.From.Add(24 * time.Hour), Until: d.Validity.Until},
 		"sales-2", at); !errors.Is(err, ErrVersionOverlap) {
 		t.Fatalf("over version 1: %v", err)
 	}
 	if _, err = tariffCard(t).AgreementVersion(1, "LE", "P", d.Validity, *d.Scope, catalogue{}); !errors.Is(err, ErrInvalidQuote) {
 		t.Fatalf("a tariff: %v", err)
+	}
+}
+
+// The review's cases: the cheapest buy card across currencies, a lane that has ended, the customer's other cards on a
+// lane, a version of the card rating during the agreement, and the event of an accepted agreement.
+func TestAgreementLanesAndCosts(t *testing.T) {
+	d := agreementDraft()
+	d.ExchangeRates = []ExchangeRate{{From: "USD", Rate: 72000, Scale: 4, FromDigits: 2, QuoteDigits: 2, Source: "Bank of China selling rate", AsOf: at}}
+	card := customerCard(t, d, airEntry(1, airFreight(1)))
+	v, err := card.AgreementVersion(1, "LE", "P", d.Validity, *d.Scope, catalogue{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// CNY 17.00/kg is 1,700.00; USD 1.00/kg is USD 100.00, CNY 720.00 at the quote's rate
+	check, err := CheckAgreementEntry(d, card.State(), v, v.Entries[0], []PublishedVersion{buyCard("S1", perKg("CNY", 1700)), buyCard("S2", perKg("USD", 100))}, at)
+	if err != nil || check.Cost != cny(72_000) || !check.CostRated {
+		t.Fatalf("the cheapest card across currencies: %+v %v", check, err)
+	}
+	ended := v.Entries[0]
+	ended.Validity = kernel.ValidityInterval{From: at.Add(-48 * time.Hour), Until: at.Add(-time.Hour)}
+	if _, err = CheckAgreementEntry(d, card.State(), v, ended, nil, at); !errors.Is(err, ErrInvalidQuote) {
+		t.Fatalf("a lane that has ended: %v", err)
+	}
+
+	window := VersionValidity{From: d.Validity.From, Until: d.Validity.Until}
+	other := func(mutate func(*RateEntry), w VersionValidity) []CustomerVersion {
+		e := airEntry(1, airFreight(1))
+		if mutate != nil {
+			mutate(&e)
+		}
+		return []CustomerVersion{{RateCardID: "C2", No: 1, Window: w, Entries: []RateEntry{e}}}
+	}
+	for name, tc := range map[string]struct {
+		others []CustomerVersion
+		taken  bool
+	}{
+		"the same lane over the same time":      {other(nil, window), true},
+		"the same lane through any carrier":     {other(func(e *RateEntry) { e.Carrier = "airline-mu" }, window), true},
+		"the same lane via a hub, and any via":  {other(func(e *RateEntry) { e.Via = "HKHKG" }, window), true},
+		"another service level":                 {other(func(e *RateEntry) { e.ServiceLevel = "EXPRESS" }, window), false},
+		"another destination":                   {other(func(e *RateEntry) { e.Destination = "USLAX" }, window), false},
+		"the same lane once the agreement ends": {other(nil, VersionValidity{From: d.Validity.Until}), false},
+		"an entry that ended before":            {other(func(e *RateEntry) { e.Validity = kernel.ValidityInterval{From: at.Add(-48 * time.Hour), Until: at} }, window), false},
+		"the agreement's own version":           {[]CustomerVersion{{RateCardID: "C1", No: 1, Window: window, Entries: v.Entries}}, false},
+	} {
+		if err := CheckCustomerLanes("C1", v, tc.others); errors.Is(err, ErrLaneTaken) != tc.taken {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+
+	// accepted, the agreement records that its card version was published
+	d.AgreementChecks = []AgreementCheck{{EntryNo: 1, At: at, Sell: cny(100_000), Cost: cny(50_000), CostRated: true}}
+	q, err := PriceQuote(d, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = q.Accept("sales-1", EvidenceEmail, "mail", 2, at.Add(time.Hour), at.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	var events []string
+	for _, e := range q.Pending() {
+		events = append(events, e.Type)
+	}
+	if !slices.Equal(events, []string{"QuotePriced.v1", "QuoteAccepted.v1", EventQuoteAgreementPublished}) {
+		t.Fatalf("events: %v", events)
+	}
+	// a version of the card that rates during the agreement is refused when the agreement is priced
+	if err = card.PublishAgreement(1, "Q-1", d.Validity, "sales-2", at); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = card.DraftVersion(VersionInput{Validity: VersionValidity{From: d.Validity.From.Add(24 * time.Hour), Until: d.Validity.Until}, Currency: "CNY"},
+		[]RateEntry{airEntry(1, airFreight(1))}, "sales-1", at); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = card.AgreementVersion(2, "LE", "P", kernel.ValidityInterval{From: d.Validity.From.Add(24 * time.Hour), Until: d.Validity.Until}, *d.Scope,
+		catalogue{}); !errors.Is(err, ErrVersionOverlap) {
+		t.Fatalf("over the published version: %v", err)
 	}
 }

@@ -95,6 +95,7 @@ func (m *Module) CreateQuote(ctx context.Context, cmd api.CreateQuote) (api.Rece
 	receipt, err := application.CreateQuote{
 		Deps: m.deps(cmd.TenantID, cmd.CommandID), Customers: orgacl.Customers{ORG: m.org}, Margins: margins{m.margins},
 		Codes: postgres.ChargeCodeStore{DB: m.db}, Snapshots: postgres.SnapshotStore{DB: m.db}, Cards: postgres.RateCardStore{DB: m.db},
+		Agreements: postgres.QuoteStore{DB: m.db},
 	}.Handle(ctx, application.CreateQuoteCommand{
 		CommandID: cmd.CommandID, Scope: scope(cmd.TenantID, cmd.ActorID), QuoteID: domain.QuoteID(cmd.QuoteID),
 		LegalEntityID: domain.LegalEntityID(cmd.LegalEntityID), CustomerPartyID: cmd.CustomerPartyID,
@@ -116,7 +117,7 @@ func (m *Module) ApproveQuotePrice(ctx context.Context, cmd api.ApproveQuotePric
 
 func (m *Module) AcceptQuote(ctx context.Context, cmd api.AcceptQuote) (api.Receipt, error) {
 	receipt, err := application.AcceptQuote{Deps: m.deps(cmd.TenantID, cmd.CommandID), Customers: orgacl.Customers{ORG: m.org},
-		Codes: postgres.ChargeCodeStore{DB: m.db}, Cards: postgres.RateCardStore{DB: m.db}}.Handle(ctx, application.AcceptQuoteCommand{
+		Cards: postgres.RateCardStore{DB: m.db}, Agreements: postgres.QuoteStore{DB: m.db}}.Handle(ctx, application.AcceptQuoteCommand{
 		CommandID: cmd.CommandID, Scope: scope(cmd.TenantID, cmd.ActorID), QuoteID: domain.QuoteID(cmd.QuoteID),
 		ExpectedRevision: cmd.ExpectedRevision, EvidenceKind: domain.EvidenceKind(cmd.EvidenceKind), EvidenceRef: cmd.EvidenceRef,
 		OccurredAt: stored(cmd.OccurredAt),
@@ -356,7 +357,7 @@ func classify(err error) error {
 		errors.Is(err, domain.ErrChargeCodeExists), errors.Is(err, domain.ErrInvalidRateCard), errors.Is(err, domain.ErrVersionOverlap),
 		errors.Is(err, domain.ErrNotPublishable), errors.Is(err, domain.ErrInvalidEvaluation), errors.Is(err, application.ErrPartyNotConfirmed),
 		errors.Is(err, application.ErrLocationRefused), errors.Is(err, application.ErrValidFromTooEarly), errors.Is(err, domain.ErrInvalidBasis),
-		errors.Is(err, application.ErrVersionQuoted):
+		errors.Is(err, application.ErrVersionQuoted), errors.Is(err, domain.ErrLaneTaken):
 		kind = api.ErrRejected
 	default:
 		return err

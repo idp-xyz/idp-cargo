@@ -13,7 +13,8 @@ ALTER TABLE cargo_rate.quote VALIDATE CONSTRAINT quote_agreement;
 -- An AGREEMENT's scope is its mode (its lanes are its card's entries); a ONE_OFF's is as in rate/000006.
 ALTER TABLE cargo_rate.quote DROP CONSTRAINT quote_scope;
 ALTER TABLE cargo_rate.quote ADD CONSTRAINT quote_scope CHECK (CASE kind
-  WHEN 'AGREEMENT' THEN (scope_mode, scope_container_mode) IN (('AIR','LOOSE'),('SEA','LCL')) AND scope_origin IS NULL AND scope_destination IS NULL
+  WHEN 'AGREEMENT' THEN scope_mode IS NOT NULL AND scope_container_mode IS NOT NULL
+    AND (scope_mode, scope_container_mode) IN (('AIR','LOOSE'),('SEA','LCL')) AND scope_origin IS NULL AND scope_destination IS NULL
     AND scope_via IS NULL AND scope_carrier IS NULL AND scope_pieces IS NULL AND scope_gross_grams IS NULL AND scope_volume_cm3 IS NULL
     AND scope_documents IS NULL
   ELSE (scope_mode IS NULL) = (scope_container_mode IS NULL) AND (scope_mode IS NULL) = (scope_origin IS NULL)
@@ -56,9 +57,34 @@ CREATE CONSTRAINT TRIGGER _tenant_scope AFTER INSERT OR UPDATE ON cargo_rate.quo
 CREATE CONSTRAINT TRIGGER quote_agreement_check_written_with_quote AFTER INSERT ON cargo_rate.quote_agreement_check
   DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION cargo_rate.check_written_with_quote_at_commit();
 
+-- As a line or a lane check is written, at once (SET CONSTRAINTS cannot put it off): a line is of a ONE_OFF quote; a lane
+-- check is of an AGREEMENT and of an entry of the version it names.
+CREATE FUNCTION cargo_rate.check_quote_line_kind() RETURNS trigger LANGUAGE plpgsql AS $fn$
+BEGIN
+  IF EXISTS (SELECT 1 FROM cargo_rate.quote q WHERE q.tenant_id = NEW.tenant_id AND q.quote_id = NEW.quote_id AND q.kind <> 'ONE_OFF') THEN
+    RAISE EXCEPTION 'cargo_rate: quote %/% is an AGREEMENT; it has no lines', NEW.tenant_id, NEW.quote_id
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'quote_agreement_consistent';
+  END IF;
+  RETURN NEW;
+END $fn$;
+CREATE TRIGGER quote_line_of_one_off BEFORE INSERT ON cargo_rate.quote_line FOR EACH ROW EXECUTE FUNCTION cargo_rate.check_quote_line_kind();
+CREATE FUNCTION cargo_rate.check_agreement_check_entry() RETURNS trigger LANGUAGE plpgsql AS $fn$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM cargo_rate.quote q JOIN cargo_rate.rate_entry e
+       ON e.tenant_id = q.tenant_id AND e.rate_card_id = q.agreement_rate_card_id AND e.version_no = q.agreement_version_no
+       WHERE q.tenant_id = NEW.tenant_id AND q.quote_id = NEW.quote_id AND q.kind = 'AGREEMENT' AND e.entry_no = NEW.entry_no) THEN
+    RAISE EXCEPTION 'cargo_rate: lane check % of quote %/% is of an AGREEMENT and an entry of its version', NEW.entry_no, NEW.tenant_id, NEW.quote_id
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'quote_agreement_consistent';
+  END IF;
+  RETURN NEW;
+END $fn$;
+CREATE TRIGGER quote_agreement_check_of_entry BEFORE INSERT ON cargo_rate.quote_agreement_check
+  FOR EACH ROW EXECUTE FUNCTION cargo_rate.check_agreement_check_entry();
+
 -- At commit, as a quote is written: a ONE_OFF quote has no lane checks; an AGREEMENT has no lines, names a DRAFT version
--- of a CUSTOMER SELL card of its legal entity and customer valid exactly over its validity, and has one check per
--- entry of that version.
+-- of a CUSTOMER SELL card of its legal entity and customer valid exactly over its validity, every entry of the
+-- agreement's mode, and has one check per entry of that version. The version row is locked first, so that its rates,
+-- written while it is held FOR SHARE, do not change once the agreement committed.
 CREATE FUNCTION cargo_rate.check_quote_kind_at_commit() RETURNS trigger LANGUAGE plpgsql AS $fn$
 BEGIN
   IF NEW.kind = 'ONE_OFF' THEN
@@ -68,6 +94,8 @@ BEGIN
     END IF;
     RETURN NULL;
   END IF;
+  PERFORM 1 FROM cargo_rate.rate_card_version v WHERE v.tenant_id = NEW.tenant_id AND v.rate_card_id = NEW.agreement_rate_card_id
+    AND v.version_no = NEW.agreement_version_no FOR NO KEY UPDATE;
   IF NOT EXISTS (SELECT 1 FROM cargo_rate.rate_card c JOIN cargo_rate.rate_card_version v ON v.tenant_id = c.tenant_id AND v.rate_card_id = c.rate_card_id
        WHERE c.tenant_id = NEW.tenant_id AND c.rate_card_id = NEW.agreement_rate_card_id AND v.version_no = NEW.agreement_version_no
          AND c.scope = 'CUSTOMER' AND c.side = 'SELL' AND c.legal_entity_id = NEW.legal_entity_id AND c.party_id = NEW.customer_party_id
@@ -76,12 +104,14 @@ BEGIN
      OR NOT EXISTS (SELECT 1 FROM cargo_rate.rate_entry e WHERE e.tenant_id = NEW.tenant_id AND e.rate_card_id = NEW.agreement_rate_card_id
        AND e.version_no = NEW.agreement_version_no)
      OR EXISTS (SELECT 1 FROM cargo_rate.rate_entry e WHERE e.tenant_id = NEW.tenant_id AND e.rate_card_id = NEW.agreement_rate_card_id
+       AND e.version_no = NEW.agreement_version_no AND (e.mode, e.container_mode) IS DISTINCT FROM (NEW.scope_mode, NEW.scope_container_mode))
+     OR EXISTS (SELECT 1 FROM cargo_rate.rate_entry e WHERE e.tenant_id = NEW.tenant_id AND e.rate_card_id = NEW.agreement_rate_card_id
        AND e.version_no = NEW.agreement_version_no AND NOT EXISTS (SELECT 1 FROM cargo_rate.quote_agreement_check k
          WHERE k.tenant_id = NEW.tenant_id AND k.quote_id = NEW.quote_id AND k.entry_no = e.entry_no))
      OR EXISTS (SELECT 1 FROM cargo_rate.quote_agreement_check k WHERE k.tenant_id = NEW.tenant_id AND k.quote_id = NEW.quote_id
        AND NOT EXISTS (SELECT 1 FROM cargo_rate.rate_entry e WHERE e.tenant_id = NEW.tenant_id AND e.rate_card_id = NEW.agreement_rate_card_id
          AND e.version_no = NEW.agreement_version_no AND e.entry_no = k.entry_no)) THEN
-    RAISE EXCEPTION 'cargo_rate: AGREEMENT quote %/% names a DRAFT customer version over its validity, has no lines and checks each lane once',
+    RAISE EXCEPTION 'cargo_rate: AGREEMENT quote %/% names a DRAFT customer version of its mode over its validity, has no lines and checks each lane once',
       NEW.tenant_id, NEW.quote_id USING ERRCODE = 'check_violation', CONSTRAINT = 'quote_agreement_consistent';
   END IF;
   RETURN NULL;
@@ -112,8 +142,15 @@ BEGIN
   RETURN r;
 END $fn$;
 
+-- When an entry rates within its version: its own validity, or always.
+CREATE FUNCTION cargo_rate.entry_range(e cargo_rate.rate_entry) RETURNS tstzrange LANGUAGE sql IMMUTABLE AS $fn$
+  SELECT CASE WHEN e.valid_from IS NULL THEN '(,)'::tstzrange ELSE tstzrange(e.valid_from, e.valid_until) END
+$fn$;
+
 -- As rate/000004, but a CUSTOMER version is published only together with the acceptance of the AGREEMENT quote that
--- names it, in the same transaction, valid over the quote's validity.
+-- names it, in the same transaction, valid over the quote's validity; and none of its lanes meets, at an instant both
+-- rate, a lane of another of the customer's CUSTOMER versions of the legal entity (the same lane, service level and
+-- commodity, and via and carrier equal where both name one). Publications for one customer take turns.
 CREATE OR REPLACE FUNCTION cargo_rate.check_rate_card_version_at_commit() RETURNS trigger LANGUAGE plpgsql AS $fn$
 DECLARE c record;
 BEGIN
@@ -121,7 +158,8 @@ BEGIN
     RAISE EXCEPTION 'cargo_rate: RATE''s commit checks run at READ COMMITTED, not %', current_setting('transaction_isolation')
       USING ERRCODE = 'check_violation', CONSTRAINT = 'rate_read_committed';
   END IF;
-  SELECT k.scope INTO c FROM cargo_rate.rate_card k WHERE k.tenant_id = NEW.tenant_id AND k.rate_card_id = NEW.rate_card_id FOR NO KEY UPDATE;
+  SELECT k.scope, k.legal_entity_id, k.party_id INTO c FROM cargo_rate.rate_card k WHERE k.tenant_id = NEW.tenant_id
+    AND k.rate_card_id = NEW.rate_card_id FOR NO KEY UPDATE;
   IF NOT FOUND OR EXISTS (SELECT 1 FROM cargo_rate.rate_card_version v WHERE v.tenant_id = NEW.tenant_id AND v.rate_card_id = NEW.rate_card_id
        AND v.status <> 'DRAFT' AND EXISTS (SELECT 1 FROM cargo_rate.rate_card_version o WHERE o.tenant_id = v.tenant_id
          AND o.rate_card_id = v.rate_card_id AND o.version_no <> v.version_no AND o.status <> 'DRAFT'
@@ -141,6 +179,24 @@ BEGIN
            AND l.rate_card_id = e.rate_card_id AND l.version_no = e.version_no AND l.entry_no = e.entry_no))) THEN
     RAISE EXCEPTION 'cargo_rate: version %/%/% is published without entries, lines, the approval its card needs or its accepted agreement',
       NEW.tenant_id, NEW.rate_card_id, NEW.version_no USING ERRCODE = 'check_violation', CONSTRAINT = 'rate_version_publishable';
+  END IF;
+  IF NEW.status = 'PUBLISHED' AND c.scope = 'CUSTOMER' THEN
+    PERFORM pg_advisory_xact_lock(hashtextextended('cargo_rate.customer:' || NEW.tenant_id || '/' || c.legal_entity_id || '/' || c.party_id, 0));
+    IF EXISTS (SELECT 1 FROM cargo_rate.rate_entry e
+         JOIN cargo_rate.rate_card k ON k.tenant_id = e.tenant_id AND k.scope = 'CUSTOMER' AND k.legal_entity_id = c.legal_entity_id
+           AND k.party_id = c.party_id
+         JOIN cargo_rate.rate_card_version o ON o.tenant_id = k.tenant_id AND o.rate_card_id = k.rate_card_id AND o.status <> 'DRAFT'
+           AND (o.rate_card_id, o.version_no) <> (NEW.rate_card_id, NEW.version_no)
+         JOIN cargo_rate.rate_entry x ON x.tenant_id = o.tenant_id AND x.rate_card_id = o.rate_card_id AND x.version_no = o.version_no
+         WHERE e.tenant_id = NEW.tenant_id AND e.rate_card_id = NEW.rate_card_id AND e.version_no = NEW.version_no
+           AND (e.mode, e.container_mode, e.origin, e.destination, e.service_level, e.commodity)
+             = (x.mode, x.container_mode, x.origin, x.destination, x.service_level, x.commodity)
+           AND (e.via IS NULL OR x.via IS NULL OR e.via = x.via)
+           AND (e.carrier_party_id IS NULL OR x.carrier_party_id IS NULL OR e.carrier_party_id = x.carrier_party_id)
+           AND (cargo_rate.rates_in(NEW) * cargo_rate.entry_range(e)) && (cargo_rate.rates_in(o) * cargo_rate.entry_range(x))) THEN
+      RAISE EXCEPTION 'cargo_rate: version %/%/% rates a lane another of the customer''s cards rates then', NEW.tenant_id, NEW.rate_card_id,
+        NEW.version_no USING ERRCODE = 'check_violation', CONSTRAINT = 'rate_customer_lane_taken';
+    END IF;
   END IF;
   RETURN NULL;
 END $fn$;

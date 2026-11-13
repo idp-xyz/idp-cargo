@@ -339,6 +339,9 @@ func (q *Quote) Accept(acceptedBy string, kind EvidenceKind, evidenceRef string,
 		EvidenceRef: evidenceRef, CustomerRevision: customerRevision}
 	q.state.Status = QuoteAccepted
 	q.record("QuoteAccepted.v1", at)
+	if q.state.kind() == KindAgreement {
+		q.record(EventQuoteAgreementPublished, at)
+	}
 	return nil
 }
 

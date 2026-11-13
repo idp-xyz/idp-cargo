@@ -40,11 +40,12 @@ type DiscountPolicy interface {
 // entity.
 type CreateQuote struct {
 	Deps
-	Customers Customers
-	Margins   MarginPolicy
-	Codes     ChargeCodeStore
-	Snapshots SnapshotStore
-	Cards     RateCardStore // AGREEMENT quotes
+	Customers  Customers
+	Margins    MarginPolicy
+	Codes      ChargeCodeStore
+	Snapshots  SnapshotStore
+	Cards      RateCardStore   // AGREEMENT quotes
+	Agreements AgreementQuotes // AGREEMENT quotes
 }
 
 func (h CreateQuote) Handle(ctx context.Context, c CreateQuoteCommand) (Receipt, error) {
@@ -53,6 +54,9 @@ func (h CreateQuote) Handle(ctx context.Context, c CreateQuoteCommand) (Receipt,
 	}
 	if h.Customers == nil || h.Margins == nil || h.Codes == nil || h.Snapshots == nil {
 		return Receipt{}, ErrMissingDependency
+	}
+	if c.Kind == rate.KindOneOff { // the default kind hashes as an omitted one, so a retry that names it replays
+		c.Kind = ""
 	}
 	hash, err := requestHash(c)
 	if err != nil {
@@ -64,11 +68,17 @@ func (h CreateQuote) Handle(ctx context.Context, c CreateQuoteCommand) (Receipt,
 	if _, err = h.admit(c.OccurredAt); err != nil {
 		return Receipt{}, err
 	}
-	if c.Kind == rate.KindAgreement && h.Cards == nil {
+	if c.Kind == rate.KindAgreement && (h.Cards == nil || h.Agreements == nil) {
 		return Receipt{}, ErrMissingDependency
 	}
 	if err = h.Auth.RequireQuoteAction(ctx, c.Scope, ActionCreateQuote, c.QuoteID); err != nil {
 		return Receipt{}, fmt.Errorf("%w: %v", ErrUnauthorized, err)
+	}
+	if c.Kind == rate.KindAgreement && c.Agreement != nil {
+		// an agreement fixes the customer's draft until it expires: only one who maintains sell rates may name it
+		if err = h.Auth.RequireQuoteAction(ctx, c.Scope, ActionMaintainSellRates, rate.QuoteID(c.Agreement.RateCardID)); err != nil {
+			return Receipt{}, fmt.Errorf("%w: %v", ErrUnauthorized, err)
+		}
 	}
 	recipient := c.Recipient
 	if recipient == "" {
@@ -256,6 +266,13 @@ func (h CreateQuote) priceAgreement(ctx context.Context, d *rate.QuoteDraft, at 
 	if err != nil {
 		return err
 	}
+	others, err := customerVersions(ctx, h.Cards, h.Agreements, d.TenantID, d.LegalEntityID, d.Customer.PartyID)
+	if err != nil {
+		return err
+	}
+	if err = rate.CheckCustomerLanes(d.Agreement.RateCardID, v, others); err != nil {
+		return err
+	}
 	st := card.State()
 	d.AgreementChecks = nil
 	for _, e := range v.Entries {
@@ -271,4 +288,35 @@ func (h CreateQuote) priceAgreement(ctx context.Context, d *rate.QuoteDraft, at 
 		d.AgreementChecks = append(d.AgreementChecks, check)
 	}
 	return nil
+}
+
+// customerVersions are the versions of the customer's CUSTOMER cards of the legal entity that rate, or that are DRAFTs
+// an AGREEMENT quote that has not expired names, with their entries.
+func customerVersions(ctx context.Context, cards RateCardStore, agreements AgreementQuotes, tenant rate.TenantID, entity rate.LegalEntityID,
+	party string) ([]rate.CustomerVersion, error) {
+	states, _, err := cards.List(ctx, tenant, CardFilter{Side: rate.SideSell, Scope: rate.ScopeCustomer, LegalEntityID: entity, PartyID: party})
+	if err != nil {
+		return nil, err
+	}
+	var out []rate.CustomerVersion
+	for _, st := range states {
+		for _, v := range st.Versions {
+			window, ok := v.Effective()
+			if !ok && v.Status == rate.VersionDraft {
+				if _, ok, err = agreements.QuotedBy(ctx, tenant, st.RateCardID, v.No); err != nil {
+					return nil, err
+				}
+				window = v.Validity
+			}
+			if !ok {
+				continue
+			}
+			entries, err := cards.Entries(ctx, tenant, st.RateCardID, v.No)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, rate.CustomerVersion{RateCardID: st.RateCardID, No: v.No, Window: window, Entries: entries})
+		}
+	}
+	return out, nil
 }
