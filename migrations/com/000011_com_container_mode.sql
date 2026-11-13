@@ -7,5 +7,6 @@
 ALTER TABLE cargo_com.order_transport
   ADD COLUMN container_mode text CHECK (container_mode IN ('LCL','FCL','LOOSE')),
   ADD CONSTRAINT order_transport_container_mode CHECK (container_mode IS NULL
-    OR (transport_mode = 'SEA' AND container_mode IN ('LCL','FCL')) OR (transport_mode = 'AIR' AND container_mode = 'LOOSE')) NOT VALID;
+    OR (coalesce(transport_mode, '') = 'SEA' AND container_mode IN ('LCL','FCL'))
+    OR (coalesce(transport_mode, '') = 'AIR' AND container_mode = 'LOOSE')) NOT VALID;
 ALTER TABLE cargo_com.order_transport VALIDATE CONSTRAINT order_transport_container_mode;

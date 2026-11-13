@@ -107,7 +107,7 @@ func (r Route) Complete() bool {
 
 // Same reports whether two routes are equal, comparing instants rather than their representation.
 func (r Route) Same(o Route) bool {
-	return r.Mode == o.Mode && r.Origin == o.Origin && r.Destination == o.Destination &&
+	return r.Mode == o.Mode && r.ContainerMode == o.ContainerMode && r.Origin == o.Origin && r.Destination == o.Destination &&
 		r.Departure.From.Equal(o.Departure.From) && r.Departure.Until.Equal(o.Departure.Until) &&
 		r.OriginIATA == o.OriginIATA && r.DestinationIATA == o.DestinationIATA && r.LocationEdition == o.LocationEdition
 }

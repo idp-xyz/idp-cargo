@@ -165,17 +165,20 @@ func TestAttachRules(t *testing.T) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
-	// N1-PHY OD-9: an LCL consolidation takes LCL shipments and those whose container mode is not planned, no FCL one
-	sea, err := CreateConsolidation("T", "C-S", ModeSea, KindSeaLCLOwn, "LE", shgHAM, t0.Add(72*time.Hour), t0.Add(60*time.Hour), "ops", t0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for mode, want := range map[string]error{"FCL": ErrFCLHouse, "LCL": nil, "": nil} {
-		i := ok
-		i.ShipmentID, i.Mode, i.Route, i.ContainerMode = "SH-S", ModeSea, shgHAM, mode
-		sm, _ := NewMembership("T", "SH-S")
-		if err := sm.Attach(sea, i, "ops-1", t0.Add(time.Hour)); !errors.Is(err, want) {
-			t.Errorf("a %q sea shipment: %v", mode, err)
+	// N1-PHY OD-9: an LCL consolidation, own container or co-load, takes LCL shipments and those whose container mode
+	// is not planned, no FCL one
+	for _, kind := range []Kind{KindSeaLCLOwn, KindSeaLCLCoload} {
+		sea, err := CreateConsolidation("T", "C-S", ModeSea, kind, "LE", shgHAM, t0.Add(72*time.Hour), t0.Add(60*time.Hour), "ops", t0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for mode, want := range map[string]error{"FCL": ErrFCLHouse, "LCL": nil, "": nil} {
+			i := ok
+			i.ShipmentID, i.Mode, i.Route, i.ContainerMode = "SH-S", ModeSea, shgHAM, mode
+			sm, _ := NewMembership("T", "SH-S")
+			if err := sm.Attach(sea, i, "ops-1", t0.Add(time.Hour)); !errors.Is(err, want) {
+				t.Errorf("%s, a %q sea shipment: %v", kind, mode, err)
+			}
 		}
 	}
 	m, _ := NewMembership("T", "SH-1")

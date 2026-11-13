@@ -1,7 +1,9 @@
 package domain
 
 import (
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -150,5 +152,20 @@ func TestRequestedContainerModes(t *testing.T) {
 	}
 	if got := s.Latest().Route.ContainerMode; got != ContainerLCL {
 		t.Fatalf("a plan version added with a part keeps the container mode: %q", got)
+	}
+}
+
+// Commands recorded before the container mode hash as they did: an empty one is left out of the route's JSON; and a
+// route differs from another by its container mode alone.
+func TestRouteContainerModeHashAndSame(t *testing.T) {
+	r := route(at.Add(72 * time.Hour))
+	blob, err := json.Marshal(r)
+	if err != nil || strings.Contains(string(blob), "ContainerMode") {
+		t.Fatalf("%s %v", blob, err)
+	}
+	lcl := r
+	lcl.ContainerMode = ContainerLCL
+	if r.Same(lcl) || !lcl.Same(lcl) {
+		t.Fatal("a route differs by its container mode alone")
 	}
 }

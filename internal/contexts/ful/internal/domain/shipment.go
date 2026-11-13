@@ -42,7 +42,7 @@ var (
 	ErrInvalidChange     = errors.New("ful: invalid change to the shipment")
 	ErrConflict          = errors.New("ful: concurrent revision conflict")
 	ErrUnresolvedRoute   = errors.New("ful: the route's locations are not resolved against the location reference data")
-	ErrModeMismatch      = errors.New("ful: the order requests another transport mode")
+	ErrModeMismatch      = errors.New("ful: the order requests another transport mode or container mode")
 )
 
 // Event types, as package api publishes them.
@@ -428,8 +428,10 @@ func (s *Shipment) Cancel(reason, by string, at time.Time) error {
 }
 
 // CheckRequestedModes checks obligation references, fresh from COM, against the shipment's transport mode and
-// container mode: where both the route and an order name one, they must be the same (C11, N1-PHY OD-9). A shipment
-// of another mode needs the order's transport changed first, in COM.
+// container mode: where both the route and an order name a mode, they must be the same (C11); where an order names a
+// container mode, a route that names its transport mode must plan that container mode (N1-PHY OD-9: PHY's LCL
+// consolidations refuse FCL houses by what FUL plans). A shipment of another mode needs the order's transport changed
+// first, in COM.
 func (s *Shipment) CheckRequestedModes(obligations []ObligationRef) error {
 	route := s.Latest().Route
 	for _, ob := range obligations {
@@ -437,9 +439,13 @@ func (s *Shipment) CheckRequestedModes(obligations []ObligationRef) error {
 			return fmt.Errorf("%w: order %s of %s requests %s, the shipment plans %s", ErrModeMismatch, ob.OrderID, ob.ObligationID, ob.RequestedMode,
 				route.Mode)
 		}
-		if route.ContainerMode != "" && ob.RequestedContainerMode != "" && ob.RequestedContainerMode != route.ContainerMode {
+		if route.Mode != "" && ob.RequestedContainerMode != "" && ob.RequestedContainerMode != route.ContainerMode {
+			planned := string(route.ContainerMode)
+			if planned == "" {
+				planned = "no container mode"
+			}
 			return fmt.Errorf("%w: order %s of %s requests %s, the shipment plans %s", ErrModeMismatch, ob.OrderID, ob.ObligationID,
-				ob.RequestedContainerMode, route.ContainerMode)
+				ob.RequestedContainerMode, planned)
 		}
 	}
 	return nil

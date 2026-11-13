@@ -78,6 +78,8 @@ var (
 	ErrIntentNotPlanned     = errors.New("phy: FUL does not report the shipment PLANNED")
 	ErrModeMismatch         = errors.New("phy: the shipment's transport mode differs from the consolidation's")
 	ErrFCLHouse             = errors.New("phy: PHY_FCL_HOUSE: an LCL consolidation takes no FCL shipment (decision N1-PHY OD-9)")
+	// ContainerFCL is the container mode of a shipment FUL plans as a full container (N1-PHY OD-9).
+	ContainerFCL            = "FCL"
 	ErrRouteMismatch        = errors.New("phy: the shipment's origin or destination differs from the consolidation's")
 	ErrWindowMismatch       = errors.New("phy: the consolidation's planned departure lies outside the shipment's departure window")
 	ErrOtherLegalEntity     = errors.New("phy: the shipment belongs to another legal entity than the one operating the consolidation")

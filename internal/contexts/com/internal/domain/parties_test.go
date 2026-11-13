@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -224,5 +225,13 @@ func TestContainerModeOfTheOrder(t *testing.T) {
 		if err != nil || o.Transport() != tr {
 			t.Fatalf("%+v: %+v %v", tr, o, err)
 		}
+	}
+}
+
+// Commands recorded before the container mode hash as they did: an empty one is left out of the JSON.
+func TestTransportHashesAsBefore(t *testing.T) {
+	blob, err := json.Marshal(Transport{Mode: ModeSea, Movement: PortToPort})
+	if err != nil || string(blob) != `{"Mode":"SEA","Movement":"PORT_TO_PORT"}` {
+		t.Fatalf("%s %v", blob, err)
 	}
 }

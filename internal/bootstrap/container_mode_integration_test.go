@@ -111,7 +111,7 @@ func TestContainerModeFromOrderToConsolidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	tenant := uniqueTenant("cargo-container-")
-	seedORG(t, platform, tenant, "party-l", "party-f", "party-x")
+	seedORG(t, platform, tenant, "party-l", "party-f", "party-x", "party-n")
 	at := time.Now().UTC().Add(-48 * time.Hour).Truncate(time.Microsecond)
 	departs := at.Add(72 * time.Hour)
 	unlocode := func(code string) kernel.LocationCode { return kernel.LocationCode{Scheme: kernel.UNLOCODE, Code: code} }
@@ -138,8 +138,26 @@ func TestContainerModeFromOrderToConsolidation(t *testing.T) {
 	if _, err = fulModule.AmendShipmentPlan(ctx, fulapi.AmendShipmentPlan{CommandID: "replan-L", TenantID: tenant, ActorID: "planner-1",
 		ShipmentID: "SH-L", ExpectedRevision: 3, TransportMode: fulapi.ModeSea, ContainerMode: fulapi.ContainerFCL, Origin: unlocode("CNSHA"),
 		Destination: unlocode("DEHAM"), DepartureWindow: kernel.ValidityInterval{From: departs, Until: departs.Add(48 * time.Hour)},
-		Reason: "a full container", OccurredAt: at.Add(8 * time.Hour)}); !errors.Is(err, fulapi.ErrRejected) {
+		Reason: "a full container", OccurredAt: at.Add(8 * time.Hour)}); !errors.Is(err, fulapi.ErrRejected) || !strings.Contains(err.Error(), "requests LCL") {
 		t.Fatalf("an FCL plan for an order that requests LCL: %v", err)
+	}
+	if _, err = fulModule.AmendShipmentPlan(ctx, fulapi.AmendShipmentPlan{CommandID: "replan-F-none", TenantID: tenant, ActorID: "planner-1",
+		ShipmentID: "SH-F", ExpectedRevision: 3, TransportMode: fulapi.ModeSea, Origin: unlocode("CNSHA"), Destination: unlocode("DEHAM"),
+		DepartureWindow: kernel.ValidityInterval{From: departs, Until: departs.Add(48 * time.Hour)}, Reason: "the container mode left out",
+		OccurredAt: at.Add(8 * time.Hour)}); !errors.Is(err, fulapi.ErrRejected) || !strings.Contains(err.Error(), "plans no container mode") {
+		t.Fatalf("a plan dropping the container mode its order requests: %v", err)
+	}
+	// a shipment whose order requests no container mode is planned without one, then given one alone
+	contexts.planSea(t, "party-n", "N", "", "")
+	if _, err = fulModule.AmendShipmentPlan(ctx, fulapi.AmendShipmentPlan{CommandID: "replan-N", TenantID: tenant, ActorID: "planner-1",
+		ShipmentID: "SH-N", ExpectedRevision: 3, TransportMode: fulapi.ModeSea, ContainerMode: fulapi.ContainerLCL, Origin: unlocode("CNSHA"),
+		Destination: unlocode("DEHAM"), DepartureWindow: kernel.ValidityInterval{From: departs, Until: departs.Add(48 * time.Hour)},
+		Reason: "consolidated LCL", OccurredAt: at.Add(8 * time.Hour)}); err != nil {
+		t.Fatalf("the container mode alone amended: %v", err)
+	}
+	if intent, err := fulModule.GetLoadIntent(ctx, fulapi.GetShipmentPlanSnapshot{TenantID: tenant, ShipmentID: "SH-N"}); err != nil ||
+		intent.ContainerMode != fulapi.ContainerLCL || intent.PlanVersion != 3 {
+		t.Fatalf("LoadIntent v1 of SH-N: %+v %v", intent, err)
 	}
 	if _, err = fulModule.AmendShipmentPlan(ctx, fulapi.AmendShipmentPlan{CommandID: "replan-L-air", TenantID: tenant, ActorID: "planner-1",
 		ShipmentID: "SH-L", ExpectedRevision: 3, TransportMode: fulapi.ModeSea, ContainerMode: fulapi.ContainerLoose, Origin: unlocode("CNSHA"),
@@ -155,21 +173,42 @@ func TestContainerModeFromOrderToConsolidation(t *testing.T) {
 		Reason: "a full container", OccurredAt: at.Add(8 * time.Hour)}); !errors.Is(err, comapi.ErrRejected) {
 		t.Fatalf("FCL on an AIR order: %v", err)
 	}
+	if _, err = comModule.ChangeOrderTransport(ctx, comapi.ChangeOrderTransport{CommandID: "transport-X-loose", TenantID: tenant, ActorID: "cs-1",
+		OrderID: "O-X", ExpectedRevision: 3, Transport: comapi.Transport{Mode: comapi.ModeAir, ContainerMode: comapi.ContainerLoose},
+		Reason: "loose cargo consolidated", OccurredAt: at.Add(8 * time.Hour)}); err != nil {
+		t.Fatalf("LOOSE on an AIR order: %v", err)
+	}
+	if p, err := comModule.GetOrderParties(ctx, comapi.GetOrderParties{TenantID: tenant, ActorID: "cs-1", OrderID: "O-X"}); err != nil ||
+		p.Transport != (comapi.Transport{Mode: comapi.ModeAir, ContainerMode: comapi.ContainerLoose}) {
+		t.Fatalf("the changed transport: %+v %v", p.Transport, err)
+	}
 	fixture, err := platform.newDB()
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = (bento.TenantTransactor{DB: fixture, Tenant: tenant}).WithinTransaction(ctx, func(txCtx context.Context) error {
-		e, err := fixture.RequireExecutor(txCtx)
-		if err != nil {
+	for name, tc := range map[string]struct{ sql, constraint string }{
+		"FCL on an AIR order": {`INSERT INTO cargo_com.order_transport (tenant_id,order_id,version,transport_mode,container_mode,reason,changed_by,
+            changed_at,entered_at) VALUES ($1,'O-X',99,'AIR','FCL','x','x',now(),now())`, "order_transport_container_mode"},
+		"a container mode on an order of no mode": {`INSERT INTO cargo_com.order_transport (tenant_id,order_id,version,movement_type,container_mode,
+            reason,changed_by,changed_at,entered_at) VALUES ($1,'O-X',99,'PORT_TO_PORT','LCL','x','x',now(),now())`, "order_transport_container_mode"},
+		"FCL on an AIR plan": {`INSERT INTO cargo_ful.shipment_plan_version (tenant_id,shipment_id,plan_no,change,transport_mode,container_mode,
+            scope_packs,scope_weight_unit,scope_weight,reason,written_by,written_at,entered_at) VALUES ($1,'SH-X',99,'AMENDED','AIR','FCL',6,'KGM',300,
+            'x','x',now(),now())`, "shipment_plan_version_container_mode"},
+		"a container mode on a plan of no mode": {`INSERT INTO cargo_ful.shipment_plan_version (tenant_id,shipment_id,plan_no,change,container_mode,
+            scope_packs,scope_weight_unit,scope_weight,reason,written_by,written_at,entered_at) VALUES ($1,'SH-X',99,'AMENDED','FCL',6,'KGM',300,
+            'x','x',now(),now())`, "shipment_plan_version_container_mode"},
+	} {
+		err = (bento.TenantTransactor{DB: fixture, Tenant: tenant}).WithinTransaction(ctx, func(txCtx context.Context) error {
+			e, err := fixture.RequireExecutor(txCtx)
+			if err != nil {
+				return err
+			}
+			_, err = e.Exec(txCtx, tc.sql, tenant)
 			return err
+		})
+		if err == nil || !strings.Contains(err.Error(), tc.constraint) {
+			t.Errorf("%s: %v", name, err)
 		}
-		_, err = e.Exec(txCtx, `INSERT INTO cargo_com.order_transport (tenant_id,order_id,version,transport_mode,container_mode,reason,changed_by,
-            changed_at,entered_at) VALUES ($1,'O-X',99,'AIR','FCL','x','x',now(),now())`, tenant)
-		return err
-	})
-	if err == nil || !strings.Contains(err.Error(), "order_transport_container_mode") {
-		t.Fatalf("the database takes FCL on AIR: %v", err)
 	}
 
 	// PHY: the LCL consolidation takes the LCL house and refuses the FCL one

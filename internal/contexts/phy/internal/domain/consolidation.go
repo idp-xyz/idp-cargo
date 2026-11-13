@@ -232,7 +232,7 @@ func (c *Consolidation) Admit(i LoadIntent) error {
 		return fmt.Errorf("%w: %s is %s", ErrIntentNotPlanned, i.ShipmentID, i.Status)
 	case i.Mode != c.state.Mode:
 		return fmt.Errorf("%w: %s is %s, the consolidation %s", ErrModeMismatch, i.ShipmentID, i.Mode, c.state.Mode)
-	case (c.state.Kind == KindSeaLCLOwn || c.state.Kind == KindSeaLCLCoload) && i.ContainerMode == "FCL":
+	case (c.state.Kind == KindSeaLCLOwn || c.state.Kind == KindSeaLCLCoload) && i.ContainerMode == ContainerFCL:
 		return fmt.Errorf("%w: %s", ErrFCLHouse, i.ShipmentID)
 	case !i.Route.sameLocations(current.Route):
 		return fmt.Errorf("%w: %s runs %s-%s, the consolidation %s-%s", ErrRouteMismatch, i.ShipmentID, i.Route.Origin.Code,

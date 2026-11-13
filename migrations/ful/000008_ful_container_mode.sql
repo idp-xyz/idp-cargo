@@ -6,5 +6,6 @@
 ALTER TABLE cargo_ful.shipment_plan_version
   ADD COLUMN container_mode text CHECK (container_mode IN ('LCL','FCL','LOOSE')),
   ADD CONSTRAINT shipment_plan_version_container_mode CHECK (container_mode IS NULL
-    OR (transport_mode = 'SEA' AND container_mode IN ('LCL','FCL')) OR (transport_mode = 'AIR' AND container_mode = 'LOOSE')) NOT VALID;
+    OR (coalesce(transport_mode, '') = 'SEA' AND container_mode IN ('LCL','FCL'))
+    OR (coalesce(transport_mode, '') = 'AIR' AND container_mode = 'LOOSE')) NOT VALID;
 ALTER TABLE cargo_ful.shipment_plan_version VALIDATE CONSTRAINT shipment_plan_version_container_mode;
