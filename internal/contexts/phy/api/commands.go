@@ -187,8 +187,46 @@ type EndMembershipForCancelledShipment struct {
 	OccurredAt                 time.Time
 }
 
+// Load unit kinds and statuses (PHY V0.3, backlog PB8). V0.3 plans containers on SEA_LCL_OWN consolidations; a
+// co-loader's consolidation has none, and ULD and loose units come with ULD build-up.
+const (
+	LoadUnitContainer = "CONTAINER"
+
+	UnitStatusPlanned = "PLANNED"
+	UnitStatusRemoved = "REMOVED"
+)
+
+// PlanLoadUnit plans a load unit for an OPEN or CLOSED consolidation: a CONTAINER of an ISO 6346 size-type
+// (TypeCode, such as 22G1, 42G1 or 45G1) on a SEA_LCL_OWN consolidation. PHY resolves the type against the current
+// edition of the equipment reference data and freezes its TEU, default maximum gross, tare and capacity with the
+// edition; a container's own plate data is SEA's. The receipt's ItemNo is the unit's number, counted from 1 in the
+// order units are planned.
+type PlanLoadUnit struct {
+	CommandID        string
+	TenantID         string
+	ActorID          string
+	ConsolidationID  string
+	ExpectedRevision int64
+	Kind             string // LoadUnitContainer
+	TypeCode         string
+	OccurredAt       time.Time
+}
+
+// RemovePlannedLoadUnit removes a planned load unit of an OPEN or CLOSED consolidation with a reason. The unit keeps
+// its number; the receipt's ItemNo is that number.
+type RemovePlannedLoadUnit struct {
+	CommandID        string
+	TenantID         string
+	ActorID          string
+	ConsolidationID  string
+	ExpectedRevision int64
+	UnitNo           int
+	Reason           string
+	OccurredAt       time.Time
+}
+
 // Receipt confirms a committed command. Replaying the same command returns the same receipt. Consolidation
-// commands return the consolidation's new revision; membership commands return the shipment's new membership
+// commands return the consolidation's new revision, and load unit commands also the unit as ItemNo; membership commands return the shipment's new membership
 // revision, the consolidation the house is in (or left) and the membership entry they wrote or ended; cargo lot
 // commands the lot's new revision; load execution commands the execution's new revision and its
 // consolidation. ItemNo is the receipt line, measurement version, screening result, discrepancy, load line,
@@ -217,6 +255,8 @@ type Commands interface {
 	RefreshHouseIntent(ctx context.Context, cmd RefreshHouseIntent) (Receipt, error)
 	EndMembershipForCancelledShipment(ctx context.Context, cmd EndMembershipForCancelledShipment) (Receipt, error)
 	ReconcileConsolidation(ctx context.Context, cmd ReconcileConsolidation) (Receipt, error)
+	PlanLoadUnit(ctx context.Context, cmd PlanLoadUnit) (Receipt, error)
+	RemovePlannedLoadUnit(ctx context.Context, cmd RemovePlannedLoadUnit) (Receipt, error)
 	PhysicalCommands
 }
 
@@ -233,6 +273,8 @@ const (
 	ActionRefreshHouseIntent                = "RefreshHouseIntent"
 	ActionEndMembershipForCancelledShipment = "EndMembershipForCancelledShipment"
 	ActionReconcileConsolidation            = "ReconcileConsolidation"
+	ActionPlanLoadUnit                      = "PlanLoadUnit"
+	ActionRemovePlannedLoadUnit             = "RemovePlannedLoadUnit"
 	ActionReceiveCargo                      = "ReceiveCargo" // subject: the cargo lot
 	ActionRecordCargoMeasurement            = "RecordCargoMeasurement"
 	ActionRecordScreeningResult             = "RecordScreeningResult"

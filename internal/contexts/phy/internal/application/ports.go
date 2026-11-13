@@ -35,6 +35,7 @@ var (
 	ErrInvalidQuery        = errors.New("phy application: invalid query")
 	ErrUnknownShipment     = errors.New("phy application: FUL does not know the shipment")
 	ErrLocationRefused     = errors.New("phy application: the location reference data does not resolve the location for the transport mode")
+	ErrEquipmentRefused    = errors.New("phy application: PHY_EQUIPMENT_UNKNOWN: the equipment reference data does not know the type")
 )
 
 // Scope is the verified caller of a command.
@@ -57,6 +58,8 @@ const (
 	ActionRefreshHouseIntent                Action = "RefreshHouseIntent"
 	ActionEndMembershipForCancelledShipment Action = "EndMembershipForCancelledShipment"
 	ActionReconcileConsolidation            Action = "ReconcileConsolidation"
+	ActionPlanLoadUnit                      Action = "PlanLoadUnit"
+	ActionRemovePlannedLoadUnit             Action = "RemovePlannedLoadUnit"
 	ActionReceiveCargo                      Action = "ReceiveCargo"
 	ActionRecordCargoMeasurement            Action = "RecordCargoMeasurement"
 	ActionRecordScreeningResult             Action = "RecordScreeningResult"
@@ -488,6 +491,14 @@ func (d Deps) changeExecution(ctx context.Context, s Scope, commandID, hash stri
 // caller expects; apply may read the consolidation's live houses in the transaction.
 func (d Deps) changeConsolidation(ctx context.Context, s Scope, commandID, hash string, entered time.Time, id phy.ConsolidationID, expected int64,
 	apply func(context.Context, *phy.Consolidation) error) (Receipt, error) {
+	return d.changeConsolidationItem(ctx, s, commandID, hash, entered, id, expected, func(txCtx context.Context, c *phy.Consolidation) (int, error) {
+		return 0, apply(txCtx, c)
+	})
+}
+
+// changeConsolidationItem is changeConsolidation whose apply returns the item it wrote, such as a load unit.
+func (d Deps) changeConsolidationItem(ctx context.Context, s Scope, commandID, hash string, entered time.Time, id phy.ConsolidationID,
+	expected int64, apply func(context.Context, *phy.Consolidation) (int, error)) (Receipt, error) {
 	return d.write(ctx, s, commandID, hash, func(txCtx context.Context) (Receipt, aggregate, error) {
 		c, revision, err := d.Consolidations.Load(txCtx, s.TenantID, id)
 		if err != nil {
@@ -496,12 +507,13 @@ func (d Deps) changeConsolidation(ctx context.Context, s Scope, commandID, hash 
 		if revision != expected {
 			return Receipt{}, nil, phy.ErrConflict
 		}
-		if err = apply(txCtx, c); err != nil {
+		item, err := apply(txCtx, c)
+		if err != nil {
 			return Receipt{}, nil, err
 		}
 		c.Stamp(entered)
 		revision, err = d.Consolidations.Save(txCtx, c, revision)
-		return Receipt{ConsolidationID: id, NewRevision: revision}, c, err
+		return Receipt{ConsolidationID: id, NewRevision: revision, ItemNo: item}, c, err
 	})
 }
 

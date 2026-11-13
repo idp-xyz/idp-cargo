@@ -166,7 +166,7 @@ func newFixture(t *testing.T) *fixture {
 	f := &fixture{db: testDB(t), at: at, tenant: "cargo-phy-" + time.Now().UTC().Format("20060102T150405.000000000"),
 		ful: &fulStub{at: at, plan: map[string]int{}, packs: map[string]int64{}, status: map[string]string{}, allocated: map[string]string{},
 			asked: map[int][]string{}}}
-	module, err := phymodule.New(f.db, f.ful, policy{}, phymodule.WithLocations(locationStub{}))
+	module, err := phymodule.New(f.db, f.ful, policy{}, phymodule.WithLocations(locationStub{}), phymodule.WithEquipment(equipmentStub{}))
 	if err != nil {
 		t.Fatal(err)
 	}

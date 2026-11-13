@@ -52,6 +52,9 @@ func (m *Module) GetPhysicalCostBasis(ctx context.Context, q api.GetPhysicalCost
 		out.Houses = append(out.Houses, house)
 	}
 	slices.SortFunc(out.Houses, func(a, b api.HouseCostBasis) int { return strings.Compare(a.ShipmentID, b.ShipmentID) })
+	for _, u := range c.LiveLoadUnits() {
+		out.LoadUnits = append(out.LoadUnits, loadUnit(u))
+	}
 	return out, nil
 }
 

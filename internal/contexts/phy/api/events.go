@@ -13,6 +13,8 @@ const (
 	ConsolidationReopened   = "ConsolidationReopened.v1"
 	ConsolidationCancelled  = "ConsolidationCancelled.v1"
 	ConsolidationReconciled = "ConsolidationReconciled.v1"
+	LoadUnitPlanned         = "LoadUnitPlanned.v1"
+	LoadUnitRemoved         = "LoadUnitRemoved.v1"
 	HouseAttached           = "HouseAttached.v1"
 	HouseDetached           = "HouseDetached.v1"
 	HouseTransferred        = "HouseTransferred.v1"
@@ -40,7 +42,7 @@ const (
 
 // EventPayload is the JSON payload of every PHY event: identifiers only, never names, addresses, contacts,
 // goods descriptions, master and house numbers or carrier message bodies (rule C3, privacy assessment V1.2).
-// Consolidation events carry the consolidation version; house events the membership entry, the consolidation
+// Consolidation events carry the consolidation version, and load unit events the unit as the item; house events the membership entry, the consolidation
 // the house is in or left, the one it came from on a transfer, and the reason code. Cargo lot events carry the
 // lot, its shipment and the item (receipt line, measurement version, screening result or discrepancy); load
 // execution events the execution, its consolidation, the shipment and lot a line or hold is about, the item

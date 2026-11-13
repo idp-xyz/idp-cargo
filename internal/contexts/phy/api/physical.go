@@ -655,8 +655,8 @@ type HouseCostBasis struct {
 }
 
 // PhysicalCostBasis is PhysicalCostBasis v1 (PHY -> FIN): the physical facts FIN apportions a consolidation's
-// pooled costs over. Houses are the live houses in shipment order. FIN apportions from these and never writes
-// them back.
+// pooled costs over. Houses are the live houses in shipment order; LoadUnits, added in PHY V0.3, the load units
+// planned and not removed, in unit order. FIN apportions from these and never writes them back.
 type PhysicalCostBasis struct {
 	TenantID               string
 	ConsolidationID        string
@@ -666,6 +666,7 @@ type PhysicalCostBasis struct {
 	OperatingLegalEntityID string
 	State                  string
 	Houses                 []HouseCostBasis
+	LoadUnits              []PlannedLoadUnit
 }
 
 // PhysicalCostBasisQueries is PhysicalCostBasis v1, which FIN reads.

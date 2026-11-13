@@ -1,5 +1,5 @@
 // Package reference is PHY's anticorruption layer for Cargo's location reference data (decision F2, option
-// 4). The reference data's error kinds are kept as text only.
+// 4) and its equipment reference data (PB8). The reference data's error kinds are kept as text only.
 package reference
 
 import (
