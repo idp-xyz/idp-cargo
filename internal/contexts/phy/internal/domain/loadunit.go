@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/big"
 	"regexp"
 	"time"
 
@@ -35,21 +36,38 @@ var (
 )
 
 // gramsPer and cubicCmPer convert the weights and volumes a container's limits are checked against (UN/ECE
-// Recommendation 20 codes).
+// Recommendation 20 codes), exactly, as a numerator and a denominator: a pound is 0.45359237 kg and a cubic foot
+// 28,316.846592 cm3.
 var (
-	gramsPer   = map[kernel.UnitCode]int64{"GRM": 1, "KGM": 1000, "TNE": 1000000}
-	cubicCmPer = map[kernel.UnitCode]int64{"CMQ": 1, "DMQ": 1000, "LTR": 1000, "MTQ": 1000000}
+	gramsPer   = map[kernel.UnitCode][2]int64{"GRM": {1, 1}, "KGM": {1000, 1}, "TNE": {1000000, 1}, "LBR": {45359237, 100000}}
+	cubicCmPer = map[kernel.UnitCode][2]int64{"CMQ": {1, 1}, "DMQ": {1000, 1}, "LTR": {1000, 1}, "MTQ": {1000000, 1},
+		"FTQ": {28316846592, 1000000}}
 )
 
-// checkable reports whether a line's weight, and its volume if it gives one, convert to grams and cubic centimetres.
-func checkable(l LoadLine) bool {
-	_, weight := gramsPer[l.GrossWeight.Unit]
-	_, volume := cubicCmPer[l.Volume.Unit]
-	return weight && (l.Volume == (kernel.Quantity{}) || volume)
+// toGrams and toCubicCm convert a quantity, rounding up and capping at math.MaxInt64; ok is false for a unit PHY
+// does not convert.
+func toGrams(q kernel.Quantity) (int64, bool)   { return convert(q, gramsPer) }
+func toCubicCm(q kernel.Quantity) (int64, bool) { return convert(q, cubicCmPer) }
+
+func convert(q kernel.Quantity, factors map[kernel.UnitCode][2]int64) (int64, bool) {
+	f, ok := factors[q.Unit]
+	if !ok || q.Amount < 0 {
+		return 0, false
+	}
+	v := new(big.Int).Mul(big.NewInt(q.Amount), big.NewInt(f[0]))
+	v.Add(v, big.NewInt(f[1]-1))
+	v.Quo(v, big.NewInt(f[1]))
+	if !v.IsInt64() {
+		return math.MaxInt64, true
+	}
+	return v.Int64(), true
 }
 
-// thousandths writes an amount in thousandths as a decimal, such as 32250.000 for 32,250,000 grams in kilograms.
-func thousandths(n int64) string { return fmt.Sprintf("%d.%03d", n/1000, n%1000) }
+// decimal writes n with places decimals, such as 32250.000 for 32,250,000 grams in kilograms.
+func decimal(n int64, places int) string {
+	unit := int64(math.Pow10(places))
+	return fmt.Sprintf("%d.%0*d", n/unit, places, n%unit)
+}
 
 // scaled multiplies an amount by a factor, capped at math.MaxInt64; addCapped adds two amounts likewise.
 func scaled(amount, factor int64) int64 {

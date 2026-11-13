@@ -42,7 +42,7 @@ func TestRandomMembershipKeepsItsInvariants(t *testing.T) {
 				n := liveIn(houses, c.ID())
 				_ = c.Close(len(n), at, "ops", at)
 			case 6:
-				_ = c.Reopen("late cargo", "ops", at, 0)
+				_ = c.Reopen("late cargo", "ops", at, 0, Stuffed{})
 			}
 			if closed && c.Current().State == StateClosed && !same(before, liveIn(houses, c.ID())) {
 				t.Fatalf("seed %d step %d: the houses of closed %s changed", seed, step, c.ID())

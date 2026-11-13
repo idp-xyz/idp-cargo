@@ -156,14 +156,28 @@ func (c *Consolidation) Close(liveHouses int, lastAttached time.Time, by string,
 	return c.change(ChangeClosed, "", by, at)
 }
 
-// Reopen reopens a CLOSED consolidation with a reason (OD-5), until cargo is tendered: tendered counts the live
-// packs of its closed load executions, which carrier evidence follows.
-func (c *Consolidation) Reopen(reason, by string, at time.Time, tendered int64) error {
+// Stuffed is what a consolidation's stuffings tell a reopen: how many containers are sealed, and the business
+// time of their latest change.
+type Stuffed struct {
+	Sealed int
+	Last   time.Time
+}
+
+// Reopen reopens a CLOSED consolidation with a reason (OD-5), until cargo is tendered or a container sealed:
+// tendered counts the live packs of its closed load executions, which carrier evidence follows. A reopen is dated
+// not before its stuffings' latest change: they were stuffed from the frozen house list.
+func (c *Consolidation) Reopen(reason, by string, at time.Time, tendered int64, stuffed Stuffed) error {
 	if c.state.State != StateClosed {
 		return ErrInvalidTransition
 	}
 	if tendered > 0 {
 		return fmt.Errorf("%w: %d packs tendered", ErrExecutionsClosed, tendered)
+	}
+	if stuffed.Sealed > 0 {
+		return fmt.Errorf("%w: %d containers are sealed", ErrExecutionsClosed, stuffed.Sealed)
+	}
+	if at.Before(stuffed.Last) {
+		return fmt.Errorf("%w: a reopen is dated not before the stuffing it pauses", ErrInvalidChange)
 	}
 	return c.change(ChangeReopened, reason, by, at)
 }

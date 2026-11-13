@@ -291,7 +291,7 @@ func OpenLoadExecution(tenant TenantID, id LoadExecutionID, c *Consolidation, ki
 
 // OpenStuffing opens the stuffing of a planned container of a CLOSED own-container LCL consolidation (its houses
 // frozen) at a facility of its origin, the forwarder's CFS. A unit takes one stuffing: taken reports whether an
-// execution was opened on it already. Business time is not before the unit was planned.
+// execution was opened on it already. Business time is not before the consolidation's latest change (its close).
 func OpenStuffing(tenant TenantID, id LoadExecutionID, c *Consolidation, unitNo int, facility Facility, taken bool, by string, at time.Time) (*LoadExecution, error) {
 	if c == nil || !identifier(string(tenant)) || !identifier(string(id)) || c.Tenant() != tenant || !facility.valid() || blank(by) || at.IsZero() {
 		return nil, ErrInvalidExecution
@@ -300,8 +300,12 @@ func OpenStuffing(tenant TenantID, id LoadExecutionID, c *Consolidation, unitNo 
 		return nil, ErrKindNotStuffed
 	}
 	current := c.Current()
-	if current.State != StateClosed {
-		return nil, fmt.Errorf("%w: it is %s", ErrNotFrozen, current.State)
+	switch current.State {
+	case StateClosed:
+	case StateOpen:
+		return nil, fmt.Errorf("%w: it is OPEN", ErrNotFrozen)
+	default:
+		return nil, ErrInvalidTransition
 	}
 	if unitNo < 1 || unitNo > len(c.state.LoadUnits) || c.state.LoadUnits[unitNo-1].Status != UnitPlanned ||
 		c.state.LoadUnits[unitNo-1].Kind != UnitContainer {
@@ -313,8 +317,8 @@ func OpenStuffing(tenant TenantID, id LoadExecutionID, c *Consolidation, unitNo 
 	if facility.Location != current.Route.Origin {
 		return nil, fmt.Errorf("%w: the facility lies at %s, the consolidation departs %s", ErrInvalidExecution, facility.Location.Code, current.Route.Origin.Code)
 	}
-	if at.Before(c.state.LoadUnits[unitNo-1].PlannedAt) {
-		return nil, ErrInvalidChange
+	if at.Before(c.lastChange()) {
+		return nil, fmt.Errorf("%w: a stuffing is dated not before the consolidation's close and its units' changes", ErrInvalidChange)
 	}
 	x := &LoadExecution{state: LoadExecutionState{TenantID: tenant, ExecutionID: id, ConsolidationID: c.ID(), Kind: ExecutionStuffing, Mode: c.Mode(),
 		Facility: facility, LoadUnitNo: unitNo, State: ExecutionOpen, OpenedBy: by, OpenedAt: at.UTC()}}
@@ -404,10 +408,6 @@ func (x *LoadExecution) Load(in LoadLine, c *Consolidation, lot *CargoLot, entry
 		}
 		line.Basis, line.MeasurementNo = BasisApportioned, m.No
 	}
-	if x.state.Kind == ExecutionStuffing && !checkable(line) {
-		return fmt.Errorf("%w: a container's limits are checked against weights in GRM, KGM or TNE and volumes in CMQ, DMQ, LTR or MTQ",
-			ErrInvalidLoad)
-	}
 	if err := x.changeable(by, at); err != nil {
 		return err
 	}
@@ -418,44 +418,110 @@ func (x *LoadExecution) Load(in LoadLine, c *Consolidation, lot *CargoLot, entry
 		s := lot.state.Screenings[len(lot.state.Screenings)-1]
 		x.HoldForScreening(lot.ID(), s.Evidence, by, at)
 	}
-	if x.state.Kind == ExecutionStuffing {
-		x.holdIfOverLimits(c.state.LoadUnits[x.state.LoadUnitNo-1].Limits, line.Evidence, by, at)
-	}
 	return nil
 }
 
-// holdIfOverLimits holds a stuffing whose container, its tare and its live cargo, weighs more than the type's
-// default maximum gross, or whose live cargo takes more than its capacity (volumes not given are not counted). The
-// line is recorded either way (G06-05); an OVERWEIGHT hold already placed is not placed again. The limits are
-// defaults: the container's plate (SEA's) may allow more, which releasing the hold with its evidence records.
-func (x *LoadExecution) holdIfOverLimits(l UnitLimits, evidence Evidence, by string, at time.Time) {
+// HoldIfOverLimits holds a loading stuffing whose container, its tare and its live cargo, weighs more than its
+// type's default maximum gross, or whose live cargo takes more than the type's capacity. The cargo is measured as
+// PHY publishes it (HouseMeasure): lines measured for themselves as measured, apportioned lines from their lot's
+// latest measurement; volumes not known are not counted. lots holds the lots of the stuffing's lines. A weight or
+// volume in a unit PHY does not convert holds it too, as not checked. The line or measurement that crossed the
+// limits stays recorded (G06-05); an OVERWEIGHT hold already placed is not placed again. The limits are defaults:
+// the container's plate (SEA's) may allow more, which releasing the hold with its evidence records, and a later
+// line or measurement over them holds again. It reports whether it placed a hold; the hold takes evidence's time,
+// or the execution's last change if that is later.
+func (x *LoadExecution) HoldIfOverLimits(c *Consolidation, lots map[CargoLotID]*CargoLot, evidence Evidence, by string, at time.Time) bool {
+	if x.state.Kind != ExecutionStuffing || (x.state.State != ExecutionLoading && x.state.State != ExecutionOnHold) || c == nil ||
+		c.ID() != x.state.ConsolidationID || x.state.LoadUnitNo > len(c.state.LoadUnits) || blank(by) || at.IsZero() {
+		return false
+	}
 	for _, h := range x.state.Holds {
 		if h.Placed() && h.Reason == HoldOverweight {
-			return
+			return false
 		}
 	}
-	var weight, volume int64
-	for _, line := range x.state.Lines {
-		_, w, v := x.lineLive(line.No)
-		weight = addCapped(weight, scaled(w, gramsPer[line.GrossWeight.Unit]))
-		if line.Volume != (kernel.Quantity{}) {
-			volume = addCapped(volume, scaled(v, cubicCmPer[line.Volume.Unit]))
-		}
-	}
-	gross := addCapped(weight, scaled(l.TareKg, 1000))
+	l := c.state.LoadUnits[x.state.LoadUnitNo-1].Limits
+	grams, cubicCm, unchecked := x.unitCargo(lots)
+	gross := addCapped(grams, scaled(l.TareKg, 1000))
 	var text string
 	switch {
+	case unchecked != "":
+		text = fmt.Sprintf("unit %d (%s): limits not checked, a measure in %s", x.state.LoadUnitNo, l.TypeCode, unchecked)
 	case gross > scaled(l.MaxGrossKg, 1000):
 		text = fmt.Sprintf("unit %d (%s): tare and cargo %s kg over the default maximum gross %d kg (edition %s)", x.state.LoadUnitNo, l.TypeCode,
-			thousandths(gross), l.MaxGrossKg, l.Edition)
-	case volume > l.CapacityCM3:
+			decimal(gross, 3), l.MaxGrossKg, l.Edition)
+	case cubicCm > l.CapacityCM3:
 		text = fmt.Sprintf("unit %d (%s): cargo %s m3 over the default capacity %s m3 (edition %s)", x.state.LoadUnitNo, l.TypeCode,
-			thousandths(volume/1000), thousandths(l.CapacityCM3/1000), l.Edition)
+			decimal(cubicCm, 6), decimal(l.CapacityCM3, 6), l.Edition)
 	default:
-		return
+		return false
 	}
-	x.hold(Hold{Reason: HoldOverweight, Text: text, Evidence: evidence}, by, at)
+	x.hold(Hold{Reason: HoldOverweight, Text: text, Evidence: evidence}, by, later(at, x.lastChange()))
+	return true
 }
+
+// unitCargo is the stuffing's live cargo in grams and cubic centimetres, by HouseMeasure's rule over every house, and
+// the first unit it could not convert.
+func (x *LoadExecution) unitCargo(lots map[CargoLotID]*CargoLot) (grams, cubicCm int64, unchecked kernel.UnitCode) {
+	add := func(total *int64, q kernel.Quantity, convert func(kernel.Quantity) (int64, bool)) {
+		if q.Amount == 0 && q.Unit == "" {
+			return
+		}
+		v, ok := convert(q)
+		if !ok && unchecked == "" {
+			unchecked = q.Unit
+		}
+		*total = addCapped(*total, v)
+	}
+	type lotShare struct{ apportioned, measuredPacks, measuredWeight, measuredVolume int64 }
+	byLot := map[CargoLotID]*lotShare{}
+	var order []CargoLotID
+	for _, line := range x.state.Lines {
+		live, w, v := x.lineLive(line.No)
+		if live == 0 {
+			continue
+		}
+		lot, ok := lots[line.LotID]
+		if ok {
+			if _, measured := lot.Measured(); measured && lot.Received() > 0 {
+				s := byLot[line.LotID]
+				if s == nil {
+					s = &lotShare{}
+					byLot[line.LotID], order = s, append(order, line.LotID)
+				}
+				if line.Basis == BasisApportioned {
+					s.apportioned += live
+					continue
+				}
+				s.measuredPacks, s.measuredWeight, s.measuredVolume = s.measuredPacks+live, s.measuredWeight+w, s.measuredVolume+v
+			}
+		}
+		add(&grams, kernel.Quantity{Unit: line.GrossWeight.Unit, Amount: w}, toGrams)
+		if line.Volume != (kernel.Quantity{}) {
+			add(&cubicCm, kernel.Quantity{Unit: line.Volume.Unit, Amount: v}, toCubicCm)
+		}
+	}
+	for _, id := range order {
+		s := byLot[id]
+		if s.apportioned == 0 {
+			continue
+		}
+		m, _ := lots[id].Measured()
+		rest := lots[id].Received() - s.measuredPacks
+		w, v := max(m.GrossWeight.Amount-s.measuredWeight, 0), max(m.Volume.Amount-s.measuredVolume, 0)
+		if s.apportioned < rest {
+			w, v = share(w, s.apportioned, rest), share(v, s.apportioned, rest)
+		}
+		add(&grams, kernel.Quantity{Unit: m.GrossWeight.Unit, Amount: w}, toGrams)
+		if m.Volume != (kernel.Quantity{}) {
+			add(&cubicCm, kernel.Quantity{Unit: m.Volume.Unit, Amount: v}, toCubicCm)
+		}
+	}
+	return grams, cubicCm, unchecked
+}
+
+// LastChange is the business time of the execution's latest change.
+func (x *LoadExecution) LastChange() time.Time { return x.lastChange() }
 
 // apportion is the part of a lot's measure that packs of received take: their share rounded down, or, for the
 // packs that complete the lot, what the live lines leave of it (never less than zero).
@@ -480,6 +546,9 @@ func (x *LoadExecution) Unload(lineNo int, packs int64, reason ReversalReason, e
 	switch x.state.State {
 	case ExecutionLoading, ExecutionOnHold:
 	case ExecutionClosed:
+		if x.state.Kind == ExecutionStuffing {
+			return fmt.Errorf("%w: a sealed container is unstuffed once it can be sealed again", ErrNotLoading)
+		}
 		if reason != ReversalOffloadedByForwarder {
 			return fmt.Errorf("%w: after the tender only packs taken back from the carrier (%s)", ErrNotLoading, ReversalOffloadedByForwarder)
 		}
@@ -609,10 +678,34 @@ func (x *LoadExecution) ReleaseHold(no int, evidence Evidence, lotOutcome Outcom
 	return nil
 }
 
-// Close closes a loading execution with its closing evidence: the tender receipt of the airline terminal or the
-// co-loader's CFS, or for a stuffing the container's seal (source SEAL, the seal number as reference), with cargo
-// in the container.
+// Close closes a loading tender with its closing evidence: the tender receipt of the airline terminal or the
+// co-loader's CFS. A stuffing is closed by Seal.
 func (x *LoadExecution) Close(evidence Evidence, by string, at time.Time) error {
+	if x.state.Kind == ExecutionStuffing {
+		return fmt.Errorf("%w: a stuffing closes with the container's seal", ErrInvalidExecution)
+	}
+	return x.close(evidence, by, at)
+}
+
+// Seal closes a loading stuffing with the container's seal as evidence (source SEAL, the seal number as reference),
+// with cargo in the container, while its consolidation c is CLOSED: a container is sealed on a frozen house list.
+func (x *LoadExecution) Seal(c *Consolidation, evidence Evidence, by string, at time.Time) error {
+	if x.state.Kind != ExecutionStuffing || c == nil || c.ID() != x.state.ConsolidationID {
+		return fmt.Errorf("%w: only a stuffing is sealed, with its consolidation", ErrInvalidExecution)
+	}
+	if s := c.Current().State; s != StateClosed {
+		return fmt.Errorf("%w: it is %s", ErrNotFrozen, s)
+	}
+	if x.state.State == ExecutionLoading && evidence.valid(at) && evidence.Source != EvidenceSeal {
+		return fmt.Errorf("%w: a stuffing closes with the container's seal (source %s)", ErrInvalidEvidence, EvidenceSeal)
+	}
+	if x.state.State == ExecutionLoading && x.Tendered() == 0 {
+		return fmt.Errorf("%w: nothing is stuffed in the container", ErrInvalidLoad)
+	}
+	return x.close(evidence, by, at)
+}
+
+func (x *LoadExecution) close(evidence Evidence, by string, at time.Time) error {
 	if x.state.State == ExecutionOnHold {
 		return ErrOnHold
 	}
@@ -621,14 +714,6 @@ func (x *LoadExecution) Close(evidence Evidence, by string, at time.Time) error 
 	}
 	if !evidence.valid(at) {
 		return ErrInvalidEvidence
-	}
-	if x.state.Kind == ExecutionStuffing {
-		if evidence.Source != EvidenceSeal {
-			return fmt.Errorf("%w: a stuffing closes with the container's seal (source %s)", ErrInvalidEvidence, EvidenceSeal)
-		}
-		if x.Tendered() == 0 {
-			return fmt.Errorf("%w: nothing is stuffed in the container", ErrInvalidLoad)
-		}
 	}
 	if err := x.changeable(by, at); err != nil {
 		return err

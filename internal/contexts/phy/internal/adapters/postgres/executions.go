@@ -351,7 +351,7 @@ func (s ExecutionStore) Insert(ctx context.Context, x *phy.LoadExecution) (int64
 		return 0, fmt.Errorf("%w: load execution %s", bentorepo.ErrAlreadyExists, st.ExecutionID)
 	}
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "load_execution_one_per_unit" {
-		return 0, fmt.Errorf("%w: unit %d of consolidation %s has its stuffing", bentorepo.ErrConflict, st.LoadUnitNo, st.ConsolidationID)
+		return 0, fmt.Errorf("%w: unit %d of consolidation %s", phy.ErrLoadUnitInUse, st.LoadUnitNo, st.ConsolidationID)
 	}
 	if err != nil {
 		return 0, err

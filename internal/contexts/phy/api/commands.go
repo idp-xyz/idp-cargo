@@ -232,7 +232,7 @@ type RemovePlannedLoadUnit struct {
 // revision, the consolidation the house is in (or left) and the membership entry they wrote or ended; cargo lot
 // commands the lot's new revision; load execution commands the execution's new revision and its
 // consolidation. ItemNo is the receipt line, measurement version, screening result, discrepancy, load line,
-// reversal, hold or carrier evidence the command wrote.
+// reversal, hold or carrier evidence the command wrote; for the opening of a stuffing, its load unit.
 type Receipt struct {
 	CommandID       string
 	ConsolidationID string

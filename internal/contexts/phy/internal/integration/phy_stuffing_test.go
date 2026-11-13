@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -72,6 +73,9 @@ func TestStuffingOnPostgres(t *testing.T) {
 	at := f.at.Add(4 * time.Hour)
 
 	opened := ok(t, 1)(f.module.OpenLoadExecution(ctx, f.stuff("open-1", "X-S1", 1, at)))
+	if opened.ItemNo != 1 || opened.ExecutionID != "X-S1" {
+		t.Fatalf("the stuffing's receipt names its unit: %+v", opened)
+	}
 	if again, err := f.module.OpenLoadExecution(ctx, f.stuff("open-1", "X-S1", 1, at)); err != nil || again != opened {
 		t.Fatalf("replay = %+v, %v", again, err)
 	}
@@ -203,7 +207,7 @@ func TestStuffingsRaceForOneUnit(t *testing.T) {
 		switch {
 		case err == nil:
 			opened++
-		case errors.Is(err, api.ErrConflict), errors.Is(err, api.ErrRejected):
+		case errors.Is(err, api.ErrRejected) && strings.Contains(err.Error(), "PHY_LOAD_UNIT_IN_USE"):
 		default:
 			t.Errorf("unexpected: %v", err)
 		}
@@ -256,6 +260,200 @@ func TestStuffingDatabaseRules(t *testing.T) {
 		if _, err := migrator.Exec(ctx, `UPDATE cargo_phy.load_execution SET load_unit_no=2 WHERE tenant_id=$1 AND execution_id='X-S1'`,
 			f.tenant); sqlState(err) != "23001" {
 			t.Fatalf("the unit rewritten by the migrator: %v", err)
+		}
+	}
+}
+
+// A stuffing that meets the one-per-unit index, the other committing meanwhile, is refused as the unit's stuffing,
+// not as a conflict to retry.
+func TestStuffingMeetsTheOnePerUnitIndex(t *testing.T) {
+	ctx := context.Background()
+	f := stuffingDay(t)
+	at := f.at.Add(4 * time.Hour)
+	started, release, done := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+	go func() {
+		done <- f.within(t, func(ctx context.Context, e bentopg.Executor) error {
+			if _, err := e.Exec(ctx, `INSERT INTO cargo_phy.load_execution (tenant_id,execution_id,consolidation_id,kind,transport_mode,facility_location,
+                facility_code,load_unit_no,state,opened_by,opened_at,opened_entered_at)
+                VALUES ($1,'X-H','C-S','STUFFING','SEA','CNSHG','CFS-1',2,'OPEN','x',now(),now())`, f.tenant); err != nil {
+				return err
+			}
+			close(started)
+			<-release
+			return nil
+		})
+	}()
+	<-started
+	result := make(chan error, 1)
+	go func() {
+		_, err := f.module.OpenLoadExecution(ctx, f.stuff("open-late", "X-L", 2, at))
+		result <- err
+	}()
+	time.Sleep(300 * time.Millisecond) // the opening waits on the index
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-result; !errors.Is(err, api.ErrRejected) || !strings.Contains(err.Error(), "PHY_LOAD_UNIT_IN_USE") {
+		t.Fatalf("the second stuffing of unit 2: %v", err)
+	}
+}
+
+// A lot weighed again while it is being stuffed holds the stuffing when its container is then over the limits.
+func TestStuffingHeldWhenTheLotIsWeighedAgain(t *testing.T) {
+	ctx := context.Background()
+	f := stuffingDay(t)
+	at := f.at.Add(4 * time.Hour)
+	ok(t, 1)(f.module.OpenLoadExecution(ctx, f.stuff("open-1", "X-S1", 1, at)))
+	ok(t, 2)(f.module.StartLoading(ctx, api.StartLoading{CommandID: "start-1", TenantID: f.tenant, ActorID: "ops-1", ExecutionID: "X-S1",
+		ExpectedRevision: 1, OccurredAt: at}))
+	ok(t, 3)(f.module.RecordCargoLoaded(ctx, f.load("stuff-1", "X-S1", 2, "L-S1", 6, at)))
+	weigh := api.RecordCargoMeasurement{CommandID: "weigh-again", TenantID: f.tenant, ActorID: "cfs-1", LotID: "L-S1", ExpectedRevision: 3,
+		GrossWeight: kgm(30000), Method: api.MethodScale, Evidence: evidence("weigh-again", at), OccurredAt: at}
+	if r := ok(t, 4)(f.module.RecordCargoMeasurement(ctx, weigh)); r.ItemNo != 2 {
+		t.Fatalf("measurement 2: %+v", r)
+	}
+	x, err := f.module.GetLoadExecution(ctx, api.GetLoadExecution{TenantID: f.tenant, ExecutionID: "X-S1"})
+	if err != nil || x.State != api.ExecutionOnHold || len(x.Holds) != 1 || x.Holds[0].Evidence.Reference != "weigh-again" ||
+		!strings.Contains(x.Holds[0].Text, "32250.000 kg over the default maximum gross 30480 kg") || x.Revision != 4 {
+		t.Fatalf("stuffing after the weighing: %+v %v", x, err)
+	}
+	types := f.outboxTypes(t)
+	if !slices.Contains(types, api.LoadExecutionHeld) || !slices.Contains(types, api.CargoMeasured) {
+		t.Fatalf("events = %v", types)
+	}
+}
+
+// A container is sealed on a frozen house list; a sealed container is not unstuffed and its consolidation does not
+// reopen; a reopen is not dated before the stuffing it pauses.
+func TestSealingOnPostgres(t *testing.T) {
+	ctx := context.Background()
+	f := stuffingDay(t)
+	at := f.at.Add(4 * time.Hour)
+	ok(t, 1)(f.module.OpenLoadExecution(ctx, f.stuff("open-1", "X-S1", 1, at)))
+	ok(t, 2)(f.module.StartLoading(ctx, api.StartLoading{CommandID: "start-1", TenantID: f.tenant, ActorID: "ops-1", ExecutionID: "X-S1",
+		ExpectedRevision: 1, OccurredAt: at}))
+	ok(t, 3)(f.module.RecordCargoLoaded(ctx, f.load("stuff-1", "X-S1", 2, "L-S1", 6, at.Add(time.Hour))))
+	reopen := api.ReopenConsolidation{CommandID: "reopen-early", TenantID: f.tenant, ActorID: "ops-1", ConsolidationID: "C-S", ExpectedRevision: 4,
+		Reason: "a late house", OccurredAt: at.Add(30 * time.Minute)}
+	if _, err := f.module.ReopenConsolidation(ctx, reopen); !errors.Is(err, api.ErrRejected) {
+		t.Fatalf("a reopen dated before the line it pauses: %v", err)
+	}
+	reopen.CommandID, reopen.OccurredAt = "reopen", at.Add(2*time.Hour)
+	ok(t, 5)(f.module.ReopenConsolidation(ctx, reopen))
+	seal := api.CloseLoadExecution{CommandID: "seal", TenantID: f.tenant, ActorID: "ops-1", ExecutionID: "X-S1", ExpectedRevision: 3,
+		Evidence: api.Evidence{Source: api.EvidenceSeal, Reference: "CN-SEAL-0042", OccurredAt: at.Add(2 * time.Hour)}, OccurredAt: at.Add(2 * time.Hour)}
+	if _, err := f.module.CloseLoadExecution(ctx, seal); !errors.Is(err, api.ErrRejected) || !strings.Contains(err.Error(), "PHY_HOUSES_NOT_FROZEN") {
+		t.Fatalf("sealed on an open house list: %v", err)
+	}
+	// The database refuses it too.
+	err := f.within(t, func(ctx context.Context, e bentopg.Executor) error {
+		_, err := e.Exec(ctx, `UPDATE cargo_phy.load_execution SET state='CLOSED', closed_by='x', closed_at=now(), closed_entered_at=now(),
+            close_evidence_source='SEAL', close_evidence_reference='S', close_evidence_occurred_at=now() WHERE tenant_id=$1 AND execution_id='X-S1'`, f.tenant)
+		return err
+	})
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.ConstraintName != "load_execution_seal_frozen" {
+		t.Fatalf("sealed on an open house list in the database: %v", err)
+	}
+	closeAgain := f.closeCmd("close-again", "C-S", 5)
+	closeAgain.OccurredAt = f.at.Add(6*time.Hour + 30*time.Minute)
+	ok(t, 6)(f.module.CloseConsolidation(ctx, closeAgain))
+	seal.OccurredAt, seal.Evidence.OccurredAt = f.at.Add(7*time.Hour), f.at.Add(7*time.Hour)
+	ok(t, 4)(f.module.CloseLoadExecution(ctx, seal))
+
+	unstuff := api.RecordCargoUnloaded{CommandID: "unstuff", TenantID: f.tenant, ActorID: "ops-1", ExecutionID: "X-S1", ExpectedRevision: 4,
+		LineNo: 1, Packs: 6, Reason: api.ReversalOffloadedByForwarder, Evidence: evidence("unstuff", f.at.Add(7*time.Hour)), OccurredAt: f.at.Add(7 * time.Hour)}
+	if _, err = f.module.RecordCargoUnloaded(ctx, unstuff); !errors.Is(err, api.ErrRejected) {
+		t.Fatalf("a sealed container unstuffed: %v", err)
+	}
+	reopen.CommandID, reopen.ExpectedRevision, reopen.OccurredAt = "reopen-sealed", 6, f.at.Add(8*time.Hour)
+	if _, err = f.module.ReopenConsolidation(ctx, reopen); !errors.Is(err, api.ErrRejected) || !strings.Contains(err.Error(), "cannot reopen") {
+		t.Fatalf("a consolidation with a sealed container reopened: %v", err)
+	}
+	for name, tc := range map[string]struct{ sql, constraint string }{
+		"a reversal of a sealed container": {`INSERT INTO cargo_phy.reversal_line (tenant_id,execution_id,reversal_no,line_no,packs,gross_weight,reason,
+            evidence_source,evidence_reference,evidence_occurred_at,reversed_by,reversed_at,entered_at)
+            VALUES ($1,'X-S1',1,1,1,1,'OFFLOADED_BY_FORWARDER','x','x',now(),'x',now(),now())`, "reversal_line_sealed"},
+	} {
+		err := f.within(t, func(ctx context.Context, e bentopg.Executor) error {
+			_, err := e.Exec(ctx, tc.sql, f.tenant)
+			return err
+		})
+		if !errors.As(err, &pgErr) || pgErr.ConstraintName != tc.constraint {
+			t.Errorf("%s: %v, want %s", name, err, tc.constraint)
+		}
+	}
+
+	// Emptied past the triggers (as the migrator), the sealed container still keeps its consolidation from reopening.
+	migrator := f.migrator(t)
+	if migrator == nil {
+		return
+	}
+	tx, err := migrator.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Exec(ctx, `SET LOCAL session_replication_role = replica`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO cargo_phy.reversal_line (tenant_id,execution_id,reversal_no,line_no,packs,gross_weight,reason,evidence_source,
+        evidence_reference,evidence_occurred_at,reversed_by,reversed_at,entered_at)
+        SELECT tenant_id,execution_id,1,1,packs,gross_weight,'OFFLOADED_BY_FORWARDER','x','x',loaded_at,'x',loaded_at,now()
+        FROM cargo_phy.load_line WHERE tenant_id=$1 AND execution_id='X-S1' AND line_no=1`, f.tenant); err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	reopen.CommandID = "reopen-emptied"
+	if _, err = f.module.ReopenConsolidation(ctx, reopen); !errors.Is(err, api.ErrRejected) || !strings.Contains(err.Error(), "1 containers are sealed") {
+		t.Fatalf("a consolidation with an emptied sealed container reopened: %v", err)
+	}
+	err = f.within(t, func(ctx context.Context, e bentopg.Executor) error {
+		_, err := e.Exec(ctx, `INSERT INTO cargo_phy.consolidation_version (tenant_id,consolidation_id,version_no,change,state,origin_code,
+            destination_code,location_edition,planned_departure,house_cut_off,reason,written_by,written_at,entered_at)
+            SELECT tenant_id,consolidation_id,version_no+1,'REOPENED','OPEN',origin_code,destination_code,location_edition,planned_departure,
+              house_cut_off,'x','x',now(),now() FROM cargo_phy.consolidation_version WHERE tenant_id=$1 AND consolidation_id='C-S'
+            ORDER BY version_no DESC LIMIT 1`, f.tenant)
+		return err
+	})
+	if !errors.As(err, &pgErr) || pgErr.ConstraintName != "consolidation_reopen_before_seal" {
+		t.Fatalf("a reopen after the seal in the database: %v", err)
+	}
+}
+
+// The database's opening rules for a stuffing: a CLOSED consolidation, a PLANNED unit, not dated before the close,
+// and opened OPEN.
+func TestStuffingOpeningRulesInTheDatabase(t *testing.T) {
+	ctx := context.Background()
+	f := stuffingDay(t)
+	at := f.at.Add(4 * time.Hour)
+	f.createSea(t, "C-O", api.KindSeaLCLOwn)
+	ok(t, 2)(f.module.PlanLoadUnit(ctx, func() api.PlanLoadUnit { c := f.planUnit("plan-o", "C-O", 1, "22G1"); return c }()))
+	insert := func(id, consolidation, state, unit, opened string) string {
+		return fmt.Sprintf(`INSERT INTO cargo_phy.load_execution (tenant_id,execution_id,consolidation_id,kind,transport_mode,facility_location,
+            facility_code,load_unit_no,state,opened_by,opened_at,opened_entered_at,started_by,started_at,started_entered_at)
+            VALUES ($1,'%s','%s','STUFFING','SEA','CNSHG','CFS-1',%s,'%s','x',%s,now(),%s)`, id, consolidation, unit, state, opened,
+			map[bool]string{true: "'x',now(),now()", false: "NULL,NULL,NULL"}[state != "OPEN"])
+	}
+	if _, err := f.module.RemovePlannedLoadUnit(ctx, api.RemovePlannedLoadUnit{CommandID: "remove-2", TenantID: f.tenant, ActorID: "ops-1",
+		ConsolidationID: "C-S", ExpectedRevision: 4, UnitNo: 2, Reason: "one container is enough", OccurredAt: at}); err != nil {
+		t.Fatal(err)
+	}
+	for name, sql := range map[string]string{
+		"an OPEN consolidation":  insert("X-1", "C-O", "OPEN", "1", "now()"),
+		"a REMOVED unit":         insert("X-2", "C-S", "OPEN", "2", "now()"),
+		"dated before the close": insert("X-3", "C-S", "OPEN", "1", "'"+f.at.Add(time.Hour).Format(time.RFC3339Nano)+"'"),
+		"opened already loading": insert("X-4", "C-S", "LOADING", "1", "now()"),
+	} {
+		err := f.within(t, func(ctx context.Context, e bentopg.Executor) error {
+			_, err := e.Exec(ctx, sql, f.tenant)
+			return err
+		})
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.ConstraintName != "load_execution_stuffing" {
+			t.Errorf("%s: %v", name, err)
 		}
 	}
 }

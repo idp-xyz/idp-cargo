@@ -215,7 +215,7 @@ func TestLoadExecutionTender(t *testing.T) {
 	if err := x.Close(ev("TR-1", at), "ops", at); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.Reopen("late cargo", "ops", at, x.Tendered()); !errors.Is(err, ErrExecutionsClosed) {
+	if err := c.Reopen("late cargo", "ops", at, x.Tendered(), Stuffed{}); !errors.Is(err, ErrExecutionsClosed) {
 		t.Fatalf("no reopen after the tender: %v", err)
 	}
 	departed := CarrierEvidence{Fact: CarrierDeparted, Pieces: 4, Transport: "MU587", Evidence: Evidence{Source: "CARGO-IMP", Reference: "FSU-DEP-1", OccurredAt: at}}
