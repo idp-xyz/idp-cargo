@@ -163,18 +163,16 @@ func (d Deps) begin(ctx context.Context, c Command) (hash string, entered time.T
 	if scoped, ok := d.Tx.(interface{ TenantScope() string }); ok && scoped.TenantScope() != string(c.Scope.TenantID) {
 		return "", time.Time{}, Receipt{}, false, ErrUnauthorized
 	}
-	blob, err := json.Marshal(c.Payload)
+	hash, legacy, err := requestHashes(c)
 	if err != nil {
 		return "", time.Time{}, Receipt{}, false, err
 	}
-	sum := sha256.Sum256(blob)
-	hash = hex.EncodeToString(sum[:])
 	if err = d.Tx.WithinTransaction(ctx, func(txCtx context.Context) error {
 		r, ok, err := d.Receipts.Find(txCtx, c.Scope.TenantID, c.CommandID)
 		if err != nil || !ok {
 			return err
 		}
-		if r.RequestHash != hash {
+		if r.RequestHash != hash && r.RequestHash != legacy {
 			return ErrIdempotencyConflict
 		}
 		stored, replayed = r, true
@@ -192,6 +190,19 @@ func (d Deps) begin(ctx context.Context, c Command) (hash string, entered time.T
 	return hash, entered, Receipt{}, false, nil
 }
 
+// requestHashes returns the hash a command's receipt keeps, of the command's name and its fields as sent, so that two
+// commands of the same fields (a refresh and an end of one house) under one command id are not replays of each other;
+// and the hash of the fields alone, which receipts written before V2.62 keep: a command recorded then is still
+// replayed, under either hash.
+func requestHashes(c Command) (hash, legacy string, err error) {
+	blob, err := json.Marshal(c.Payload)
+	if err != nil {
+		return "", "", err
+	}
+	named, plain := sha256.Sum256(append([]byte(string(c.Action)+"\x00"), blob...)), sha256.Sum256(blob)
+	return hex.EncodeToString(named[:]), hex.EncodeToString(plain[:]), nil
+}
+
 type aggregate interface {
 	Pending() []air.Event
 	Acknowledge()
@@ -207,7 +218,11 @@ func (d Deps) write(ctx context.Context, c Command, hash, kind string, mutate fu
 			return err
 		}
 		if ok {
-			if r.RequestHash != hash {
+			_, legacy, err := requestHashes(c)
+			if err != nil {
+				return err
+			}
+			if r.RequestHash != hash && r.RequestHash != legacy {
 				return ErrIdempotencyConflict
 			}
 			result = r
@@ -340,20 +355,32 @@ func (d Deps) HAWB(ctx context.Context, tenant air.TenantID, legalEntity, shipme
 	if err != nil {
 		return "", fmt.Errorf("%w: %v", air.ErrInvalidSeries, err)
 	}
-	seq, err := d.Numbers.Next(ctx, string(tenant), numbering.DocType(DocTypeHAWB, legalEntity), tmpl.Period(at))
-	if err != nil {
-		return "", err
+	// A number of the series that was given by hand to another shipment before the sequence reached it is passed
+	// over: the sequence moves on, so that one number keyed in advance cannot stop the series. It is looked up rather
+	// than claimed and caught: a unique violation would abort the transaction and with it the sequence's step, and
+	// the next draw would render the same number again.
+	for {
+		seq, err := d.Numbers.Next(ctx, string(tenant), numbering.DocType(DocTypeHAWB, legalEntity), tmpl.Period(at))
+		if err != nil {
+			return "", err
+		}
+		number, err := tmpl.Render(seq, at)
+		switch {
+		case errors.Is(err, numbering.ErrExhausted):
+			return "", fmt.Errorf("%w: %v", air.ErrSeriesExhausted, err)
+		case err != nil:
+			return "", err
+		case !air.ValidHAWB(number):
+			return "", fmt.Errorf("%w: the template renders %q", air.ErrInvalidHAWB, number)
+		}
+		_, taken, err := d.Register.Find(ctx, tenant, legalEntity, number)
+		if err != nil {
+			return "", err
+		}
+		if !taken {
+			return number, d.Register.Claim(ctx, tenant, legalEntity, number, shipment, true, at)
+		}
 	}
-	number, err := tmpl.Render(seq, at)
-	switch {
-	case errors.Is(err, numbering.ErrExhausted):
-		return "", fmt.Errorf("%w: %v", air.ErrSeriesExhausted, err)
-	case err != nil:
-		return "", err
-	case !air.ValidHAWB(number):
-		return "", fmt.Errorf("%w: the template renders %q", air.ErrInvalidHAWB, number)
-	}
-	return number, d.Register.Claim(ctx, tenant, legalEntity, number, shipment, true, at)
 }
 
 // DocTypeHAWB is the document type of HAWB numbers in the platform's sequences (<type>/<legal entity>).
