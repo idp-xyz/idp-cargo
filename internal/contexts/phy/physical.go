@@ -174,7 +174,7 @@ func (m *Module) ListOpenDiscrepancies(ctx context.Context, q api.ListOpenDiscre
 // with lines of it, its own lines, the master's and its carrier evidence and their open discrepancies.
 func (m *Module) GetPhysicalLoadEvidence(ctx context.Context, q api.GetPhysicalLoadEvidence) (api.PhysicalLoadEvidence, error) {
 	shipment := domain.ShipmentID(q.ShipmentID)
-	lots, executions, err := m.reads(q.TenantID).Evidence(ctx, domain.TenantID(q.TenantID), shipment)
+	lots, executions, units, err := m.reads(q.TenantID).Evidence(ctx, domain.TenantID(q.TenantID), shipment)
 	if err != nil {
 		return api.PhysicalLoadEvidence{}, classify(err)
 	}
@@ -202,7 +202,8 @@ func (m *Module) GetPhysicalLoadEvidence(ctx context.Context, q api.GetPhysicalL
 	for _, r := range executions {
 		v := executionView(r)
 		t := api.TenderEvidence{ExecutionID: v.ExecutionID, Revision: v.Revision, ConsolidationID: v.ConsolidationID, Kind: v.Kind, State: v.State,
-			Facility: v.Facility, LoadUnitNo: v.LoadUnitNo, ClosedAt: v.ClosedAt, CloseEvidence: v.CloseEvidence}
+			Facility: v.Facility, LoadUnitNo: v.LoadUnitNo, LoadUnitType: units[r.Execution.ID()].TypeCode, ClosedAt: v.ClosedAt,
+			CloseEvidence: v.CloseEvidence}
 		for _, l := range v.Lines {
 			if l.ShipmentID == q.ShipmentID {
 				t.Lines = append(t.Lines, l)

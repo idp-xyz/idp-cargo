@@ -76,12 +76,13 @@ func WithConsolMemberships(q phyapi.ConsolMembershipQueries) Option {
 }
 
 var (
-	_ api.Commands                 = (*Module)(nil)
-	_ api.ConsolAttachmentCommands = (*Module)(nil)
-	_ api.LoadEvidenceCommands     = (*Module)(nil)
-	_ api.Queries                  = (*Module)(nil)
-	_ api.LoadIntentQueries        = (*Module)(nil)
-	_ api.AirOperationPlanQueries  = (*Module)(nil)
+	_ api.Commands                  = (*Module)(nil)
+	_ api.ConsolAttachmentCommands  = (*Module)(nil)
+	_ api.LoadEvidenceCommands      = (*Module)(nil)
+	_ api.Queries                   = (*Module)(nil)
+	_ api.LoadIntentQueries         = (*Module)(nil)
+	_ api.AirOperationPlanQueries   = (*Module)(nil)
+	_ api.OceanOperationPlanQueries = (*Module)(nil)
 )
 
 // New assembles FUL. com answers which obligation versions a shipment may plan; the composition root
@@ -259,6 +260,40 @@ func (m *Module) GetAirOperationPlan(ctx context.Context, q api.GetShipmentPlanS
 		}
 		if basis, measured, ok := shipment.Measured(); ok {
 			plan.MeasuredBasis, plan.MeasuredPacks, plan.MeasuredGrossWeight, plan.MeasuredVolume = basis, measured.Packs, measured.GrossWeight, measured.Volume
+		}
+	}
+	return plan, nil
+}
+
+// GetOceanOperationPlan answers OceanOperationPlan v1 for SEA: the LoadIntent of the shipment with the PHY membership
+// revision of its current attachment, the measures relayed from PHY's evidence and the sealed containers with packs of
+// it. Like AirOperationPlan v1 it answers any shipment, with its mode.
+func (m *Module) GetOceanOperationPlan(ctx context.Context, q api.GetShipmentPlanSnapshot) (api.OceanOperationPlan, error) {
+	shipment, revision, err := m.shipment(ctx, q)
+	if err != nil {
+		return api.OceanOperationPlan{}, err
+	}
+	intent := loadIntent(shipment, revision)
+	plan := api.OceanOperationPlan{TenantID: intent.TenantID, ShipmentID: intent.ShipmentID, Revision: intent.Revision, Status: intent.Status,
+		PlanVersion: intent.PlanVersion, CustomerPartyID: intent.CustomerPartyID, LegalEntityID: intent.LegalEntityID, TransportMode: intent.TransportMode,
+		ContainerMode: intent.ContainerMode, Origin: intent.Origin, Destination: intent.Destination, LocationEdition: intent.LocationEdition,
+		DepartureWindow: intent.DepartureWindow, Packs: intent.Packs, GrossWeight: intent.GrossWeight, Volume: intent.Volume, Parts: intent.Parts,
+		Stage: intent.Stage, ConsolidationID: intent.ConsolidationID, MembershipEntryNo: intent.MembershipEntryNo}
+	if a, ok := shipment.Attachment(domain.StageMain); ok && a.ConsolidationID == intent.ConsolidationID {
+		plan.MembershipRevision = a.MembershipRevision
+	}
+	plan.ExecutionStatus = string(shipment.Execution())
+	if v, ok := shipment.LatestEvidence(); ok {
+		plan.EvidenceVersion = v.No
+		if basis, measured, ok := shipment.Measured(); ok {
+			plan.MeasuredBasis, plan.MeasuredPacks, plan.MeasuredGrossWeight, plan.MeasuredVolume = basis, measured.Packs, measured.GrossWeight, measured.Volume
+		}
+		if v.Evidence.ConsolidationID == intent.ConsolidationID {
+			for _, s := range v.Evidence.Stuffings {
+				plan.Stuffings = append(plan.Stuffings, api.ContainerStuffing{ExecutionID: s.ExecutionID, LoadUnitNo: s.LoadUnitNo, TypeCode: s.TypeCode,
+					Packs: s.Scope.Packs, GrossWeight: s.Scope.GrossWeight, Volume: s.Scope.Volume, LineNos: append([]int(nil), s.Lines...), Seal: s.Seal,
+					SealSHA256: s.SealSHA256, SealedAt: s.SealedAt})
+			}
 		}
 	}
 	return plan, nil

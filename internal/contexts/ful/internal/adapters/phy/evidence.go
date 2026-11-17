@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	app "go.idp.xyz/idp-cargo/internal/contexts/ful/internal/application"
 	ful "go.idp.xyz/idp-cargo/internal/contexts/ful/internal/domain"
@@ -85,6 +86,21 @@ func (e Evidence) Evidence(ctx context.Context, tenant ful.TenantID, shipment fu
 			continue // tendered means handed over: the tender receipt is recorded
 		}
 		out.Tendered.Packs += t.LoadedPacks
+		if t.Kind == phyapi.ExecutionStuffing && t.LoadedPacks > 0 {
+			sealed := t.CloseEvidence.OccurredAt // when the seal was applied, which PHY records no later than the close
+			if sealed.IsZero() {
+				sealed = t.ClosedAt
+			}
+			s := ful.Stuffing{ExecutionID: t.ExecutionID, LoadUnitNo: t.LoadUnitNo, TypeCode: t.LoadUnitType,
+				Scope: ful.CargoScope{Packs: t.LoadedPacks, GrossWeight: t.GrossWeight, Volume: t.Volume}, Seal: t.CloseEvidence.Reference,
+				SealSHA256: t.CloseEvidence.SHA256, SealedAt: sealed.UTC().Truncate(time.Microsecond)} // as stored, so the digest holds
+			for _, l := range t.Lines {
+				if l.LivePacks > 0 {
+					s.Lines = append(s.Lines, l.LineNo)
+				}
+			}
+			out.Stuffings = append(out.Stuffings, s)
+		}
 		tenderedWeight.add(t.GrossWeight)
 		tenderedVolume.add(t.Volume)
 		tenderedVolume.unknown = tenderedVolume.unknown || (t.LoadedPacks > 0 && t.Volume.Unit == "")

@@ -111,22 +111,44 @@ func (r Reads) Execution(ctx context.Context, tenant phy.TenantID, id phy.LoadEx
 	return out, err
 }
 
-// Evidence reads a shipment's lots and the load executions with lines of it, in one snapshot.
-func (r Reads) Evidence(ctx context.Context, tenant phy.TenantID, shipment phy.ShipmentID) ([]LotRead, []ExecutionRead, error) {
+// Evidence reads a shipment's lots, the load executions with lines of it and, for stuffings, the limits of the
+// units they fill, in one transaction (read committed: each read sees what was committed when it ran).
+func (r Reads) Evidence(ctx context.Context, tenant phy.TenantID, shipment phy.ShipmentID) ([]LotRead, []ExecutionRead,
+	map[phy.LoadExecutionID]phy.UnitLimits, error) {
 	if tenant == "" || shipment == "" {
-		return nil, nil, ErrInvalidQuery
+		return nil, nil, nil, ErrInvalidQuery
 	}
 	var lots []LotRead
 	var executions []ExecutionRead
+	units := map[phy.LoadExecutionID]phy.UnitLimits{}
 	err := r.Tx.WithinTransaction(ctx, func(txCtx context.Context) error {
 		var err error
 		if lots, err = r.Lots.ByShipment(txCtx, tenant, shipment); err != nil {
 			return err
 		}
-		executions, err = r.Executions.ByShipment(txCtx, tenant, shipment)
-		return err
+		if executions, err = r.Executions.ByShipment(txCtx, tenant, shipment); err != nil {
+			return err
+		}
+		consols := map[phy.ConsolidationID]*phy.Consolidation{}
+		for _, x := range executions {
+			st := x.Execution.State()
+			if st.LoadUnitNo == 0 {
+				continue
+			}
+			c, ok := consols[st.ConsolidationID]
+			if !ok {
+				if c, _, err = r.Consolidations.Read(txCtx, tenant, st.ConsolidationID); err != nil {
+					return err
+				}
+				consols[st.ConsolidationID] = c
+			}
+			if us := c.State().LoadUnits; st.LoadUnitNo <= len(us) {
+				units[st.ExecutionID] = us[st.LoadUnitNo-1].Limits
+			}
+		}
+		return nil
 	})
-	return lots, executions, err
+	return lots, executions, units, err
 }
 
 // CostBasis reads a consolidation, its live houses, its load executions and the houses' lots in one snapshot,
