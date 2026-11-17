@@ -130,6 +130,18 @@ type EndHouseBillAssociation struct {
 	OccurredAt       time.Time
 }
 
+// FinalizeOceanDocFacts publishes the next OceanDocFacts v1 of an OPEN movement and makes the movement FINAL.
+// FUL's plan of every live house is read before the transaction. A later link, refresh or end returns the movement
+// to OPEN and leaves the published version as it was.
+type FinalizeOceanDocFacts struct {
+	CommandID        string
+	TenantID         string
+	ActorID          string
+	MovementID       string
+	ExpectedRevision int64
+	OccurredAt       time.Time
+}
+
 // CancelOceanMovement cancels an open movement without houses and without containers (every container visit
 // released first), with a reason; its current master bill reference is voided.
 type CancelOceanMovement struct {
@@ -145,16 +157,20 @@ type CancelOceanMovement struct {
 // Receipt confirms a committed command. Replaying the same command returns the same receipt. House commands also
 // name the house entry and its HBL, RecordMasterBill the master bill entry; RegisterHblSeries names the legal entity
 // in MovementID's place. Container visit commands name the visit (VisitID, with its revision) instead of a
-// movement, and RecordContainerSeal the seal's number in the visit's history.
+// movement, RecordContainerSeal the seal's number in the visit's history, AssertVgm or RecordVgmResponse the
+// assertion's version, and RecordContainerEvent the event's number.
 type Receipt struct {
-	CommandID   string
-	MovementID  string
-	NewRevision int64
-	EntryNo     int
-	HBL         string
-	BillNo      int
-	VisitID     string
-	SealNo      int
+	CommandID    string
+	MovementID   string
+	NewRevision  int64
+	EntryNo      int
+	HBL          string
+	BillNo       int
+	VisitID      string
+	SealNo       int
+	AssertionNo  int
+	EventNo      int
+	FactsVersion int
 }
 
 // Commands is SEA's command entry point.
@@ -167,6 +183,7 @@ type Commands interface {
 	AssociateHouseBill(ctx context.Context, cmd AssociateHouseBill) (Receipt, error)
 	RefreshHouseBillFacts(ctx context.Context, cmd RefreshHouseBillFacts) (Receipt, error)
 	EndHouseBillAssociation(ctx context.Context, cmd EndHouseBillAssociation) (Receipt, error)
+	FinalizeOceanDocFacts(ctx context.Context, cmd FinalizeOceanDocFacts) (Receipt, error)
 	CancelOceanMovement(ctx context.Context, cmd CancelOceanMovement) (Receipt, error)
 }
 
@@ -179,6 +196,7 @@ const (
 	ActionAssociateHouseBill      = "AssociateHouseBill"
 	ActionRefreshHouseBillFacts   = "RefreshHouseBillFacts"
 	ActionEndHouseBillAssociation = "EndHouseBillAssociation"
+	ActionFinalizeOceanDocFacts   = "FinalizeOceanDocFacts"
 	ActionCancelOceanMovement     = "CancelOceanMovement"
 )
 

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 	"unicode"
+
+	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
 // VisitID identifies a container visit: one use of one container for one ocean movement. The same equipment number
@@ -20,6 +22,8 @@ var (
 	ErrNotStuffed       = errors.New("sea: no live house of the movement carries one sealed stuffing of the visit's load unit, as FUL relays it")
 	ErrStuffingDiffers  = errors.New("sea: PHY's stuffing of the unit differs from the container")
 	ErrCargoInContainer = errors.New("sea: the container holds cargo")
+	ErrInvalidVGM       = errors.New("sea: invalid VGM")
+	ErrInvalidEvent     = errors.New("sea: invalid container event")
 )
 
 // VisitStatus is a container visit's state. ASSIGNED: the container is assigned to a planned load unit of the
@@ -30,7 +34,27 @@ type VisitStatus string
 const (
 	VisitAssigned VisitStatus = "ASSIGNED"
 	VisitStuffed  VisitStatus = "STUFFED"
+	VisitVGM      VisitStatus = "VGM_SUBMITTED"
+	VisitGatedIn  VisitStatus = "GATED_IN"
+	VisitLoaded   VisitStatus = "LOADED"
 	VisitReleased VisitStatus = "RELEASED"
+)
+
+// VGM methods (SOLAS): weighing the packed container, or adding the cargo, the packing and the tare.
+const (
+	VgmMethod1 = "METHOD_1"
+	VgmMethod2 = "METHOD_2"
+
+	VgmAccepted = "ACCEPTED"
+	VgmRejected = "REJECTED"
+
+	// Container event kinds. STUFFED is recorded by StuffingDone, not by RecordContainerEvent.
+	EventEmptyReleased = "EMPTY_RELEASED"
+	EventEmptyPickedUp = "EMPTY_PICKED_UP"
+	EventArrivedAtCFS  = "ARRIVED_AT_CFS"
+	EventGateIn        = "GATE_IN_TERMINAL"
+	EventLoaded        = "LOADED_ON_BOARD"
+	EventRolled        = "ROLLED"
 )
 
 // Seal parties (CargoWise: SealPartyType) and plate sources.
@@ -121,16 +145,72 @@ type VisitState struct {
 	ReleaseReason    string
 	ReleasedBy       string
 	ReleasedAt       time.Time
+	Assertions       []VgmAssertion
+	Events           []VisitEvent
 	AssignedBy       string
 	AssignedAt       time.Time
 	EnteredAt        time.Time
 }
 
-// Visit is the aggregate root (ContainerVisit). Seals are only added.
+// VgmAssertion is one immutable statement of the container's verified gross mass. Signatory is the authorised
+// person's name: it is personal data, kept only until the visit is stored, and empty when a visit is read back.
+// The name lives in its own table and is returned only by the restricted read.
+type VgmAssertion struct {
+	Version           int
+	MassGrams         int64
+	Method            string
+	PartyID           string
+	PartyRevision     int64
+	DeterminedAt      time.Time
+	SubmittedAt       time.Time
+	LateReason        string
+	Signatory         string
+	By                string
+	At                time.Time
+	EnteredAt         time.Time
+	Response          string
+	ResponseSource    string
+	RespondedAt       time.Time
+	ResponseBy        string
+	ResponseEnteredAt time.Time
+}
+
+// VisitEvent is a carrier or terminal fact about the container. It never moves a house. A source reference is
+// recorded once: the same message again changes nothing, and the same reference with other content is refused.
+type VisitEvent struct {
+	No         int
+	Kind       string
+	Location   kernel.LocationCode
+	OccurredAt time.Time
+	Source     string
+	Reference  string
+	By         string
+	At         time.Time
+	EnteredAt  time.Time
+}
+
+func (e VisitEvent) valid() bool {
+	return containerEventKind(e.Kind) && e.Kind != ContainerStuffedEvent && port(e.Location) && !e.OccurredAt.IsZero() &&
+		!e.OccurredAt.After(e.At) && !e.At.IsZero() && short(e.Source, 64) && short(e.Reference, 128) && !blank(e.By)
+}
+
+func containerEventKind(kind string) bool {
+	switch kind {
+	case EventEmptyReleased, EventEmptyPickedUp, EventArrivedAtCFS, ContainerStuffedEvent, EventGateIn, EventLoaded, EventRolled:
+		return true
+	}
+	return false
+}
+
+// Visit is the aggregate root (ContainerVisit). Seals, VGM assertions and container events are only added.
 type Visit struct {
-	state   VisitState
-	seals   int
-	pending []Event
+	state      VisitState
+	seals      int
+	assertions int
+	events     int
+	responded  int // the version whose carrier response was recorded since the visit was loaded; 0 otherwise
+	repeated   int // the event a repeated source reference matched; 0 otherwise
+	pending    []Event
 }
 
 const (
@@ -138,6 +218,8 @@ const (
 	eventSealRecorded      = "SealRecorded.v1"
 	eventContainerEvent    = "ContainerEventRecorded.v1"
 	eventContainerReleased = "ContainerReleased.v1"
+	eventVgmAsserted       = "VgmAsserted.v1"
+	eventVgmResponse       = "VgmResponseRecorded.v1"
 
 	// ContainerStuffedEvent is the kind of the container event a stuffing done records.
 	ContainerStuffedEvent = "STUFFED"
@@ -166,7 +248,7 @@ func AssignContainer(id VisitID, m *Movement, unit int, number, sizeType string,
 	}
 	v := &Visit{state: VisitState{TenantID: st.TenantID, VisitID: id, MovementID: st.MovementID, ConsolidationID: st.ConsolidationID, LoadUnitNo: unit,
 		Number: number, SizeType: sizeType, Plate: plate, Status: VisitAssigned, AssignedBy: by, AssignedAt: at.UTC()}}
-	v.record(eventContainerAssigned, at, 0, "")
+	v.record(eventContainerAssigned, at, 0, 0, 0, "")
 	return v, nil
 }
 
@@ -188,7 +270,7 @@ func (v *Visit) RecordSeal(number, party string, appliedAt time.Time, source, by
 		return err
 	}
 	v.state.Seals = append(v.state.Seals, s)
-	v.record(eventSealRecorded, at, s.No, "")
+	v.record(eventSealRecorded, at, s.No, 0, 0, "")
 	return nil
 }
 
@@ -205,7 +287,7 @@ func (v *Visit) StuffingDone(m *Movement, reason, by string, at time.Time) error
 	if v.state.Status != VisitAssigned {
 		return ErrInvalidTransition
 	}
-	if m == nil || m.ID() != v.state.MovementID || m.state.TenantID != v.state.TenantID {
+	if m == nil || m.ID() != v.state.MovementID || m.state.TenantID != v.state.TenantID || m.state.State != StateOpen {
 		return ErrInvalidVisit
 	}
 	if len(v.state.Seals) == 0 {
@@ -228,7 +310,7 @@ func (v *Visit) StuffingDone(m *Movement, reason, by string, at time.Time) error
 		return err
 	}
 	v.state.Status, v.state.ExecutionID, v.state.DifferenceReason, v.state.StuffedBy, v.state.StuffedAt = VisitStuffed, s.ExecutionID, reason, by, at.UTC()
-	v.record(eventContainerEvent, at, 0, ContainerStuffedEvent)
+	v.record(eventContainerEvent, at, 0, 0, 0, ContainerStuffedEvent)
 	return nil
 }
 
@@ -297,7 +379,7 @@ func (v *Visit) Release(reason, by string, at time.Time) error {
 		return err
 	}
 	v.state.Status, v.state.ReleaseReason, v.state.ReleasedBy, v.state.ReleasedAt = VisitReleased, reason, by, at.UTC()
-	v.record(eventContainerReleased, at, 0, "")
+	v.record(eventContainerReleased, at, 0, 0, 0, "")
 	return nil
 }
 
@@ -314,12 +396,136 @@ func (v *Visit) LastChange() time.Time {
 	for _, s := range v.state.Seals {
 		last = later(last, s.At)
 	}
+	for _, a := range v.state.Assertions {
+		last = later(later(last, a.At), a.RespondedAt)
+	}
+	for _, e := range v.state.Events {
+		last = later(last, e.At)
+	}
 	return last
 }
 
-func (v *Visit) record(kind string, at time.Time, seal int, reason string) {
+func (v *Visit) record(kind string, at time.Time, seal, assertion, event int, reason string) {
 	v.pending = append(v.pending, Event{Type: kind, At: at.UTC(), TenantID: v.state.TenantID, SubjectID: string(v.state.VisitID),
-		ConsolidationID: v.state.ConsolidationID, MovementID: string(v.state.MovementID), SealNo: seal, Reason: reason})
+		ConsolidationID: v.state.ConsolidationID, MovementID: string(v.state.MovementID), SealNo: seal, AssertionNo: assertion, EventNo: event, Reason: reason})
+}
+
+// AssertVGM states the container's verified gross mass. It is the shipper's assertion, not a sum of the houses'
+// declared weights. The mass is kept in grams. Where the plate's tare is known, the mass is not below it. The
+// business time is when the assertion is submitted to the carrier; when that is after the current voyage's VGM
+// cut-off, a late reason is required, and without a cut-off or while still before it a reason is refused.
+// signatory is the authorised person's name and is not kept on the visit once it is stored.
+func (v *Visit) AssertVGM(m *Movement, mass kernel.Quantity, method, party string, partyRevision int64, determined time.Time, lateReason, signatory, by string, at time.Time) error {
+	if v.state.Status != VisitStuffed && v.state.Status != VisitVGM {
+		return ErrInvalidTransition
+	}
+	if m == nil || m.ID() != v.state.MovementID || m.state.TenantID != v.state.TenantID || m.state.State != StateOpen {
+		return ErrInvalidVGM
+	}
+	grams, ok := Grams(mass)
+	cut, hasCut := m.VGMCutOff()
+	switch {
+	case !ok || grams < 1:
+		return fmt.Errorf("%w: the mass is a positive weight in grams, kilograms or tonnes", ErrInvalidVGM)
+	case v.state.Plate.TareKg > 0 && grams < v.state.Plate.TareKg*1000:
+		return fmt.Errorf("%w: %d g is below the tare of %d kg", ErrInvalidVGM, grams, v.state.Plate.TareKg)
+	case method != VgmMethod1 && method != VgmMethod2:
+		return fmt.Errorf("%w: the method is METHOD_1 (the packed container weighed) or METHOD_2 (cargo, packing and tare)", ErrInvalidVGM)
+	case !identifier(party) || partyRevision < 1:
+		return fmt.Errorf("%w: the responsible party and its revision", ErrInvalidVGM)
+	case determined.IsZero() || determined.After(at):
+		return fmt.Errorf("%w: the mass is determined not after it is submitted", ErrInvalidVGM)
+	case hasCut && at.After(cut) && !text(lateReason):
+		return fmt.Errorf("%w: submitted after the VGM cut-off %s; state why it is late", ErrInvalidVGM, cut.Format(time.RFC3339))
+	case (!hasCut || !at.After(cut)) && lateReason != "":
+		return fmt.Errorf("%w: a late reason is taken only after the VGM cut-off", ErrInvalidVGM)
+	case !short(signatory, 100):
+		return fmt.Errorf("%w: the authorised signatory's name", ErrInvalidVGM)
+	}
+	if err := v.changeable(by, at); err != nil {
+		return err
+	}
+	a := VgmAssertion{Version: len(v.state.Assertions) + 1, MassGrams: grams, Method: method, PartyID: party, PartyRevision: partyRevision,
+		DeterminedAt: determined.UTC(), SubmittedAt: at.UTC(), LateReason: lateReason, Signatory: signatory, By: by, At: at.UTC()}
+	v.state.Assertions = append(v.state.Assertions, a)
+	v.state.Status = VisitVGM
+	v.record(eventVgmAsserted, at, 0, a.Version, 0, "")
+	return nil
+}
+
+// RecordVgmResponse records the carrier's answer to the latest assertion, once. The mass and the signatory stay.
+func (v *Visit) RecordVgmResponse(response, source, by string, at time.Time) error {
+	if v.state.Status != VisitVGM || len(v.state.Assertions) == 0 {
+		return ErrInvalidTransition
+	}
+	i := len(v.state.Assertions) - 1
+	a := &v.state.Assertions[i]
+	switch {
+	case a.Response != "":
+		return fmt.Errorf("%w: version %d already has the carrier's answer", ErrInvalidChange, a.Version)
+	case response != VgmAccepted && response != VgmRejected:
+		return fmt.Errorf("%w: the carrier accepts or rejects", ErrInvalidVGM)
+	case !text(source) || at.Before(a.SubmittedAt):
+		return fmt.Errorf("%w: the carrier's source, not before the assertion was submitted", ErrInvalidVGM)
+	}
+	if err := v.changeable(by, at); err != nil {
+		return err
+	}
+	a.Response, a.ResponseSource, a.RespondedAt, a.ResponseBy = response, source, at.UTC(), by
+	v.responded = a.Version
+	v.record(eventVgmResponse, at, 0, a.Version, 0, "")
+	return nil
+}
+
+// RecordContainerEvent records a carrier or terminal fact about the container. It never moves a house. A container
+// is gated in only once its VGM is submitted, and loaded on board only once it is gated in. Stuffing is not recorded
+// here. The same source reference with the same content changes nothing and returns its number; with other content
+// it is refused. The number is the event's place in the visit's history, and added reports whether this call recorded it.
+func (v *Visit) RecordContainerEvent(kind string, where kernel.LocationCode, occurred time.Time, source, reference, by string, at time.Time) (int, bool, error) {
+	if v.state.Status == VisitReleased {
+		return 0, false, ErrInvalidTransition
+	}
+	occurred = occurred.UTC()
+	switch {
+	case kind == ContainerStuffedEvent:
+		return 0, false, fmt.Errorf("%w: stuffing is recorded when the container is sealed", ErrInvalidEvent)
+	case !containerEventKind(kind) || !port(where) || occurred.IsZero() || occurred.After(at) || !short(source, 64) || !short(reference, 128):
+		return 0, false, ErrInvalidEvent
+	}
+	for _, e := range v.state.Events {
+		if e.Source == source && e.Reference == reference {
+			if e.Kind == kind && e.Location == where && e.OccurredAt.Equal(occurred) {
+				v.repeated = e.No
+				return e.No, false, nil
+			}
+			return 0, false, fmt.Errorf("%w: %s %s was recorded with other content", ErrInvalidChange, source, reference)
+		}
+	}
+	switch kind {
+	case EventGateIn:
+		if v.state.Status != VisitVGM && v.state.Status != VisitGatedIn && v.state.Status != VisitLoaded {
+			return 0, false, fmt.Errorf("%w: a container is gated in once its VGM is submitted", ErrInvalidEvent)
+		}
+	case EventLoaded:
+		if v.state.Status != VisitGatedIn && v.state.Status != VisitLoaded {
+			return 0, false, fmt.Errorf("%w: a container is loaded once it is gated in", ErrInvalidEvent)
+		}
+	}
+	if err := v.changeable(by, at); err != nil {
+		return 0, false, err
+	}
+	e := VisitEvent{No: len(v.state.Events) + 1, Kind: kind, Location: where, OccurredAt: occurred, Source: source, Reference: reference, By: by, At: at.UTC()}
+	v.state.Events = append(v.state.Events, e)
+	switch kind {
+	case EventGateIn:
+		if v.state.Status == VisitVGM {
+			v.state.Status = VisitGatedIn
+		}
+	case EventLoaded:
+		v.state.Status = VisitLoaded
+	}
+	v.record(eventContainerEvent, at, 0, 0, e.No, kind)
+	return e.No, true, nil
 }
 
 // Seal returns the container's current seal; zero when none is recorded.
@@ -341,12 +547,26 @@ func (v *Visit) Stamp(entered time.Time) {
 	for i := v.seals; i < len(v.state.Seals); i++ {
 		v.state.Seals[i].EnteredAt = entered.UTC()
 	}
+	for i := v.assertions; i < len(v.state.Assertions); i++ {
+		v.state.Assertions[i].EnteredAt = entered.UTC()
+	}
+	for i := v.events; i < len(v.state.Events); i++ {
+		v.state.Events[i].EnteredAt = entered.UTC()
+	}
+	if v.responded > 0 {
+		v.state.Assertions[v.responded-1].ResponseEnteredAt = entered.UTC()
+	}
 }
 
 // RestoreVisit rebuilds a stored visit without emitting events.
 func RestoreVisit(st VisitState) (*Visit, error) {
 	st.Seals = append([]VisitSeal(nil), st.Seals...)
-	v := &Visit{state: st, seals: len(st.Seals)}
+	st.Assertions = append([]VgmAssertion(nil), st.Assertions...)
+	st.Events = append([]VisitEvent(nil), st.Events...)
+	for i := range st.Assertions {
+		st.Assertions[i].Signatory = ""
+	}
+	v := &Visit{state: st, seals: len(st.Seals), assertions: len(st.Assertions), events: len(st.Events)}
 	if err := v.validate(); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidVisit, err)
 	}
@@ -355,28 +575,65 @@ func RestoreVisit(st VisitState) (*Visit, error) {
 
 func (v *Visit) validate() error {
 	st := v.state
-	stuffed, released := st.Status == VisitStuffed, st.Status == VisitReleased
+	stuffed, submitted := st.Status == VisitStuffed, st.Status == VisitVGM
+	gated, loaded, released := st.Status == VisitGatedIn, st.Status == VisitLoaded, st.Status == VisitReleased
+	onward := submitted || gated || loaded
+	packed := stuffed || onward
 	switch {
 	case !identifier(string(st.TenantID)) || !identifier(string(st.VisitID)) || !identifier(string(st.MovementID)) || !identifier(st.ConsolidationID) ||
 		st.LoadUnitNo < 1 || blank(st.AssignedBy) || st.AssignedAt.IsZero():
 		return fmt.Errorf("identity")
 	case !ValidContainerNumber(st.Number) || !sizeTypeForm.MatchString(st.SizeType) || !st.Plate.valid():
 		return fmt.Errorf("container")
-	case st.Status != VisitAssigned && !stuffed && !released:
+	case st.Status != VisitAssigned && !packed && !released:
 		return fmt.Errorf("status %s", st.Status)
-	case stuffed != identifier(st.ExecutionID) || stuffed == blank(st.StuffedBy) || stuffed == st.StuffedAt.IsZero() || (stuffed && len(st.Seals) == 0) ||
-		(stuffed && st.StuffedAt.Before(st.AssignedAt)):
+	case packed != identifier(st.ExecutionID) || packed == blank(st.StuffedBy) || packed == st.StuffedAt.IsZero() || (packed && len(st.Seals) == 0) ||
+		(packed && st.StuffedAt.Before(st.AssignedAt)):
 		return fmt.Errorf("stuffing")
-	case st.DifferenceReason != "" && (!stuffed || !text(st.DifferenceReason)):
+	case st.DifferenceReason != "" && (!packed || !text(st.DifferenceReason)):
 		return fmt.Errorf("difference reason")
+	case onward != (len(st.Assertions) > 0):
+		return fmt.Errorf("vgm")
 	case released != text(st.ReleaseReason) || released == blank(st.ReleasedBy) || released == st.ReleasedAt.IsZero() ||
 		(released && st.ReleasedAt.Before(st.AssignedAt)):
 		return fmt.Errorf("release")
+	}
+	for i, a := range st.Assertions {
+		answered := a.Response != ""
+		switch {
+		case a.Version != i+1 || a.MassGrams < 1 || (a.Method != VgmMethod1 && a.Method != VgmMethod2) || !identifier(a.PartyID) || a.PartyRevision < 1 ||
+			a.DeterminedAt.IsZero() || a.DeterminedAt.After(a.SubmittedAt) || a.SubmittedAt.Before(st.StuffedAt) || blank(a.By) || (a.LateReason != "" && !text(a.LateReason)):
+			return fmt.Errorf("assertion %d", i+1)
+		case answered && (a.Response != VgmAccepted && a.Response != VgmRejected || !text(a.ResponseSource) || a.RespondedAt.Before(a.SubmittedAt) || blank(a.ResponseBy)):
+			return fmt.Errorf("assertion %d response", i+1)
+		case !answered && (a.ResponseSource != "" || !a.RespondedAt.IsZero() || a.ResponseBy != ""):
+			return fmt.Errorf("assertion %d response", i+1)
+		}
 	}
 	for i, s := range st.Seals {
 		if s.No != i+1 || !s.valid() || s.At.Before(st.AssignedAt) || (i > 0 && (st.Seals[i-1].Number == s.Number || s.At.Before(st.Seals[i-1].At))) {
 			return fmt.Errorf("seal %d", i+1)
 		}
+	}
+	var gatedFacts, loadedFacts int
+	seen := map[string]struct{}{}
+	for i, e := range st.Events {
+		if e.No != i+1 || !e.valid() || e.At.Before(st.AssignedAt) {
+			return fmt.Errorf("event %d", i+1)
+		}
+		if _, ok := seen[e.Source+"\x00"+e.Reference]; ok {
+			return fmt.Errorf("event %d", i+1)
+		}
+		seen[e.Source+"\x00"+e.Reference] = struct{}{}
+		if e.Kind == EventGateIn {
+			gatedFacts++
+		}
+		if e.Kind == EventLoaded {
+			loadedFacts++
+		}
+	}
+	if (gated || loaded) != (gatedFacts > 0) || loaded != (loadedFacts > 0) {
+		return fmt.Errorf("event")
 	}
 	return nil
 }
@@ -385,6 +642,8 @@ func (v *Visit) validate() error {
 func (v *Visit) State() VisitState {
 	st := v.state
 	st.Seals = append([]VisitSeal(nil), st.Seals...)
+	st.Assertions = append([]VgmAssertion(nil), st.Assertions...)
+	st.Events = append([]VisitEvent(nil), st.Events...)
 	return st
 }
 
@@ -394,5 +653,19 @@ func (v *Visit) Pending() []Event { return append([]Event(nil), v.pending...) }
 // AddedSeals returns the seals recorded since the visit was loaded.
 func (v *Visit) AddedSeals() []VisitSeal { return v.state.Seals[v.seals:] }
 
+// AddedAssertions returns the VGM assertions recorded since the visit was loaded. Their signatory names are still set.
+func (v *Visit) AddedAssertions() []VgmAssertion { return v.state.Assertions[v.assertions:] }
+
+// RespondedAssertion is the version whose carrier response was recorded since the visit was loaded, or 0.
+func (v *Visit) RespondedAssertion() int { return v.responded }
+
+// AddedEvents returns the container events recorded since the visit was loaded.
+func (v *Visit) AddedEvents() []VisitEvent { return v.state.Events[v.events:] }
+
+// RepeatedEvent is the event a repeated source reference matched since the visit was loaded, or 0.
+func (v *Visit) RepeatedEvent() int { return v.repeated }
+
 // Acknowledge is permitted only after the transaction holding the visit and its Outbox events commits.
-func (v *Visit) Acknowledge() { v.pending, v.seals = nil, len(v.state.Seals) }
+func (v *Visit) Acknowledge() {
+	v.pending, v.seals, v.assertions, v.events, v.responded, v.repeated = nil, len(v.state.Seals), len(v.state.Assertions), len(v.state.Events), 0, 0
+}

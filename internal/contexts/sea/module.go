@@ -5,6 +5,7 @@ package sea
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -47,8 +48,9 @@ type Option func(*Module)
 func WithRecordWindow(w kernel.RecordWindow) Option { return func(m *Module) { m.window = w } }
 
 var (
-	_ api.Commands = (*Module)(nil)
-	_ api.Queries  = (*Module)(nil)
+	_ api.Commands   = (*Module)(nil)
+	_ api.Queries    = (*Module)(nil)
+	_ api.VgmQueries = (*Module)(nil)
 )
 
 // New assembles SEA. book answers CarrierBooking v1 (relationship 6) and ful OceanOperationPlan v1 (relationship
@@ -173,6 +175,66 @@ func (m *Module) EndHouseBillAssociation(ctx context.Context, cmd api.EndHouseBi
 	return receipt(r, err)
 }
 
+func (m *Module) FinalizeOceanDocFacts(ctx context.Context, cmd api.FinalizeOceanDocFacts) (api.Receipt, error) {
+	d := m.deps(cmd.TenantID, cmd.CommandID)
+	var plans []domain.Plan
+	r, err := d.Change(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, api.ActionFinalizeOceanDocFacts, cmd.MovementID,
+		cmd.ExpectedRevision, cmd.OccurredAt, cmd), func(ctx context.Context, mv *domain.Movement) error {
+		plans = nil
+		for _, h := range mv.Houses() {
+			p, err := d.Plans.Plan(ctx, domain.TenantID(cmd.TenantID), h.ShipmentID)
+			if err != nil {
+				return err
+			}
+			plans = append(plans, p)
+		}
+		return nil
+	}, func(txCtx context.Context, mv *domain.Movement) (application.Result, error) {
+		if d.Visits == nil {
+			return application.Result{}, application.ErrMissingDependency
+		}
+		ids, err := d.Visits.OfMovement(txCtx, domain.TenantID(cmd.TenantID), mv.ID())
+		if err != nil {
+			return application.Result{}, err
+		}
+		var visits []domain.VisitState
+		for _, id := range ids {
+			v, _, err := d.Visits.Read(txCtx, domain.TenantID(cmd.TenantID), id)
+			if err != nil {
+				return application.Result{}, err
+			}
+			visits = append(visits, v.State())
+		}
+		if err = mv.Finalize(plans, visits, cmd.ActorID, stored(cmd.OccurredAt)); err != nil {
+			return application.Result{}, err
+		}
+		return application.Result{FactsVersion: len(mv.State().DocFacts)}, nil
+	})
+	return receipt(r, err)
+}
+
+func (m *Module) GetOceanDocFacts(ctx context.Context, q api.GetOceanDocFacts) (api.OceanDocFacts, error) {
+	read, err := m.reads(q.TenantID).Movement(ctx, domain.TenantID(q.TenantID), domain.MovementID(q.MovementID))
+	mv := read.Movement
+	if err != nil {
+		return api.OceanDocFacts{}, classify(err)
+	}
+	v, current, ok := mv.DocFactsVersion(q.Version)
+	if !ok {
+		return api.OceanDocFacts{}, api.ErrNotFound
+	}
+	var out api.OceanDocFacts
+	if err = json.Unmarshal(v.Content, &out); err != nil {
+		return api.OceanDocFacts{}, err
+	}
+	out.SHA256, out.FinalizedBy, out.FinalizedAt = v.SHA256, v.By, v.At
+	out.Status = api.DocFactsSuperseded
+	if current {
+		out.Status = api.DocFactsFinal
+	}
+	return out, nil
+}
+
 func (m *Module) CancelOceanMovement(ctx context.Context, cmd api.CancelOceanMovement) (api.Receipt, error) {
 	d := m.deps(cmd.TenantID, cmd.CommandID)
 	r, err := d.Change(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, api.ActionCancelOceanMovement, cmd.MovementID,
@@ -228,6 +290,46 @@ func (m *Module) RecordStuffingDone(ctx context.Context, cmd api.RecordStuffingD
 		return 0, v.StuffingDone(mv, cmd.DifferenceReason, cmd.ActorID, stored(cmd.OccurredAt))
 	})
 	return receipt(r, err)
+}
+
+func (m *Module) AssertVgm(ctx context.Context, cmd api.AssertVgm) (api.Receipt, error) {
+	r, err := m.deps(cmd.TenantID, cmd.CommandID).AssertVGM(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, api.ActionAssertVgm, cmd.VisitID,
+		cmd.ExpectedRevision, cmd.OccurredAt, cmd), cmd.Mass, cmd.Method, cmd.ResponsiblePartyID, cmd.ResponsiblePartyRevision, stored(cmd.DeterminedAt),
+		cmd.LateReason, cmd.Signatory)
+	return receipt(r, err)
+}
+
+func (m *Module) RecordContainerEvent(ctx context.Context, cmd api.RecordContainerEvent) (api.Receipt, error) {
+	r, err := m.deps(cmd.TenantID, cmd.CommandID).RecordContainerEvent(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, api.ActionRecordContainerEvent, cmd.VisitID,
+		cmd.ExpectedRevision, cmd.OccurredAt, cmd), cmd.Kind, cmd.Location, stored(cmd.HappenedAt), cmd.Source, cmd.Reference)
+	return receipt(r, err)
+}
+
+func (m *Module) RecordVgmResponse(ctx context.Context, cmd api.RecordVgmResponse) (api.Receipt, error) {
+	r, err := m.deps(cmd.TenantID, cmd.CommandID).RecordVgmResponse(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, api.ActionRecordVgmResponse, cmd.VisitID,
+		cmd.ExpectedRevision, cmd.OccurredAt, cmd), cmd.Response, cmd.Source)
+	return receipt(r, err)
+}
+
+func (m *Module) ReadVgmSignatory(ctx context.Context, q api.ReadVgmSignatory) (api.VgmSignatory, error) {
+	name, err := m.deps(q.TenantID, "").ReadVgmSignatory(ctx, m.command("", q.TenantID, q.ActorID, api.ActionReadVgmSignatory, q.VisitID, 0, time.Time{}, q),
+		q.Version, q.Purpose)
+	if err != nil {
+		return api.VgmSignatory{}, classify(err)
+	}
+	return api.VgmSignatory{Name: name}, nil
+}
+
+func (m *Module) ReadVgmSignatoryAccess(ctx context.Context, q api.ReadVgmSignatoryAccess) ([]api.VgmSignatoryAccess, error) {
+	rows, err := m.deps(q.TenantID, "").VgmSignatoryAccess(ctx, m.command("", q.TenantID, q.ActorID, api.ActionReadVgmSignatoryLog, q.VisitID, 0, time.Time{}, q), q.Version)
+	if err != nil {
+		return nil, classify(err)
+	}
+	out := make([]api.VgmSignatoryAccess, 0, len(rows))
+	for _, a := range rows {
+		out = append(out, api.VgmSignatoryAccess{AccessID: a.AccessID, ActorID: a.ActorID, Purpose: a.Purpose, RecordedAt: a.RecordedAt})
+	}
+	return out, nil
 }
 
 func (m *Module) ReleaseContainer(ctx context.Context, cmd api.ReleaseContainer) (api.Receipt, error) {
@@ -328,7 +430,8 @@ func view(mv *domain.Movement, revision int64) api.OceanMovement {
 	st := mv.State()
 	current := mv.Current()
 	out := api.OceanMovement{TenantID: string(st.TenantID), MovementID: string(st.MovementID), Revision: revision, State: string(st.State),
-		Kind: string(st.Kind), ConsolidationID: st.ConsolidationID, OperatingLegalEntityID: st.LegalEntityID, CarrierPartyID: st.Carrier.PartyID,
+		DocFactsVersion: len(st.DocFacts),
+		Kind:            string(st.Kind), ConsolidationID: st.ConsolidationID, OperatingLegalEntityID: st.LegalEntityID, CarrierPartyID: st.Carrier.PartyID,
 		CarrierPartyRevision: st.Carrier.PartyRevision, CarrierRole: st.Carrier.Role, Origin: st.Origin, Destination: st.Destination,
 		LocationEdition: st.Edition, BookingID: current.BookingID, CapacityVersion: current.CapacityVersion}
 	for i := len(st.Links) - 1; i >= 0; i-- {
@@ -388,7 +491,7 @@ func attachVisits(out api.OceanMovement, reads []application.VisitRead) api.Ocea
 			continue
 		}
 		out.Containers = append(out.Containers, visitView(r.Visit, r.Revision))
-		if st.Status == domain.VisitStuffed {
+		if st.Status == domain.VisitStuffed || st.Status == domain.VisitVGM || st.Status == domain.VisitGatedIn || st.Status == domain.VisitLoaded {
 			numberOf[st.ExecutionID] = st.Number
 		}
 	}
@@ -414,6 +517,18 @@ func visitView(v *domain.Visit, revision int64) api.ContainerVisit {
 		s := st.Seals[i]
 		out.Seals = append(out.Seals, api.ContainerSeal{SealNo: s.No, Number: s.Number, Party: s.Party, AppliedAt: s.AppliedAt, Source: s.Source,
 			RecordedBy: s.By, RecordedAt: s.At})
+	}
+	for i := len(st.Assertions) - 1; i >= 0; i-- {
+		a := st.Assertions[i]
+		out.Assertions = append(out.Assertions, api.VgmAssertion{Version: a.Version, MassGrams: a.MassGrams, Method: a.Method,
+			ResponsiblePartyID: a.PartyID, ResponsiblePartyRevision: a.PartyRevision, DeterminedAt: a.DeterminedAt, SubmittedAt: a.SubmittedAt,
+			LateReason: a.LateReason, RecordedBy: a.By, RecordedAt: a.At, Response: a.Response, ResponseSource: a.ResponseSource,
+			RespondedAt: a.RespondedAt, ResponseBy: a.ResponseBy})
+	}
+	for i := len(st.Events) - 1; i >= 0; i-- {
+		e := st.Events[i]
+		out.Events = append(out.Events, api.ContainerEvent{EventNo: e.No, Kind: e.Kind, Location: e.Location, HappenedAt: e.OccurredAt,
+			Source: e.Source, Reference: e.Reference, RecordedBy: e.By, RecordedAt: e.At})
 	}
 	return out
 }
@@ -452,7 +567,8 @@ func receipt(r application.Receipt, err error) (api.Receipt, error) {
 	if err != nil {
 		return api.Receipt{}, classify(err)
 	}
-	out := api.Receipt{CommandID: r.CommandID, NewRevision: r.NewRevision, EntryNo: r.EntryNo, HBL: r.HBL, BillNo: r.BillNo, SealNo: r.SealNo}
+	out := api.Receipt{CommandID: r.CommandID, NewRevision: r.NewRevision, EntryNo: r.EntryNo, HBL: r.HBL, BillNo: r.BillNo, SealNo: r.SealNo,
+		AssertionNo: r.AssertionNo, EventNo: r.EventNo, FactsVersion: r.FactsVersion}
 	if r.Kind == "ContainerVisit" {
 		out.VisitID = r.SubjectID
 	} else {
@@ -486,8 +602,8 @@ func classify(err error) error {
 		errors.Is(err, domain.ErrNotAssociated), errors.Is(err, domain.ErrStillAttached), errors.Is(err, domain.ErrNothingToRefresh),
 		errors.Is(err, domain.ErrHousesLive), errors.Is(err, domain.ErrInvalidHBL), errors.Is(err, domain.ErrInvalidMasterBill),
 		errors.Is(err, domain.ErrInvalidSeries), errors.Is(err, domain.ErrSeriesExhausted), errors.Is(err, domain.ErrInvalidVisit),
-		errors.Is(err, domain.ErrInvalidContainer), errors.Is(err, domain.ErrInvalidSeal), errors.Is(err, domain.ErrNotStuffed),
-		errors.Is(err, domain.ErrStuffingDiffers), errors.Is(err, domain.ErrCargoInContainer), errors.Is(err, application.ErrInvalidQuery),
+		errors.Is(err, domain.ErrInvalidContainer), errors.Is(err, domain.ErrInvalidSeal), errors.Is(err, domain.ErrInvalidVGM), errors.Is(err, domain.ErrInvalidEvent), errors.Is(err, domain.ErrNotStuffed),
+		errors.Is(err, domain.ErrStuffingDiffers), errors.Is(err, domain.ErrCargoInContainer), errors.Is(err, domain.ErrNotFinalizable), errors.Is(err, application.ErrInvalidQuery),
 		errors.Is(err, application.ErrUnknownBooking), errors.Is(err, application.ErrUnknownShipment), errors.Is(err, application.ErrNoSeries),
 		errors.Is(err, application.ErrHBLInUse), errors.Is(err, application.ErrHBLDiffers), errors.Is(err, application.ErrMasterBillInUse),
 		errors.Is(err, application.ErrContainerInUse), errors.Is(err, application.ErrUnitHasContainer), errors.Is(err, application.ErrContainersAssigned),

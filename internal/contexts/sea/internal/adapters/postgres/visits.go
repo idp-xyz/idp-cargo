@@ -13,6 +13,7 @@ import (
 	bentorepo "go.idp.xyz/idp-bento-go/repository"
 	app "go.idp.xyz/idp-cargo/internal/contexts/sea/internal/application"
 	sea "go.idp.xyz/idp-cargo/internal/contexts/sea/internal/domain"
+	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
 // VisitStore loads and writes container visits.
@@ -55,6 +56,37 @@ type sealRow struct {
 	EnteredAt  time.Time `json:"entered_at"`
 }
 
+type assertionRow struct {
+	Version           int        `json:"version"`
+	MassGrams         int64      `json:"mass_grams"`
+	Method            string     `json:"method"`
+	PartyID           string     `json:"responsible_party_id"`
+	PartyRevision     int64      `json:"responsible_party_revision"`
+	DeterminedAt      time.Time  `json:"determined_at"`
+	SubmittedAt       time.Time  `json:"submitted_at"`
+	LateReason        *string    `json:"late_reason"`
+	RecordedBy        string     `json:"recorded_by"`
+	RecordedAt        time.Time  `json:"recorded_at"`
+	EnteredAt         time.Time  `json:"entered_at"`
+	Response          *string    `json:"response"`
+	ResponseSource    *string    `json:"response_source"`
+	RespondedAt       *time.Time `json:"responded_at"`
+	ResponseBy        *string    `json:"response_by"`
+	ResponseEnteredAt *time.Time `json:"response_entered_at"`
+}
+
+type eventRow struct {
+	EventNo    int       `json:"event_no"`
+	Kind       string    `json:"kind"`
+	Location   string    `json:"location_code"`
+	OccurredAt time.Time `json:"occurred_at"`
+	Source     string    `json:"source"`
+	Reference  string    `json:"reference"`
+	RecordedBy string    `json:"recorded_by"`
+	RecordedAt time.Time `json:"recorded_at"`
+	EnteredAt  time.Time `json:"entered_at"`
+}
+
 // readVisit reads the visit and its seals in one statement, so that an unlocked read is one snapshot.
 func readVisit(ctx context.Context, q queryRower, tenant sea.TenantID, id sea.VisitID) (*sea.Visit, int64, error) {
 	st := sea.VisitState{TenantID: tenant, VisitID: id}
@@ -62,15 +94,17 @@ func readVisit(ctx context.Context, q queryRower, tenant sea.TenantID, id sea.Vi
 	var plate, execution, difference, stuffedBy, releaseReason, releasedBy *string
 	var stuffedAt, releasedAt *time.Time
 	var revision int64
-	var seals []byte
+	var seals, assertions, events []byte
 	err := q.QueryRow(ctx, `SELECT v.movement_id,v.consolidation_id,v.load_unit_no,v.container_number,v.size_type,v.tare_kg,v.max_gross_kg,v.plate_source,
       v.status,v.execution_id,v.difference_reason,v.stuffed_by,v.stuffed_at,v.release_reason,v.released_by,v.released_at,v.assigned_by,v.assigned_at,
       v.entered_at,v.revision,
-      (SELECT coalesce(json_agg(s ORDER BY s.seal_no), '[]') FROM cargo_sea.container_seal s WHERE s.tenant_id=v.tenant_id AND s.visit_id=v.visit_id)
+      (SELECT coalesce(json_agg(s ORDER BY s.seal_no), '[]') FROM cargo_sea.container_seal s WHERE s.tenant_id=v.tenant_id AND s.visit_id=v.visit_id),
+      (SELECT coalesce(json_agg(a ORDER BY a.version), '[]') FROM cargo_sea.vgm_assertion a WHERE a.tenant_id=v.tenant_id AND a.visit_id=v.visit_id),
+      (SELECT coalesce(json_agg(e ORDER BY e.event_no), '[]') FROM cargo_sea.container_event e WHERE e.tenant_id=v.tenant_id AND e.visit_id=v.visit_id)
       FROM cargo_sea.container_visit v WHERE v.tenant_id=$1 AND v.visit_id=$2`, string(tenant), string(id)).Scan(
 		&st.MovementID, &st.ConsolidationID, &st.LoadUnitNo, &st.Number, &st.SizeType, &tare, &maxGross, &plate, &st.Status,
 		&execution, &difference, &stuffedBy, &stuffedAt, &releaseReason, &releasedBy, &releasedAt, &st.AssignedBy, &st.AssignedAt, &st.EnteredAt,
-		&revision, &seals)
+		&revision, &seals, &assertions, &events)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, 0, fmt.Errorf("%w: visit %s", bentorepo.ErrNotFound, id)
 	}
@@ -91,6 +125,24 @@ func readVisit(ctx context.Context, q queryRower, tenant sea.TenantID, id sea.Vi
 	for _, r := range rows {
 		st.Seals = append(st.Seals, sea.VisitSeal{No: r.SealNo, Number: r.Number, Party: r.Party, AppliedAt: utc(r.AppliedAt), Source: r.Source,
 			By: r.RecordedBy, At: utc(r.RecordedAt), EnteredAt: utc(r.EnteredAt)})
+	}
+	var asserted []assertionRow
+	if err = json.Unmarshal(assertions, &asserted); err != nil {
+		return nil, 0, err
+	}
+	for _, a := range asserted {
+		st.Assertions = append(st.Assertions, sea.VgmAssertion{Version: a.Version, MassGrams: a.MassGrams, Method: a.Method, PartyID: a.PartyID,
+			PartyRevision: a.PartyRevision, DeterminedAt: utc(a.DeterminedAt), SubmittedAt: utc(a.SubmittedAt), LateReason: deref(a.LateReason),
+			By: a.RecordedBy, At: utc(a.RecordedAt), EnteredAt: utc(a.EnteredAt), Response: deref(a.Response), ResponseSource: deref(a.ResponseSource),
+			RespondedAt: utcTime(a.RespondedAt), ResponseBy: deref(a.ResponseBy), ResponseEnteredAt: utcTime(a.ResponseEnteredAt)})
+	}
+	var happened []eventRow
+	if err = json.Unmarshal(events, &happened); err != nil {
+		return nil, 0, err
+	}
+	for _, e := range happened {
+		st.Events = append(st.Events, sea.VisitEvent{No: e.EventNo, Kind: e.Kind, Location: kernel.LocationCode{Scheme: kernel.UNLOCODE, Code: e.Location},
+			OccurredAt: utc(e.OccurredAt), Source: e.Source, Reference: e.Reference, By: e.RecordedBy, At: utc(e.RecordedAt), EnteredAt: utc(e.EnteredAt)})
 	}
 	v, err := sea.RestoreVisit(st)
 	return v, revision, err
@@ -145,7 +197,55 @@ func (s VisitStore) Save(ctx context.Context, v *sea.Visit, expected int64) (int
 	if err = insertSeals(ctx, q, st, v.AddedSeals()); err != nil {
 		return 0, err
 	}
+	if err = writeVGM(ctx, q, v); err != nil {
+		return 0, err
+	}
+	if err = writeEvents(ctx, q, v); err != nil {
+		return 0, err
+	}
 	return revision, nil
+}
+
+func writeEvents(ctx context.Context, q bentopg.Executor, v *sea.Visit) error {
+	st := v.State()
+	for _, e := range v.AddedEvents() {
+		if _, err := q.Exec(ctx, `INSERT INTO cargo_sea.container_event (tenant_id,visit_id,event_no,kind,location_code,occurred_at,source,reference,recorded_by,recorded_at,entered_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+			string(st.TenantID), string(st.VisitID), e.No, e.Kind, e.Location.Code, e.OccurredAt, e.Source, e.Reference, e.By, e.At, e.EnteredAt); err != nil {
+			return visitWriteErr(err, st)
+		}
+	}
+	return nil
+}
+
+func writeVGM(ctx context.Context, q bentopg.Executor, v *sea.Visit) error {
+	st := v.State()
+	for _, a := range v.AddedAssertions() {
+		if _, err := q.Exec(ctx, `INSERT INTO cargo_sea.vgm_assertion (tenant_id,visit_id,version,mass_grams,method,responsible_party_id,
+        responsible_party_revision,determined_at,submitted_at,late_reason,recorded_by,recorded_at,entered_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+			string(st.TenantID), string(st.VisitID), a.Version, a.MassGrams, a.Method, a.PartyID, a.PartyRevision, a.DeterminedAt, a.SubmittedAt,
+			orNull(a.LateReason), a.By, a.At, a.EnteredAt); err != nil {
+			return err
+		}
+		if _, err := q.Exec(ctx, `INSERT INTO cargo_sea.vgm_signatory (tenant_id,visit_id,version,name) VALUES ($1,$2,$3,$4)`,
+			string(st.TenantID), string(st.VisitID), a.Version, a.Signatory); err != nil {
+			return err
+		}
+	}
+	if version := v.RespondedAssertion(); version > 0 {
+		a := st.Assertions[version-1]
+		tag, err := q.Exec(ctx, `UPDATE cargo_sea.vgm_assertion SET response=$4, response_source=$5, responded_at=$6, response_by=$7, response_entered_at=$8
+        WHERE tenant_id=$1 AND visit_id=$2 AND version=$3 AND response IS NULL`,
+			string(st.TenantID), string(st.VisitID), version, a.Response, a.ResponseSource, a.RespondedAt, a.ResponseBy, a.ResponseEnteredAt)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() != 1 {
+			return fmt.Errorf("%w: VGM assertion %d", bentorepo.ErrConflict, version)
+		}
+	}
+	return nil
 }
 
 func insertSeals(ctx context.Context, q bentopg.Executor, st sea.VisitState, seals []sea.VisitSeal) error {
@@ -169,6 +269,8 @@ func visitWriteErr(err error, st sea.VisitState) error {
 			return fmt.Errorf("%w: %s", app.ErrContainerInUse, st.Number)
 		case "container_visit_live_unit":
 			return fmt.Errorf("%w: unit %d of %s", app.ErrUnitHasContainer, st.LoadUnitNo, st.MovementID)
+		case "container_event_source":
+			return fmt.Errorf("%w: the source reference is already recorded", sea.ErrInvalidChange)
 		}
 	}
 	return err
@@ -216,4 +318,44 @@ func (s VisitStore) live(ctx context.Context, sql string, args ...any) (sea.Visi
 		return "", false, nil
 	}
 	return sea.VisitID(id), err == nil, err
+}
+
+// Signatory reads the authorised person's name and logs the read. An unknown assertion has ok false and writes no log.
+func (s VisitStore) Signatory(ctx context.Context, id sea.VisitID, version int, actor, purpose string) (string, bool, error) {
+	q, err := s.DB.RequireExecutor(ctx)
+	if err != nil {
+		return "", false, err
+	}
+	var name *string
+	if err = q.QueryRow(ctx, `SELECT cargo_sea.read_vgm_signatory($1,$2,$3,$4)`, string(id), version, actor, purpose).Scan(&name); err != nil {
+		return "", false, err
+	}
+	if name == nil {
+		return "", false, nil
+	}
+	return *name, true, nil
+}
+
+// SignatoryAccess lists the logged reads of one assertion, newest first. The log holds no name.
+func (s VisitStore) SignatoryAccess(ctx context.Context, tenant sea.TenantID, id sea.VisitID, version int) ([]app.SignatoryAccess, error) {
+	q, err := s.DB.ReadExecutor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := q.Query(ctx, `SELECT access_id::text, actor_id, purpose, recorded_at FROM cargo_sea.vgm_signatory_access
+      WHERE tenant_id=$1 AND visit_id=$2 AND version=$3 ORDER BY recorded_at DESC, access_id`, string(tenant), string(id), version)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []app.SignatoryAccess
+	for rows.Next() {
+		var a app.SignatoryAccess
+		if err = rows.Scan(&a.AccessID, &a.ActorID, &a.Purpose, &a.RecordedAt); err != nil {
+			return nil, err
+		}
+		a.RecordedAt = a.RecordedAt.UTC()
+		out = append(out, a)
+	}
+	return out, rows.Err()
 }

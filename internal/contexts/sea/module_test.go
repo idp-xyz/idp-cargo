@@ -59,6 +59,34 @@ func TestEventsMatchPublishedContract(t *testing.T) {
 	if next, _ := postgres.SEAEnvelope("cmd-4", seal, at); next.ID == sealed.ID {
 		t.Fatal("two seals share an event id")
 	}
+	// A verified-gross-mass event names the assertion's version and nothing of the signatory.
+	vgm := domain.Event{Type: api.VgmAsserted, At: at, TenantID: "T", SubjectID: "CV-1", ConsolidationID: "C-1", MovementID: "OM-1", AssertionNo: 1}
+	asserted, err := postgres.SEAEnvelope("cmd-5", vgm, at)
+	if err != nil || string(asserted.Payload) != `{"tenant_id":"T","subject_id":"CV-1","consolidation_id":"C-1","movement_id":"OM-1","assertion_no":1}` ||
+		strings.Contains(string(asserted.Payload), "Ada") {
+		t.Fatalf("vgm asserted: %s %v", asserted.Payload, err)
+	}
+	vgm.AssertionNo = 2
+	if next, _ := postgres.SEAEnvelope("cmd-5", vgm, at); next.ID == asserted.ID {
+		t.Fatal("two assertions share an event id")
+	}
+	// A container event names its number and its kind. A stuffing recorded before this carries no event number, so
+	// its id is unchanged.
+	happened := domain.Event{Type: api.ContainerEventRecorded, At: at, TenantID: "T", SubjectID: "CV-1", ConsolidationID: "C-1", MovementID: "OM-1",
+		EventNo: 1, Reason: api.EventGateIn}
+	gated, err := postgres.SEAEnvelope("cmd-6", happened, at)
+	if err != nil || string(gated.Payload) != `{"tenant_id":"T","subject_id":"CV-1","consolidation_id":"C-1","movement_id":"OM-1","event_no":1,"reason":"GATE_IN_TERMINAL"}` {
+		t.Fatalf("gated in: %s %v", gated.Payload, err)
+	}
+	happened.EventNo = 2
+	if next, _ := postgres.SEAEnvelope("cmd-6", happened, at); next.ID == gated.ID {
+		t.Fatal("two container events share an event id")
+	}
+	stuffedEvent := domain.Event{Type: api.ContainerEventRecorded, At: at, TenantID: "T", SubjectID: "CV-1", ConsolidationID: "C-1", MovementID: "OM-1", Reason: api.ContainerEventStuffed}
+	stuffedEnvelope, _ := postgres.SEAEnvelope("cmd-7", stuffedEvent, at)
+	if strings.Contains(string(stuffedEnvelope.Payload), "event_no") {
+		t.Fatalf("a stuffing event gained a number: %s", stuffedEnvelope.Payload)
+	}
 	// an event of a movement keeps the id it had before SEA recorded visits: a command replayed across the upgrade
 	// yields the same event
 	sum := sha256.Sum256([]byte("cmd-1\x00" + api.HouseBillAssociated + "\x00T\x00OM-1\x00SH-1\x001\x000"))
@@ -112,15 +140,23 @@ func TestTheModelEmitsThePublishedEventTypes(t *testing.T) {
 	}
 	free, err := domain.AssignContainer("CV-2", om, 2, "TEMU1234565", "22G1", domain.Plate{}, "ops", at)
 	if err = errors.Join(err, om.Associate(stuffed, "H1", "ops", at), v.RecordSeal("S1", domain.SealShipper, at, "tally", "ops", at),
-		v.StuffingDone(om, "", "ops", at), free.Release("not used", "ops", at)); err != nil {
+		v.StuffingDone(om, "", "ops", at), v.AssertVGM(om, kernel.Quantity{Unit: "KGM", Amount: 2500}, domain.VgmMethod1, "LE", 1, at, "", "Ada Lovelace", "ops", at),
+		v.RecordVgmResponse(domain.VgmAccepted, "carrier portal", "ops", at), free.Release("not used", "ops", at)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = v.RecordContainerEvent(domain.EventGateIn, sha, at, "terminal", "GIN-1", "ops", at); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = v.RecordContainerEvent(domain.EventLoaded, sha, at, "vessel", "LOA-1", "ops", at); err != nil {
 		t.Fatal(err)
 	}
 	published := map[string]bool{api.OceanMovementOpened: true, api.VoyageLegsLinked: true, api.MasterBillRecorded: true, api.HouseBillAssociated: true,
 		api.HouseBillFactsRefreshed: true, api.HouseBillAssociationEnded: true, api.OceanMovementCancelled: true, api.HblSeriesRegistered: true,
-		api.ContainerAssigned: true, api.SealRecorded: true, api.ContainerEventRecorded: true, api.ContainerReleased: true}
+		api.ContainerAssigned: true, api.SealRecorded: true, api.ContainerEventRecorded: true, api.ContainerReleased: true,
+		api.VgmAsserted: true, api.VgmResponseRecorded: true}
 	emitted := map[string]bool{}
 	for _, e := range slices.Concat(m.Pending(), s.Pending(), v.Pending(), free.Pending()) {
-		if (e.Type == api.ContainerEventRecorded) != (e.Reason == api.ContainerEventStuffed) {
+		if e.Type == api.ContainerEventRecorded && e.Reason != api.ContainerEventStuffed && e.Reason != api.EventGateIn && e.Reason != api.EventLoaded {
 			t.Errorf("%s carries the reason %q", e.Type, e.Reason)
 		}
 		if !published[e.Type] {
@@ -136,11 +172,15 @@ func TestTheModelEmitsThePublishedEventTypes(t *testing.T) {
 		api.RoleCarrier != domain.KindOwn.Role() || api.MasterBillCarrierMBL != domain.BillCarrierMBL ||
 		api.MasterBillCarrierSeaWaybill != domain.BillCarrierSeaWaybill || api.MasterBillCoLoad != domain.BillCoLoad ||
 		api.MasterBillCurrent != domain.BillCurrent || api.MasterBillSuperseded != domain.BillSuperseded || api.MasterBillVoided != domain.BillVoided ||
-		api.StateOpen != string(domain.StateOpen) || api.StateCancelled != string(domain.StateCancelled) || api.EntryAssociated != domain.StartAssociated ||
+		api.StateOpen != string(domain.StateOpen) || api.StateFinal != string(domain.StateFinal) || api.StateCancelled != string(domain.StateCancelled) || api.EntryAssociated != domain.StartAssociated ||
 		api.EntryRefreshed != domain.StartRefreshed || api.EntryDetached != domain.EndDetached || api.EntryTransferred != domain.EndTransferred ||
 		api.EntryShipmentCancelled != domain.EndCancelled || api.BasisPlanned != domain.BasisPlanned || api.BasisReceived != domain.BasisReceived ||
 		api.BasisTendered != domain.BasisTendered || api.VisitAssigned != string(domain.VisitAssigned) || api.VisitStuffed != string(domain.VisitStuffed) ||
-		api.VisitReleased != string(domain.VisitReleased) || api.SealCarrier != domain.SealCarrier || api.SealShipper != domain.SealShipper ||
+		api.VisitReleased != string(domain.VisitReleased) || api.VisitVGM != string(domain.VisitVGM) ||
+		api.VisitGatedIn != string(domain.VisitGatedIn) || api.VisitLoaded != string(domain.VisitLoaded) ||
+		api.EventGateIn != domain.EventGateIn || api.EventLoaded != domain.EventLoaded || api.EventRolled != domain.EventRolled ||
+		api.VgmMethod1 != domain.VgmMethod1 || api.VgmMethod2 != domain.VgmMethod2 || api.VgmAccepted != domain.VgmAccepted || api.VgmRejected != domain.VgmRejected ||
+		api.SealCarrier != domain.SealCarrier || api.SealShipper != domain.SealShipper ||
 		api.SealCustoms != domain.SealCustoms || api.PlateCSC != domain.PlateCSC || api.PlateCarrier != domain.PlateCarrier ||
 		api.ContainerEventStuffed != domain.ContainerStuffedEvent {
 		t.Fatal("package api and the model name a kind, role, status or basis differently")
@@ -204,6 +244,9 @@ func TestClassifyMapsCausesToAPIKinds(t *testing.T) {
 		{domain.ErrNotStuffed, api.ErrRejected},
 		{domain.ErrStuffingDiffers, api.ErrRejected},
 		{domain.ErrCargoInContainer, api.ErrRejected},
+		{domain.ErrInvalidVGM, api.ErrRejected},
+		{domain.ErrInvalidEvent, api.ErrRejected},
+		{domain.ErrNotFinalizable, api.ErrRejected},
 		{application.ErrNoSeries, api.ErrRejected},
 		{application.ErrUnknownBooking, api.ErrRejected},
 		{application.ErrUnknownShipment, api.ErrRejected},

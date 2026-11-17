@@ -192,21 +192,30 @@ func (s MovementStore) Read(ctx context.Context, tenant sea.TenantID, id sea.Mov
 	return readMovement(ctx, q, tenant, id)
 }
 
+type docFactsRow struct {
+	VersionNo   int       `json:"version_no"`
+	Content     string    `json:"content"`
+	SHA256      string    `json:"content_sha256"`
+	FinalizedBy string    `json:"finalized_by"`
+	FinalizedAt time.Time `json:"finalized_at"`
+	EnteredAt   time.Time `json:"entered_at"`
+}
+
 func readMovement(ctx context.Context, q queryRower, tenant sea.TenantID, id sea.MovementID) (*sea.Movement, int64, error) {
 	st := sea.MovementState{TenantID: tenant, MovementID: id}
 	var kind, state, originCode, destCode, booking string
 	var cancelReason, cancelledBy *string
 	var cancelledAt *time.Time
 	var revision int64
-	var links, legs, cutOffs, bills, entries, parts, stuffings []byte
+	var links, legs, cutOffs, bills, entries, parts, stuffings, facts []byte
 	err := q.QueryRow(ctx, `SELECT m.consolidation_id, m.kind, m.operating_legal_entity_id, m.carrier_party_id, m.carrier_party_revision, m.carrier_role,
         m.origin_code, m.destination_code, m.location_edition, m.state, m.booking_id, m.cancel_reason, m.cancelled_by, m.cancelled_at, m.revision, `+
 		child("booking_link", "x.link_no")+`, `+child("voyage_leg", "x.link_no, x.leg_no")+`, `+child("voyage_cut_off", "x.link_no, x.leg_no, x.cut_off_no")+`, `+
 		child("master_bill", "x.bill_no")+`, `+child("house_bill", "x.entry_no")+`, `+child("house_bill_part", "x.entry_no, x.part_no")+`, `+
-		child("house_bill_stuffing", "x.entry_no, x.stuffing_no")+`
+		child("house_bill_stuffing", "x.entry_no, x.stuffing_no")+`, `+child("ocean_doc_facts_version", "x.version_no")+`
       FROM cargo_sea.ocean_movement m WHERE m.tenant_id=$1 AND m.movement_id=$2`, string(tenant), string(id)).Scan(
 		&st.ConsolidationID, &kind, &st.LegalEntityID, &st.Carrier.PartyID, &st.Carrier.PartyRevision, &st.Carrier.Role, &originCode, &destCode,
-		&st.Edition, &state, &booking, &cancelReason, &cancelledBy, &cancelledAt, &revision, &links, &legs, &cutOffs, &bills, &entries, &parts, &stuffings)
+		&st.Edition, &state, &booking, &cancelReason, &cancelledBy, &cancelledAt, &revision, &links, &legs, &cutOffs, &bills, &entries, &parts, &stuffings, &facts)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, 0, fmt.Errorf("%w: movement %s", bentorepo.ErrNotFound, id)
 	}
@@ -220,8 +229,9 @@ func readMovement(ctx context.Context, q queryRower, tenant sea.TenantID, id sea
 	var er []entryRow
 	var pr []partRow
 	var sr []stuffingRow
+	var fr []docFactsRow
 	if err = errors.Join(json.Unmarshal(links, &lr), json.Unmarshal(legs, &gr), json.Unmarshal(cutOffs, &cr), json.Unmarshal(bills, &br),
-		json.Unmarshal(entries, &er), json.Unmarshal(parts, &pr), json.Unmarshal(stuffings, &sr)); err != nil {
+		json.Unmarshal(entries, &er), json.Unmarshal(parts, &pr), json.Unmarshal(stuffings, &sr), json.Unmarshal(facts, &fr)); err != nil {
 		return nil, 0, err
 	}
 	st.Kind, st.State, st.Origin, st.Destination = sea.Kind(kind), sea.State(state), unlocode(originCode), unlocode(destCode)
@@ -277,6 +287,10 @@ func readMovement(ctx context.Context, q queryRower, tenant sea.TenantID, id sea
 		}
 		st.Entries = append(st.Entries, entry)
 	}
+	for _, f := range fr {
+		st.DocFacts = append(st.DocFacts, sea.DocFactsVersion{No: f.VersionNo, Content: []byte(f.Content), SHA256: f.SHA256, By: f.FinalizedBy,
+			At: utc(f.FinalizedAt), EnteredAt: utc(f.EnteredAt)})
+	}
 	m, err := sea.RestoreMovement(st)
 	return m, revision, err
 }
@@ -306,7 +320,7 @@ func (s MovementStore) Insert(ctx context.Context, m *sea.Movement) (int64, erro
 	if err != nil {
 		return 0, err
 	}
-	return revision, s.writeAdded(ctx, q, m)
+	return revision, s.writeAdded(ctx, q, m, revision)
 }
 
 // Save writes the state and what the movement added or changed since it was loaded, if the stored revision is
@@ -327,12 +341,12 @@ func (s MovementStore) Save(ctx context.Context, m *sea.Movement, expected int64
 	if err != nil {
 		return 0, err
 	}
-	return revision, s.writeAdded(ctx, q, m)
+	return revision, s.writeAdded(ctx, q, m, revision)
 }
 
 // writeAdded writes what the movement added, the master bills that left CURRENT and the entries that ended. A
 // superseded master bill is written before its successor, since one reference is current at a time.
-func (s MovementStore) writeAdded(ctx context.Context, q bentopg.Executor, m *sea.Movement) error {
+func (s MovementStore) writeAdded(ctx context.Context, q bentopg.Executor, m *sea.Movement, revision int64) error {
 	st := m.State()
 	exec := func(sql string, args ...any) error {
 		_, err := q.Exec(ctx, sql, append([]any{string(st.TenantID), string(st.MovementID)}, args...)...)
@@ -425,6 +439,13 @@ func (s MovementStore) writeAdded(ctx context.Context, q bentopg.Executor, m *se
 				orNull(string(x.Volume.Unit)), orNull(x.Volume.Amount), x.LineNos, x.Seal, orNull(x.SealSHA256), x.SealedAt); err != nil {
 				return err
 			}
+		}
+	}
+	for _, v := range m.AddedDocFacts() {
+		if err := exec(`INSERT INTO cargo_sea.ocean_doc_facts_version (tenant_id,movement_id,version_no,content,content_sha256,movement_revision,
+            finalized_by,finalized_at,entered_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+			v.No, string(v.Content), v.SHA256, revision, v.By, v.At, v.EnteredAt); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -559,10 +580,10 @@ func (s CommandReceipts) Find(ctx context.Context, tenant sea.TenantID, id strin
 	r := app.Receipt{CommandID: id}
 	var entry, bill *int
 	var hbl *string
-	var seal *int
-	err = q.QueryRow(ctx, `SELECT request_sha256,result_type,result_id,result_revision,result_entry_no,result_hbl,result_bill_no,result_seal_no
+	var seal, assertion, eventNo, facts *int
+	err = q.QueryRow(ctx, `SELECT request_sha256,result_type,result_id,result_revision,result_entry_no,result_hbl,result_bill_no,result_seal_no,result_assertion_no,result_event_no,result_facts_version
       FROM cargo_sea.command_receipt WHERE tenant_id=$1 AND command_id=$2`, string(tenant), id).Scan(
-		&r.RequestHash, &r.Kind, &r.SubjectID, &r.NewRevision, &entry, &hbl, &bill, &seal)
+		&r.RequestHash, &r.Kind, &r.SubjectID, &r.NewRevision, &entry, &hbl, &bill, &seal, &assertion, &eventNo, &facts)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return app.Receipt{}, false, nil
 	}
@@ -578,6 +599,15 @@ func (s CommandReceipts) Find(ctx context.Context, tenant sea.TenantID, id strin
 	if seal != nil {
 		r.SealNo = *seal
 	}
+	if assertion != nil {
+		r.AssertionNo = *assertion
+	}
+	if eventNo != nil {
+		r.EventNo = *eventNo
+	}
+	if facts != nil {
+		r.FactsVersion = *facts
+	}
 	r.HBL = deref(hbl)
 	return r, true, nil
 }
@@ -588,8 +618,9 @@ func (s CommandReceipts) Save(ctx context.Context, tenant sea.TenantID, r app.Re
 		return err
 	}
 	_, err = q.Exec(ctx, `INSERT INTO cargo_sea.command_receipt (tenant_id,command_id,request_sha256,result_type,result_id,result_revision,result_entry_no,
-      result_hbl,result_bill_no,result_seal_no) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, string(tenant), r.CommandID, r.RequestHash, kind, r.SubjectID,
-		r.NewRevision, orNull(r.EntryNo), orNull(r.HBL), orNull(r.BillNo), orNull(r.SealNo))
+      result_hbl,result_bill_no,result_seal_no,result_assertion_no,result_event_no,result_facts_version) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+		string(tenant), r.CommandID, r.RequestHash, kind, r.SubjectID, r.NewRevision, orNull(r.EntryNo), orNull(r.HBL), orNull(r.BillNo), orNull(r.SealNo),
+		orNull(r.AssertionNo), orNull(r.EventNo), orNull(r.FactsVersion))
 	return err
 }
 
@@ -613,12 +644,20 @@ func SEAEnvelope(commandID string, e sea.Event, recordedAt time.Time) (eventing.
 	id := commandID + "\x00" + e.Type + "\x00" + string(e.TenantID) + "\x00" + e.SubjectID + "\x00" + e.ShipmentID + "\x00" +
 		strconv.Itoa(e.EntryNo) + "\x00" + strconv.Itoa(e.BillNo)
 	// Movement and seal join the id only when a visit sets them, so a command recorded before keeps its event id.
-	if e.MovementID != "" || e.SealNo != 0 {
+	if e.MovementID != "" || e.SealNo != 0 || e.AssertionNo != 0 || e.EventNo != 0 {
 		id += "\x00" + e.MovementID + "\x00" + strconv.Itoa(e.SealNo)
+		if e.AssertionNo != 0 {
+			id += "\x00" + strconv.Itoa(e.AssertionNo)
+		}
+		if e.EventNo != 0 {
+			id += "\x00" + strconv.Itoa(e.EventNo)
+		}
 	}
 	digest := sha256.Sum256([]byte(id))
 	payload, err := json.Marshal(api.EventPayload{TenantID: string(e.TenantID), SubjectID: e.SubjectID, ConsolidationID: e.ConsolidationID,
-		MovementID: e.MovementID, ShipmentID: e.ShipmentID, EntryNo: e.EntryNo, BillNo: e.BillNo, SealNo: e.SealNo, BookingID: e.BookingID,
+		MovementID: e.MovementID, ShipmentID: e.ShipmentID, EntryNo: e.EntryNo, BillNo: e.BillNo, SealNo: e.SealNo, AssertionNo: e.AssertionNo, EventNo: e.EventNo,
+		FactsVersion:    e.FactsVersion,
+		BookingID:       e.BookingID,
 		CapacityVersion: e.CapacityVersion, Reason: e.Reason})
 	if err != nil {
 		return eventing.Envelope{}, err
@@ -634,5 +673,7 @@ func Conflict(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "23514" && (pgErr.ConstraintName == "house_bill_consistent" ||
 		pgErr.ConstraintName == "ocean_movement_consistent" || pgErr.ConstraintName == "container_visit_consistent" ||
-		pgErr.ConstraintName == "container_seal_consistent" || pgErr.ConstraintName == "ocean_movement_holds_no_container")
+		pgErr.ConstraintName == "container_seal_consistent" || pgErr.ConstraintName == "ocean_movement_holds_no_container" ||
+		pgErr.ConstraintName == "vgm_assertion_consistent" || pgErr.ConstraintName == "container_event_consistent" ||
+		pgErr.ConstraintName == "ocean_doc_facts_consistent")
 }

@@ -457,7 +457,8 @@ func TestRestoreRefusesInvalidMovements(t *testing.T) {
 	}{
 		"a co-loader on a container":    {func(st *MovementState) { st.Carrier.Role = "CO_LOADER" }, "identity"},
 		"an unknown kind":               {func(st *MovementState) { st.Kind = "SEA_FCL" }, "identity"},
-		"an unknown state":              {func(st *MovementState) { st.State = "FINAL" }, "state FINAL"},
+		"an unknown state":              {func(st *MovementState) { st.State = "SAILED" }, "state SAILED"},
+		"FINAL without its facts":       {func(st *MovementState) { st.State = StateFinal }, "FINAL without doc facts"},
 		"cancelled without a reason":    {func(st *MovementState) { st.State = StateCancelled }, "cancellation"},
 		"no link":                       {func(st *MovementState) { st.Links = nil }, "no booking link"},
 		"a link out of number":          {func(st *MovementState) { st.Links[0].No = 2 }, "link 1"},
@@ -516,5 +517,52 @@ func TestSeries(t *testing.T) {
 	}
 	if _, err = RestoreSeries(s.State()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestFinalizeOceanDocFacts(t *testing.T) {
+	p := stuffed(plan("SH-1", "C-1", 1), 1, "CN-SEAL-1")
+	m := open(t, booking(1))
+	if err := errors.Join(m.Associate(p, "H1", "ops", at), m.RecordMasterBill("MAEU123456789", BillCarrierMBL, sha, "ops", at.Add(time.Hour))); err != nil {
+		t.Fatal(err)
+	}
+	v := assigned(t, m)
+	sealed(t, v, "CN-SEAL-1", 2)
+	if err := v.StuffingDone(m, "", "cfs", at.Add(21*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	when := at.Add(23 * time.Hour)
+	if err := m.Finalize([]Plan{p}, []VisitState{v.State()}, "ops", when); !errors.Is(err, ErrNotFinalizable) {
+		t.Fatalf("before the VGM: %v", err)
+	}
+	if err := v.AssertVGM(m, kernel.Quantity{Unit: "KGM", Amount: plate.TareKg}, VgmMethod1, "LE", 1, at.Add(22*time.Hour), "", "Ada Lovelace", "ops", at.Add(22*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Finalize([]Plan{p}, []VisitState{v.State()}, "ops", when); err != nil {
+		t.Fatal(err)
+	}
+	got, current, ok := m.DocFactsVersion(0)
+	if !ok || !current || m.State().State != StateFinal || strings.Contains(string(got.Content), "Ada") || strings.Contains(string(got.Content), "Lovelace") ||
+		len(got.Facts.Containers) != 1 || got.Facts.Containers[0].VGMGrams != plate.TareKg*1000 || got.Facts.Containers[0].VGMAssertionID != "CV-1:1" ||
+		got.Facts.Houses[0].Packs != 6 || m.Pending()[len(m.Pending())-1].FactsVersion != 1 {
+		t.Fatalf("%s", got.Content)
+	}
+	if again, err := RestoreMovement(m.State()); err != nil || again.State().State != StateFinal {
+		t.Fatalf("restored: %v", err)
+	}
+	if err := m.RecordMasterBill("MAEU000000001", BillCarrierMBL, sha, "ops", when); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("a master bill once FINAL: %v", err)
+	}
+	next := p
+	next.PlanVersion, next.Revision = 2, p.Revision+1
+	if err := m.Refresh(next, "ops", when.Add(time.Hour)); err != nil || m.State().State != StateOpen {
+		t.Fatalf("reopened: %v %s", err, m.State().State)
+	}
+	if _, current, ok = m.DocFactsVersion(1); !ok || current {
+		t.Fatal("version 1 stayed current")
+	}
+	events := m.Pending()
+	if events[len(events)-2].Type != eventSuperseded || events[len(events)-2].FactsVersion != 1 || events[len(events)-1].Type != eventRefreshed {
+		t.Fatalf("events: %+v", events[len(events)-2:])
 	}
 }

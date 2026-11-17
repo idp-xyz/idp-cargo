@@ -7,10 +7,15 @@ import (
 	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
-// Movement states: OPEN or CANCELLED. Finalizing the movement's facts for DOC (OceanDocFacts v1) comes later.
+// Movement states: OPEN; FINAL once its facts are finalized for DOC, until a link, a refresh or an end returns it
+// to OPEN; CANCELLED.
 const (
 	StateOpen      = "OPEN"
+	StateFinal     = "FINAL"
 	StateCancelled = "CANCELLED"
+
+	DocFactsFinal      = "FINAL"
+	DocFactsSuperseded = "SUPERSEDED"
 )
 
 // Movement kinds, the kinds of PHY's sea LCL consolidations (N1-PHY OD-6): the consolidator's own container booked
@@ -153,6 +158,7 @@ type OceanMovement struct {
 	MovementID             string
 	Revision               int64
 	State                  string
+	DocFactsVersion        int // the latest OceanDocFacts version; 0 before the first. Current while State is FINAL.
 	Kind                   string
 	ConsolidationID        string
 	OperatingLegalEntityID string
@@ -219,4 +225,84 @@ type Queries interface {
 	FindOceanMovementByMasterBill(ctx context.Context, q FindOceanMovementByMasterBill) (OceanMovement, error)
 	FindHouseBill(ctx context.Context, q FindHouseBill) (HouseBillRef, error)
 	GetHblSeries(ctx context.Context, q GetHblSeries) (HblSeries, error)
+	GetOceanDocFacts(ctx context.Context, q GetOceanDocFacts) (OceanDocFacts, error)
+}
+
+// GetOceanDocFacts reads a published version. Version 0 reads the latest. Status is FINAL while that version is
+// the latest and the movement is FINAL, and SUPERSEDED otherwise.
+type GetOceanDocFacts struct {
+	TenantID   string
+	MovementID string
+	Version    int
+}
+
+// OceanDocFacts is OceanDocFacts v1 as published. It has no signatory.
+type OceanDocFacts struct {
+	Status                 string         `json:"-"`
+	Version                int            `json:"version"`
+	MovementID             string         `json:"movement_id"`
+	ConsolidationID        string         `json:"consolidation_id"`
+	Kind                   string         `json:"kind"`
+	OperatingLegalEntityID string         `json:"operating_legal_entity_id"`
+	CarrierPartyID         string         `json:"carrier_party_id"`
+	CarrierPartyRevision   int64          `json:"carrier_party_revision"`
+	CarrierRole            string         `json:"carrier_role"`
+	MasterBillNumber       string         `json:"master_bill_number"`
+	MasterBillKind         string         `json:"master_bill_kind"`
+	BookingID              string         `json:"booking_id"`
+	CapacityVersion        int            `json:"capacity_version"`
+	Vessel                 string         `json:"vessel"`
+	VesselIMO              string         `json:"vessel_imo,omitempty"`
+	Voyage                 string         `json:"voyage"`
+	PlaceOfReceipt         string         `json:"place_of_receipt"`
+	PortOfLoading          string         `json:"port_of_loading"`
+	PortOfDischarge        string         `json:"port_of_discharge"`
+	LocationEdition        string         `json:"location_edition"`
+	ETD                    time.Time      `json:"etd"`
+	OnBoardAt              time.Time      `json:"on_board_at,omitempty"`
+	Containers             []DocContainer `json:"containers"`
+	Houses                 []DocHouse     `json:"houses"`
+	SHA256                 string         `json:"-"`
+	FinalizedBy            string         `json:"-"`
+	FinalizedAt            time.Time      `json:"-"`
+}
+
+// DocContainer is a container named in OceanDocFacts v1.
+type DocContainer struct {
+	VisitID                  string `json:"visit_id"`
+	Number                   string `json:"number"`
+	SizeType                 string `json:"size_type"`
+	SealNumber               string `json:"seal_number"`
+	SealParty                string `json:"seal_party"`
+	VGMAssertionID           string `json:"vgm_assertion_id"`
+	VGMGrams                 int64  `json:"vgm_grams"`
+	VGMMethod                string `json:"vgm_method"`
+	ResponsiblePartyID       string `json:"responsible_party_id"`
+	ResponsiblePartyRevision int64  `json:"responsible_party_revision"`
+	Packs                    int64  `json:"packs"`
+	GrossWeightGrams         int64  `json:"gross_weight_grams"`
+	VolumeCubicCentimetres   int64  `json:"volume_cubic_centimetres"`
+}
+
+// DocHouse is a live house named in OceanDocFacts v1.
+type DocHouse struct {
+	ShipmentID             string         `json:"shipment_id"`
+	HBL                    string         `json:"hbl"`
+	PlanVersion            int            `json:"plan_version"`
+	Packs                  int64          `json:"packs"`
+	PackageType            string         `json:"package_type,omitempty"`
+	GrossWeightGrams       int64          `json:"gross_weight_grams"`
+	VolumeCubicCentimetres int64          `json:"volume_cubic_centimetres"`
+	OrderIDs               []string       `json:"order_ids"`
+	GoodsDescription       string         `json:"goods_description,omitempty"`
+	Containers             []DocBreakdown `json:"containers"`
+}
+
+// DocBreakdown is a house's packs in one container.
+type DocBreakdown struct {
+	VisitID                string `json:"visit_id"`
+	ContainerNumber        string `json:"container_number"`
+	Packs                  int64  `json:"packs"`
+	GrossWeightGrams       int64  `json:"gross_weight_grams"`
+	VolumeCubicCentimetres int64  `json:"volume_cubic_centimetres"`
 }
