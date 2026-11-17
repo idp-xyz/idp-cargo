@@ -270,6 +270,41 @@ func TestHouseBillsUnderTheOceanMovementWithEveryContext(t *testing.T) {
 		t.Fatalf("house L in its sealed container: %+v", m.Houses)
 	}
 
+	// The container: SEA assigns the one the line released to PHY's unit 1, records the seal the CFS applied, with
+	// the shipper as its party, and that the container is stuffed, against PHY's stuffing as FUL relays it. The house
+	// then names its container. The movement's revision does not move: a visit has its own.
+	if _, err = seaModule.RecordStuffingDone(ctx, seaapi.RecordStuffingDone{CommandID: "stuffed-unknown", TenantID: tenant, ActorID: "cfs-1", VisitID: "CV-1",
+		ExpectedRevision: 1, OccurredAt: hours(16)}); !errors.Is(err, seaapi.ErrNotFound) {
+		t.Fatalf("a container not assigned yet: %v", err)
+	}
+	if r, err = seaModule.AssignContainer(ctx, seaapi.AssignContainer{CommandID: "assign", TenantID: tenant, ActorID: "ops-1", VisitID: "CV-1",
+		MovementID: "OM-1", LoadUnitNo: 1, ContainerNumber: "csqu3054383", SizeType: "22G1", TareKg: 2180, MaxGrossKg: 30480, PlateSource: seaapi.PlateCSC,
+		OccurredAt: hours(12)}); err != nil || r.VisitID != "CV-1" || r.NewRevision != 1 {
+		t.Fatalf("the container assigned: %+v %v", r, err)
+	}
+	if _, err = seaModule.RecordStuffingDone(ctx, seaapi.RecordStuffingDone{CommandID: "stuffed-unsealed", TenantID: tenant, ActorID: "cfs-1", VisitID: "CV-1",
+		ExpectedRevision: 1, OccurredAt: hours(16)}); !errors.Is(err, seaapi.ErrRejected) {
+		t.Fatalf("stuffing done without a seal: %v", err)
+	}
+	if r, err = seaModule.RecordContainerSeal(ctx, seaapi.RecordContainerSeal{CommandID: "sea-seal", TenantID: tenant, ActorID: "cfs-1", VisitID: "CV-1",
+		ExpectedRevision: 1, Number: "cn-seal-77120", Party: seaapi.SealShipper, AppliedAt: hours(15), Source: "CFS tally T-L", OccurredAt: hours(15)}); err != nil ||
+		r.SealNo != 1 {
+		t.Fatalf("the seal: %+v %v", r, err)
+	}
+	if r, err = seaModule.RecordStuffingDone(ctx, seaapi.RecordStuffingDone{CommandID: "stuffed", TenantID: tenant, ActorID: "cfs-1", VisitID: "CV-1",
+		ExpectedRevision: 2, OccurredAt: hours(16)}); err != nil || r.NewRevision != 3 {
+		t.Fatalf("stuffing done: %+v %v", r, err)
+	}
+	m = movement("OM-1")
+	if m.Revision != 5 || len(m.Containers) != 1 || m.Containers[0].Status != seaapi.VisitStuffed || m.Containers[0].ExecutionID != "X-1" ||
+		m.Containers[0].ContainerNumber != "CSQU3054383" || m.Containers[0].SealNumber != "CN-SEAL-77120" || m.Containers[0].SealParty != seaapi.SealShipper ||
+		m.Containers[0].DifferenceReason != "" || m.Containers[0].LoadUnitNo != 1 || m.Houses[0].Containers[0].ContainerNumber != "CSQU3054383" {
+		t.Fatalf("house L in container CSQU3054383: %+v", m)
+	}
+	if next := movement("OM-2"); len(next.Containers) != 0 {
+		t.Fatalf("the next movement has no container yet: %+v", next.Containers)
+	}
+
 	// The line states its master bill number; then it rolls the container to the next vessel under the same booking.
 	bill := seaapi.Evidence{SHA256: strings.Repeat("9c", 32), StorageID: "mail/draft-mbl.pdf", MediaType: "application/pdf", CapturedAt: hours(17)}
 	if _, err = seaModule.RecordMasterBill(ctx, seaapi.RecordMasterBill{CommandID: "mbl", TenantID: tenant, ActorID: "ops-1", MovementID: "OM-1",

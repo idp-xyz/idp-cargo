@@ -15,15 +15,18 @@ const (
 	HblSeriesRegistered       = "HblSeriesRegistered.v1"
 )
 
-// EventPayload is the JSON payload of every SEA event: identifiers only, never master or house bill numbers, vessel
-// names or quantities (rule C3); consumers read them through queries.
+// EventPayload is the JSON payload of every SEA event: identifiers only, never master or house bill numbers,
+// container or seal numbers, vessel names or quantities (rule C3); consumers read them through queries. A container
+// visit's events have the visit as subject and name its movement.
 type EventPayload struct {
 	TenantID        string `json:"tenant_id"`
 	SubjectID       string `json:"subject_id"`
 	ConsolidationID string `json:"consolidation_id,omitempty"`
+	MovementID      string `json:"movement_id,omitempty"`
 	ShipmentID      string `json:"shipment_id,omitempty"`
 	EntryNo         int    `json:"entry_no,omitempty"`
 	BillNo          int    `json:"bill_no,omitempty"`
+	SealNo          int    `json:"seal_no,omitempty"`
 	BookingID       string `json:"booking_id,omitempty"`
 	CapacityVersion int    `json:"capacity_version,omitempty"`
 	Reason          string `json:"reason,omitempty"`

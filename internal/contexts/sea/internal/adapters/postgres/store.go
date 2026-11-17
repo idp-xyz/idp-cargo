@@ -559,8 +559,10 @@ func (s CommandReceipts) Find(ctx context.Context, tenant sea.TenantID, id strin
 	r := app.Receipt{CommandID: id}
 	var entry, bill *int
 	var hbl *string
-	err = q.QueryRow(ctx, `SELECT request_sha256,result_id,result_revision,result_entry_no,result_hbl,result_bill_no FROM cargo_sea.command_receipt
-      WHERE tenant_id=$1 AND command_id=$2`, string(tenant), id).Scan(&r.RequestHash, &r.SubjectID, &r.NewRevision, &entry, &hbl, &bill)
+	var seal *int
+	err = q.QueryRow(ctx, `SELECT request_sha256,result_type,result_id,result_revision,result_entry_no,result_hbl,result_bill_no,result_seal_no
+      FROM cargo_sea.command_receipt WHERE tenant_id=$1 AND command_id=$2`, string(tenant), id).Scan(
+		&r.RequestHash, &r.Kind, &r.SubjectID, &r.NewRevision, &entry, &hbl, &bill, &seal)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return app.Receipt{}, false, nil
 	}
@@ -573,6 +575,9 @@ func (s CommandReceipts) Find(ctx context.Context, tenant sea.TenantID, id strin
 	if bill != nil {
 		r.BillNo = *bill
 	}
+	if seal != nil {
+		r.SealNo = *seal
+	}
 	r.HBL = deref(hbl)
 	return r, true, nil
 }
@@ -583,8 +588,8 @@ func (s CommandReceipts) Save(ctx context.Context, tenant sea.TenantID, r app.Re
 		return err
 	}
 	_, err = q.Exec(ctx, `INSERT INTO cargo_sea.command_receipt (tenant_id,command_id,request_sha256,result_type,result_id,result_revision,result_entry_no,
-      result_hbl,result_bill_no) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, string(tenant), r.CommandID, r.RequestHash, kind, r.SubjectID, r.NewRevision,
-		orNull(r.EntryNo), orNull(r.HBL), orNull(r.BillNo))
+      result_hbl,result_bill_no,result_seal_no) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, string(tenant), r.CommandID, r.RequestHash, kind, r.SubjectID,
+		r.NewRevision, orNull(r.EntryNo), orNull(r.HBL), orNull(r.BillNo), orNull(r.SealNo))
 	return err
 }
 
@@ -605,10 +610,16 @@ func (o Outbox) EnqueueSEAEvent(ctx context.Context, e sea.Event) error {
 
 // SEAEnvelope maps a SEA domain event to its Bento envelope; a retried command yields the same event ID.
 func SEAEnvelope(commandID string, e sea.Event, recordedAt time.Time) (eventing.Envelope, error) {
-	digest := sha256.Sum256([]byte(commandID + "\x00" + e.Type + "\x00" + string(e.TenantID) + "\x00" + e.SubjectID + "\x00" + e.ShipmentID + "\x00" +
-		strconv.Itoa(e.EntryNo) + "\x00" + strconv.Itoa(e.BillNo)))
+	id := commandID + "\x00" + e.Type + "\x00" + string(e.TenantID) + "\x00" + e.SubjectID + "\x00" + e.ShipmentID + "\x00" +
+		strconv.Itoa(e.EntryNo) + "\x00" + strconv.Itoa(e.BillNo)
+	// Movement and seal join the id only when a visit sets them, so a command recorded before keeps its event id.
+	if e.MovementID != "" || e.SealNo != 0 {
+		id += "\x00" + e.MovementID + "\x00" + strconv.Itoa(e.SealNo)
+	}
+	digest := sha256.Sum256([]byte(id))
 	payload, err := json.Marshal(api.EventPayload{TenantID: string(e.TenantID), SubjectID: e.SubjectID, ConsolidationID: e.ConsolidationID,
-		ShipmentID: e.ShipmentID, EntryNo: e.EntryNo, BillNo: e.BillNo, BookingID: e.BookingID, CapacityVersion: e.CapacityVersion, Reason: e.Reason})
+		MovementID: e.MovementID, ShipmentID: e.ShipmentID, EntryNo: e.EntryNo, BillNo: e.BillNo, SealNo: e.SealNo, BookingID: e.BookingID,
+		CapacityVersion: e.CapacityVersion, Reason: e.Reason})
 	if err != nil {
 		return eventing.Envelope{}, err
 	}
@@ -622,5 +633,6 @@ func SEAEnvelope(commandID string, e sea.Event, recordedAt time.Time) (eventing.
 func Conflict(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "23514" && (pgErr.ConstraintName == "house_bill_consistent" ||
-		pgErr.ConstraintName == "ocean_movement_consistent")
+		pgErr.ConstraintName == "ocean_movement_consistent" || pgErr.ConstraintName == "container_visit_consistent" ||
+		pgErr.ConstraintName == "container_seal_consistent" || pgErr.ConstraintName == "ocean_movement_holds_no_container")
 }

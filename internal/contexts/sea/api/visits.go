@@ -1,0 +1,176 @@
+package api
+
+import (
+	"context"
+	"time"
+)
+
+// SEA V0.2 (sea freight part 1e-i): container visits. A container visit is one use of one container for one ocean
+// movement: the container assigned to a planned load unit of the consolidation, the seals applied to it, and the
+// record that it is stuffed and sealed. The VGM and the container's terminal and vessel events come later.
+
+// AssignContainer assigns a container to a planned load unit of an OPEN movement of the consolidator's own
+// container (SEA_LCL_OWN): its ISO 6346 number (owner code, category, serial and check digit, validated), its
+// size-type and, when known, its own tare and maximum gross from the CSC plate or the carrier. A container has one
+// live visit in the tenant, and a load unit of a movement one live container. LoadUnitNo is the number PHY gave
+// the planned unit; SEA does not ask PHY for it, and RecordStuffingDone checks it against what FUL relays. The
+// assignment is dated not before the movement was opened; the visit then has its own history.
+type AssignContainer struct {
+	CommandID       string
+	TenantID        string
+	ActorID         string
+	VisitID         string
+	MovementID      string
+	LoadUnitNo      int
+	ContainerNumber string // such as CSQU3054383; trimmed and written in capital letters
+	SizeType        string // ISO 6346 size-type, such as 22G1
+	TareKg          int64  // 0 when the plate is not known yet
+	MaxGrossKg      int64
+	PlateSource     string // PlateCSC or PlateCarrier, with the plate data
+	OccurredAt      time.Time
+}
+
+// RecordContainerSeal records a seal applied to the container: its number, the party that applied it (the
+// carrier, the shipper or customs), when, and the source it was read from. A further seal replaces the current
+// one, which stays as history (a customs inspection reseals).
+type RecordContainerSeal struct {
+	CommandID        string
+	TenantID         string
+	ActorID          string
+	VisitID          string
+	ExpectedRevision int64
+	Number           string // capital letters and digits with single spaces, hyphens or slashes inside, 35 at most
+	Party            string // SealCarrier, SealShipper or SealCustoms
+	AppliedAt        time.Time
+	Source           string
+	OccurredAt       time.Time
+}
+
+// RecordStuffingDone records that an assigned container is stuffed and sealed. A seal must be recorded, and the
+// movement's live houses must carry, as FUL relays it from PHY (OD-2), one sealed stuffing of the visit's load
+// unit; refresh the houses first when FUL has newer evidence. The visit keeps PHY's stuffing and becomes STUFFED:
+// its container is then named in the houses' per-container breakdown. It is dated not before PHY sealed.
+//
+// PHY keeps the seal it closed the stuffing with as it was keyed, and the size-type of the unit it planned; neither
+// is corrected there once the container is sealed. When that seal is none of the visit's seals (compared by
+// letters and digits alone, whatever the case and the separators) or that size-type is not the visit's, the command
+// is refused unless it states a DifferenceReason, which the visit keeps. A container assigned to the wrong unit is
+// released and assigned again instead. Without a difference a reason is refused.
+type RecordStuffingDone struct {
+	CommandID        string
+	TenantID         string
+	ActorID          string
+	VisitID          string
+	ExpectedRevision int64
+	DifferenceReason string // only when PHY's seal or size-type differs from the container's (500 characters)
+	OccurredAt       time.Time
+}
+
+// ReleaseContainer gives an assigned container back unused, with a reason; its number and its load unit are free
+// for another visit. A stuffed container is not released.
+type ReleaseContainer struct {
+	CommandID        string
+	TenantID         string
+	ActorID          string
+	VisitID          string
+	ExpectedRevision int64
+	Reason           string
+	OccurredAt       time.Time
+}
+
+// VisitCommands is SEA's command entry point for container visits. Their receipts name the visit (VisitID) and,
+// for a seal, its number in the visit's history (SealNo).
+type VisitCommands interface {
+	AssignContainer(ctx context.Context, cmd AssignContainer) (Receipt, error)
+	RecordContainerSeal(ctx context.Context, cmd RecordContainerSeal) (Receipt, error)
+	RecordStuffingDone(ctx context.Context, cmd RecordStuffingDone) (Receipt, error)
+	ReleaseContainer(ctx context.Context, cmd ReleaseContainer) (Receipt, error)
+}
+
+// Actions of container visits; the subject is the visit.
+const (
+	ActionAssignContainer     = "AssignContainer"
+	ActionRecordContainerSeal = "RecordContainerSeal"
+	ActionRecordStuffingDone  = "RecordStuffingDone"
+	ActionReleaseContainer    = "ReleaseContainer"
+)
+
+// Visit states, seal parties and plate sources.
+const (
+	VisitAssigned = "ASSIGNED"
+	VisitStuffed  = "STUFFED"
+	VisitReleased = "RELEASED"
+
+	SealCarrier = "CARRIER"
+	SealShipper = "SHIPPER"
+	SealCustoms = "CUSTOMS"
+
+	PlateCSC     = "CSC_PLATE"
+	PlateCarrier = "CARRIER"
+)
+
+// ContainerSeal is a seal of a container visit.
+type ContainerSeal struct {
+	SealNo     int
+	Number     string
+	Party      string
+	AppliedAt  time.Time
+	Source     string
+	RecordedBy string
+	RecordedAt time.Time
+}
+
+// ContainerVisit is a container visit with its seals, latest first.
+type ContainerVisit struct {
+	TenantID        string
+	VisitID         string
+	Revision        int64
+	MovementID      string
+	ConsolidationID string
+	LoadUnitNo      int
+	ContainerNumber string
+	SizeType        string
+	TareKg          int64 // 0 when not recorded
+	MaxGrossKg      int64
+	PlateSource     string
+	Status          string
+	SealNumber      string // the current seal; empty before one is recorded
+	SealParty       string
+	Seals           []ContainerSeal
+	ExecutionID     string // PHY's stuffing of the unit, once STUFFED
+	// DifferenceReason is why the container was taken as stuffed although PHY's seal or size-type differed.
+	DifferenceReason string
+	StuffedAt        time.Time
+	ReleaseReason    string
+	ReleasedAt       time.Time
+	AssignedBy       string
+	AssignedAt       time.Time
+}
+
+// Queries of container visits.
+type (
+	GetContainerVisit struct{ TenantID, VisitID string }
+	// ListContainerVisits lists a movement's visits in the order they were assigned, released ones included.
+	ListContainerVisits struct{ TenantID, MovementID string }
+	// FindLiveContainerVisit asks which live visit holds a container number in the tenant.
+	FindLiveContainerVisit struct{ TenantID, ContainerNumber string }
+)
+
+// VisitQueries is SEA's read side for container visits. An unknown visit, or a number without a live visit,
+// yields ErrNotFound.
+type VisitQueries interface {
+	GetContainerVisit(ctx context.Context, q GetContainerVisit) (ContainerVisit, error)
+	ListContainerVisits(ctx context.Context, q ListContainerVisits) ([]ContainerVisit, error)
+	FindLiveContainerVisit(ctx context.Context, q FindLiveContainerVisit) (ContainerVisit, error)
+}
+
+// Published event types of container visits; their subject is the visit, and they name its movement.
+// ContainerEventRecorded carries the kind of the event as its reason: ContainerEventStuffed in V0.2.
+const (
+	ContainerAssigned      = "ContainerAssigned.v1"
+	SealRecorded           = "SealRecorded.v1"
+	ContainerEventRecorded = "ContainerEventRecorded.v1"
+	ContainerReleased      = "ContainerReleased.v1"
+
+	ContainerEventStuffed = "STUFFED"
+)
