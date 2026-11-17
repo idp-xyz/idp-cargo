@@ -83,9 +83,13 @@ func (d Deps) AssignContainer(ctx context.Context, c Command, movement sea.Movem
 }
 
 // ChangeVisit runs a command on a stored visit locked at the expected revision. apply may read the visit's
-// movement in the transaction (Movement).
+// movement in the transaction (Movement). A gate-in, a loading, another container fact or the carrier's
+// acceptance of a VGM is recorded while the movement is FINAL and leaves it FINAL. A new seal, a new VGM
+// assertion, or the carrier's rejection returns a FINAL movement to OPEN in the same transaction: a rejection
+// means the published facts no longer hold. Stuffing, a release and anything else are still refused while the
+// movement is FINAL.
 func (d Deps) ChangeVisit(ctx context.Context, c Command, apply func(context.Context, *sea.Visit) (seal int, err error)) (Receipt, error) {
-	if d.Visits == nil {
+	if d.Visits == nil || d.Movements == nil {
 		return Receipt{}, ErrMissingDependency
 	}
 	hash, entered, stored, replayed, err := d.begin(ctx, c)
@@ -100,11 +104,11 @@ func (d Deps) ChangeVisit(ctx context.Context, c Command, apply func(context.Con
 		if revision != c.ExpectedRevision {
 			return Receipt{}, nil, sea.ErrConflict
 		}
-		mv, _, err := d.Movements.Read(txCtx, v.State().TenantID, v.State().MovementID)
+		mv, mvRevision, err := d.Movements.Load(txCtx, v.State().TenantID, v.State().MovementID)
 		if err != nil {
 			return Receipt{}, nil, err
 		}
-		if mv.State().State != sea.StateOpen {
+		if mv.State().State == sea.StateCancelled {
 			return Receipt{}, nil, sea.ErrInvalidTransition
 		}
 		seal, err := apply(txCtx, v)
@@ -119,6 +123,21 @@ func (d Deps) ChangeVisit(ctx context.Context, c Command, apply func(context.Con
 		if len(v.Pending()) == 0 {
 			return Receipt{SubjectID: c.Subject, NewRevision: revision, EventNo: eventNo}, nil, nil
 		}
+		if len(v.AddedSeals()) > 0 || len(v.AddedAssertions()) > 0 || v.RejectedResponse() {
+			if err = mv.Supersede(c.Scope.ActorID, c.OccurredAt); err != nil {
+				return Receipt{}, nil, err
+			}
+		} else if mv.State().State == sea.StateFinal && len(v.AddedEvents()) == 0 && v.RespondedAssertion() == 0 {
+			return Receipt{}, nil, sea.ErrInvalidTransition
+		}
+		aggs := make([]aggregate, 0, 2)
+		if len(mv.Pending()) > 0 {
+			mv.Stamp(entered)
+			if _, err = d.Movements.Save(txCtx, mv, mvRevision); err != nil {
+				return Receipt{}, nil, err
+			}
+			aggs = append(aggs, mv)
+		}
 		v.Stamp(entered)
 		if revision, err = d.Visits.Save(txCtx, v, revision); err != nil {
 			return Receipt{}, nil, err
@@ -127,7 +146,7 @@ func (d Deps) ChangeVisit(ctx context.Context, c Command, apply func(context.Con
 		if added := v.AddedAssertions(); len(added) > 0 {
 			assertion = added[len(added)-1].Version
 		}
-		return Receipt{SubjectID: c.Subject, NewRevision: revision, SealNo: seal, AssertionNo: assertion, EventNo: eventNo}, []aggregate{v}, nil
+		return Receipt{SubjectID: c.Subject, NewRevision: revision, SealNo: seal, AssertionNo: assertion, EventNo: eventNo}, append(aggs, v), nil
 	})
 }
 
