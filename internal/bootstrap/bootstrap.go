@@ -32,6 +32,8 @@ import (
 	phyapi "go.idp.xyz/idp-cargo/internal/contexts/phy/api"
 	"go.idp.xyz/idp-cargo/internal/contexts/rate"
 	rateapi "go.idp.xyz/idp-cargo/internal/contexts/rate/api"
+	"go.idp.xyz/idp-cargo/internal/contexts/sea"
+	seaapi "go.idp.xyz/idp-cargo/internal/contexts/sea/api"
 	"go.idp.xyz/idp-cargo/internal/foundation/bento"
 	"go.idp.xyz/idp-cargo/internal/foundation/messaging"
 	"go.idp.xyz/idp-cargo/internal/reference/equipment"
@@ -211,6 +213,16 @@ func (p *Platform) AIR(book bookapi.Queries, ful fulapi.AirOperationPlanQueries,
 		return nil, err
 	}
 	return air.New(db, book, ful, auth, opts...)
+}
+
+// SEA assembles the SEA bounded context. book answers CarrierBooking v1 (relationship 6) and ful OceanOperationPlan
+// v1 (relationship 10), each through its query side.
+func (p *Platform) SEA(book bookapi.Queries, ful fulapi.OceanOperationPlanQueries, auth seaapi.Authorizer, opts ...sea.Option) (*sea.Module, error) {
+	db, err := p.newDB()
+	if err != nil {
+		return nil, err
+	}
+	return sea.New(db, book, ful, auth, opts...)
 }
 
 // ORGForDOC is what DOC reads of ORG: legal entities, party roles, address books, party identities and the contact

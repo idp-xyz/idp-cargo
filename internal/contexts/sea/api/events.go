@@ -1,0 +1,30 @@
+package api
+
+// Source is the event source of every SEA integration event.
+const Source = "idp-cargo.sea"
+
+// Published event types. Movement events have the movement as subject; series events the legal entity.
+const (
+	OceanMovementOpened       = "OceanMovementOpened.v1"
+	VoyageLegsLinked          = "VoyageLegsLinked.v1"
+	MasterBillRecorded        = "MasterBillRecorded.v1"
+	HouseBillAssociated       = "HouseBillAssociated.v1"
+	HouseBillFactsRefreshed   = "HouseBillFactsRefreshed.v1"
+	HouseBillAssociationEnded = "HouseBillAssociationEnded.v1"
+	OceanMovementCancelled    = "OceanMovementCancelled.v1"
+	HblSeriesRegistered       = "HblSeriesRegistered.v1"
+)
+
+// EventPayload is the JSON payload of every SEA event: identifiers only, never master or house bill numbers, vessel
+// names or quantities (rule C3); consumers read them through queries.
+type EventPayload struct {
+	TenantID        string `json:"tenant_id"`
+	SubjectID       string `json:"subject_id"`
+	ConsolidationID string `json:"consolidation_id,omitempty"`
+	ShipmentID      string `json:"shipment_id,omitempty"`
+	EntryNo         int    `json:"entry_no,omitempty"`
+	BillNo          int    `json:"bill_no,omitempty"`
+	BookingID       string `json:"booking_id,omitempty"`
+	CapacityVersion int    `json:"capacity_version,omitempty"`
+	Reason          string `json:"reason,omitempty"`
+}
