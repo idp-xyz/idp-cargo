@@ -14,7 +14,16 @@ const (
 	OceanMovementCancelled    = "OceanMovementCancelled.v1"
 	OceanDocFactsFinalized    = "OceanDocFactsFinalized.v1"
 	OceanDocFactsSuperseded   = "OceanDocFactsSuperseded.v1"
+	OceanCarrierFactRecorded  = "OceanCarrierFactRecorded.v1"
 	HblSeriesRegistered       = "HblSeriesRegistered.v1"
+)
+
+// Carrier fact kinds. A fact names a container or a bill, and does not change the movement.
+const (
+	CarrierLoaded     = "LOADED_ON_BOARD"
+	CarrierDeparted   = "DEPARTED"
+	CarrierRolled     = "ROLLED"
+	CarrierDischarged = "DISCHARGED"
 )
 
 // EventPayload is the JSON payload of every SEA event: identifiers only, never master or house bill numbers,
@@ -31,6 +40,7 @@ type EventPayload struct {
 	SealNo          int    `json:"seal_no,omitempty"`
 	AssertionNo     int    `json:"assertion_no,omitempty"`
 	EventNo         int    `json:"event_no,omitempty"`
+	FactNo          int    `json:"fact_no,omitempty"`
 	FactsVersion    int    `json:"facts_version,omitempty"`
 	BookingID       string `json:"booking_id,omitempty"`
 	CapacityVersion int    `json:"capacity_version,omitempty"`

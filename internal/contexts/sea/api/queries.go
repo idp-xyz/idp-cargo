@@ -177,9 +177,26 @@ type OceanMovement struct {
 	MasterBills            []MasterBill     // latest first
 	Containers             []ContainerVisit // the movement's live container visits, in the order they were assigned
 	Houses                 []House          // live
+	CarrierFacts           []OceanCarrierFact
 	Packs                  int64
 	GrossWeight            kernel.Quantity
 	Volume                 kernel.Quantity
+}
+
+// OceanCarrierFact is one carrier report about the movement. It names a container or a bill, not both.
+type OceanCarrierFact struct {
+	FactNo          int
+	Kind            string
+	ContainerNumber string
+	BillNumber      string
+	Vessel          string
+	Voyage          string
+	Source          string
+	Reference       string
+	SHA256          string
+	OccurredAt      time.Time
+	RecordedBy      string
+	RecordedAt      time.Time
 }
 
 // HblSeries is a legal entity's HBL numbering: its template, first number and where its sequence stands per period (""

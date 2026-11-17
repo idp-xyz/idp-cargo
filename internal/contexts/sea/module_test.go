@@ -117,8 +117,14 @@ func TestTheModelEmitsThePublishedEventTypes(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err = errors.Join(m.LinkBooking(booking(2), "ops", at), m.RecordMasterBill("MAEU123456789", domain.BillCarrierMBL, evidence, "ops", at),
-		m.Associate(plan(1, "C-1"), "H1", "ops", at), m.Refresh(plan(2, "C-1"), "ops", at), m.EndAssociation(plan(2, "C-2"), "ops", at),
-		m.Cancel("no cargo", "ops", at)); err != nil {
+		m.Associate(plan(1, "C-1"), "H1", "ops", at), m.Refresh(plan(2, "C-1"), "ops", at), m.EndAssociation(plan(2, "C-2"), "ops", at)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = m.RecordCarrierFact(domain.CarrierFact{Kind: domain.CarrierDeparted, BillNumber: "MAEU123456789", Vessel: "EVER GIVEN", Voyage: "0123W",
+		Source: "line", Reference: "DEP-1", SHA256: strings.Repeat("ab", 32), OccurredAt: at}, nil, "ops", at); err != nil {
+		t.Fatal(err)
+	}
+	if err = m.Cancel("no cargo", "ops", at); err != nil {
 		t.Fatal(err)
 	}
 	s, err := domain.RegisterSeries("T", "LE", "SHAL{seq:7}", 1, "", "ops", at)
@@ -153,7 +159,7 @@ func TestTheModelEmitsThePublishedEventTypes(t *testing.T) {
 	published := map[string]bool{api.OceanMovementOpened: true, api.VoyageLegsLinked: true, api.MasterBillRecorded: true, api.HouseBillAssociated: true,
 		api.HouseBillFactsRefreshed: true, api.HouseBillAssociationEnded: true, api.OceanMovementCancelled: true, api.HblSeriesRegistered: true,
 		api.ContainerAssigned: true, api.SealRecorded: true, api.ContainerEventRecorded: true, api.ContainerReleased: true,
-		api.VgmAsserted: true, api.VgmResponseRecorded: true}
+		api.VgmAsserted: true, api.VgmResponseRecorded: true, api.OceanCarrierFactRecorded: true}
 	emitted := map[string]bool{}
 	for _, e := range slices.Concat(m.Pending(), s.Pending(), v.Pending(), free.Pending()) {
 		if e.Type == api.ContainerEventRecorded && e.Reason != api.ContainerEventStuffed && e.Reason != api.EventGateIn && e.Reason != api.EventLoaded {
