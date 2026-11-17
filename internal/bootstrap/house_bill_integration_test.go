@@ -141,7 +141,8 @@ func TestHouseBillsUnderTheOceanMovementWithEveryContext(t *testing.T) {
 	}
 	etd := departs.Add(6 * time.Hour)
 	contexts.bookSea(t, bookModule, "BK-1", "C-1", "EVER GIVEN", "9811000", "0123W", etd)
-	contexts.bookSea(t, bookModule, "BK-2", "C-2", "EVER GLORY", "", "0124W", departs.Add(30*time.Hour))
+	// BOOK keeps the second vessel's name as the operator entered it, with a space after it; SEA keeps the name
+	contexts.bookSea(t, bookModule, "BK-2", "C-2", "EVER GLORY ", "", "0124W", departs.Add(30*time.Hour))
 
 	// SEA: the movement from the booking, the series, an HBL drawn for each house.
 	if _, err = seaModule.OpenOceanMovement(ctx, seaapi.OpenOceanMovement{CommandID: "open-1", TenantID: tenant, ActorID: "ops-1", MovementID: "OM-1",

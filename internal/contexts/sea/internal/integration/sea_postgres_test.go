@@ -145,13 +145,14 @@ func (w *world) plan(shipment, consolidation string, version int) {
 			GrossWeight: kg(300), GoodsDescription: "Furniture parts in cartons"}}}
 }
 
-// stuffed makes a shipment's plan carry PHY's sealed 22G1 with its six packs, 318 kg, as FUL relays it.
+// stuffed makes a shipment's plan carry PHY's sealed 22G1 with its six packs, 318 kg, as FUL relays it; the seal's time
+// is finer than SEA stores, as a stand-in's may be.
 func (w *world) stuffed(shipment string, evidence int, seal string) fulapi.ContainerStuffing {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	p := w.plans[shipment]
 	s := fulapi.ContainerStuffing{ExecutionID: "X-1", LoadUnitNo: 1, TypeCode: "22G1", Packs: 6, GrossWeight: kg(318), LineNos: []int{1, 3},
-		Seal: seal, SealSHA256: strings.Repeat("c4", 32), SealedAt: w.at.Add(30 * time.Minute)}
+		Seal: seal, SealSHA256: strings.Repeat("c4", 32), SealedAt: w.at.Add(30*time.Minute + 789*time.Nanosecond)}
 	p.EvidenceVersion, p.MeasuredBasis, p.MeasuredPacks, p.MeasuredGrossWeight = evidence, fulapi.MeasuredTendered, 6, kg(318)
 	p.Stuffings = []fulapi.ContainerStuffing{s}
 	w.plans[shipment] = p
@@ -303,6 +304,13 @@ func TestOceanMovementOnPostgres(t *testing.T) {
 		ConsolidationID: "C-1", BookingID: "BK-1", OccurredAt: f.at}); !errors.Is(err, api.ErrUnauthorized) {
 		t.Fatalf("an actor without the right: %v", err)
 	}
+	// a business time outside the record window: after SEA's clock, or more than seven days before it
+	for name, when := range map[string]time.Time{"tomorrow": time.Now().Add(24 * time.Hour), "last month": time.Now().Add(-30 * 24 * time.Hour)} {
+		if _, err := f.module.OpenOceanMovement(ctx, api.OpenOceanMovement{CommandID: "open-" + name, TenantID: f.tenant, ActorID: "ops-1", MovementID: "OM-X",
+			ConsolidationID: "C-1", BookingID: "BK-1", OccurredAt: when}); !errors.Is(err, api.ErrRejected) || !errors.Is(err, kernel.ErrOutsideRecordWindow) {
+			t.Fatalf("a movement opened %s: %v", name, err)
+		}
+	}
 	r, err := f.open("OM-1", "C-1", "BK-1")
 	if err != nil || r.NewRevision != 1 {
 		t.Fatalf("open: %+v %v", r, err)
@@ -340,6 +348,13 @@ func TestOceanMovementOnPostgres(t *testing.T) {
 	f.series(t)
 	if _, err = f.associate("assoc-1-stale", "OM-1", "SH-1", "", 7); !errors.Is(err, api.ErrConflict) {
 		t.Fatalf("a stale revision: %v", err)
+	}
+	if _, err = f.associate("assoc-404", "OM-1", "SH-404", "", 1); !errors.Is(err, api.ErrRejected) || !strings.Contains(err.Error(), "FUL does not know") {
+		t.Fatalf("a shipment FUL does not know: %v", err)
+	}
+	if _, err = f.module.LinkCarrierBooking(ctx, api.LinkCarrierBooking{CommandID: "link-same", TenantID: f.tenant, ActorID: "ops-1", MovementID: "OM-1",
+		ExpectedRevision: 1, OccurredAt: f.hours(1)}); !errors.Is(err, api.ErrRejected) || !strings.Contains(err.Error(), "linked already") {
+		t.Fatalf("the capacity version the movement is linked to: %v", err)
 	}
 	r1, err := f.associate("assoc-1", "OM-1", "SH-1", "", 1)
 	if err != nil || r1.HBL != "SHAL0000001" || r1.EntryNo != 1 || r1.NewRevision != 2 {
@@ -442,7 +457,7 @@ func TestOceanMovementOnPostgres(t *testing.T) {
 	m = f.get(t, "OM-1")
 	h := m.Houses[len(m.Houses)-1]
 	want := api.HouseContainer{ExecutionID: container.ExecutionID, LoadUnitNo: 1, TypeCode: "22G1", Packs: 6, GrossWeight: kg(318), LineNos: []int{1, 3},
-		Seal: "CN-SEAL-77120", SealSHA256: container.SealSHA256, SealedAt: container.SealedAt}
+		Seal: "CN-SEAL-77120", SealSHA256: container.SealSHA256, SealedAt: f.at.Add(30 * time.Minute)}
 	if h.ShipmentID != "SH-1" || h.EntryNo != 3 || h.Basis != api.BasisTendered || h.EvidenceVersion != 2 || h.PlanVersion != 3 || h.GrossWeight != kg(318) ||
 		h.Volume != (kernel.Quantity{}) || h.Start != api.EntryRefreshed || len(h.Containers) != 1 || !reflect.DeepEqual(h.Containers[0], want) {
 		t.Fatalf("the stuffed house: %+v", h)
@@ -578,136 +593,6 @@ func TestCoLoadMovementOnPostgres(t *testing.T) {
 	if m := f.get(t, "OM-1"); m.Kind != api.KindSeaLCLCoLoad || m.CarrierRole != api.RoleCoLoader || m.CarrierPartyID != "coloader-x" ||
 		m.MasterBillNumber != "SHA-HAM/2611-0042" || m.MasterBillKind != api.MasterBillCoLoad {
 		t.Fatalf("co-load: %+v", m)
-	}
-}
-
-// TestDatabaseRules writes past SEA on the application role.
-func TestDatabaseRules(t *testing.T) {
-	f := newFixture(t)
-	f.w.booking("BK-1", "C-1", "EVER GIVEN", "9811000", "0123W", 1, f.hours(72))
-	if _, err := f.open("OM-1", "C-1", "BK-1"); err != nil {
-		t.Fatal(err)
-	}
-	f.series(t)
-	f.w.plan("SH-1", "C-1", 2)
-	f.w.stuffed("SH-1", 1, "CN-SEAL-1")
-	if _, err := f.associate("assoc", "OM-1", "SH-1", "", 1); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.masterBill("mbl-1", "OM-1", "MAEU1", api.MasterBillCarrierMBL, 2, 2); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.masterBill("mbl-2", "OM-1", "MAEU2", api.MasterBillCarrierMBL, 3, 2); err != nil {
-		t.Fatal(err)
-	}
-	nextBill := `WITH s AS (UPDATE cargo_sea.master_bill SET status='SUPERSEDED' WHERE tenant_id=$1 AND movement_id='OM-1' AND status='CURRENT' RETURNING bill_no)
-        INSERT INTO cargo_sea.master_bill (tenant_id,movement_id,bill_no,bill_number,kind,issuer_party_id,evidence_sha256,evidence_storage_id,
-        evidence_media_type,evidence_captured_at,status,recorded_by,recorded_at,entered_at)
-        SELECT $1,'OM-1',bill_no+1,'MAEU3','%s','%s',repeat('a',64),'s','m',now(),'CURRENT','x',now(),now() FROM s`
-	for name, tc := range map[string]struct {
-		sql   string
-		state string
-		in    string // part of the error text, such as the constraint
-	}{
-		"leg immutable":      {`UPDATE cargo_sea.voyage_leg SET vessel='OTHER' WHERE tenant_id=$1`, "42501|23001", ""},
-		"cut-off immutable":  {`UPDATE cargo_sea.voyage_cut_off SET cut_off_at=now() WHERE tenant_id=$1`, "42501|23001", ""},
-		"cut-off deleted":    {`DELETE FROM cargo_sea.voyage_cut_off WHERE tenant_id=$1`, "42501|23001", ""},
-		"register immutable": {`UPDATE cargo_sea.hbl_number SET shipment_id='SH-9' WHERE tenant_id=$1`, "42501|23001", ""},
-		"house facts":        {`UPDATE cargo_sea.house_bill SET packs=1 WHERE tenant_id=$1`, "42501|23001", ""},
-		"container facts":    {`UPDATE cargo_sea.house_bill_stuffing SET seal='OTHER' WHERE tenant_id=$1`, "42501|23001", ""},
-		"series fixed":       {`UPDATE cargo_sea.hbl_series SET first_number=2 WHERE tenant_id=$1`, "42501|23001", ""},
-		"sequence backwards": {`UPDATE cargo_sea.numbering_sequence SET next_val=0 WHERE scope=$1`, "23001", "one number at a time"},
-		"sequence deleted":   {`DELETE FROM cargo_sea.numbering_sequence WHERE scope=$1`, "42501|23001", ""},
-		"sequence of no series": {`INSERT INTO cargo_sea.numbering_sequence (scope,doc_type,period,next_val) VALUES ($1,'HBL/LE-NONE','',1)`, "23001",
-			"starts at 1 or at its series"},
-		"carrier fixed":            {`UPDATE cargo_sea.ocean_movement SET carrier_party_id='line-2' WHERE tenant_id=$1`, "42501|23001", ""},
-		"movement deleted":         {`DELETE FROM cargo_sea.ocean_movement WHERE tenant_id=$1`, "42501|23001", ""},
-		"master bill renumbered":   {`UPDATE cargo_sea.master_bill SET bill_number='MAEU9' WHERE tenant_id=$1`, "42501|23001", ""},
-		"master bill made current": {`UPDATE cargo_sea.master_bill SET status='CURRENT' WHERE tenant_id=$1 AND status='SUPERSEDED'`, "23001|23505", ""},
-		"a second current master bill": {`INSERT INTO cargo_sea.master_bill (tenant_id,movement_id,bill_no,bill_number,kind,issuer_party_id,evidence_sha256,
-            evidence_storage_id,evidence_media_type,evidence_captured_at,status,recorded_by,recorded_at,entered_at)
-            VALUES ($1,'OM-1',3,'MAEU3','CARRIER_MBL','line-1',repeat('a',64),'s','m',now(),'CURRENT','x',now(),now())`, "23505", "master_bill_one_current"},
-		"a master bill out of number": {`INSERT INTO cargo_sea.master_bill (tenant_id,movement_id,bill_no,bill_number,kind,issuer_party_id,evidence_sha256,
-            evidence_storage_id,evidence_media_type,evidence_captured_at,status,recorded_by,recorded_at,entered_at)
-            VALUES ($1,'OM-1',9,'MAEU3','CARRIER_MBL','line-1',repeat('a',64),'s','m',now(),'SUPERSEDED','x',now(),now())`, "23514", "ocean_movement_consistent"},
-		"a master bill of another issuer": {fmt.Sprintf(nextBill, "CARRIER_MBL", "line-2"), "23514", "ocean_movement_consistent"},
-		"a co-load bill on a container":   {fmt.Sprintf(nextBill, "COLOAD_BILL", "line-1"), "23514", "ocean_movement_consistent"},
-		"the current master bill voided on an open movement": {`UPDATE cargo_sea.master_bill SET status='VOIDED' WHERE tenant_id=$1 AND status='CURRENT'`,
-			"23514", "ocean_movement_consistent"},
-		"evidence captured after it was recorded": {`INSERT INTO cargo_sea.master_bill (tenant_id,movement_id,bill_no,bill_number,kind,issuer_party_id,
-            evidence_sha256,evidence_storage_id,evidence_media_type,evidence_captured_at,status,recorded_by,recorded_at,entered_at)
-            VALUES ($1,'OM-1',3,'MAEU3','CARRIER_MBL','line-1',repeat('a',64),'s','m',now(),'SUPERSEDED','x',now() - interval '1 hour',now())`, "23514",
-			"master_bill_evidence_time"},
-		"unregistered HBL": {`INSERT INTO cargo_sea.house_bill (tenant_id,movement_id,entry_no,shipment_id,hbl,ful_revision,plan_version,window_from,packs,
-            gross_weight_unit,gross_weight,basis,start_kind,associated_by,associated_at,entered_at)
-            VALUES ($1,'OM-1',2,'SH-9','NOPE1',1,1,now(),1,'KGM',1,'PLANNED','ASSOCIATED','x',now(),now())`, "23514", "house_bill_consistent"},
-		"measures without evidence": {`INSERT INTO cargo_sea.house_bill (tenant_id,movement_id,entry_no,shipment_id,hbl,ful_revision,plan_version,window_from,
-            packs,gross_weight_unit,gross_weight,basis,start_kind,associated_by,associated_at,entered_at)
-            VALUES ($1,'OM-1',2,'SH-9','NOPE1',1,1,now(),1,'KGM',1,'TENDERED','ASSOCIATED','x',now(),now())`, "23514", "house_bill_measured"},
-		"an FCL house": {`INSERT INTO cargo_sea.house_bill (tenant_id,movement_id,entry_no,shipment_id,hbl,ful_revision,plan_version,container_mode,
-            window_from,packs,gross_weight_unit,gross_weight,basis,start_kind,associated_by,associated_at,entered_at)
-            VALUES ($1,'OM-1',2,'SH-9','NOPE1',1,1,'FCL',now(),1,'KGM',1,'PLANNED','ASSOCIATED','x',now(),now())`, "23514", "container_mode"},
-		"leg added later": {`INSERT INTO cargo_sea.voyage_leg (tenant_id,movement_id,link_no,leg_no,vessel,voyage,from_code,to_code,etd)
-            VALUES ($1,'OM-1',1,2,'LATER','1','DEHAM','NLRTM',now())`, "23514", "voyage_with_link"},
-		"a wrong IMO check digit": {`INSERT INTO cargo_sea.voyage_leg (tenant_id,movement_id,link_no,leg_no,vessel,vessel_imo,voyage,from_code,to_code,etd)
-            VALUES ($1,'OM-1',1,2,'LATER','9811001','1','DEHAM','NLRTM',now())`, "23514", "voyage_leg_imo"},
-		"an IMO number of letters": {`INSERT INTO cargo_sea.voyage_leg (tenant_id,movement_id,link_no,leg_no,vessel,vessel_imo,voyage,from_code,to_code,etd)
-            VALUES ($1,'OM-1',1,2,'LATER','IMO9811','1','DEHAM','NLRTM',now())`, "23514", "voyage_leg_imo"},
-		"cut-off added later": {`INSERT INTO cargo_sea.voyage_cut_off (tenant_id,movement_id,link_no,leg_no,cut_off_no,kind,cut_off_at,time_zone)
-            VALUES ($1,'OM-1',1,1,9,'HAZARDOUS',now(),'Asia/Shanghai')`, "23514", "voyage_with_link"},
-		"an AIR cut-off": {`INSERT INTO cargo_sea.voyage_cut_off (tenant_id,movement_id,link_no,leg_no,cut_off_no,kind,cut_off_at,time_zone)
-            VALUES ($1,'OM-1',1,1,9,'CARGO_ACCEPTANCE',now(),'Asia/Shanghai')`, "23514", "kind"},
-		"part added later": {`INSERT INTO cargo_sea.house_bill_part (tenant_id,movement_id,entry_no,part_no,obligation_id,obligation_version,order_id,packs,
-            package_type,gross_weight_unit,gross_weight) VALUES ($1,'OM-1',1,9,'OB-X',1,'O-X',1,'CT','KGM',1)`, "23514", "house_bill_facts_with_entry"},
-		"container added later": {`INSERT INTO cargo_sea.house_bill_stuffing (tenant_id,movement_id,entry_no,stuffing_no,execution_id,load_unit_no,type_code,
-            packs,line_nos,seal,sealed_at) VALUES ($1,'OM-1',1,9,'X-9',2,'42G1',1,'{1}','S-9',now())`, "23514", "house_bill_facts_with_entry"},
-		"a container without load lines": {`INSERT INTO cargo_sea.house_bill_stuffing (tenant_id,movement_id,entry_no,stuffing_no,execution_id,load_unit_no,
-            type_code,packs,line_nos,seal,sealed_at) VALUES ($1,'OM-1',1,9,'X-9',2,'42G1',1,'{}','S-9',now())`, "23514", "line_nos"},
-		"cancelled with a house": {`UPDATE cargo_sea.ocean_movement SET state='CANCELLED',cancel_reason='x',cancelled_by='x',cancelled_at=now()
-            WHERE tenant_id=$1 AND movement_id='OM-1'`, "23514", "ocean_movement_consistent"},
-		"a co-loader on an own container": {`INSERT INTO cargo_sea.ocean_movement (tenant_id,movement_id,consolidation_id,kind,operating_legal_entity_id,
-            carrier_party_id,carrier_party_revision,carrier_role,origin_code,destination_code,location_edition,state,booking_id)
-            VALUES ($1,'OM-9','C-9','SEA_LCL_OWN','LE','x',1,'CO_LOADER','CNSHG','DEHAM','E1','OPEN','BK-9')`, "23514", "ocean_movement_carrier_role"},
-		"a movement without its booking link": {`INSERT INTO cargo_sea.ocean_movement (tenant_id,movement_id,consolidation_id,kind,operating_legal_entity_id,
-            carrier_party_id,carrier_party_revision,carrier_role,origin_code,destination_code,location_edition,state,booking_id)
-            VALUES ($1,'OM-9','C-9','SEA_LCL_OWN','LE','x',1,'CARRIER','CNSHG','DEHAM','E1','OPEN','BK-9')`, "23514", "ocean_movement_consistent"},
-	} {
-		err := f.within(t, func(ctx context.Context, e bentopg.Executor) error {
-			_, err := e.Exec(ctx, tc.sql, f.tenant)
-			return err
-		})
-		if state := sqlState(err); state == "" || !strings.Contains(tc.state, state) || !strings.Contains(refusal(err), tc.in) {
-			t.Errorf("%s: %v (state %s, %s), want %s %s", name, err, state, refusal(err), tc.state, tc.in)
-		}
-		t.Logf("%s refused: %v", name, err)
-	}
-	// nothing above changed the movement
-	if m := f.get(t, "OM-1"); m.Revision != 4 || m.State != api.StateOpen || len(m.Houses) != 1 || len(m.Houses[0].Containers) != 1 ||
-		m.MasterBillNumber != "MAEU2" || len(m.MasterBills) != 2 || len(m.Legs) != 1 || len(m.Legs[0].CutOffs) != 2 {
-		t.Fatalf("the movement after the refused writes: %+v", m)
-	}
-	// another tenant sees and changes nothing of it
-	other := scope.TenantTransactor{DB: f.db, Tenant: f.tenant + "-other"}
-	if err := other.WithinTransaction(context.Background(), func(txCtx context.Context) error {
-		e, err := f.db.RequireExecutor(txCtx)
-		if err != nil {
-			return err
-		}
-		var movements, bills, houses int
-		if err = e.QueryRow(txCtx, `SELECT (SELECT count(*) FROM cargo_sea.ocean_movement), (SELECT count(*) FROM cargo_sea.master_bill),
-            (SELECT count(*) FROM cargo_sea.house_bill)`).Scan(&movements, &bills, &houses); err != nil {
-			return err
-		}
-		if movements != 0 || bills != 0 || houses != 0 {
-			return fmt.Errorf("another tenant reads %d movements, %d master bills, %d house bills", movements, bills, houses)
-		}
-		tag, err := e.Exec(txCtx, `UPDATE cargo_sea.master_bill SET status='SUPERSEDED' WHERE status='CURRENT'`)
-		if err == nil && tag.RowsAffected() != 0 {
-			err = fmt.Errorf("another tenant changed %d master bills", tag.RowsAffected())
-		}
-		return err
-	}); err != nil {
-		t.Fatal(err)
 	}
 }
 

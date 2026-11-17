@@ -89,7 +89,8 @@ type RegisterHblSeries struct {
 // AssociateHouseBill associates a house with the movement. FUL's OceanOperationPlan v1 must report the shipment
 // PLANNED by SEA and not as FCL, attached to the movement's consolidation, on its port route (OD-8) and of its
 // operating legal entity (OD-10). The house keeps the HBL number it had under the legal entity; otherwise HBL is the
-// number given, or empty to draw the next one from the entity's series. Its packs, gross weight and volume are
+// number given, or empty to draw the next one from the entity's series (a number of the series given by hand to
+// another shipment before is passed over). Its packs, gross weight and volume are
 // frozen: PHY's measures when FUL relays them (basis RECEIVED or TENDERED), else FUL's plan (PLANNED); with its
 // parts and their goods descriptions, and the sealed containers of the consolidation holding its packs as FUL
 // relays them from PHY (the per-container breakdown, with PHY's evidence ids).

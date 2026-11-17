@@ -353,6 +353,9 @@ func TestHouseBills(t *testing.T) {
 	if err := m.Refresh(stuffed(plan("SH-1", "C-1", 2), 3, "CN-SEAL-2"), "ops", at.Add(3*time.Hour)); err != nil {
 		t.Fatalf("another plan version: %v", err)
 	}
+	if err := m.Refresh(stuffed(plan("SH-1", "C-1", 1), 4, "CN-SEAL-3"), "ops", at.Add(3*time.Hour)); !errors.Is(err, ErrInvalidChange) {
+		t.Fatalf("an older plan version than the entry's: %v", err)
+	}
 	st := m.State()
 	if len(st.Entries) != 5 || st.Entries[0].End != EndRefreshed || st.Entries[0].Successor != 3 || st.Entries[2].Predecessor != 1 ||
 		st.Entries[4].HBL != "H1" || st.Entries[4].Start != StartRefreshed || st.Entries[4].Facts.Basis != BasisTendered ||
@@ -440,36 +443,61 @@ func TestRestoreRefusesInvalidMovements(t *testing.T) {
 	if _, err := RestoreMovement(m.State()); err != nil {
 		t.Fatalf("a valid movement: %v", err)
 	}
-	for name, change := range map[string]func(*MovementState){
-		"a co-loader on a container":    func(st *MovementState) { st.Carrier.Role = "CO_LOADER" },
-		"an unknown kind":               func(st *MovementState) { st.Kind = "SEA_FCL" },
-		"an unknown state":              func(st *MovementState) { st.State = "FINAL" },
-		"cancelled without a reason":    func(st *MovementState) { st.State = StateCancelled },
-		"no link":                       func(st *MovementState) { st.Links = nil },
-		"a link out of number":          func(st *MovementState) { st.Links[0].No = 2 },
-		"two current master bills":      func(st *MovementState) { st.Bills[0].Status = BillCurrent },
-		"no current master bill":        func(st *MovementState) { st.Bills[1].Status = BillSuperseded },
-		"a co-load bill on a container": func(st *MovementState) { st.Bills[1].Kind = BillCoLoad },
-		"a master bill out of number":   func(st *MovementState) { st.Bills[1].No = 3 },
-		"an entry without packs":        func(st *MovementState) { st.Entries[1].Facts.Packs = 0 },
-		"a measured entry without evidence": func(st *MovementState) {
-			st.Entries[1].Facts.Evidence = 0
-		},
-		"an FCL entry":           func(st *MovementState) { st.Entries[1].ContainerMode = "FCL" },
-		"two live entries":       func(st *MovementState) { st.Entries[0].End, st.Entries[0].Successor = "", 0 },
-		"a refresh of nothing":   func(st *MovementState) { st.Entries[1].Predecessor = 0 },
-		"another HBL on refresh": func(st *MovementState) { st.Entries[1].HBL = "H2" },
-		"an unknown end":         func(st *MovementState) { st.Entries[0].End = "LOST" },
-		"a container without its seal": func(st *MovementState) {
+	// another live entry beside entry 2 (SH-1 under H1), of a shipment and with an HBL
+	beside := func(shipment, hbl string) func(*MovementState) {
+		return func(st *MovementState) {
+			e := st.Entries[1]
+			e.No, e.ShipmentID, e.HBL, e.Start, e.Predecessor = 3, shipment, hbl, StartAssociated, 0
+			st.Entries = append(st.Entries, e)
+		}
+	}
+	for name, tc := range map[string]struct {
+		change func(*MovementState)
+		why    string // what the restore reports
+	}{
+		"a co-loader on a container":    {func(st *MovementState) { st.Carrier.Role = "CO_LOADER" }, "identity"},
+		"an unknown kind":               {func(st *MovementState) { st.Kind = "SEA_FCL" }, "identity"},
+		"an unknown state":              {func(st *MovementState) { st.State = "FINAL" }, "state FINAL"},
+		"cancelled without a reason":    {func(st *MovementState) { st.State = StateCancelled }, "cancellation"},
+		"no link":                       {func(st *MovementState) { st.Links = nil }, "no booking link"},
+		"a link out of number":          {func(st *MovementState) { st.Links[0].No = 2 }, "link 1"},
+		"two current master bills":      {func(st *MovementState) { st.Bills[0].Status = BillCurrent }, "master bill 1"},
+		"no current master bill":        {func(st *MovementState) { st.Bills[1].Status = BillSuperseded }, "master bill 2"},
+		"a co-load bill on a container": {func(st *MovementState) { st.Bills[1].Kind = BillCoLoad }, "master bill 2"},
+		"a master bill out of number":   {func(st *MovementState) { st.Bills[1].No = 3 }, "master bill 2"},
+		"an entry without packs":        {func(st *MovementState) { st.Entries[1].Facts.Packs = 0 }, "entry 2"},
+		"a measured entry without evidence": {func(st *MovementState) {
+			st.Entries[1].Facts.Evidence, st.Entries[1].Facts.Stuffings = 0, nil
+		}, "entry 2"},
+		"an FCL entry":                    {func(st *MovementState) { st.Entries[1].ContainerMode = "FCL" }, "entry 2"},
+		"one shipment live twice":         {beside("SH-1", "H3"), "entry 3 live"},
+		"one HBL live twice":              {beside("SH-3", "H1"), "entry 3 live"},
+		"a live entry beside its refresh": {func(st *MovementState) { st.Entries[0].End, st.Entries[0].Successor = "", 0 }, "entry 2 predecessor"},
+		"a refresh of nothing":            {func(st *MovementState) { st.Entries[1].Predecessor = 0 }, "entry 1 successor"},
+		"another HBL on refresh":          {func(st *MovementState) { st.Entries[1].HBL = "H2" }, "entry 2 predecessor"},
+		"an unknown end":                  {func(st *MovementState) { st.Entries[0].End = "LOST" }, "entry 1 end"},
+		"a container without its seal": {func(st *MovementState) {
 			st.Entries[1].Facts.Stuffings = []Stuffing{{ExecutionID: "X-1", LoadUnitNo: 1, TypeCode: "22G1", Packs: 6, LineNos: []int{1}, SealedAt: at}}
-		},
+		}, "entry 2 container"},
+		"a container without evidence": {func(st *MovementState) {
+			st.Entries[1].Facts.Basis, st.Entries[1].Facts.Evidence = BasisPlanned, 0
+		}, "entry 2 container"},
 	} {
 		st := m.State()
 		st.Bills, st.Entries = append([]MasterBill(nil), st.Bills...), append([]Entry(nil), st.Entries...)
-		change(&st)
-		if _, err := RestoreMovement(st); !errors.Is(err, ErrInvalidMovement) {
-			t.Errorf("%s: %v", name, err)
+		tc.change(&st)
+		if _, err := RestoreMovement(st); !errors.Is(err, ErrInvalidMovement) || !strings.HasSuffix(err.Error(), ": "+tc.why) {
+			t.Errorf("%s: %v, want %q", name, err, tc.why)
 		}
+	}
+	// a shipment may be named like an HBL: the two are told apart
+	named := open(t, booking(1))
+	if err := errors.Join(named.Associate(plan("hbl:H2", "C-1", 1), "H1", "ops", at), named.Associate(plan("H1", "C-1", 1), "H2", "ops", at)); err != nil {
+		t.Fatal(err)
+	}
+	named.Stamp(at)
+	if _, err := RestoreMovement(named.State()); err != nil {
+		t.Fatalf("shipments hbl:H2 and H1 under the HBLs H1 and H2: %v", err)
 	}
 }
 

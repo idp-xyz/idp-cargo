@@ -480,6 +480,10 @@ func (m *Movement) Refresh(p Plan, by string, at time.Time) error {
 	if err != nil {
 		return err
 	}
+	if p.PlanVersion < m.state.Entries[i].PlanVersion || p.Revision < m.state.Entries[i].FULRevision {
+		return fmt.Errorf("%w: FUL reports %s at plan version %d, revision %d, older than the entry's %d, %d", ErrInvalidChange, p.ShipmentID,
+			p.PlanVersion, p.Revision, m.state.Entries[i].PlanVersion, m.state.Entries[i].FULRevision)
+	}
 	if p.PlanVersion == m.state.Entries[i].PlanVersion && sameMeasures(f, m.state.Entries[i].Facts) {
 		return ErrNothingToRefresh
 	}
@@ -726,7 +730,7 @@ func (m *Movement) validate() error {
 			return fmt.Errorf("master bill %d", i+1)
 		}
 	}
-	live := map[string]bool{}
+	liveShipments, liveHBLs := map[string]bool{}, map[string]bool{}
 	for i, e := range st.Entries {
 		f := e.Facts
 		if e.No != i+1 || !identifier(e.ShipmentID) || !ValidHBL(e.HBL) || e.FULRevision < 1 || e.PlanVersion < 1 || f.Packs < 1 || !measure(f.GrossWeight) ||
@@ -760,10 +764,10 @@ func (m *Movement) validate() error {
 			return fmt.Errorf("entry %d start", i+1)
 		}
 		if e.Live() {
-			if live[e.ShipmentID] || live["hbl:"+e.HBL] || cancelled || e.Successor != 0 {
+			if liveShipments[e.ShipmentID] || liveHBLs[e.HBL] || cancelled || e.Successor != 0 {
 				return fmt.Errorf("entry %d live", i+1)
 			}
-			live[e.ShipmentID], live["hbl:"+e.HBL] = true, true
+			liveShipments[e.ShipmentID], liveHBLs[e.HBL] = true, true
 			continue
 		}
 		switch e.End {

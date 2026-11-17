@@ -172,8 +172,9 @@ type OceanMovement struct {
 	Volume                 kernel.Quantity
 }
 
-// HblSeries is a legal entity's HBL numbering: its template, first number and the last number taken per period ("" for
-// a template that never resets).
+// HblSeries is a legal entity's HBL numbering: its template, first number and where its sequence stands per period (""
+// for a template that never resets). A series whose first number is above 1 stands at the number before it until one
+// is taken; a period no number was taken in is not listed.
 type HblSeries struct {
 	LegalEntityID string
 	Template      string
@@ -182,7 +183,8 @@ type HblSeries struct {
 	Last          []NumberPeriod
 }
 
-// NumberPeriod is the last sequence value a period took.
+// NumberPeriod is where a period's sequence stands: the last value taken (or passed over because the number was given
+// by hand before), or the series' seed.
 type NumberPeriod struct {
 	Period string
 	Last   int64

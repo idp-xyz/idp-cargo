@@ -48,6 +48,7 @@ CREATE TABLE cargo_sea.booking_link (
  linked_by text NOT NULL CHECK (length(btrim(linked_by)) > 0),
  linked_at timestamptz NOT NULL,
  entered_at timestamptz NOT NULL,
+ created_xact xid8 NOT NULL DEFAULT pg_current_xact_id(), -- the transaction that wrote the link, set by trigger
  PRIMARY KEY (tenant_id, movement_id, link_no),
  UNIQUE (tenant_id, movement_id, capacity_version),
  FOREIGN KEY (tenant_id, movement_id) REFERENCES cargo_sea.ocean_movement (tenant_id, movement_id)
@@ -144,6 +145,7 @@ CREATE TABLE cargo_sea.house_bill (
  ended_at timestamptz,
  end_entered_at timestamptz,
  successor_no integer,
+ created_xact xid8 NOT NULL DEFAULT pg_current_xact_id(), -- the transaction that wrote the entry, set by trigger
  PRIMARY KEY (tenant_id, movement_id, entry_no),
  FOREIGN KEY (tenant_id, movement_id) REFERENCES cargo_sea.ocean_movement (tenant_id, movement_id),
  CONSTRAINT house_bill_volume CHECK ((volume_unit IS NULL) = (volume IS NULL)),
@@ -295,37 +297,56 @@ BEGIN
 END $fn$;
 CREATE TRIGGER house_bill_rules BEFORE UPDATE OR DELETE ON cargo_sea.house_bill FOR EACH ROW EXECUTE FUNCTION cargo_sea.check_house_bill_change();
 
--- At commit, for every house bill a transaction writes: a live entry belongs to an open movement and its HBL is the
--- number registered to its shipment under the movement's legal entity.
+-- The transaction that writes a link or an entry is kept on the row, whatever the insert states: its legs, cut-offs,
+-- parts and containers are accepted from that transaction only. (A row's xmin would not do: ending an entry rewrites
+-- the row.)
+CREATE FUNCTION cargo_sea.stamp_created_xact() RETURNS trigger LANGUAGE plpgsql AS $fn$
+BEGIN
+  NEW.created_xact := pg_current_xact_id();
+  RETURN NEW;
+END $fn$;
+CREATE TRIGGER booking_link_created BEFORE INSERT ON cargo_sea.booking_link FOR EACH ROW EXECUTE FUNCTION cargo_sea.stamp_created_xact();
+CREATE TRIGGER house_bill_created BEFORE INSERT ON cargo_sea.house_bill FOR EACH ROW EXECUTE FUNCTION cargo_sea.stamp_created_xact();
+
+-- At commit, for every house bill a transaction writes: the movement is open, the entry has a part, and its HBL is the
+-- number registered to its shipment under the movement's legal entity. The movement is read under a share lock, which
+-- a cancellation waits for: an entry and a cancellation cannot pass each other.
 CREATE FUNCTION cargo_sea.check_house_bill_at_commit() RETURNS trigger LANGUAGE plpgsql AS $fn$
 DECLARE
   e cargo_sea.house_bill;
   m cargo_sea.ocean_movement;
 BEGIN
+  SELECT * INTO m FROM cargo_sea.ocean_movement WHERE tenant_id = NEW.tenant_id AND movement_id = NEW.movement_id FOR SHARE;
   SELECT * INTO e FROM cargo_sea.house_bill WHERE tenant_id = NEW.tenant_id AND movement_id = NEW.movement_id AND entry_no = NEW.entry_no;
-  IF e.ended_at IS NOT NULL THEN
-    RETURN NULL;
-  END IF;
-  SELECT * INTO m FROM cargo_sea.ocean_movement WHERE tenant_id = e.tenant_id AND movement_id = e.movement_id;
-  IF m.state <> 'OPEN' OR NOT EXISTS (SELECT 1 FROM cargo_sea.hbl_number n WHERE n.tenant_id = e.tenant_id
+  IF m.state IS DISTINCT FROM 'OPEN'
+     OR NOT EXISTS (SELECT 1 FROM cargo_sea.house_bill_part p WHERE p.tenant_id = e.tenant_id AND p.movement_id = e.movement_id AND p.entry_no = e.entry_no)
+     OR NOT EXISTS (SELECT 1 FROM cargo_sea.hbl_number n WHERE n.tenant_id = e.tenant_id
        AND n.legal_entity_id = m.operating_legal_entity_id AND n.hbl = e.hbl AND n.shipment_id = e.shipment_id) THEN
-    RAISE EXCEPTION 'cargo_sea: house bill %/%/% needs an open movement and its shipment''s registered HBL', e.tenant_id, e.movement_id, e.entry_no
-      USING ERRCODE = 'check_violation', CONSTRAINT = 'house_bill_consistent';
+    RAISE EXCEPTION 'cargo_sea: house bill %/%/% needs an open movement, a part and its shipment''s registered HBL', NEW.tenant_id, NEW.movement_id,
+      NEW.entry_no USING ERRCODE = 'check_violation', CONSTRAINT = 'house_bill_consistent';
   END IF;
   RETURN NULL;
 END $fn$;
 CREATE CONSTRAINT TRIGGER house_bill_consistent AFTER INSERT ON cargo_sea.house_bill
   DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION cargo_sea.check_house_bill_at_commit();
 
--- A movement as it stands at commit: a cancelled movement keeps no live house bill; its booking is its first link's;
--- its master bill references are its carrier's or co-loader's, of a kind of the movement's kind, numbered from one
+-- A movement as it stands at commit: a cancelled movement keeps no live house bill; its booking links are of its
+-- booking, numbered from one without gaps, each of a later capacity version than the one before and with a voyage
+-- leg; its master bill references are its carrier's or co-loader's, of a kind of the movement's kind, numbered from one
 -- without gaps, the latest CURRENT (VOIDED once the movement is cancelled) and every earlier one SUPERSEDED.
 CREATE FUNCTION cargo_sea.movement_consistent(t text, mv text) RETURNS boolean LANGUAGE sql STABLE AS $fn$
   SELECT NOT EXISTS (SELECT 1 FROM cargo_sea.ocean_movement m WHERE m.tenant_id = t AND m.movement_id = mv AND (
       m.state = 'CANCELLED' AND EXISTS (SELECT 1 FROM cargo_sea.house_bill e
         WHERE e.tenant_id = m.tenant_id AND e.movement_id = m.movement_id AND e.ended_at IS NULL)
-      OR NOT EXISTS (SELECT 1 FROM cargo_sea.booking_link l WHERE l.tenant_id = m.tenant_id AND l.movement_id = m.movement_id
-        AND l.link_no = 1 AND l.booking_id = m.booking_id)
+      OR NOT EXISTS (SELECT 1 FROM cargo_sea.booking_link l WHERE l.tenant_id = m.tenant_id AND l.movement_id = m.movement_id)
+      OR EXISTS (SELECT 1 FROM cargo_sea.booking_link l,
+          LATERAL (SELECT count(*) AS links FROM cargo_sea.booking_link x WHERE x.tenant_id = m.tenant_id AND x.movement_id = m.movement_id) n
+        WHERE l.tenant_id = m.tenant_id AND l.movement_id = m.movement_id AND (
+          l.booking_id <> m.booking_id
+          OR l.link_no > n.links
+          OR NOT EXISTS (SELECT 1 FROM cargo_sea.voyage_leg g WHERE g.tenant_id = l.tenant_id AND g.movement_id = l.movement_id AND g.link_no = l.link_no)
+          OR EXISTS (SELECT 1 FROM cargo_sea.booking_link earlier WHERE earlier.tenant_id = l.tenant_id AND earlier.movement_id = l.movement_id
+            AND earlier.link_no < l.link_no AND earlier.capacity_version >= l.capacity_version)))
       OR EXISTS (SELECT 1 FROM cargo_sea.master_bill b,
           LATERAL (SELECT count(*) AS bills FROM cargo_sea.master_bill x WHERE x.tenant_id = m.tenant_id AND x.movement_id = m.movement_id) n
         WHERE b.tenant_id = m.tenant_id AND b.movement_id = m.movement_id AND (
@@ -344,15 +365,33 @@ BEGIN
 END $fn$;
 CREATE CONSTRAINT TRIGGER ocean_movement_consistent AFTER INSERT OR UPDATE ON cargo_sea.ocean_movement
   DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION cargo_sea.check_movement_at_commit();
-CREATE CONSTRAINT TRIGGER master_bill_consistent AFTER INSERT OR UPDATE ON cargo_sea.master_bill
+CREATE CONSTRAINT TRIGGER master_bill_status_consistent AFTER UPDATE ON cargo_sea.master_bill
   DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION cargo_sea.check_movement_at_commit();
 
--- At commit, a house's parts and containers are written by the transaction that writes the entry, and a link's legs
--- and cut-offs by the one that writes the link: an entry's facts and a link's voyage never grow later.
+-- At commit, a booking link or a master bill reference a transaction writes belongs to an open movement, read under a
+-- share lock as for house bills, and leaves the movement consistent: nothing is added to a cancelled movement.
+CREATE FUNCTION cargo_sea.check_movement_child_at_commit() RETURNS trigger LANGUAGE plpgsql AS $fn$
+DECLARE
+  m cargo_sea.ocean_movement;
+BEGIN
+  SELECT * INTO m FROM cargo_sea.ocean_movement WHERE tenant_id = NEW.tenant_id AND movement_id = NEW.movement_id FOR SHARE;
+  IF m.state IS DISTINCT FROM 'OPEN' OR NOT cargo_sea.movement_consistent(NEW.tenant_id, NEW.movement_id) THEN
+    RAISE EXCEPTION 'cargo_sea: % of movement %/% need an open movement and leave it consistent', TG_TABLE_NAME, NEW.tenant_id, NEW.movement_id
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'ocean_movement_consistent';
+  END IF;
+  RETURN NULL;
+END $fn$;
+CREATE CONSTRAINT TRIGGER booking_link_consistent AFTER INSERT ON cargo_sea.booking_link
+  DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION cargo_sea.check_movement_child_at_commit();
+CREATE CONSTRAINT TRIGGER master_bill_consistent AFTER INSERT ON cargo_sea.master_bill
+  DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION cargo_sea.check_movement_child_at_commit();
+
+-- At commit, a house's parts and containers are written by the transaction that wrote the entry, and a link's legs
+-- and cut-offs by the one that wrote the link: an entry's facts and a link's voyage never grow later.
 CREATE FUNCTION cargo_sea.check_entry_facts_at_commit() RETURNS trigger LANGUAGE plpgsql AS $fn$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM cargo_sea.house_bill e WHERE e.tenant_id = NEW.tenant_id AND e.movement_id = NEW.movement_id
-       AND e.entry_no = NEW.entry_no AND e.xmin = pg_current_xact_id()::xid) THEN
+       AND e.entry_no = NEW.entry_no AND e.created_xact = pg_current_xact_id()) THEN
     RAISE EXCEPTION 'cargo_sea: % of house bill %/%/% are written with the entry', TG_TABLE_NAME, NEW.tenant_id, NEW.movement_id, NEW.entry_no
       USING ERRCODE = 'check_violation', CONSTRAINT = 'house_bill_facts_with_entry';
   END IF;
@@ -365,7 +404,7 @@ CREATE CONSTRAINT TRIGGER house_bill_stuffing_with_entry AFTER INSERT ON cargo_s
 CREATE FUNCTION cargo_sea.check_link_voyage_at_commit() RETURNS trigger LANGUAGE plpgsql AS $fn$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM cargo_sea.booking_link l WHERE l.tenant_id = NEW.tenant_id AND l.movement_id = NEW.movement_id
-       AND l.link_no = NEW.link_no AND l.xmin = pg_current_xact_id()::xid) THEN
+       AND l.link_no = NEW.link_no AND l.created_xact = pg_current_xact_id()) THEN
     RAISE EXCEPTION 'cargo_sea: % of booking link %/%/% are written with the link', TG_TABLE_NAME, NEW.tenant_id, NEW.movement_id, NEW.link_no
       USING ERRCODE = 'check_violation', CONSTRAINT = 'voyage_with_link';
   END IF;

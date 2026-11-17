@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
+	"time"
 
 	bookapi "go.idp.xyz/idp-cargo/internal/contexts/book/api"
 	app "go.idp.xyz/idp-cargo/internal/contexts/sea/internal/application"
@@ -23,31 +25,55 @@ var kinds = map[string]sea.Kind{bookapi.KindSeaLCLConsolEquipment: sea.KindOwn, 
 
 func (b Bookings) Booking(ctx context.Context, tenant sea.TenantID, id string) (sea.Booking, error) {
 	got, err := b.BOOK.GetCarrierBooking(ctx, bookapi.GetCarrierBooking{TenantID: string(tenant), BookingID: id})
-	if errors.Is(err, bookapi.ErrNotFound) {
-		return sea.Booking{}, fmt.Errorf("%w: %s: %v", app.ErrUnknownBooking, id, err.Error())
-	}
 	if err != nil {
-		return sea.Booking{}, err
+		return sea.Booking{}, foreign(err, id)
 	}
 	if got.TenantID != string(tenant) || got.BookingID != id {
 		return sea.Booking{}, fmt.Errorf("%w: BOOK answered for another booking", app.ErrUnknownBooking)
 	}
 	inForce := got.Capacity.Version > 0 && (got.Status == bookapi.StatusConfirmed || got.Status == bookapi.StatusChangeRequested ||
 		got.Status == bookapi.StatusCancellationRequested)
-	out := sea.Booking{BookingID: got.BookingID, Revision: got.Revision, Kind: kinds[got.Kind], InForce: inForce, ConsumerID: got.ConsumerID,
-		LegalEntityID: got.LegalEntityID, Edition: got.Request.LocationEdition, CapacityVersion: got.Capacity.Version, Lines: len(got.Capacity.Lines),
+	out := sea.Booking{BookingID: got.BookingID, Revision: got.Revision, Kind: kinds[got.Kind], InForce: inForce, LegalEntityID: got.LegalEntityID,
+		Edition: got.Request.LocationEdition, CapacityVersion: got.Capacity.Version, Lines: len(got.Capacity.Lines),
 		Carrier: sea.Carrier{PartyID: got.CarrierPartyID, PartyRevision: got.CarrierPartyRevision, Role: got.CarrierRole}}
+	if got.ConsumerKind == bookapi.ConsumerConsolidation { // capacity allocated to anything else is allocated to no consolidation
+		out.ConsumerID = got.ConsumerID
+	}
 	if legs := got.Request.Legs; len(legs) > 0 {
 		out.Origin, out.Destination = legs[0].Loading.Code, legs[len(legs)-1].Discharge.Code
 	}
 	if len(got.Capacity.Lines) > 0 {
 		for _, l := range got.Capacity.Lines[0].Legs {
-			leg := sea.Leg{Vessel: l.Vessel, VesselIMO: l.VesselIMO, Voyage: l.Voyage, From: l.Loading.Code, To: l.Discharge.Code, ETD: l.ETD, ETA: l.ETA}
+			// BOOK keeps a vessel's name as it was entered; SEA keeps it without the spaces around it. Instants are
+			// kept to the microsecond, as they are stored.
+			leg := sea.Leg{Vessel: strings.TrimSpace(l.Vessel), VesselIMO: l.VesselIMO, Voyage: l.Voyage, From: l.Loading.Code, To: l.Discharge.Code,
+				ETD: micro(l.ETD), ETA: micro(l.ETA)}
 			for _, c := range l.CutOffs {
-				leg.CutOffs = append(leg.CutOffs, sea.CutOff{Kind: c.Kind, At: c.At, TimeZone: c.TimeZone, Location: c.Location})
+				leg.CutOffs = append(leg.CutOffs, sea.CutOff{Kind: c.Kind, At: micro(c.At), TimeZone: c.TimeZone, Location: c.Location})
 			}
 			out.Legs = append(out.Legs, leg)
 		}
 	}
 	return out, nil
+}
+
+// foreign turns an error of BOOK into SEA's: a booking BOOK does not know, or a question BOOK rejects, is an unknown
+// booking; any other of BOOK's kinds is kept as text, so that no caller of SEA matches BOOK's kinds; anything else
+// (a cancelled context, a failing database) passes unchanged.
+func foreign(err error, id string) error {
+	switch {
+	case errors.Is(err, bookapi.ErrNotFound), errors.Is(err, bookapi.ErrRejected):
+		return fmt.Errorf("%w: %s: %v", app.ErrUnknownBooking, id, err.Error())
+	case errors.Is(err, bookapi.ErrUnauthenticated), errors.Is(err, bookapi.ErrUnauthorized), errors.Is(err, bookapi.ErrConflict),
+		errors.Is(err, bookapi.ErrIdempotencyConflict):
+		return fmt.Errorf("sea: BOOK did not answer for booking %s: %v", id, err.Error())
+	}
+	return err
+}
+
+func micro(t time.Time) time.Time {
+	if t.IsZero() {
+		return t
+	}
+	return t.UTC().Truncate(time.Microsecond)
 }

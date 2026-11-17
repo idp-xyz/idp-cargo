@@ -167,7 +167,9 @@ func (d Deps) begin(ctx context.Context, c Command) (hash string, entered time.T
 	if err != nil {
 		return "", time.Time{}, Receipt{}, false, err
 	}
-	sum := sha256.Sum256(blob)
+	// The hash covers the command's name: two commands of the same fields (a refresh and an end of one house) are
+	// not replays of each other.
+	sum := sha256.Sum256(append([]byte(string(c.Action)+"\x00"), blob...))
 	hash = hex.EncodeToString(sum[:])
 	if err = d.Tx.WithinTransaction(ctx, func(txCtx context.Context) error {
 		r, ok, err := d.Receipts.Find(txCtx, c.Scope.TenantID, c.CommandID)
@@ -317,7 +319,9 @@ func (d Deps) Change(ctx context.Context, c Command, read func(context.Context, 
 
 // HBL returns the number a house takes: the one it holds under the legal entity, else the one given, else the next
 // of the entity's template, taken from the platform's sequence of the period of the business time in this
-// transaction. A number taken is registered to the shipment.
+// transaction. A number taken is registered to the shipment. A number of the series that was given by hand to
+// another shipment before the sequence reached it is passed over: the sequence moves on, so that one number keyed
+// in advance cannot stop the series.
 func (d Deps) HBL(ctx context.Context, tenant sea.TenantID, legalEntity, shipment, given string, at time.Time) (string, error) {
 	held, ok, err := d.Register.OfShipment(ctx, tenant, legalEntity, shipment)
 	if err != nil {
@@ -343,20 +347,30 @@ func (d Deps) HBL(ctx context.Context, tenant sea.TenantID, legalEntity, shipmen
 	if err != nil {
 		return "", fmt.Errorf("%w: %v", sea.ErrInvalidSeries, err)
 	}
-	seq, err := d.Numbers.Next(ctx, string(tenant), numbering.DocType(DocTypeHBL, legalEntity), tmpl.Period(at))
-	if err != nil {
-		return "", err
+	for {
+		seq, err := d.Numbers.Next(ctx, string(tenant), numbering.DocType(DocTypeHBL, legalEntity), tmpl.Period(at))
+		if err != nil {
+			return "", err
+		}
+		number, err := tmpl.Render(seq, at)
+		switch {
+		case errors.Is(err, numbering.ErrExhausted):
+			return "", fmt.Errorf("%w: %v", sea.ErrSeriesExhausted, err)
+		case err != nil:
+			return "", err
+		case !sea.ValidHBL(number):
+			return "", fmt.Errorf("%w: the template renders %q", sea.ErrInvalidHBL, number)
+		}
+		// Looked up rather than claimed and caught: a unique violation would abort the transaction and with it the
+		// sequence's step, and the next draw would render the same number again.
+		_, taken, err := d.Register.Find(ctx, tenant, legalEntity, number)
+		if err != nil {
+			return "", err
+		}
+		if !taken {
+			return number, d.Register.Claim(ctx, tenant, legalEntity, number, shipment, true, at)
+		}
 	}
-	number, err := tmpl.Render(seq, at)
-	switch {
-	case errors.Is(err, numbering.ErrExhausted):
-		return "", fmt.Errorf("%w: %v", sea.ErrSeriesExhausted, err)
-	case err != nil:
-		return "", err
-	case !sea.ValidHBL(number):
-		return "", fmt.Errorf("%w: the template renders %q", sea.ErrInvalidHBL, number)
-	}
-	return number, d.Register.Claim(ctx, tenant, legalEntity, number, shipment, true, at)
 }
 
 // DocTypeHBL is the document type of HBL numbers in the platform's sequences (<type>/<legal entity>).
