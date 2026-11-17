@@ -419,7 +419,7 @@ func (v *Visit) AssertVGM(m *Movement, mass kernel.Quantity, method, party strin
 	if v.state.Status != VisitStuffed && v.state.Status != VisitVGM {
 		return ErrInvalidTransition
 	}
-	if m == nil || m.ID() != v.state.MovementID || m.state.TenantID != v.state.TenantID || m.state.State != StateOpen {
+	if m == nil || m.ID() != v.state.MovementID || m.state.TenantID != v.state.TenantID || (m.state.State != StateOpen && m.state.State != StateFinal) {
 		return ErrInvalidVGM
 	}
 	grams, ok := Grams(mass)
@@ -658,6 +658,12 @@ func (v *Visit) AddedAssertions() []VgmAssertion { return v.state.Assertions[v.a
 
 // RespondedAssertion is the version whose carrier response was recorded since the visit was loaded, or 0.
 func (v *Visit) RespondedAssertion() int { return v.responded }
+
+// RejectedResponse reports that this command recorded the carrier's rejection of an assertion.
+func (v *Visit) RejectedResponse() bool {
+	n := v.responded
+	return n > 0 && n <= len(v.state.Assertions) && v.state.Assertions[n-1].Response == VgmRejected
+}
 
 // AddedEvents returns the container events recorded since the visit was loaded.
 func (v *Visit) AddedEvents() []VisitEvent { return v.state.Events[v.events:] }

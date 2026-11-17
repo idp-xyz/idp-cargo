@@ -126,7 +126,8 @@ type RecordContainerEvent struct {
 }
 
 // RecordVgmResponse records the carrier's answer to the latest assertion, once: accepted or rejected, with the
-// source the answer was read from, not before the assertion was submitted. The visit stays VGM_SUBMITTED.
+// source the answer was read from, not before the assertion was submitted. The visit stays VGM_SUBMITTED. Accepting
+// it leaves a FINAL movement FINAL; rejecting it returns that movement to OPEN.
 type RecordVgmResponse struct {
 	CommandID        string
 	TenantID         string

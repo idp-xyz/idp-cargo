@@ -7,8 +7,9 @@ import (
 	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
-// Movement states: OPEN; FINAL once its facts are finalized for DOC, until a link, a refresh or an end returns it
-// to OPEN; CANCELLED.
+// Movement states: OPEN; FINAL once its facts are finalized for DOC, until a link, a refresh, an end, a new seal,
+// a new VGM assertion or the carrier's rejection returns it to OPEN. A container fact or the carrier's acceptance
+// leaves it FINAL. CANCELLED.
 const (
 	StateOpen      = "OPEN"
 	StateFinal     = "FINAL"

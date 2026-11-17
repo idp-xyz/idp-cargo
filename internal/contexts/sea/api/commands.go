@@ -131,8 +131,9 @@ type EndHouseBillAssociation struct {
 }
 
 // FinalizeOceanDocFacts publishes the next OceanDocFacts v1 of an OPEN movement and makes the movement FINAL.
-// FUL's plan of every live house is read before the transaction. A later link, refresh or end returns the movement
-// to OPEN and leaves the published version as it was.
+// FUL's plan of every live house is read before the transaction. A later link, refresh, end, new seal or new VGM
+// assertion, or the carrier's rejection, returns the movement to OPEN and leaves the published version as it was.
+// A container fact or the carrier's acceptance does not.
 type FinalizeOceanDocFacts struct {
 	CommandID        string
 	TenantID         string

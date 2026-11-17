@@ -577,6 +577,19 @@ func (m *Movement) reopen(at time.Time) {
 	m.pending[len(m.pending)-1].FactsVersion = len(m.state.DocFacts)
 }
 
+// Supersede returns a FINAL movement to OPEN because a new seal, a new VGM assertion, or the carrier's rejection
+// changes what the published facts say. The published version stays. A movement that is not FINAL is left as it is.
+func (m *Movement) Supersede(by string, at time.Time) error {
+	if m.state.State != StateFinal {
+		return nil
+	}
+	if err := m.changeable(by, at); err != nil {
+		return err
+	}
+	m.reopen(at)
+	return nil
+}
+
 func (m *Movement) live(shipment string) (int, error) {
 	for i, e := range m.state.Entries {
 		if e.Live() && e.ShipmentID == shipment {

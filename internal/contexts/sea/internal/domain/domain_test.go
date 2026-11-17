@@ -553,6 +553,18 @@ func TestFinalizeOceanDocFacts(t *testing.T) {
 	if err := m.RecordMasterBill("MAEU000000001", BillCarrierMBL, sha, "ops", when); !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("a master bill once FINAL: %v", err)
 	}
+	if err := v.RecordVgmResponse(VgmRejected, "carrier portal", "ops", when); err != nil || m.State().State != StateFinal || !v.RejectedResponse() {
+		t.Fatalf("a rejection stays on the visit until the movement is superseded: %v %s", err, m.State().State)
+	}
+	if err := v.AssertVGM(m, kernel.Quantity{Unit: "KGM", Amount: plate.TareKg + 1}, VgmMethod2, "LE", 1, when, "", "Grace Hopper", "ops", when); err != nil || m.State().State != StateFinal {
+		t.Fatalf("a further assertion leaves the movement FINAL until it is superseded: %v %s", err, m.State().State)
+	}
+	if _, _, err := v.RecordContainerEvent(EventGateIn, loc("CNSHG"), when, "terminal", "GIN-1", "ops", when); err != nil || m.State().State != StateFinal {
+		t.Fatalf("a gate-in leaves the facts final: %v %s", err, m.State().State)
+	}
+	if err := m.Supersede("ops", when); err != nil || m.State().State != StateOpen {
+		t.Fatalf("superseded: %v %s", err, m.State().State)
+	}
 	next := p
 	next.PlanVersion, next.Revision = 2, p.Revision+1
 	if err := m.Refresh(next, "ops", when.Add(time.Hour)); err != nil || m.State().State != StateOpen {
