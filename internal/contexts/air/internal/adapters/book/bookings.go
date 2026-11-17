@@ -19,11 +19,8 @@ var _ app.Bookings = Bookings{}
 
 func (b Bookings) Booking(ctx context.Context, tenant air.TenantID, id string) (air.Booking, error) {
 	got, err := b.BOOK.GetCarrierBooking(ctx, bookapi.GetCarrierBooking{TenantID: string(tenant), BookingID: id})
-	if errors.Is(err, bookapi.ErrNotFound) {
-		return air.Booking{}, fmt.Errorf("%w: %s: %v", app.ErrUnknownBooking, id, err.Error())
-	}
 	if err != nil {
-		return air.Booking{}, err
+		return air.Booking{}, foreign(err, id)
 	}
 	if got.TenantID != string(tenant) || got.BookingID != id {
 		return air.Booking{}, fmt.Errorf("%w: BOOK answered for another booking", app.ErrUnknownBooking)
@@ -45,4 +42,18 @@ func (b Bookings) Booking(ctx context.Context, tenant air.TenantID, id string) (
 		}
 	}
 	return out, nil
+}
+
+// foreign turns an error of BOOK into AIR's: a booking BOOK does not know, or a question BOOK rejects, is an unknown
+// booking; any other of BOOK's kinds is kept as text, so that no caller of AIR matches BOOK's kinds; anything else
+// (a cancelled context, a failing database) passes unchanged.
+func foreign(err error, id string) error {
+	switch {
+	case errors.Is(err, bookapi.ErrNotFound), errors.Is(err, bookapi.ErrRejected):
+		return fmt.Errorf("%w: %s: %v", app.ErrUnknownBooking, id, err.Error())
+	case errors.Is(err, bookapi.ErrUnauthenticated), errors.Is(err, bookapi.ErrUnauthorized), errors.Is(err, bookapi.ErrConflict),
+		errors.Is(err, bookapi.ErrIdempotencyConflict):
+		return fmt.Errorf("air: BOOK did not answer for booking %s: %v", id, err.Error())
+	}
+	return err
 }

@@ -21,11 +21,8 @@ var _ app.Plans = Plans{}
 
 func (p Plans) Plan(ctx context.Context, tenant air.TenantID, shipment string) (air.Plan, error) {
 	got, err := p.FUL.GetAirOperationPlan(ctx, fulapi.GetShipmentPlanSnapshot{TenantID: string(tenant), ShipmentID: shipment})
-	if errors.Is(err, fulapi.ErrNotFound) {
-		return air.Plan{}, fmt.Errorf("%w: %s: %v", app.ErrUnknownShipment, shipment, err.Error())
-	}
 	if err != nil {
-		return air.Plan{}, err
+		return air.Plan{}, foreign(err, shipment)
 	}
 	if got.TenantID != string(tenant) || got.ShipmentID != shipment || got.Stage != fulapi.StageMain {
 		return air.Plan{}, fmt.Errorf("%w: FUL answered for another shipment or stage", app.ErrUnknownShipment)
@@ -44,4 +41,18 @@ func (p Plans) Plan(ctx context.Context, tenant air.TenantID, shipment string) (
 			Reference: s.Reference, ScreenedAt: s.ScreenedAt.UTC()})
 	}
 	return out, nil
+}
+
+// foreign turns an error of FUL into AIR's: a shipment FUL does not know, or a question FUL rejects, is an unknown
+// shipment; any other of FUL's kinds is kept as text, so that no caller of AIR matches FUL's kinds; anything else (a
+// cancelled context, a failing database) passes unchanged.
+func foreign(err error, shipment string) error {
+	switch {
+	case errors.Is(err, fulapi.ErrNotFound), errors.Is(err, fulapi.ErrRejected):
+		return fmt.Errorf("%w: %s: %v", app.ErrUnknownShipment, shipment, err.Error())
+	case errors.Is(err, fulapi.ErrUnauthenticated), errors.Is(err, fulapi.ErrUnauthorized), errors.Is(err, fulapi.ErrConflict),
+		errors.Is(err, fulapi.ErrIdempotencyConflict):
+		return fmt.Errorf("air: FUL did not answer for shipment %s: %v", shipment, err.Error())
+	}
+	return err
 }
