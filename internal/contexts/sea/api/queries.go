@@ -1,0 +1,216 @@
+package api
+
+import (
+	"context"
+	"time"
+
+	"go.idp.xyz/idp-cargo/internal/kernel"
+)
+
+// Movement states: OPEN or CANCELLED. Finalizing the movement's facts for DOC (OceanDocFacts v1) comes later.
+const (
+	StateOpen      = "OPEN"
+	StateCancelled = "CANCELLED"
+)
+
+// Movement kinds, the kinds of PHY's sea LCL consolidations (N1-PHY OD-6): the consolidator's own container booked
+// with a shipping line, or LCL space bought from a co-loader.
+const (
+	KindSeaLCLOwn    = "SEA_LCL_OWN"
+	KindSeaLCLCoLoad = "SEA_LCL_COLOAD"
+)
+
+// Roles of the movement's carrier, as BOOK froze them from ORG.
+const (
+	RoleCarrier  = "CARRIER"
+	RoleCoLoader = "CO_LOADER"
+)
+
+// Master bill kinds and statuses.
+const (
+	MasterBillCarrierMBL        = "CARRIER_MBL"
+	MasterBillCarrierSeaWaybill = "CARRIER_SEA_WAYBILL"
+	MasterBillCoLoad            = "COLOAD_BILL"
+
+	MasterBillCurrent    = "CURRENT"
+	MasterBillSuperseded = "SUPERSEDED"
+	MasterBillVoided     = "VOIDED" // the current reference of a cancelled movement
+)
+
+// Entry starts and ends of a house association.
+const (
+	EntryAssociated        = "ASSOCIATED"
+	EntryRefreshed         = "REFRESHED"
+	EntryDetached          = "DETACHED"
+	EntryTransferred       = "TRANSFERRED"
+	EntryShipmentCancelled = "SHIPMENT_CANCELLED"
+)
+
+// Bases of a house's quantities: PLANNED from FUL's plan; RECEIVED (the lots' latest measures once every lot
+// completed receipt) and TENDERED (what was stuffed or tendered in the consolidation, at the lots' latest measures)
+// from PHY's evidence as FUL relays it (decision N1-PHY OD-2, option A).
+const (
+	BasisPlanned  = "PLANNED"
+	BasisReceived = "RECEIVED"
+	BasisTendered = "TENDERED"
+)
+
+// CutOff is a deadline the carrier set for a voyage leg, as BOOK recorded it: an instant with the IANA time zone of
+// the place, and the place when it is not the leg's port of loading.
+type CutOff struct {
+	Kind     string // BOOK's cut-off kinds of SEA, such as VGM or SHIPPING_INSTRUCTIONS_DOCUMENTS
+	At       time.Time
+	TimeZone string
+	Location kernel.LocationCode
+}
+
+// VoyageLeg is a leg of the movement as the carrier confirmed it, from the booking's capacity version; ETD and ETA
+// are the carrier's estimates, never facts of departure.
+type VoyageLeg struct {
+	Leg             int
+	Vessel          string
+	VesselIMO       string // empty when the carrier gave none
+	Voyage          string
+	From            kernel.LocationCode
+	To              kernel.LocationCode
+	ETD             time.Time
+	ETA             time.Time
+	CutOffs         []CutOff
+	BookingID       string
+	CapacityVersion int
+	Current         bool
+}
+
+// MasterBill is a master bill reference of the movement as its carrier or co-loader stated it.
+type MasterBill struct {
+	BillNo     int
+	Number     string
+	Kind       string
+	Status     string
+	Evidence   Evidence
+	RecordedBy string
+	RecordedAt time.Time
+}
+
+// HousePart is a part of a COM obligation the house carries, with its order.
+type HousePart struct {
+	ObligationID      string
+	ObligationVersion int64
+	OrderID           string
+	Packs             int64
+	PackageType       string
+	GrossWeight       kernel.Quantity
+	Volume            kernel.Quantity
+	GoodsDescription  string // the order line's, as FUL relays it from COM; empty for parts FUL planned before it kept one
+}
+
+// HouseContainer is a sealed container of the consolidation with the house's packs in it, as PHY verified them and
+// FUL relays them: PHY's stuffing (ExecutionID) and planned load unit with its ISO 6346 size-type, the house's
+// packs, gross weight and volume in it, PHY's load lines (LineNos, with ExecutionID the PHY evidence ids) and the
+// seal PHY recorded. The container's number and plate data come with the container visit (part 1e).
+type HouseContainer struct {
+	ExecutionID string
+	LoadUnitNo  int
+	TypeCode    string
+	Packs       int64
+	GrossWeight kernel.Quantity
+	Volume      kernel.Quantity
+	LineNos     []int
+	Seal        string
+	SealSHA256  string
+	SealedAt    time.Time
+}
+
+// House is a house bill association: the FUL shipment, its HBL number and the facts frozen from FUL's plan version
+// or from PHY's measures FUL relayed (Basis, with FUL's EvidenceVersion), with its parts as planned and its
+// per-container breakdown. Quantities are in the units FUL relays.
+type House struct {
+	EntryNo         int
+	ShipmentID      string
+	HBL             string
+	FULRevision     int64
+	PlanVersion     int
+	ContainerMode   string // LCL, or empty when FUL plans none
+	Packs           int64
+	GrossWeight     kernel.Quantity
+	Volume          kernel.Quantity
+	Basis           string
+	EvidenceVersion int // FUL's evidence version the measures or containers came from; 0 when neither did
+	Parts           []HousePart
+	Containers      []HouseContainer
+	Start           string
+	AssociatedAt    time.Time
+	WindowDrift     bool // the house's departure window does not contain the first current leg's ETD
+}
+
+// OceanMovement is an ocean movement with its voyage legs, master bill references, live houses and totals. Totals
+// are given in GRM and CMQ when every live house's weight (volume) is in a metric unit SEA converts (KGM, GRM, TNE;
+// MTQ, DMQ, LTR, CMQ), and are empty otherwise; houses without a volume add none.
+type OceanMovement struct {
+	TenantID               string
+	MovementID             string
+	Revision               int64
+	State                  string
+	Kind                   string
+	ConsolidationID        string
+	OperatingLegalEntityID string
+	CarrierPartyID         string
+	CarrierPartyRevision   int64
+	CarrierRole            string
+	Origin                 kernel.LocationCode
+	Destination            kernel.LocationCode
+	LocationEdition        string
+	BookingID              string
+	CapacityVersion        int
+	Legs                   []VoyageLeg // current first, then superseded
+	MasterBillNumber       string      // the current reference; empty before one is recorded
+	MasterBillKind         string
+	MasterBills            []MasterBill // latest first
+	Houses                 []House      // live
+	Packs                  int64
+	GrossWeight            kernel.Quantity
+	Volume                 kernel.Quantity
+}
+
+// HblSeries is a legal entity's HBL numbering: its template, first number and the last number taken per period ("" for
+// a template that never resets).
+type HblSeries struct {
+	LegalEntityID string
+	Template      string
+	FirstNumber   int64
+	Revision      int64
+	Last          []NumberPeriod
+}
+
+// NumberPeriod is the last sequence value a period took.
+type NumberPeriod struct {
+	Period string
+	Last   int64
+}
+
+// Queries.
+type (
+	GetOceanMovement struct{ TenantID, MovementID string }
+	// FindOceanMovementByMasterBill asks which movement holds a number as its current master bill reference of an
+	// issuer (the carrier or co-loader).
+	FindOceanMovementByMasterBill struct{ TenantID, IssuerPartyID, Number string }
+	FindHouseBill                 struct{ TenantID, LegalEntityID, HBL string }
+	GetHblSeries                  struct{ TenantID, LegalEntityID string }
+)
+
+// HouseBillRef is where an HBL number belongs: its shipment for ever and, while live, the movement.
+type HouseBillRef struct {
+	LegalEntityID string
+	HBL           string
+	ShipmentID    string
+	MovementID    string // empty when no association is live
+	EntryNo       int
+}
+
+// Queries is SEA's read side. Unknown movements, master bill references, HBLs and series yield ErrNotFound.
+type Queries interface {
+	GetOceanMovement(ctx context.Context, q GetOceanMovement) (OceanMovement, error)
+	FindOceanMovementByMasterBill(ctx context.Context, q FindOceanMovementByMasterBill) (OceanMovement, error)
+	FindHouseBill(ctx context.Context, q FindHouseBill) (HouseBillRef, error)
+	GetHblSeries(ctx context.Context, q GetHblSeries) (HblSeries, error)
+}
