@@ -235,6 +235,13 @@ func (m *Module) GetOceanDocFacts(ctx context.Context, q api.GetOceanDocFacts) (
 	return out, nil
 }
 
+func (m *Module) RecordOceanCarrierFact(ctx context.Context, cmd api.RecordOceanCarrierFact) (api.Receipt, error) {
+	r, err := m.deps(cmd.TenantID, cmd.CommandID).RecordCarrierFact(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, api.ActionRecordOceanCarrierFact, cmd.MovementID,
+		cmd.ExpectedRevision, cmd.OccurredAt, cmd), domain.CarrierFact{Kind: cmd.Kind, ContainerNumber: cmd.ContainerNumber, BillNumber: cmd.BillNumber,
+		Vessel: cmd.Vessel, Voyage: cmd.Voyage, Source: cmd.Source, Reference: cmd.Reference, SHA256: cmd.SHA256, OccurredAt: stored(cmd.HappenedAt)})
+	return receipt(r, err)
+}
+
 func (m *Module) CancelOceanMovement(ctx context.Context, cmd api.CancelOceanMovement) (api.Receipt, error) {
 	d := m.deps(cmd.TenantID, cmd.CommandID)
 	r, err := d.Change(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, api.ActionCancelOceanMovement, cmd.MovementID,
@@ -478,6 +485,11 @@ func view(mv *domain.Movement, revision int64) api.OceanMovement {
 	if measured && cm3 > 0 {
 		out.Volume = kernel.Quantity{Unit: "CMQ", Amount: cm3}
 	}
+	for _, f := range st.CarrierFacts {
+		out.CarrierFacts = append(out.CarrierFacts, api.OceanCarrierFact{FactNo: f.No, Kind: f.Kind, ContainerNumber: f.ContainerNumber,
+			BillNumber: f.BillNumber, Vessel: f.Vessel, Voyage: f.Voyage, Source: f.Source, Reference: f.Reference, SHA256: f.SHA256,
+			OccurredAt: f.OccurredAt, RecordedBy: f.By, RecordedAt: f.At})
+	}
 	return out
 }
 
@@ -568,7 +580,7 @@ func receipt(r application.Receipt, err error) (api.Receipt, error) {
 		return api.Receipt{}, classify(err)
 	}
 	out := api.Receipt{CommandID: r.CommandID, NewRevision: r.NewRevision, EntryNo: r.EntryNo, HBL: r.HBL, BillNo: r.BillNo, SealNo: r.SealNo,
-		AssertionNo: r.AssertionNo, EventNo: r.EventNo, FactsVersion: r.FactsVersion}
+		AssertionNo: r.AssertionNo, EventNo: r.EventNo, FactsVersion: r.FactsVersion, FactNo: r.FactNo}
 	if r.Kind == "ContainerVisit" {
 		out.VisitID = r.SubjectID
 	} else {

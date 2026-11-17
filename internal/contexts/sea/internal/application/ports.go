@@ -54,6 +54,7 @@ type Receipt struct {
 	SealNo       int // the seal a RecordContainerSeal wrote
 	AssertionNo  int // the VGM assertion an AssertVgm or RecordVgmResponse wrote
 	EventNo      int // the container event a RecordContainerEvent wrote
+	FactNo       int // the carrier fact a RecordOceanCarrierFact wrote
 	FactsVersion int // the OceanDocFacts version a FinalizeOceanDocFacts published
 	RequestHash  string
 }
@@ -68,6 +69,8 @@ type MovementStore interface {
 	Read(context.Context, sea.TenantID, sea.MovementID) (*sea.Movement, int64, error)
 	Insert(context.Context, *sea.Movement) (int64, error)
 	Save(context.Context, *sea.Movement, int64) (int64, error)
+	// InsertCarrierFacts writes facts added since the movement was loaded, without moving its revision.
+	InsertCarrierFacts(context.Context, *sea.Movement) error
 	ByMasterBill(ctx context.Context, tenant sea.TenantID, issuer, number string) (sea.MovementID, bool, error)
 }
 
@@ -321,6 +324,53 @@ func (d Deps) Change(ctx context.Context, c Command, read func(context.Context, 
 			return Receipt{}, nil, err
 		}
 		return Receipt{SubjectID: c.Subject, NewRevision: revision, EntryNo: result.EntryNo, HBL: result.HBL, BillNo: result.BillNo, FactsVersion: result.FactsVersion}, []aggregate{m}, nil
+	})
+}
+
+// RecordCarrierFact records a carrier report on a movement that is OPEN or FINAL. The movement's revision does not
+// move, so a FINAL movement stays at the revision its document facts were published.
+func (d Deps) RecordCarrierFact(ctx context.Context, c Command, fact sea.CarrierFact) (Receipt, error) {
+	if d.Movements == nil || d.Visits == nil {
+		return Receipt{}, ErrMissingDependency
+	}
+	hash, entered, stored, replayed, err := d.begin(ctx, c)
+	if err != nil || replayed {
+		return stored, err
+	}
+	return d.write(ctx, c, hash, "OceanMovement", func(txCtx context.Context) (Receipt, []aggregate, error) {
+		m, revision, err := d.Movements.Load(txCtx, c.Scope.TenantID, sea.MovementID(c.Subject))
+		if err != nil {
+			return Receipt{}, nil, err
+		}
+		if revision != c.ExpectedRevision {
+			return Receipt{}, nil, sea.ErrConflict
+		}
+		ids, err := d.Visits.OfMovement(txCtx, m.State().TenantID, m.ID())
+		if err != nil {
+			return Receipt{}, nil, err
+		}
+		var live []string
+		for _, id := range ids {
+			v, _, err := d.Visits.Read(txCtx, m.State().TenantID, id)
+			if err != nil {
+				return Receipt{}, nil, err
+			}
+			if v.State().Status != sea.VisitReleased {
+				live = append(live, v.State().Number)
+			}
+		}
+		no, added, err := m.RecordCarrierFact(fact, live, c.Scope.ActorID, c.OccurredAt)
+		if err != nil {
+			return Receipt{}, nil, err
+		}
+		if !added {
+			return Receipt{SubjectID: c.Subject, NewRevision: revision, FactNo: no}, nil, nil
+		}
+		m.Stamp(entered)
+		if err = d.Movements.InsertCarrierFacts(txCtx, m); err != nil {
+			return Receipt{}, nil, err
+		}
+		return Receipt{SubjectID: c.Subject, NewRevision: revision, FactNo: no}, []aggregate{m}, nil
 	})
 }
 

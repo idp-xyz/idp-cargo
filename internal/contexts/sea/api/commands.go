@@ -143,6 +143,28 @@ type FinalizeOceanDocFacts struct {
 	OccurredAt       time.Time
 }
 
+// RecordOceanCarrierFact records a carrier report: loaded on board, departed, rolled or discharged. It names one
+// live container of the movement, or the current master bill, or a live house's HBL. The same source reference
+// again returns the fact already recorded. The movement's state and revision do not change, including when it is FINAL.
+// HappenedAt is when the carrier says it happened; OccurredAt is when it is recorded. SHA256 is the carrier message.
+type RecordOceanCarrierFact struct {
+	CommandID        string
+	TenantID         string
+	ActorID          string
+	MovementID       string
+	ExpectedRevision int64
+	Kind             string
+	ContainerNumber  string
+	BillNumber       string
+	Vessel           string
+	Voyage           string
+	Source           string
+	Reference        string
+	SHA256           string
+	HappenedAt       time.Time
+	OccurredAt       time.Time
+}
+
 // CancelOceanMovement cancels an open movement without houses and without containers (every container visit
 // released first), with a reason; its current master bill reference is voided.
 type CancelOceanMovement struct {
@@ -159,7 +181,8 @@ type CancelOceanMovement struct {
 // name the house entry and its HBL, RecordMasterBill the master bill entry; RegisterHblSeries names the legal entity
 // in MovementID's place. Container visit commands name the visit (VisitID, with its revision) instead of a
 // movement, RecordContainerSeal the seal's number in the visit's history, AssertVgm or RecordVgmResponse the
-// assertion's version, and RecordContainerEvent the event's number.
+// assertion's version, and RecordContainerEvent the event's number. RecordOceanCarrierFact names the fact; the
+// movement's revision does not move.
 type Receipt struct {
 	CommandID    string
 	MovementID   string
@@ -172,6 +195,7 @@ type Receipt struct {
 	AssertionNo  int
 	EventNo      int
 	FactsVersion int
+	FactNo       int
 }
 
 // Commands is SEA's command entry point.
@@ -185,6 +209,7 @@ type Commands interface {
 	RefreshHouseBillFacts(ctx context.Context, cmd RefreshHouseBillFacts) (Receipt, error)
 	EndHouseBillAssociation(ctx context.Context, cmd EndHouseBillAssociation) (Receipt, error)
 	FinalizeOceanDocFacts(ctx context.Context, cmd FinalizeOceanDocFacts) (Receipt, error)
+	RecordOceanCarrierFact(ctx context.Context, cmd RecordOceanCarrierFact) (Receipt, error)
 	CancelOceanMovement(ctx context.Context, cmd CancelOceanMovement) (Receipt, error)
 }
 
@@ -198,6 +223,7 @@ const (
 	ActionRefreshHouseBillFacts   = "RefreshHouseBillFacts"
 	ActionEndHouseBillAssociation = "EndHouseBillAssociation"
 	ActionFinalizeOceanDocFacts   = "FinalizeOceanDocFacts"
+	ActionRecordOceanCarrierFact  = "RecordOceanCarrierFact"
 	ActionCancelOceanMovement     = "CancelOceanMovement"
 )
 

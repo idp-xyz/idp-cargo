@@ -180,6 +180,7 @@ type MovementState struct {
 	Bills           []MasterBill
 	Entries         []Entry
 	DocFacts        []DocFactsVersion
+	CarrierFacts    []CarrierFact
 	CancelReason    string
 	CancelledBy     string
 	CancelledAt     time.Time
@@ -193,6 +194,7 @@ type Movement struct {
 	bills   int
 	entries int
 	docs    int
+	facts   int
 	retired []int // stored master bills that left CURRENT since the movement was loaded, by index
 	ended   []int // stored entries ended since the movement was loaded, by index
 	pending []Event
@@ -213,6 +215,7 @@ type Event struct {
 	SealNo          int
 	AssertionNo     int
 	EventNo         int
+	FactNo          int
 	FactsVersion    int
 	BookingID       string
 	CapacityVersion int
@@ -228,8 +231,37 @@ const (
 	eventEnded      = "HouseBillAssociationEnded.v1"
 	eventFinalized  = "OceanDocFactsFinalized.v1"
 	eventSuperseded = "OceanDocFactsSuperseded.v1"
+	eventCarrier    = "OceanCarrierFactRecorded.v1"
 	eventCancelled  = "OceanMovementCancelled.v1"
+
+	CarrierLoaded     = "LOADED_ON_BOARD"
+	CarrierDeparted   = "DEPARTED"
+	CarrierRolled     = "ROLLED"
+	CarrierDischarged = "DISCHARGED"
 )
+
+// CarrierFact is one carrier report about the movement: a container loaded, the vessel departed, a roll or a
+// discharge. It names a live container of the movement or its current master bill or a live house's HBL, never both.
+// Recording it does not change the movement's state.
+type CarrierFact struct {
+	No              int
+	Kind            string
+	ContainerNumber string
+	BillNumber      string
+	Vessel          string
+	Voyage          string
+	Source          string
+	Reference       string
+	SHA256          string
+	OccurredAt      time.Time
+	By              string
+	At              time.Time
+	EnteredAt       time.Time
+}
+
+func carrierKind(kind string) bool {
+	return kind == CarrierLoaded || kind == CarrierDeparted || kind == CarrierRolled || kind == CarrierDischarged
+}
 
 // OpenMovement opens the ocean movement of a consolidation from its booking: a sea LCL booking in force, allocated
 // to the consolidation, with one capacity line. The movement takes its kind, the carrier or co-loader, the
@@ -590,6 +622,69 @@ func (m *Movement) Supersede(by string, at time.Time) error {
 	return nil
 }
 
+// RecordCarrierFact records a carrier's report. liveContainers are the movement's containers that are not released.
+// The same source reference with the same content returns the fact already recorded and leaves the movement as it
+// is; with other content it is refused. The movement's state does not change.
+func (m *Movement) RecordCarrierFact(f CarrierFact, liveContainers []string, by string, at time.Time) (int, bool, error) {
+	if m.state.State != StateOpen && m.state.State != StateFinal {
+		return 0, false, ErrInvalidTransition
+	}
+	f.OccurredAt = f.OccurredAt.UTC()
+	container := f.ContainerNumber != ""
+	bill := f.BillNumber != ""
+	switch {
+	case !carrierKind(f.Kind) || container == bill || (container && !ValidContainerNumber(f.ContainerNumber)) || (bill && !ValidBillNumber(f.BillNumber)):
+		return 0, false, fmt.Errorf("%w: the fact names a container of the movement or its bill, and a kind", ErrInvalidChange)
+	case !short(f.Vessel, 35) || !voyageForm.MatchString(f.Voyage) || !short(f.Source, 64) || !short(f.Reference, 128) || !hexForm.MatchString(f.SHA256):
+		return 0, false, fmt.Errorf("%w: vessel, voyage, source reference and the message's SHA-256", ErrInvalidChange)
+	case f.OccurredAt.IsZero() || f.OccurredAt.After(at):
+		return 0, false, fmt.Errorf("%w: the fact is not recorded before it happened", ErrInvalidChange)
+	}
+	for _, o := range m.state.CarrierFacts {
+		if o.Source == f.Source && o.Reference == f.Reference {
+			if o.Kind == f.Kind && o.ContainerNumber == f.ContainerNumber && o.BillNumber == f.BillNumber && o.Vessel == f.Vessel &&
+				o.Voyage == f.Voyage && o.SHA256 == f.SHA256 && o.OccurredAt.Equal(f.OccurredAt) {
+				return o.No, false, nil
+			}
+			return 0, false, fmt.Errorf("%w: %s %s was recorded with other content", ErrInvalidChange, f.Source, f.Reference)
+		}
+	}
+	if container {
+		found := false
+		for _, n := range liveContainers {
+			if n == f.ContainerNumber {
+				found = true
+			}
+		}
+		if !found {
+			return 0, false, fmt.Errorf("%w: %s is not a live container of the movement", ErrInvalidChange, f.ContainerNumber)
+		}
+	} else if !m.namesBill(f.BillNumber) {
+		return 0, false, fmt.Errorf("%w: %s is not the current master bill or a live house bill", ErrInvalidChange, f.BillNumber)
+	}
+	if err := m.changeable(by, at); err != nil {
+		return 0, false, err
+	}
+	f.No, f.By, f.At = len(m.state.CarrierFacts)+1, by, at.UTC()
+	m.state.CarrierFacts = append(m.state.CarrierFacts, f)
+	m.record(eventCarrier, at, "", 0, 0, f.Kind)
+	m.pending[len(m.pending)-1].FactNo = f.No
+	return f.No, true, nil
+}
+
+// namesBill reports whether number is the current master bill or a live house's HBL.
+func (m *Movement) namesBill(number string) bool {
+	if b, ok := m.CurrentBill(); ok && b.Number == number {
+		return true
+	}
+	for _, e := range m.state.Entries {
+		if e.Live() && e.HBL == number {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *Movement) live(shipment string) (int, error) {
 	for i, e := range m.state.Entries {
 		if e.Live() && e.ShipmentID == shipment {
@@ -656,6 +751,9 @@ func (m *Movement) lastChange() time.Time {
 	}
 	for _, v := range m.state.DocFacts {
 		last = later(last, v.At)
+	}
+	for _, f := range m.state.CarrierFacts {
+		last = later(last, f.At)
 	}
 	return last
 }
@@ -752,6 +850,9 @@ func (m *Movement) Stamp(entered time.Time) {
 	for i := m.docs; i < len(m.state.DocFacts); i++ {
 		m.state.DocFacts[i].EnteredAt = entered.UTC()
 	}
+	for i := m.facts; i < len(m.state.CarrierFacts); i++ {
+		m.state.CarrierFacts[i].EnteredAt = entered.UTC()
+	}
 }
 
 // RestoreMovement rebuilds a stored movement without emitting events.
@@ -760,7 +861,8 @@ func RestoreMovement(st MovementState) (*Movement, error) {
 	st.Bills = append([]MasterBill(nil), st.Bills...)
 	st.Entries = append([]Entry(nil), st.Entries...)
 	st.DocFacts = append([]DocFactsVersion(nil), st.DocFacts...)
-	m := &Movement{state: st, links: len(st.Links), bills: len(st.Bills), entries: len(st.Entries), docs: len(st.DocFacts)}
+	st.CarrierFacts = append([]CarrierFact(nil), st.CarrierFacts...)
+	m := &Movement{state: st, links: len(st.Links), bills: len(st.Bills), entries: len(st.Entries), docs: len(st.DocFacts), facts: len(st.CarrierFacts)}
 	if err := m.validate(); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidMovement, err)
 	}
@@ -858,6 +960,16 @@ func (m *Movement) validate() error {
 	if err := m.readDocFacts(); err != nil {
 		return err
 	}
+	for i, f := range st.CarrierFacts {
+		container := f.ContainerNumber != ""
+		bill := f.BillNumber != ""
+		if f.No != i+1 || !carrierKind(f.Kind) || container == bill || (container && !ValidContainerNumber(f.ContainerNumber)) ||
+			(bill && !ValidBillNumber(f.BillNumber)) || !short(f.Vessel, 35) || !voyageForm.MatchString(f.Voyage) ||
+			!short(f.Source, 64) || !short(f.Reference, 128) || !hexForm.MatchString(f.SHA256) || f.OccurredAt.IsZero() ||
+			f.OccurredAt.After(f.At) || blank(f.By) || f.At.IsZero() {
+			return fmt.Errorf("carrier fact %d", i+1)
+		}
+	}
 	return nil
 }
 
@@ -868,6 +980,7 @@ func (m *Movement) State() MovementState {
 	st.Bills = append([]MasterBill(nil), st.Bills...)
 	st.Entries = append([]Entry(nil), st.Entries...)
 	st.DocFacts = append([]DocFactsVersion(nil), st.DocFacts...)
+	st.CarrierFacts = append([]CarrierFact(nil), st.CarrierFacts...)
 	for i := range st.DocFacts {
 		st.DocFacts[i].Content = append([]byte(nil), m.state.DocFacts[i].Content...)
 	}
@@ -881,6 +994,9 @@ func (m *Movement) Pending() []Event { return append([]Event(nil), m.pending...)
 func (m *Movement) Added() ([]Link, []MasterBill, []Entry) {
 	return m.state.Links[m.links:], m.state.Bills[m.bills:], m.state.Entries[m.entries:]
 }
+
+// AddedCarrierFacts returns the carrier facts recorded since the movement was loaded.
+func (m *Movement) AddedCarrierFacts() []CarrierFact { return m.state.CarrierFacts[m.facts:] }
 
 // Changed returns the stored master bills that left CURRENT and the stored entries ended since the movement was
 // loaded, each by number.
@@ -898,5 +1014,5 @@ func (m *Movement) Changed() (map[int]MasterBill, map[int]Entry) {
 // Acknowledge is permitted only after the transaction holding the movement and its Outbox events commits.
 func (m *Movement) Acknowledge() {
 	m.pending, m.retired, m.ended = nil, nil, nil
-	m.links, m.bills, m.entries, m.docs = len(m.state.Links), len(m.state.Bills), len(m.state.Entries), len(m.state.DocFacts)
+	m.links, m.bills, m.entries, m.docs, m.facts = len(m.state.Links), len(m.state.Bills), len(m.state.Entries), len(m.state.DocFacts), len(m.state.CarrierFacts)
 }

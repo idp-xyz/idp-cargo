@@ -550,6 +550,19 @@ func TestFinalizeOceanDocFacts(t *testing.T) {
 	if again, err := RestoreMovement(m.State()); err != nil || again.State().State != StateFinal {
 		t.Fatalf("restored: %v", err)
 	}
+	departed := CarrierFact{Kind: CarrierDeparted, BillNumber: "MAEU123456789", Vessel: "EVER GIVEN", Voyage: "0123W", Source: "line", Reference: "DEP-1",
+		SHA256: strings.Repeat("ab", 32), OccurredAt: when}
+	if no, added, err := m.RecordCarrierFact(departed, nil, "ops", when); err != nil || !added || no != 1 || m.State().State != StateFinal {
+		t.Fatalf("a carrier fact leaves the movement final: %v no %d", err, no)
+	}
+	if no, added, err := m.RecordCarrierFact(departed, nil, "ops", when); err != nil || added || no != 1 {
+		t.Fatalf("the same carrier report: %v added %v no %d", err, added, no)
+	}
+	other := departed
+	other.Reference, other.Kind, other.BillNumber, other.ContainerNumber = "DEP-2", CarrierLoaded, "", "CSQU3054383"
+	if _, _, err := m.RecordCarrierFact(other, nil, "ops", when); !errors.Is(err, ErrInvalidChange) {
+		t.Fatalf("a container the movement does not have: %v", err)
+	}
 	if err := m.RecordMasterBill("MAEU000000001", BillCarrierMBL, sha, "ops", when); !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("a master bill once FINAL: %v", err)
 	}
@@ -576,5 +589,20 @@ func TestFinalizeOceanDocFacts(t *testing.T) {
 	events := m.Pending()
 	if events[len(events)-2].Type != eventSuperseded || events[len(events)-2].FactsVersion != 1 || events[len(events)-1].Type != eventRefreshed {
 		t.Fatalf("events: %+v", events[len(events)-2:])
+	}
+}
+
+func TestACarrierFactOnACancelledMovement(t *testing.T) {
+	m := open(t, booking(1))
+	if err := m.RecordMasterBill("MAEU123456789", BillCarrierMBL, sha, "ops", at); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Cancel("the consolidation was given up", "ops", at); err != nil {
+		t.Fatal(err)
+	}
+	f := CarrierFact{Kind: CarrierDeparted, BillNumber: "MAEU123456789", Vessel: "EVER GIVEN", Voyage: "0123W", Source: "line", Reference: "DEP-9",
+		SHA256: strings.Repeat("ab", 32), OccurredAt: at}
+	if _, _, err := m.RecordCarrierFact(f, nil, "ops", at); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("cancelled: %v", err)
 	}
 }
