@@ -12,6 +12,8 @@ const (
 	HouseBillFactsRefreshed   = "HouseBillFactsRefreshed.v1"
 	HouseBillAssociationEnded = "HouseBillAssociationEnded.v1"
 	OceanMovementCancelled    = "OceanMovementCancelled.v1"
+	OceanDocFactsFinalized    = "OceanDocFactsFinalized.v1"
+	OceanDocFactsSuperseded   = "OceanDocFactsSuperseded.v1"
 	HblSeriesRegistered       = "HblSeriesRegistered.v1"
 )
 
@@ -27,6 +29,9 @@ type EventPayload struct {
 	EntryNo         int    `json:"entry_no,omitempty"`
 	BillNo          int    `json:"bill_no,omitempty"`
 	SealNo          int    `json:"seal_no,omitempty"`
+	AssertionNo     int    `json:"assertion_no,omitempty"`
+	EventNo         int    `json:"event_no,omitempty"`
+	FactsVersion    int    `json:"facts_version,omitempty"`
 	BookingID       string `json:"booking_id,omitempty"`
 	CapacityVersion int    `json:"capacity_version,omitempty"`
 	Reason          string `json:"reason,omitempty"`

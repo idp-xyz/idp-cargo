@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
 var plate = Plate{TareKg: 2200, MaxGrossKg: 30480, Source: PlateCSC}
@@ -412,7 +414,7 @@ func TestRestoreRefusesInvalidVisits(t *testing.T) {
 		"a wrong check digit":               {good, func(s *VisitState) { s.Number = "CSQU3054384" }, "container"},
 		"a size-type of three":              {good, func(s *VisitState) { s.SizeType = "22G" }, "container"},
 		"a tare over the maximum gross":     {good, func(s *VisitState) { s.Plate.TareKg = 40000 }, "container"},
-		"a state of a later version":        {good, func(s *VisitState) { s.Status = "VGM_SUBMITTED" }, "status VGM_SUBMITTED"},
+		"submitted with no assertion":       {good, func(s *VisitState) { s.Status = VisitVGM }, "vgm"},
 		"stuffed without its stuffing":      {good, func(s *VisitState) { s.ExecutionID = "" }, "stuffing"},
 		"stuffed by no one":                 {good, func(s *VisitState) { s.StuffedBy = "" }, "stuffing"},
 		"stuffed without a seal":            {good, func(s *VisitState) { s.Seals = nil }, "stuffing"},
@@ -435,5 +437,168 @@ func TestRestoreRefusesInvalidVisits(t *testing.T) {
 		if _, err := RestoreVisit(st); !errors.Is(err, ErrInvalidVisit) || !strings.HasSuffix(err.Error(), ": "+tc.reason) {
 			t.Errorf("%s: %v, want %q", name, err, tc.reason)
 		}
+	}
+}
+
+func TestVGM(t *testing.T) {
+	m := stuffedMovement(t, "CN-SEAL-1")
+	v := assigned(t, m)
+	if err := v.AssertVGM(m, kernel.Quantity{Unit: "KGM", Amount: 4000}, VgmMethod1, "LE", 1, at, "", "Ada Lovelace", "ops", at); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("before the container is stuffed: %v", err)
+	}
+	sealed(t, v, "CN-SEAL-1", 2)
+	done := at.Add(21 * time.Hour)
+	if err := v.StuffingDone(m, "", "cfs", done); err != nil {
+		t.Fatal(err)
+	}
+	cut, ok := m.VGMCutOff()
+	if !ok || !cut.Equal(at.Add(48*time.Hour)) {
+		t.Fatalf("cut-off: %s %v", cut, ok)
+	}
+	submit := done.Add(time.Hour) // still before the cut-off
+	equal := kernel.Quantity{Unit: "KGM", Amount: plate.TareKg}
+	elsewhere, err := OpenMovement("T", "OM-9", "C-1", booking(1), "ops", at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, call := range map[string]func() error{
+		"below the tare": func() error {
+			return v.AssertVGM(m, kernel.Quantity{Unit: "KGM", Amount: plate.TareKg - 1}, VgmMethod1, "LE", 1, submit, "", "Ada Lovelace", "ops", submit)
+		},
+		"no weight": func() error {
+			return v.AssertVGM(m, kernel.Quantity{}, VgmMethod1, "LE", 1, submit, "", "Ada Lovelace", "ops", submit)
+		},
+		"a method SEA does not know": func() error {
+			return v.AssertVGM(m, equal, "weighed", "LE", 1, submit, "", "Ada Lovelace", "ops", submit)
+		},
+		"determined after submission": func() error {
+			return v.AssertVGM(m, equal, VgmMethod2, "LE", 1, submit.Add(time.Minute), "", "Ada Lovelace", "ops", submit)
+		},
+		"a reason while still in time": func() error {
+			return v.AssertVGM(m, equal, VgmMethod1, "LE", 1, submit, "the gate was slow", "Ada Lovelace", "ops", submit)
+		},
+		"late with no reason": func() error {
+			return v.AssertVGM(m, equal, VgmMethod1, "LE", 1, cut.Add(time.Minute), "", "Ada Lovelace", "ops", cut.Add(time.Minute))
+		},
+		"a name with a space before it": func() error { return v.AssertVGM(m, equal, VgmMethod1, "LE", 1, submit, "", " Ada", "ops", submit) },
+		"no name":                       func() error { return v.AssertVGM(m, equal, VgmMethod1, "LE", 1, submit, "", "", "ops", submit) },
+		"another movement": func() error {
+			return v.AssertVGM(elsewhere, equal, VgmMethod1, "LE", 1, submit, "", "Ada Lovelace", "ops", submit)
+		},
+	} {
+		if err := call(); !errors.Is(err, ErrInvalidVGM) || len(v.State().Assertions) != 0 {
+			t.Errorf("%s: %v, assertions %d", name, err, len(v.State().Assertions))
+		}
+	}
+	// 2.2 t is the tare: equal is allowed. Method 2 sums cargo, packing and tare.
+	if err := v.AssertVGM(m, kernel.Quantity{Unit: "TNE", Amount: 3}, VgmMethod2, "LE", 4, submit.Add(-time.Hour), "", "Ada Lovelace", "ops", submit); err != nil {
+		t.Fatal(err)
+	}
+	st := v.State()
+	if st.Status != VisitVGM || len(st.Assertions) != 1 || st.Assertions[0].MassGrams != 3_000_000 || st.Assertions[0].Signatory != "Ada Lovelace" ||
+		st.Assertions[0].Version != 1 || v.Pending()[len(v.Pending())-1].AssertionNo != 1 {
+		t.Fatalf("asserted: %+v", st.Assertions)
+	}
+	if again, err := RestoreVisit(st); err != nil || again.State().Assertions[0].Signatory != "" || len(again.AddedAssertions()) != 0 {
+		t.Fatalf("the name is not kept on a visit read back: %+v %v", again, err)
+	}
+	if err := v.RecordVgmResponse(VgmAccepted, "carrier portal", "line", submit.Add(-time.Minute)); !errors.Is(err, ErrInvalidVGM) {
+		t.Fatalf("an answer before the submission: %v", err)
+	}
+	if err := v.RecordVgmResponse("NOTED", "carrier portal", "line", submit); !errors.Is(err, ErrInvalidVGM) {
+		t.Fatalf("an answer that is neither: %v", err)
+	}
+	if err := v.RecordVgmResponse(VgmRejected, "carrier portal", "line", submit); err != nil {
+		t.Fatal(err)
+	}
+	v.Acknowledge()
+	if err := v.RecordVgmResponse(VgmAccepted, "carrier portal", "line", submit); !errors.Is(err, ErrInvalidChange) {
+		t.Fatalf("an answer twice: %v", err)
+	}
+	late := cut.Add(time.Hour)
+	if err := v.AssertVGM(m, equal, VgmMethod1, "LE", 4, late, "the weighbridge queued the container", "Lin Wei", "ops", late); err != nil {
+		t.Fatalf("a late assertion: %v", err)
+	}
+	if a := v.State().Assertions; len(a) != 2 || a[0].Response != VgmRejected || a[1].Version != 2 || a[1].LateReason == "" || a[1].Response != "" || v.RespondedAssertion() != 0 {
+		t.Fatalf("a second version leaves the first answer: %+v", a)
+	}
+	bare := booking(1)
+	bare.Legs[0].CutOffs = nil
+	none := open(t, bare)
+	if err := none.Associate(stuffed(plan("SH-1", "C-1", 1), 1, "CN-SEAL-1"), "H1", "ops", at); err != nil {
+		t.Fatal(err)
+	}
+	other, err := AssignContainer("CV-2", none, 1, "TEMU1234565", "22G1", plate, "ops", at.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed(t, other, "CN-SEAL-1", 2)
+	if err = other.StuffingDone(none, "", "cfs", done); err != nil {
+		t.Fatal(err)
+	}
+	if err = other.AssertVGM(none, equal, VgmMethod1, "LE", 1, submit, "no cut-off to be late for", "Ada Lovelace", "ops", submit); !errors.Is(err, ErrInvalidVGM) {
+		t.Fatalf("a reason where the voyage has no VGM cut-off: %v", err)
+	}
+}
+
+func TestContainerEvents(t *testing.T) {
+	m := stuffedMovement(t, "CN-SEAL-1")
+	v := assigned(t, m)
+	where := loc("CNSHG")
+	recorded := at.Add(2 * time.Hour)
+	if _, _, err := v.RecordContainerEvent(EventGateIn, where, recorded, "terminal", "GIN-1", "ops", recorded); !errors.Is(err, ErrInvalidEvent) {
+		t.Fatalf("gated in before the VGM: %v", err)
+	}
+	if _, _, err := v.RecordContainerEvent(ContainerStuffedEvent, where, recorded, "cfs", "STF-1", "ops", recorded); !errors.Is(err, ErrInvalidEvent) {
+		t.Fatalf("stuffing by this command: %v", err)
+	}
+	if _, _, err := v.RecordContainerEvent(EventEmptyPickedUp, where, recorded.Add(time.Minute), "depot", "EMP-1", "ops", recorded); !errors.Is(err, ErrInvalidEvent) {
+		t.Fatalf("a fact dated after it is recorded: %v", err)
+	}
+	no, added, err := v.RecordContainerEvent(EventEmptyPickedUp, where, at.Add(90*time.Minute), "depot", "EMP-1", "ops", recorded)
+	if err != nil || !added || no != 1 || v.State().Status != VisitAssigned || v.Pending()[len(v.Pending())-1].EventNo != 1 || v.Pending()[len(v.Pending())-1].Reason != EventEmptyPickedUp {
+		t.Fatalf("picked up empty: %d %v %v", no, added, err)
+	}
+	again, added, err := v.RecordContainerEvent(EventEmptyPickedUp, where, at.Add(90*time.Minute), "depot", "EMP-1", "ops", recorded)
+	if err != nil || added || again != 1 || v.RepeatedEvent() != 1 || len(v.State().Events) != 1 {
+		t.Fatalf("the same message again: %d %v %v", again, added, err)
+	}
+	if _, _, err = v.RecordContainerEvent(EventArrivedAtCFS, where, recorded, "depot", "EMP-1", "ops", recorded); !errors.Is(err, ErrInvalidChange) {
+		t.Fatalf("the same reference with other content: %v", err)
+	}
+	sealed(t, v, "CN-SEAL-1", 3)
+	done := at.Add(21 * time.Hour)
+	if err = v.StuffingDone(m, "", "cfs", done); err != nil {
+		t.Fatal(err)
+	}
+	submit := done.Add(time.Hour)
+	if err = v.AssertVGM(m, kernel.Quantity{Unit: "KGM", Amount: plate.TareKg}, VgmMethod1, "LE", 1, submit, "", "Ada Lovelace", "ops", submit); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = v.RecordContainerEvent(EventLoaded, where, submit, "vessel", "LOA-1", "ops", submit); !errors.Is(err, ErrInvalidEvent) {
+		t.Fatalf("loaded before the gate: %v", err)
+	}
+	if no, added, err = v.RecordContainerEvent(EventGateIn, where, submit, "terminal", "GIN-1", "ops", submit); err != nil || !added || no != 2 || v.State().Status != VisitGatedIn {
+		t.Fatalf("gated in: %d %v %v", no, added, err)
+	}
+	if _, _, err = v.RecordContainerEvent(EventGateIn, where, submit, "terminal", "GIN-2", "ops", submit); err != nil || v.State().Status != VisitGatedIn {
+		t.Fatalf("a second gate report: %v", err)
+	}
+	loadedAt := submit.Add(time.Hour)
+	if no, added, err = v.RecordContainerEvent(EventLoaded, where, loadedAt, "vessel", "LOA-1", "ops", loadedAt); err != nil || !added || v.State().Status != VisitLoaded {
+		t.Fatalf("loaded: %d %v %v", no, added, err)
+	}
+	if _, _, err = v.RecordContainerEvent(EventRolled, loc("SGSIN"), loadedAt, "line", "ROL-1", "ops", loadedAt); err != nil || v.State().Status != VisitLoaded {
+		t.Fatalf("rolled, and the house is not moved by it: %v", err)
+	}
+	if again, err := RestoreVisit(v.State()); err != nil || again.State().Status != VisitLoaded || len(again.AddedEvents()) != 0 || again.State().Events[0].Kind != EventEmptyPickedUp {
+		t.Fatalf("restored: %+v %v", again, err)
+	}
+	free := assigned(t, m)
+	if err = free.Release("not used", "ops", at.Add(2*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = free.RecordContainerEvent(EventEmptyReleased, where, at.Add(2*time.Hour), "depot", "REL-1", "ops", at.Add(3*time.Hour)); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("an event on a released container: %v", err)
 	}
 }

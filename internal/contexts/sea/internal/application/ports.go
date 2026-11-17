@@ -44,15 +44,18 @@ type Action string
 
 // Receipt is a committed command's result.
 type Receipt struct {
-	CommandID   string
-	Kind        string // OceanMovement, HblSeries or ContainerVisit; what result_type stores
-	SubjectID   string // movement, legal entity for a series, or visit
-	NewRevision int64
-	EntryNo     int
-	HBL         string
-	BillNo      int // the master bill entry a RecordMasterBill wrote
-	SealNo      int // the seal a RecordContainerSeal wrote
-	RequestHash string
+	CommandID    string
+	Kind         string // OceanMovement, HblSeries or ContainerVisit; what result_type stores
+	SubjectID    string // movement, legal entity for a series, or visit
+	NewRevision  int64
+	EntryNo      int
+	HBL          string
+	BillNo       int // the master bill entry a RecordMasterBill wrote
+	SealNo       int // the seal a RecordContainerSeal wrote
+	AssertionNo  int // the VGM assertion an AssertVgm or RecordVgmResponse wrote
+	EventNo      int // the container event a RecordContainerEvent wrote
+	FactsVersion int // the OceanDocFacts version a FinalizeOceanDocFacts published
+	RequestHash  string
 }
 
 type TxRunner interface {
@@ -271,9 +274,10 @@ func (d Deps) Open(ctx context.Context, c Command, consolidation, booking string
 
 // Result is what a change of a movement adds to its receipt.
 type Result struct {
-	EntryNo int
-	HBL     string
-	BillNo  int
+	EntryNo      int
+	HBL          string
+	BillNo       int
+	FactsVersion int
 }
 
 // Change runs a command on a stored movement locked at the expected revision. read asks BOOK or FUL first,
@@ -316,7 +320,7 @@ func (d Deps) Change(ctx context.Context, c Command, read func(context.Context, 
 		if revision, err = d.Movements.Save(txCtx, m, revision); err != nil {
 			return Receipt{}, nil, err
 		}
-		return Receipt{SubjectID: c.Subject, NewRevision: revision, EntryNo: result.EntryNo, HBL: result.HBL, BillNo: result.BillNo}, []aggregate{m}, nil
+		return Receipt{SubjectID: c.Subject, NewRevision: revision, EntryNo: result.EntryNo, HBL: result.HBL, BillNo: result.BillNo, FactsVersion: result.FactsVersion}, []aggregate{m}, nil
 	})
 }
 

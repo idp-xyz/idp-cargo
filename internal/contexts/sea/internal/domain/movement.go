@@ -13,6 +13,7 @@ type State string
 
 const (
 	StateOpen      State = "OPEN"
+	StateFinal     State = "FINAL"
 	StateCancelled State = "CANCELLED"
 )
 
@@ -178,6 +179,7 @@ type MovementState struct {
 	Links           []Link
 	Bills           []MasterBill
 	Entries         []Entry
+	DocFacts        []DocFactsVersion
 	CancelReason    string
 	CancelledBy     string
 	CancelledAt     time.Time
@@ -190,6 +192,7 @@ type Movement struct {
 	links   int
 	bills   int
 	entries int
+	docs    int
 	retired []int // stored master bills that left CURRENT since the movement was loaded, by index
 	ended   []int // stored entries ended since the movement was loaded, by index
 	pending []Event
@@ -208,6 +211,9 @@ type Event struct {
 	EntryNo         int
 	BillNo          int
 	SealNo          int
+	AssertionNo     int
+	EventNo         int
+	FactsVersion    int
 	BookingID       string
 	CapacityVersion int
 	Reason          string
@@ -220,6 +226,8 @@ const (
 	eventAssociated = "HouseBillAssociated.v1"
 	eventRefreshed  = "HouseBillFactsRefreshed.v1"
 	eventEnded      = "HouseBillAssociationEnded.v1"
+	eventFinalized  = "OceanDocFactsFinalized.v1"
+	eventSuperseded = "OceanDocFactsSuperseded.v1"
 	eventCancelled  = "OceanMovementCancelled.v1"
 )
 
@@ -312,6 +320,7 @@ func (m *Movement) LinkBooking(b Booking, by string, at time.Time) error {
 	if err := m.changeable(by, at); err != nil {
 		return err
 	}
+	m.reopen(at)
 	m.addLink(b, by, at)
 	m.record(eventLinked, at, "", 0, 0, "")
 	return nil
@@ -334,7 +343,7 @@ func (m *Movement) addLink(b Booking, by string, at time.Time) {
 // RecordMasterBill records the master bill reference the movement's carrier or co-loader states, with its evidence:
 // a kind of the movement's kind and a number in its form. A further number or kind supersedes the current one.
 func (m *Movement) RecordMasterBill(number, kind string, evidence Evidence, by string, at time.Time) error {
-	if !m.open() {
+	if m.state.State != StateOpen {
 		return ErrInvalidTransition
 	}
 	switch {
@@ -446,6 +455,9 @@ func sameMeasures(a, b Facts) bool {
 
 // Associate associates a house that FUL reports attached to the consolidation, with its HBL number.
 func (m *Movement) Associate(p Plan, hbl, by string, at time.Time) error {
+	if m.state.State != StateOpen {
+		return ErrInvalidTransition
+	}
 	if err := m.admits(p); err != nil {
 		return err
 	}
@@ -493,6 +505,7 @@ func (m *Movement) Refresh(p Plan, by string, at time.Time) error {
 	if err = m.changeable(by, at); err != nil {
 		return err
 	}
+	m.reopen(at)
 	old := m.state.Entries[i]
 	m.end(i, EndRefreshed, len(m.state.Entries)+1, by, at) // entries are numbered across the movement
 	no := m.addEntry(p, old.HBL, f, StartRefreshed, old.No, by, at)
@@ -522,6 +535,7 @@ func (m *Movement) EndAssociation(p Plan, by string, at time.Time) error {
 	if err = m.changeable(by, at); err != nil {
 		return err
 	}
+	m.reopen(at)
 	m.end(i, kind, 0, by, at)
 	m.record(eventEnded, at, p.ShipmentID, m.state.Entries[i].No, 0, kind)
 	return nil
@@ -529,7 +543,7 @@ func (m *Movement) EndAssociation(p Plan, by string, at time.Time) error {
 
 // Cancel cancels an open movement without houses and voids its current master bill reference.
 func (m *Movement) Cancel(reason, by string, at time.Time) error {
-	if !m.open() {
+	if m.state.State != StateOpen {
 		return ErrInvalidTransition
 	}
 	if len(m.Houses()) > 0 {
@@ -550,7 +564,18 @@ func (m *Movement) Cancel(reason, by string, at time.Time) error {
 	return nil
 }
 
-func (m *Movement) open() bool { return m.state.State == StateOpen }
+// open reports whether the movement takes a link, a refresh or an end: OPEN, or FINAL, which that change returns to OPEN.
+func (m *Movement) open() bool { return m.state.State == StateOpen || m.state.State == StateFinal }
+
+// reopen returns a FINAL movement to OPEN and says so. The published version stays as it was.
+func (m *Movement) reopen(at time.Time) {
+	if m.state.State != StateFinal {
+		return
+	}
+	m.state.State = StateOpen
+	m.record(eventSuperseded, at, "", 0, 0, "")
+	m.pending[len(m.pending)-1].FactsVersion = len(m.state.DocFacts)
+}
 
 func (m *Movement) live(shipment string) (int, error) {
 	for i, e := range m.state.Entries {
@@ -584,6 +609,19 @@ func (m *Movement) changeable(by string, at time.Time) error {
 	return nil
 }
 
+// VGMCutOff is the VGM cut-off of the current voyage's first leg, when the booking recorded one.
+func (m *Movement) VGMCutOff() (time.Time, bool) {
+	if m == nil || len(m.Current().Legs) == 0 {
+		return time.Time{}, false
+	}
+	for _, c := range m.Current().Legs[0].CutOffs {
+		if c.Kind == "VGM" {
+			return c.At, true
+		}
+	}
+	return time.Time{}, false
+}
+
 // openedAt is the business time the movement was opened: its first link's.
 func (m *Movement) openedAt() time.Time {
 	if len(m.state.Links) == 0 {
@@ -602,6 +640,9 @@ func (m *Movement) lastChange() time.Time {
 	}
 	for _, e := range m.state.Entries {
 		last = later(later(last, e.At), e.EndedAt)
+	}
+	for _, v := range m.state.DocFacts {
+		last = later(last, v.At)
 	}
 	return last
 }
@@ -695,6 +736,9 @@ func (m *Movement) Stamp(entered time.Time) {
 			e.EndEnteredAt = entered.UTC()
 		}
 	}
+	for i := m.docs; i < len(m.state.DocFacts); i++ {
+		m.state.DocFacts[i].EnteredAt = entered.UTC()
+	}
 }
 
 // RestoreMovement rebuilds a stored movement without emitting events.
@@ -702,7 +746,8 @@ func RestoreMovement(st MovementState) (*Movement, error) {
 	st.Links = append([]Link(nil), st.Links...)
 	st.Bills = append([]MasterBill(nil), st.Bills...)
 	st.Entries = append([]Entry(nil), st.Entries...)
-	m := &Movement{state: st, links: len(st.Links), bills: len(st.Bills), entries: len(st.Entries)}
+	st.DocFacts = append([]DocFactsVersion(nil), st.DocFacts...)
+	m := &Movement{state: st, links: len(st.Links), bills: len(st.Bills), entries: len(st.Entries), docs: len(st.DocFacts)}
 	if err := m.validate(); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidMovement, err)
 	}
@@ -716,7 +761,7 @@ func (m *Movement) validate() error {
 	case !identifier(string(st.TenantID)) || !identifier(string(st.MovementID)) || !identifier(st.ConsolidationID) || !identifier(st.LegalEntityID) ||
 		!st.Kind.valid() || !st.Carrier.valid(st.Kind) || !port(st.Origin) || !port(st.Destination) || st.Origin == st.Destination:
 		return fmt.Errorf("identity")
-	case st.State != StateOpen && !cancelled:
+	case st.State != StateOpen && st.State != StateFinal && !cancelled:
 		return fmt.Errorf("state %s", st.State)
 	case cancelled != text(st.CancelReason) || cancelled == blank(st.CancelledBy):
 		return fmt.Errorf("cancellation")
@@ -797,6 +842,9 @@ func (m *Movement) validate() error {
 			return fmt.Errorf("entry %d end", i+1)
 		}
 	}
+	if err := m.readDocFacts(); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -806,6 +854,10 @@ func (m *Movement) State() MovementState {
 	st.Links = append([]Link(nil), st.Links...)
 	st.Bills = append([]MasterBill(nil), st.Bills...)
 	st.Entries = append([]Entry(nil), st.Entries...)
+	st.DocFacts = append([]DocFactsVersion(nil), st.DocFacts...)
+	for i := range st.DocFacts {
+		st.DocFacts[i].Content = append([]byte(nil), m.state.DocFacts[i].Content...)
+	}
 	return st
 }
 
@@ -833,5 +885,5 @@ func (m *Movement) Changed() (map[int]MasterBill, map[int]Entry) {
 // Acknowledge is permitted only after the transaction holding the movement and its Outbox events commits.
 func (m *Movement) Acknowledge() {
 	m.pending, m.retired, m.ended = nil, nil, nil
-	m.links, m.bills, m.entries = len(m.state.Links), len(m.state.Bills), len(m.state.Entries)
+	m.links, m.bills, m.entries, m.docs = len(m.state.Links), len(m.state.Bills), len(m.state.Entries), len(m.state.DocFacts)
 }
