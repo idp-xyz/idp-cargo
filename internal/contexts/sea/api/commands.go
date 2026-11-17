@@ -130,8 +130,8 @@ type EndHouseBillAssociation struct {
 	OccurredAt       time.Time
 }
 
-// CancelOceanMovement cancels an open movement without houses, with a reason; its current master bill reference is
-// voided.
+// CancelOceanMovement cancels an open movement without houses and without containers (every container visit
+// released first), with a reason; its current master bill reference is voided.
 type CancelOceanMovement struct {
 	CommandID        string
 	TenantID         string
@@ -144,7 +144,8 @@ type CancelOceanMovement struct {
 
 // Receipt confirms a committed command. Replaying the same command returns the same receipt. House commands also
 // name the house entry and its HBL, RecordMasterBill the master bill entry; RegisterHblSeries names the legal entity
-// in MovementID's place.
+// in MovementID's place. Container visit commands name the visit (VisitID, with its revision) instead of a
+// movement, and RecordContainerSeal the seal's number in the visit's history.
 type Receipt struct {
 	CommandID   string
 	MovementID  string
@@ -152,10 +153,13 @@ type Receipt struct {
 	EntryNo     int
 	HBL         string
 	BillNo      int
+	VisitID     string
+	SealNo      int
 }
 
 // Commands is SEA's command entry point.
 type Commands interface {
+	VisitCommands
 	OpenOceanMovement(ctx context.Context, cmd OpenOceanMovement) (Receipt, error)
 	LinkCarrierBooking(ctx context.Context, cmd LinkCarrierBooking) (Receipt, error)
 	RecordMasterBill(ctx context.Context, cmd RecordMasterBill) (Receipt, error)

@@ -11,34 +11,48 @@ import (
 type Reads struct {
 	Tx        TxRunner
 	Movements MovementStore
+	Visits    VisitStore
 	Series    SeriesStore
 	Numbers   Numbers
 	Register  HBLRegister
 }
 
-// Movement reads a movement with its revision.
-func (r Reads) Movement(ctx context.Context, tenant sea.TenantID, id sea.MovementID) (*sea.Movement, int64, error) {
+// MovementRead is a movement as read, with its revision and its container visits in the order they were assigned.
+type MovementRead struct {
+	Movement *sea.Movement
+	Revision int64
+	Visits   []VisitRead
+}
+
+// Movement reads a movement with its revision and its container visits.
+func (r Reads) Movement(ctx context.Context, tenant sea.TenantID, id sea.MovementID) (MovementRead, error) {
 	if tenant == "" || id == "" {
-		return nil, 0, ErrInvalidQuery
+		return MovementRead{}, ErrInvalidQuery
 	}
-	var m *sea.Movement
-	var revision int64
-	err := r.Tx.WithinTransaction(ctx, func(txCtx context.Context) error {
-		var err error
-		m, revision, err = r.Movements.Read(txCtx, tenant, id)
+	var out MovementRead
+	err := r.Tx.WithinTransaction(ctx, func(txCtx context.Context) (err error) {
+		out, err = r.movement(txCtx, tenant, id)
 		return err
 	})
-	return m, revision, err
+	return out, err
+}
+
+func (r Reads) movement(txCtx context.Context, tenant sea.TenantID, id sea.MovementID) (MovementRead, error) {
+	m, revision, err := r.Movements.Read(txCtx, tenant, id)
+	if err != nil {
+		return MovementRead{}, err
+	}
+	visits, err := r.visitsOf(txCtx, tenant, id)
+	return MovementRead{Movement: m, Revision: revision, Visits: visits}, err
 }
 
 // ByMasterBill reads the movement a number is the current master bill reference of, for an issuer.
-func (r Reads) ByMasterBill(ctx context.Context, tenant sea.TenantID, issuer, number string) (*sea.Movement, int64, error) {
+func (r Reads) ByMasterBill(ctx context.Context, tenant sea.TenantID, issuer, number string) (MovementRead, error) {
 	number = sea.NormalizeBillNumber(number)
 	if tenant == "" || issuer == "" || !sea.ValidBillNumber(number) {
-		return nil, 0, ErrInvalidQuery
+		return MovementRead{}, ErrInvalidQuery
 	}
-	var m *sea.Movement
-	var revision int64
+	var out MovementRead
 	err := r.Tx.WithinTransaction(ctx, func(txCtx context.Context) error {
 		id, found, err := r.Movements.ByMasterBill(txCtx, tenant, issuer, number)
 		if err != nil {
@@ -47,10 +61,10 @@ func (r Reads) ByMasterBill(ctx context.Context, tenant sea.TenantID, issuer, nu
 		if !found {
 			return bentorepo.ErrNotFound
 		}
-		m, revision, err = r.Movements.Read(txCtx, tenant, id)
+		out, err = r.movement(txCtx, tenant, id)
 		return err
 	})
-	return m, revision, err
+	return out, err
 }
 
 // HouseBill finds where an HBL number of a legal entity belongs.

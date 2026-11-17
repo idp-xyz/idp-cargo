@@ -1,9 +1,12 @@
 package sea
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -44,6 +47,24 @@ func TestEventsMatchPublishedContract(t *testing.T) {
 	if envelope.ID != again.ID || envelope.ID == other.ID {
 		t.Fatal("event ids")
 	}
+	// A container visit's event has the visit as subject and names its movement and, for a seal, the seal's number
+	// in the visit's history; its id covers both, so that two seals never share one.
+	seal := domain.Event{Type: api.SealRecorded, At: at, TenantID: "T", SubjectID: "CV-1", ConsolidationID: "C-1", MovementID: "OM-1", SealNo: 2}
+	sealed, err := postgres.SEAEnvelope("cmd-4", seal, at)
+	if err != nil || string(sealed.Payload) != `{"tenant_id":"T","subject_id":"CV-1","consolidation_id":"C-1","movement_id":"OM-1","seal_no":2}` ||
+		sealed.PartitionKey != "T:CV-1" || sealed.Subject != "CV-1" {
+		t.Fatalf("seal recorded: %s %v", sealed.Payload, err)
+	}
+	seal.SealNo = 3
+	if next, _ := postgres.SEAEnvelope("cmd-4", seal, at); next.ID == sealed.ID {
+		t.Fatal("two seals share an event id")
+	}
+	// an event of a movement keeps the id it had before SEA recorded visits: a command replayed across the upgrade
+	// yields the same event
+	sum := sha256.Sum256([]byte("cmd-1\x00" + api.HouseBillAssociated + "\x00T\x00OM-1\x00SH-1\x001\x000"))
+	if string(envelope.ID) != hex.EncodeToString(sum[:]) {
+		t.Fatalf("the id of a movement's event changed: %s", envelope.ID)
+	}
 }
 
 // TestTheModelEmitsThePublishedEventTypes runs every command of the model and checks that its events are
@@ -76,10 +97,32 @@ func TestTheModelEmitsThePublishedEventTypes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// a container assigned, sealed and stuffed on a second movement, and one given back unused
+	om, err := domain.OpenMovement("T", "OM-2", "C-1", booking(1), "ops", at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stuffed := plan(1, "C-1")
+	stuffed.EvidenceVersion, stuffed.MeasuredBasis, stuffed.MeasuredPacks, stuffed.MeasuredWeight = 1, domain.BasisTendered, 2, stuffed.GrossWeight
+	stuffed.Stuffings = []domain.Stuffing{{ExecutionID: "X-1", LoadUnitNo: 1, TypeCode: "22G1", Packs: 2, GrossWeight: stuffed.GrossWeight, LineNos: []int{1},
+		Seal: "S1", SealedAt: at}}
+	v, err := domain.AssignContainer("CV-1", om, 1, "CSQU3054383", "22G1", domain.Plate{}, "ops", at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	free, err := domain.AssignContainer("CV-2", om, 2, "TEMU1234565", "22G1", domain.Plate{}, "ops", at)
+	if err = errors.Join(err, om.Associate(stuffed, "H1", "ops", at), v.RecordSeal("S1", domain.SealShipper, at, "tally", "ops", at),
+		v.StuffingDone(om, "", "ops", at), free.Release("not used", "ops", at)); err != nil {
+		t.Fatal(err)
+	}
 	published := map[string]bool{api.OceanMovementOpened: true, api.VoyageLegsLinked: true, api.MasterBillRecorded: true, api.HouseBillAssociated: true,
-		api.HouseBillFactsRefreshed: true, api.HouseBillAssociationEnded: true, api.OceanMovementCancelled: true, api.HblSeriesRegistered: true}
+		api.HouseBillFactsRefreshed: true, api.HouseBillAssociationEnded: true, api.OceanMovementCancelled: true, api.HblSeriesRegistered: true,
+		api.ContainerAssigned: true, api.SealRecorded: true, api.ContainerEventRecorded: true, api.ContainerReleased: true}
 	emitted := map[string]bool{}
-	for _, e := range append(m.Pending(), s.Pending()...) {
+	for _, e := range slices.Concat(m.Pending(), s.Pending(), v.Pending(), free.Pending()) {
+		if (e.Type == api.ContainerEventRecorded) != (e.Reason == api.ContainerEventStuffed) {
+			t.Errorf("%s carries the reason %q", e.Type, e.Reason)
+		}
 		if !published[e.Type] {
 			t.Errorf("event type %s is not published by package api", e.Type)
 		}
@@ -96,7 +139,10 @@ func TestTheModelEmitsThePublishedEventTypes(t *testing.T) {
 		api.StateOpen != string(domain.StateOpen) || api.StateCancelled != string(domain.StateCancelled) || api.EntryAssociated != domain.StartAssociated ||
 		api.EntryRefreshed != domain.StartRefreshed || api.EntryDetached != domain.EndDetached || api.EntryTransferred != domain.EndTransferred ||
 		api.EntryShipmentCancelled != domain.EndCancelled || api.BasisPlanned != domain.BasisPlanned || api.BasisReceived != domain.BasisReceived ||
-		api.BasisTendered != domain.BasisTendered {
+		api.BasisTendered != domain.BasisTendered || api.VisitAssigned != string(domain.VisitAssigned) || api.VisitStuffed != string(domain.VisitStuffed) ||
+		api.VisitReleased != string(domain.VisitReleased) || api.SealCarrier != domain.SealCarrier || api.SealShipper != domain.SealShipper ||
+		api.SealCustoms != domain.SealCustoms || api.PlateCSC != domain.PlateCSC || api.PlateCarrier != domain.PlateCarrier ||
+		api.ContainerEventStuffed != domain.ContainerStuffedEvent {
 		t.Fatal("package api and the model name a kind, role, status or basis differently")
 	}
 }
@@ -149,6 +195,15 @@ func TestClassifyMapsCausesToAPIKinds(t *testing.T) {
 		{application.ErrHBLInUse, api.ErrRejected},
 		{application.ErrHBLDiffers, api.ErrRejected},
 		{application.ErrMasterBillInUse, api.ErrRejected},
+		{application.ErrContainerInUse, api.ErrRejected},
+		{application.ErrUnitHasContainer, api.ErrRejected},
+		{application.ErrContainersAssigned, api.ErrRejected},
+		{domain.ErrInvalidVisit, api.ErrRejected},
+		{domain.ErrInvalidContainer, api.ErrRejected},
+		{domain.ErrInvalidSeal, api.ErrRejected},
+		{domain.ErrNotStuffed, api.ErrRejected},
+		{domain.ErrStuffingDiffers, api.ErrRejected},
+		{domain.ErrCargoInContainer, api.ErrRejected},
 		{application.ErrNoSeries, api.ErrRejected},
 		{application.ErrUnknownBooking, api.ErrRejected},
 		{application.ErrUnknownShipment, api.ErrRejected},

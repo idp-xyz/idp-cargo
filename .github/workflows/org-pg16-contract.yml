@@ -124,6 +124,7 @@ jobs:
           GRANT UPDATE (state,cancel_reason,cancelled_by,cancelled_at,revision,updated_at) ON cargo_sea.ocean_movement TO cargo_app;
           GRANT UPDATE (status) ON cargo_sea.master_bill TO cargo_app;
           GRANT UPDATE (end_kind,ended_by,ended_at,end_entered_at,successor_no) ON cargo_sea.house_bill TO cargo_app;
+          GRANT UPDATE (status,execution_id,difference_reason,stuffed_by,stuffed_at,release_reason,released_by,released_at,revision,updated_at) ON cargo_sea.container_visit TO cargo_app;
           GRANT UPDATE (next_val,updated_at) ON cargo_sea.numbering_sequence TO cargo_app;
           GRANT SELECT,INSERT ON ALL TABLES IN SCHEMA cargo_doc TO cargo_app;
           GRANT UPDATE (state,cancel_reason,cancelled_by,cancelled_at,movement_id,consolidation_id,revision,updated_at) ON cargo_doc.transport_document TO cargo_app;

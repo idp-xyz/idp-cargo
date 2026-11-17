@@ -195,16 +195,19 @@ type Movement struct {
 	pending []Event
 }
 
-// Event carries identifiers only.
+// Event carries identifiers only. Its subject is a movement, a legal entity (series) or a container visit, whose
+// events also name their movement.
 type Event struct {
 	Type            string
 	At              time.Time
 	TenantID        TenantID
 	SubjectID       string
 	ConsolidationID string
+	MovementID      string
 	ShipmentID      string
 	EntryNo         int
 	BillNo          int
+	SealNo          int
 	BookingID       string
 	CapacityVersion int
 	Reason          string
@@ -579,6 +582,14 @@ func (m *Movement) changeable(by string, at time.Time) error {
 		return fmt.Errorf("%w: author and business time not before the movement's last change", ErrInvalidChange)
 	}
 	return nil
+}
+
+// openedAt is the business time the movement was opened: its first link's.
+func (m *Movement) openedAt() time.Time {
+	if len(m.state.Links) == 0 {
+		return time.Time{}
+	}
+	return m.state.Links[0].At
 }
 
 func (m *Movement) lastChange() time.Time {

@@ -107,18 +107,20 @@ type HousePart struct {
 // HouseContainer is a sealed container of the consolidation with the house's packs in it, as PHY verified them and
 // FUL relays them: PHY's stuffing (ExecutionID) and planned load unit with its ISO 6346 size-type, the house's
 // packs, gross weight and volume in it, PHY's load lines (LineNos, with ExecutionID the PHY evidence ids) and the
-// seal PHY recorded. The container's number and plate data come with the container visit (part 1e).
+// seal PHY recorded. ContainerNumber is the container of the movement's STUFFED visit that keeps this stuffing
+// (RecordStuffingDone); empty until then.
 type HouseContainer struct {
-	ExecutionID string
-	LoadUnitNo  int
-	TypeCode    string
-	Packs       int64
-	GrossWeight kernel.Quantity
-	Volume      kernel.Quantity
-	LineNos     []int
-	Seal        string
-	SealSHA256  string
-	SealedAt    time.Time
+	ContainerNumber string
+	ExecutionID     string
+	LoadUnitNo      int
+	TypeCode        string
+	Packs           int64
+	GrossWeight     kernel.Quantity
+	Volume          kernel.Quantity
+	LineNos         []int
+	Seal            string
+	SealSHA256      string
+	SealedAt        time.Time
 }
 
 // House is a house bill association: the FUL shipment, its HBL number and the facts frozen from FUL's plan version
@@ -165,8 +167,9 @@ type OceanMovement struct {
 	Legs                   []VoyageLeg // current first, then superseded
 	MasterBillNumber       string      // the current reference; empty before one is recorded
 	MasterBillKind         string
-	MasterBills            []MasterBill // latest first
-	Houses                 []House      // live
+	MasterBills            []MasterBill     // latest first
+	Containers             []ContainerVisit // the movement's live container visits, in the order they were assigned
+	Houses                 []House          // live
 	Packs                  int64
 	GrossWeight            kernel.Quantity
 	Volume                 kernel.Quantity
@@ -211,6 +214,7 @@ type HouseBillRef struct {
 
 // Queries is SEA's read side. Unknown movements, master bill references, HBLs and series yield ErrNotFound.
 type Queries interface {
+	VisitQueries
 	GetOceanMovement(ctx context.Context, q GetOceanMovement) (OceanMovement, error)
 	FindOceanMovementByMasterBill(ctx context.Context, q FindOceanMovementByMasterBill) (OceanMovement, error)
 	FindHouseBill(ctx context.Context, q FindHouseBill) (HouseBillRef, error)

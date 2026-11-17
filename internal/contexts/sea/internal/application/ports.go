@@ -45,11 +45,13 @@ type Action string
 // Receipt is a committed command's result.
 type Receipt struct {
 	CommandID   string
-	SubjectID   string // movement, or legal entity for a series
+	Kind        string // OceanMovement, HblSeries or ContainerVisit; what result_type stores
+	SubjectID   string // movement, legal entity for a series, or visit
 	NewRevision int64
 	EntryNo     int
 	HBL         string
 	BillNo      int // the master bill entry a RecordMasterBill wrote
+	SealNo      int // the seal a RecordContainerSeal wrote
 	RequestHash string
 }
 
@@ -127,6 +129,7 @@ type Clock interface{ Now() time.Time }
 type Deps struct {
 	Tx        TxRunner
 	Movements MovementStore
+	Visits    VisitStore
 	Series    SeriesStore
 	Numbers   Numbers
 	Register  HBLRegister
@@ -226,7 +229,7 @@ func (d Deps) write(ctx context.Context, c Command, hash, kind string, mutate fu
 				}
 			}
 		}
-		receipt.CommandID, receipt.RequestHash = c.CommandID, hash
+		receipt.CommandID, receipt.Kind, receipt.RequestHash = c.CommandID, kind, hash
 		if err = d.Receipts.Save(txCtx, c.Scope.TenantID, receipt, kind); err != nil {
 			return err
 		}
