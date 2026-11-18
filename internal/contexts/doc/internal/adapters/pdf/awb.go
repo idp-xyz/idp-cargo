@@ -17,7 +17,16 @@ type Renderer struct{}
 
 var _ app.Renderer = Renderer{}
 
-func (Renderer) Template() string { return Template }
+// Template is the air waybill's for a HAWB or a MAWB and the bill of lading's for an HBL or a house sea waybill.
+func (Renderer) Template(kind doc.Kind) (string, bool) {
+	switch kind {
+	case doc.KindHAWB, doc.KindMAWB:
+		return Template, true
+	case doc.KindHBL, doc.KindHouseSeaWaybill:
+		return TemplateHBL, true
+	}
+	return "", false
+}
 
 var chinaTime = time.FixedZone("UTC+8", 8*3600)
 
@@ -118,13 +127,22 @@ func pair(p *Page, x, top, w1, w2, min float64, maxLines int, label1, text1, lab
 
 // Render lays out one version: the issuer, parties, route, flights, cargo, security status, issue place and date;
 // a MAWB lists its houses; a version that is not issued carries a draft mark; a dispatch copy lists the contacts
-// provided with consent. The template is the air waybill's: a sea document has none yet and is refused rather than
-// laid out as a non-negotiable air waybill.
+// provided with consent. The kind picks the template: the air waybill's here, the bill of lading's in hbl.go; a kind
+// without a template is refused.
 func (Renderer) Render(r app.Rendering) ([]byte, error) {
 	c := r.Doc
-	if c.Kind != string(doc.KindHAWB) && c.Kind != string(doc.KindMAWB) {
-		return nil, fmt.Errorf("%w: %s under %s", doc.ErrNoTemplate, c.Kind, Template)
+	switch doc.Kind(c.Kind) {
+	case doc.KindHAWB, doc.KindMAWB:
+		return renderAWB(r)
+	case doc.KindHBL, doc.KindHouseSeaWaybill:
+		return renderHBL(r)
 	}
+	return nil, fmt.Errorf("%w: %s", doc.ErrNoTemplate, c.Kind)
+}
+
+// renderAWB lays out an air waybill under Template.
+func renderAWB(r app.Rendering) ([]byte, error) {
+	c := r.Doc
 	page := &Page{}
 	pages := []*Page{page}
 	const left, width = 36.0, PageWidth - 72

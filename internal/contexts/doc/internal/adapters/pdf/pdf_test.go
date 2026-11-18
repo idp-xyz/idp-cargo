@@ -68,13 +68,19 @@ func structure(t *testing.T, pdf []byte) (objects int, pages int) {
 	return size - 1, bytes.Count(pdf, []byte("/Type /Page "))
 }
 
-// The template is the air waybill's. A bill of lading laid out on it would read "Not negotiable".
-func TestASeaDocumentHasNoTemplateYet(t *testing.T) {
-	for _, kind := range []doc.Kind{doc.KindHBL, doc.KindHouseSeaWaybill} {
-		r := house(1)
-		r.Doc.Kind = string(kind)
-		if pdf, err := (Renderer{}).Render(r); !errors.Is(err, doc.ErrNoTemplate) || pdf != nil {
-			t.Errorf("%s rendered under %s: %v", kind, Template, err)
+// A kind no template renders is refused, and the renderer names the template of each kind it does render.
+func TestAKindWithoutATemplateIsRefused(t *testing.T) {
+	r := house(1)
+	r.Doc.Kind = "MBL"
+	if pdf, err := (Renderer{}).Render(r); !errors.Is(err, doc.ErrNoTemplate) || pdf != nil {
+		t.Errorf("MBL rendered: %v", err)
+	}
+	if name, ok := (Renderer{}).Template("MBL"); ok || name != "" {
+		t.Errorf("MBL has template %q", name)
+	}
+	for kind, want := range map[doc.Kind]string{doc.KindHAWB: "IDP-AWB-V1", doc.KindMAWB: "IDP-AWB-V1", doc.KindHBL: "IDP-HBL-V1", doc.KindHouseSeaWaybill: "IDP-HBL-V1"} {
+		if name, ok := (Renderer{}).Template(kind); !ok || name != want {
+			t.Errorf("%s: template %q, %v; want %s", kind, name, ok, want)
 		}
 	}
 }
@@ -234,6 +240,56 @@ func TestLongHeaderBoxesContinueAfterTheCargo(t *testing.T) {
 	for _, m := range regexp.MustCompile(` (-?[0-9.]+) (-?[0-9.]+) Tm `).FindAllStringSubmatch(s, -1) {
 		if y, _ := strconv.ParseFloat(m[2], 64); y < 20 || y > PageHeight {
 			t.Fatalf("text at y %v", y)
+		}
+	}
+}
+
+// The air waybill's bytes are pinned. A dispatch records the SHA-256 of its copy and GetDispatchCopy renders again and
+// compares, so one byte changed in this layout would make every copy recorded since V2.38 answer DOC_COPY_CHANGED. A
+// change of layout is a new template; these digests are never edited.
+func TestAirWaybillBytesAreUnchanged(t *testing.T) {
+	draft := house(3)
+	draft.Status, draft.IssuedAt = doc.VersionDraft, time.Time{}
+	master := house(3)
+	master.Doc.Kind, master.Doc.Number, master.Doc.MAWB = string(doc.KindMAWB), "781-12345675", ""
+	master.Doc.IssuerCapacity = doc.KindMAWB.Capacity()
+	master.Doc.Cargo.Lines = nil
+	for i := range 3 {
+		master.Doc.Cargo.Lines = append(master.Doc.Cargo.Lines, doc.CargoLine{HAWB: fmt.Sprintf("SHA000000%d", i+1), Pieces: 2, GrossGrams: 106_000,
+			GoodsDescription: fmt.Sprintf("Cartons of electronics, house %d", i+1)})
+	}
+	copied := house(3)
+	copied.Contacts = []app.CopyContact{{Role: "SHIPPER", Name: "张三", Mobile: "+86 138 0000 0000", Email: "zhang@example.cn"},
+		{Role: "CONSIGNEE", Name: "Jane Doe", Phone: "+1 212 555 0100"}}
+	notified := house(3)
+	notified.Doc.IssuerCapacity = "AGENT_OF_CARRIER"
+	notified.Doc.Notify = &doc.Party{PartyID: "notify", LegalName: "Notify Ltd.", CountryCode: "GB", Address: &doc.Address{Lines: []string{"2 Street"}, City: "London",
+		Postcode: "E1 6AN", CountryCode: "GB"}, Identifiers: []doc.Identifier{{Type: "EORI", Country: "GB", None: true}}}
+	long := house(2)
+	for i := range 70 {
+		long.Doc.Security.Screenings = append(long.Doc.Security.Screenings, doc.Screening{Screener: "PVG", Method: "XRAY", Reference: fmt.Sprintf("AQ-%03d", i),
+			ScreenedAt: t0})
+	}
+	long.Doc.HandlingInformation = strings.Repeat("Keep dry and away from heat, stow upright, do not stack more than two high. ", 12)
+	for _, c := range []struct {
+		name string
+		in   app.Rendering
+		want string
+	}{
+		{"HAWB issued, 3 lines", house(3), "fdda20ba5a10784f5baf8c5fef51113b966d4d5892c717a585d6cad12cf3f618"},
+		{"HAWB draft, 3 lines", draft, "c1f2a67e4f406afbd3e99e1b1d4df0b39293908291df35eb8ead38df4ef8b65d"},
+		{"HAWB issued, 120 lines", house(120), "81119ecd46602bbf063c084530aee5baabb3f03d302ec2aa2f4e5137b8815078"},
+		{"MAWB issued, 3 houses", master, "569e11a19649c6feda509814714bd471ce0f97d0f6ed25a53b63900fc5a2dc53"},
+		{"HAWB issued with two contacts", copied, "9d2d6f6d2872925de988240e46c551924912c391c636d40e79a0710234808e4e"},
+		{"HAWB issued with an agent of the carrier and a notify party", notified, "cb03beb4106e23ef284dfcfd95eed5b564615b41a54354517c9c263ba450be37"},
+		{"HAWB issued with header boxes continued after the cargo", long, "b4a6c021ea0868a2a4d2f1ff6fd0f7463d28961400694512928c65657f4f95b0"},
+	} {
+		pdf, err := Renderer{}.Render(c.in)
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if got := doc.Digest(pdf); got != c.want {
+			t.Errorf("%s: SHA-256 %s, pinned %q", c.name, got, c.want)
 		}
 	}
 }

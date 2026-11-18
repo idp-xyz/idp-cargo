@@ -473,9 +473,10 @@ func TestAHouseSeaWaybillOnPostgres(t *testing.T) {
 	if err != nil || snapshot.Kind != api.KindHouseSeaWaybill || snapshot.MasterNumber != "LINU2611000999" {
 		t.Fatalf("FIN's snapshot: %+v %v", snapshot, err)
 	}
-	// no template renders a sea document yet: it is refused, not laid out as an air waybill
-	if _, err = f.module.RenderDocumentVersion(ctx, api.RenderDocumentVersion{TenantID: f.tenant, DocumentID: "DOC-S"}); !refused(err, "DOC_NO_TEMPLATE") {
-		t.Fatalf("a sea waybill rendered: %v", err)
+	// the sea waybill renders under the bill of lading's template
+	if rendered, err := f.module.RenderDocumentVersion(ctx, api.RenderDocumentVersion{TenantID: f.tenant, DocumentID: "DOC-S"}); err != nil ||
+		rendered.Template != api.TemplateHBL || !strings.HasPrefix(string(rendered.PDF), "%PDF-1.4") {
+		t.Fatalf("a sea waybill rendered: %+v %v", rendered.Template, err)
 	}
 	if _, err = f.module.CancelTransportDocument(ctx, api.CancelTransportDocument{CommandID: "cancel-s", TenantID: f.tenant, ActorID: "doc-1",
 		DocumentID: "DOC-S", ExpectedRevision: 3, Reason: "the shipper wants a bill of lading", OccurredAt: f.hours(6)}); err != nil {
