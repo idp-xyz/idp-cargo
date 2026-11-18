@@ -204,6 +204,7 @@ type Deps struct {
 	Directory   Directory
 	Credit      Credit
 	Dispatches  DispatchStore
+	Carriers    CarrierStore
 	Renderer    Renderer
 }
 

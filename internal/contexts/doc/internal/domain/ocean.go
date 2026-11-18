@@ -40,6 +40,12 @@ type OceanFacts struct {
 	OnBoardAt       time.Time
 	Containers      []OceanContainer
 	Houses          []OceanHouse
+
+	// What the carrier's own document reads (carrier.go): the carrier's party revision, its role (CARRIER, or CO_LOADER
+	// on a co-load movement) and the kind of the master bill reference. A house document does not carry them.
+	CarrierPartyRevision int64
+	CarrierRole          string
+	MasterBillKind       string
 }
 
 type OceanContainer struct {

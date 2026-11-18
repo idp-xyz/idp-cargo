@@ -356,6 +356,7 @@ func (m *Module) deps(tenant, commandID string) application.Deps {
 		Directory:   m.directory,
 		Credit:      m.credit,
 		Dispatches:  postgres.DispatchStore{DB: m.db},
+		Carriers:    postgres.CarrierStore{DB: m.db},
 		Renderer:    m.renderer,
 	}
 }
@@ -394,7 +395,7 @@ func classify(err error) error {
 		errors.Is(err, domain.ErrIssuerNotVerified), errors.Is(err, domain.ErrInvalidAuthority), errors.Is(err, domain.ErrNumberIssued),
 		errors.Is(err, domain.ErrOriginalsOut), errors.Is(err, domain.ErrNoTemplate),
 		errors.Is(err, domain.ErrNotDispatchable), errors.Is(err, domain.ErrTransferBlocked), errors.Is(err, domain.ErrTransferNotReserved),
-		errors.Is(err, domain.ErrInvalidDispatch), errors.Is(err, domain.ErrCopyChanged),
+		errors.Is(err, domain.ErrInvalidDispatch), errors.Is(err, domain.ErrCopyChanged), errors.Is(err, domain.ErrSelfVerification),
 		errors.Is(err, application.ErrInvalidQuery), errors.Is(err, application.ErrInvalidCommand), errors.Is(err, application.ErrUnknownSource),
 		errors.Is(err, kernel.ErrOutsideRecordWindow):
 		kind = api.ErrRejected

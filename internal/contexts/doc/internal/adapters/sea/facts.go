@@ -34,7 +34,8 @@ func (f Facts) Latest(ctx context.Context, tenant doc.TenantID, movement string)
 	}
 	out := doc.OceanFacts{MovementID: movement, Version: got.Version, SHA256: got.SHA256, Final: got.Status == seaapi.DocFactsFinal,
 		ConsolidationID: got.ConsolidationID, LegalEntityID: got.OperatingLegalEntityID, CarrierPartyID: got.CarrierPartyID,
-		MasterBill: got.MasterBillNumber, Vessel: got.Vessel, Voyage: got.Voyage, PlaceOfReceipt: got.PlaceOfReceipt,
+		MasterBill: got.MasterBillNumber, CarrierPartyRevision: got.CarrierPartyRevision, CarrierRole: got.CarrierRole,
+		MasterBillKind: got.MasterBillKind, Vessel: got.Vessel, Voyage: got.Voyage, PlaceOfReceipt: got.PlaceOfReceipt,
 		PortOfLoading: got.PortOfLoading, PortOfDischarge: got.PortOfDischarge, Edition: got.LocationEdition, OnBoardAt: got.OnBoardAt}
 	for _, c := range got.Containers {
 		out.Containers = append(out.Containers, doc.OceanContainer{VisitID: c.VisitID, Number: c.Number, SizeType: c.SizeType, SealNumber: c.SealNumber})
