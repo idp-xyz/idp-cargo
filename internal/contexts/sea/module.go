@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"slices"
 	"strings"
 	"time"
@@ -20,6 +21,7 @@ import (
 	"go.idp.xyz/idp-cargo/internal/contexts/sea/api"
 	bookacl "go.idp.xyz/idp-cargo/internal/contexts/sea/internal/adapters/book"
 	fulacl "go.idp.xyz/idp-cargo/internal/contexts/sea/internal/adapters/ful"
+	seahttp "go.idp.xyz/idp-cargo/internal/contexts/sea/internal/adapters/http"
 	"go.idp.xyz/idp-cargo/internal/contexts/sea/internal/adapters/postgres"
 	"go.idp.xyz/idp-cargo/internal/contexts/sea/internal/application"
 	"go.idp.xyz/idp-cargo/internal/contexts/sea/internal/domain"
@@ -52,6 +54,9 @@ var (
 	_ api.Queries    = (*Module)(nil)
 	_ api.VgmQueries = (*Module)(nil)
 )
+
+// RegisterHTTP registers SEA's inbound HTTP routes; the composition root calls it.
+func (m *Module) RegisterHTTP(mux *http.ServeMux) { seahttp.Register(mux, m) }
 
 // New assembles SEA. book answers CarrierBooking v1 (relationship 6) and ful OceanOperationPlan v1 (relationship
 // 10); SEA writes to neither.
@@ -227,7 +232,7 @@ func (m *Module) GetOceanDocFacts(ctx context.Context, q api.GetOceanDocFacts) (
 	if err = json.Unmarshal(v.Content, &out); err != nil {
 		return api.OceanDocFacts{}, err
 	}
-	out.SHA256, out.FinalizedBy, out.FinalizedAt = v.SHA256, v.By, v.At
+	out.Content, out.SHA256, out.FinalizedBy, out.FinalizedAt = slices.Clone(v.Content), v.SHA256, v.By, v.At
 	out.Status = api.DocFactsSuperseded
 	if current {
 		out.Status = api.DocFactsFinal

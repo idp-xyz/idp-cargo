@@ -258,9 +258,12 @@ type GetOceanDocFacts struct {
 	Version    int
 }
 
-// OceanDocFacts is OceanDocFacts v1 as published. It has no signatory.
+// OceanDocFacts is OceanDocFacts v1 as published. It has no signatory. Content is the JSON that was published, byte
+// for byte, of which SHA256 is the digest: a reader that checks the digest checks it over Content, not over these
+// fields encoded again.
 type OceanDocFacts struct {
 	Status                 string         `json:"-"`
+	Content                []byte         `json:"-"`
 	Version                int            `json:"version"`
 	MovementID             string         `json:"movement_id"`
 	ConsolidationID        string         `json:"consolidation_id"`
