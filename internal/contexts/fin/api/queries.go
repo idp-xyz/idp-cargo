@@ -568,12 +568,14 @@ type PoolCostLine struct {
 }
 
 // PoolShare is one house job's share of a pool cost line under an apportionment: the basis quantity it was weighted
-// by (chargeable grams, cubic centimetres, pieces or milli freight tonnes) and the share in the line's currency and
-// in the functional currency, each conserved exactly.
+// by (chargeable or gross grams, cubic centimetres, pieces, milli freight tonnes or shipments) and the share in the
+// line's currency and in the functional currency, each conserved exactly. NotUsed is true for a house the apportionment
+// left out: its quantity is 0, it has no unit and its amounts are 0 (false, as before, for every house that took part).
 type PoolShare struct {
 	ShareNo    int
 	ShipmentID string
 	JobID      string
+	NotUsed    bool
 	Quantity   int64
 	Unit       string
 	Amount     kernel.Money

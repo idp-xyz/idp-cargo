@@ -479,6 +479,12 @@ const (
 	MethodVolume     = "VOLUME"
 	MethodPieces     = "PIECES"
 	MethodManual     = "MANUAL"
+	// MethodGrossWeight divides by each house's gross weight in grams (unit GRM; planned at PLANNED, loaded at ACTUAL),
+	// as CargoWise's Gross Weight method does (FIN V0.8).
+	MethodGrossWeight = "GROSS_WEIGHT"
+	// MethodShipment gives each house that takes part an equal share (unit SHP), as CargoWise's Shipment method does
+	// (FIN V0.8).
+	MethodShipment = "SHIPMENT"
 	// MethodRetained keeps lines' costs on the consolidation (FIN V0.5), with a reason, once PHY reports it cancelled
 	// or without a house left: the consolidation's own cost, such as dead freight, as CargoWise leaves a consol charge
 	// on the consol when it is not apportioned.
@@ -553,7 +559,17 @@ type ManualShare struct {
 // amount exactly (largest remainder, ties to the first shipment). A new apportionment supersedes earlier ones line by
 // line. Since FIN V0.5 each line's current cost is divided (what creditor invoices matched plus what is still
 // accrued); RETAINED keeps the lines' costs on the consolidation with a reason, and only once PHY reports it cancelled
-// or without houses.
+// or without houses. Since FIN V0.8 GROSS_WEIGHT weighs by each house's gross weight in grams and SHIPMENT gives each
+// house that takes part the same share (the minor units left over go to the first houses in shipment order), and
+// NotUsed names live houses of PHY's basis that take no part in these lines, as CargoWise's Is Used box: the quantities,
+// the amounts and the stage are those of the houses that take part (ACTUAL when every one of them has loaded packs), and
+// a house left out keeps a share of each line marked not used, with quantity 0, no unit and amounts 0 (every live house
+// still needs an OPEN job). A house is named once, not every house is left out (FIN_INVALID), and RETAINED takes none.
+// MANUAL names the houses that take part and no other. To leave different houses out of different lines, apportion
+// the lines in separate commands. A house left out of a line stays out of it: a command that names no NotUsed keeps,
+// line by line, the houses the line's latest apportionment left out (those still live), until AllHouses takes every
+// live house in again or another NotUsed replaces the list; AllHouses with NotUsed is refused, and so is a carried
+// list that leaves no house taking part.
 type ApportionConsolCosts struct {
 	CommandID        string
 	TenantID         string
@@ -563,6 +579,8 @@ type ApportionConsolCosts struct {
 	LineNos          []int
 	Method           string
 	Manual           []ManualShare
+	NotUsed          []string `json:",omitempty"` // left out of the request hash when empty, so earlier commands hash as they did
+	AllHouses        bool     `json:",omitempty"` // likewise when false
 	Reason           string
 	OccurredAt       time.Time
 }
