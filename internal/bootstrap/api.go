@@ -31,7 +31,9 @@ func (c APIConfig) verifier() identity.HS256Verifier {
 }
 
 // API assembles the contexts the HTTP API serves, each authorized by the permissions of the request's verified
-// principal (identity.Authorize), and answers the handler: RATE's catalogue, with ORG for RATE's party checks.
+// principal (identity.Authorize), and answers the handler: RATE's catalogue, with ORG for RATE's party checks, and
+// SEA's ocean movements and container visits, with BOOK's bookings and FUL's plans, which SEA reads. COM, FUL, PHY
+// and BOOK have no routes yet.
 func (p *Platform) API(cfg APIConfig) (http.Handler, error) {
 	switch {
 	case len(cfg.TokenKey) < 32 || cfg.TokenIssuer == "" || cfg.TokenAudience == "":
@@ -47,7 +49,23 @@ func (p *Platform) API(cfg APIConfig) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	return transport.NewHandler(transport.Config{Verifier: cfg.verifier(), Logger: cfg.Logger, Ready: p.pool.Ping}, rate)
+	com, err := p.COM(org, rate, permissions{})
+	if err != nil {
+		return nil, err
+	}
+	ful, _, err := p.FULAndPHY(com, permissions{}, permissions{})
+	if err != nil {
+		return nil, err
+	}
+	book, err := p.BOOK(org, permissions{})
+	if err != nil {
+		return nil, err
+	}
+	sea, err := p.SEA(book, ful, permissions{})
+	if err != nil {
+		return nil, err
+	}
+	return transport.NewHandler(transport.Config{Verifier: cfg.verifier(), Logger: cfg.Logger, Ready: p.pool.Ping}, rate, sea)
 }
 
 // APIServer is an http.Server for the API's handler with Cargo's timeouts; its requests run under base.
@@ -83,6 +101,28 @@ func (permissions) AuthorizePartyAction(ctx context.Context, tenant, actor, acti
 
 func (permissions) AuthorizeQuoteAction(ctx context.Context, tenant, actor, action, _ string) error {
 	return identity.Authorize(ctx, "rate", tenant, actor, action)
+}
+
+func (permissions) AuthorizeOrderAction(ctx context.Context, tenant, actor, action, _ string) error {
+	return identity.Authorize(ctx, "com", tenant, actor, action)
+}
+
+func (permissions) AuthorizeShipmentAction(ctx context.Context, tenant, actor, action, _ string) error {
+	return identity.Authorize(ctx, "ful", tenant, actor, action)
+}
+
+func (permissions) AuthorizeConsolidationAction(ctx context.Context, tenant, actor, action, _ string) error {
+	return identity.Authorize(ctx, "phy", tenant, actor, action)
+}
+
+func (permissions) AuthorizeBookingAction(ctx context.Context, tenant, actor, action, _ string) error {
+	return identity.Authorize(ctx, "book", tenant, actor, action)
+}
+
+// AuthorizeSeaAction covers SEA's commands and the two reads SEA itself authorizes: a VGM signatory's name
+// ("sea:ReadVgmSignatory") and the log of those reads ("sea:ReadVgmSignatoryAccess"). "sea:Read" grants neither.
+func (permissions) AuthorizeSeaAction(ctx context.Context, tenant, actor, action, _ string) error {
+	return identity.Authorize(ctx, "sea", tenant, actor, action)
 }
 
 // margins is RATE's margin and discount policy, one for every legal entity.
