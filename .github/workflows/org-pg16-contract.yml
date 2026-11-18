@@ -128,7 +128,8 @@ jobs:
           GRANT UPDATE (response,response_source,responded_at,response_by,response_entered_at) ON cargo_sea.vgm_assertion TO cargo_app;
           REVOKE SELECT ON cargo_sea.vgm_signatory FROM cargo_app;
           REVOKE INSERT ON cargo_sea.vgm_signatory_access FROM cargo_app;
-          GRANT EXECUTE ON FUNCTION cargo_sea.read_vgm_signatory(text, integer, text, text) TO cargo_app;
+          GRANT EXECUTE ON FUNCTION cargo_sea.log_vgm_signatory_read(text, integer, text, text) TO cargo_app;
+          GRANT EXECUTE ON FUNCTION cargo_sea.read_logged_vgm_signatory(uuid) TO cargo_app;
           GRANT EXECUTE ON FUNCTION cargo_sea.vgm_signatory_count(text) TO cargo_app;
           GRANT UPDATE (next_val,updated_at) ON cargo_sea.numbering_sequence TO cargo_app;
           GRANT SELECT,INSERT ON ALL TABLES IN SCHEMA cargo_doc TO cargo_app;

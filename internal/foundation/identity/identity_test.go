@@ -175,3 +175,35 @@ func TestAuthorize(t *testing.T) {
 		t.Errorf("a read without permission: %v", err)
 	}
 }
+
+// AuthorizeNamed grants an action only to a principal that holds it by name: no wildcard includes it.
+func TestAuthorizeNamed(t *testing.T) {
+	with := func(permissions ...string) context.Context {
+		return WithPrincipal(context.Background(), Principal{TenantID: "t1", ActorID: "alice", Permissions: permissions})
+	}
+	for _, tc := range []struct {
+		name          string
+		ctx           context.Context
+		tenant, actor string
+		ok            bool
+	}{
+		{"by name", with("sea:ReadVgmSignatory"), "t1", "alice", true},
+		{"by name among others", with("sea:Read", "sea:ReadVgmSignatory", "rate:*"), "t1", "alice", true},
+		{"the context's wildcard", with("sea:*"), "t1", "alice", false},
+		{"every permission", with("*"), "t1", "alice", false},
+		{"both wildcards", with("*", "sea:*", "sea:Read"), "t1", "alice", false},
+		{"another action", with("sea:ReadVgmSignatoryAccess"), "t1", "alice", false},
+		{"another context's action of the same name", with("air:ReadVgmSignatory"), "t1", "alice", false},
+		{"another tenant", with("sea:ReadVgmSignatory"), "t2", "alice", false},
+		{"another actor", with("sea:ReadVgmSignatory"), "t1", "bob", false},
+		{"no principal", context.Background(), "t1", "alice", false},
+	} {
+		if err := AuthorizeNamed(tc.ctx, "sea", tc.tenant, tc.actor, "ReadVgmSignatory"); (err == nil) != tc.ok || (err != nil && !errors.Is(err, ErrDenied)) {
+			t.Errorf("%s: %v", tc.name, err)
+		}
+	}
+	// the same wildcards still grant what Authorize grants
+	if err := Authorize(with("sea:*"), "sea", "t1", "alice", "ReadVgmSignatory"); err != nil {
+		t.Errorf("Authorize with the wildcard: %v", err)
+	}
+}

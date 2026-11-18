@@ -663,6 +663,17 @@ func (s CommandReceipts) Find(ctx context.Context, tenant sea.TenantID, id strin
 	return r, true, nil
 }
 
+// Lock holds a lock on the command id until the transaction ends, so that the same command sent twice at once runs
+// once: the second waits, then finds the first's receipt and answers it.
+func (s CommandReceipts) Lock(ctx context.Context, tenant sea.TenantID, id string) error {
+	q, err := s.DB.RequireExecutor(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = q.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('cargo_sea.command:' || $1 || ':' || $2, 0))`, string(tenant), id)
+	return err
+}
+
 func (s CommandReceipts) Save(ctx context.Context, tenant sea.TenantID, r app.Receipt, kind string) error {
 	q, err := s.DB.RequireExecutor(ctx)
 	if err != nil {

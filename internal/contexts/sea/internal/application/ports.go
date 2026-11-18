@@ -1,7 +1,10 @@
-// Package application runs SEA's use cases. Business rules stay in domain; this package orders the steps: replay
-// check, authorization, questions to BOOK and FUL outside any SEA transaction (rule T3), and one transaction for
-// the movement (and, when an HBL is drawn, the series and the HBL register), its Outbox events and the command
-// receipt (rule T2). A house command locks the movement first and then the legal entity's sequence.
+// Package application runs SEA's use cases. Business rules stay in domain; this package orders the steps:
+// authorization, replay check, questions to BOOK and FUL outside any SEA transaction (rule T3), and one transaction
+// for the movement (and, when an HBL is drawn, the series and the HBL register), its Outbox events and the command
+// receipt (rule T2). A command is authorized before its replay is answered: a replay answers only an actor still
+// allowed, and a command id in use tells no one else. The transaction holds the command id first, so the same
+// command sent twice at once commits once and the other answers its receipt. A house command locks the movement
+// first and then the legal entity's sequence.
 package application
 
 import (
@@ -157,6 +160,33 @@ type Command struct {
 	ExpectedRevision int64
 	OccurredAt       time.Time
 	Payload          any
+	// Earlier is the payload as an earlier version hashed it, when that differs: a receipt stored with that hash is
+	// still answered. Nothing is stored with it.
+	Earlier any
+}
+
+// requestHash is the hash a command's receipt is stored with. It covers the command's name: two commands of the same
+// fields (a refresh and an end of one house) are not replays of each other.
+func requestHash(action Action, payload any) (string, error) {
+	blob, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(append([]byte(string(action)+"\x00"), blob...))
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// answers reports whether a stored receipt is this command's: stored with its hash, or with the hash an earlier
+// version gave the same command.
+func (c Command) answers(stored, hash string) bool {
+	if stored == hash {
+		return true
+	}
+	if c.Earlier == nil {
+		return false
+	}
+	earlier, err := requestHash(c.Action, c.Earlier)
+	return err == nil && stored == earlier
 }
 
 func (d Deps) begin(ctx context.Context, c Command) (hash string, entered time.Time, stored Receipt, replayed bool, err error) {
@@ -172,30 +202,18 @@ func (d Deps) begin(ctx context.Context, c Command) (hash string, entered time.T
 	if scoped, ok := d.Tx.(interface{ TenantScope() string }); ok && scoped.TenantScope() != string(c.Scope.TenantID) {
 		return "", time.Time{}, Receipt{}, false, ErrUnauthorized
 	}
-	blob, err := json.Marshal(c.Payload)
-	if err != nil {
+	if hash, err = requestHash(c.Action, c.Payload); err != nil {
 		return "", time.Time{}, Receipt{}, false, err
 	}
-	// The hash covers the command's name: two commands of the same fields (a refresh and an end of one house) are
-	// not replays of each other.
-	sum := sha256.Sum256(append([]byte(string(c.Action)+"\x00"), blob...))
-	hash = hex.EncodeToString(sum[:])
-	if err = d.Tx.WithinTransaction(ctx, func(txCtx context.Context) error {
-		r, ok, err := d.Receipts.Find(txCtx, c.Scope.TenantID, c.CommandID)
-		if err != nil || !ok {
-			return err
-		}
-		if r.RequestHash != hash {
-			return ErrIdempotencyConflict
-		}
-		stored, replayed = r, true
-		return nil
-	}); err != nil || replayed {
-		return hash, time.Time{}, stored, replayed, err
-	}
+	// Authorized before a replay too: a replay answers only an actor still allowed, and a command id in use tells no
+	// one else.
 	if err = d.Auth.RequireSeaAction(ctx, c.Scope, c.Action, c.Subject); err != nil {
 		return "", time.Time{}, Receipt{}, false, fmt.Errorf("%w: %v", ErrUnauthorized, err)
 	}
+	if stored, replayed, err = d.replay(ctx, c, hash); err != nil || replayed {
+		return hash, time.Time{}, stored, replayed, err
+	}
+	// The business time is admitted after the replay, so a command retried later still answers its receipt.
 	entered = d.Clock.Now().UTC().Truncate(time.Microsecond)
 	if err = d.Window.Check(c.OccurredAt, entered); err != nil {
 		return "", time.Time{}, Receipt{}, false, fmt.Errorf("%w: business time %s, recorded %s", err, c.OccurredAt.Format(time.RFC3339), entered.Format(time.RFC3339))
@@ -203,22 +221,60 @@ func (d Deps) begin(ctx context.Context, c Command) (hash string, entered time.T
 	return hash, entered, Receipt{}, false, nil
 }
 
+// replay answers the stored receipt of a command whose payload is unchanged.
+func (d Deps) replay(ctx context.Context, c Command, hash string) (stored Receipt, replayed bool, err error) {
+	err = d.Tx.WithinTransaction(ctx, func(txCtx context.Context) error {
+		r, ok, err := d.Receipts.Find(txCtx, c.Scope.TenantID, c.CommandID)
+		if err != nil || !ok {
+			return err
+		}
+		if !c.answers(r.RequestHash, hash) {
+			return ErrIdempotencyConflict
+		}
+		stored, replayed = r, true
+		return nil
+	})
+	return stored, replayed, err
+}
+
+// committedMeanwhile answers the receipt of a command that a concurrent attempt committed while this attempt was
+// preparing outside the transaction: what this attempt then read was the state the command had already changed, so
+// its refusal (cause) says nothing about the command. Without a receipt the refusal stands.
+func (d Deps) committedMeanwhile(ctx context.Context, c Command, hash string, cause error) (Receipt, error) {
+	if stored, replayed, err := d.replay(ctx, c, hash); err == nil && replayed {
+		return stored, nil
+	}
+	return Receipt{}, cause
+}
+
 type aggregate interface {
 	Pending() []sea.Event
 	Acknowledge()
 }
 
-// write commits mutate's aggregates, their Outbox events and the receipt in one transaction.
+// commandLocker is a Receipts store that can hold the command id for the transaction.
+type commandLocker interface {
+	Lock(ctx context.Context, tenant sea.TenantID, commandID string) error
+}
+
+// write commits mutate's aggregates, their Outbox events and the receipt in one transaction. The command id is held
+// first, so that the same command sent twice at once (a client retrying before the first answer) commits once: the
+// other waits, finds the receipt and answers it.
 func (d Deps) write(ctx context.Context, c Command, hash, kind string, mutate func(context.Context) (Receipt, []aggregate, error)) (Receipt, error) {
 	var result Receipt
 	var changed []aggregate
 	err := d.Tx.WithinTransaction(ctx, func(txCtx context.Context) error {
+		if l, ok := d.Receipts.(commandLocker); ok {
+			if err := l.Lock(txCtx, c.Scope.TenantID, c.CommandID); err != nil {
+				return err
+			}
+		}
 		r, ok, err := d.Receipts.Find(txCtx, c.Scope.TenantID, c.CommandID)
 		if err != nil {
 			return err
 		}
 		if ok {
-			if r.RequestHash != hash {
+			if !c.answers(r.RequestHash, hash) {
 				return ErrIdempotencyConflict
 			}
 			result = r
@@ -301,10 +357,10 @@ func (d Deps) Change(ctx context.Context, c Command, read func(context.Context, 
 			}
 			return err
 		}); err != nil {
-			return Receipt{}, err
+			return d.committedMeanwhile(ctx, c, hash, err)
 		}
 		if err = read(ctx, current); err != nil {
-			return Receipt{}, err
+			return d.committedMeanwhile(ctx, c, hash, err)
 		}
 	}
 	return d.write(ctx, c, hash, "OceanMovement", func(txCtx context.Context) (Receipt, []aggregate, error) {

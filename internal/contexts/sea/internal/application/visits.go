@@ -38,8 +38,12 @@ type VisitStore interface {
 	LiveByNumber(ctx context.Context, tenant sea.TenantID, number string) (sea.VisitID, bool, error)
 	// LiveByUnit finds the live visit assigned to a load unit of a movement.
 	LiveByUnit(ctx context.Context, tenant sea.TenantID, movement sea.MovementID, unit int) (sea.VisitID, bool, error)
-	// Signatory reads an assertion's signatory and logs the read. ok is false when the assertion is unknown, and then nothing is logged.
-	Signatory(ctx context.Context, id sea.VisitID, version int, actor, purpose string) (name string, ok bool, err error)
+	// LogSignatoryRead logs a read of an assertion's signatory and answers the log entry's id. ok is false when the
+	// assertion is unknown, and then nothing is logged.
+	LogSignatoryRead(ctx context.Context, id sea.VisitID, version int, actor, purpose string) (access string, ok bool, err error)
+	// Signatory reads the name against a log entry that an earlier transaction committed. ok is false when the entry
+	// is not one: unknown, written by this transaction, or older than the database allows.
+	Signatory(ctx context.Context, access string) (name string, ok bool, err error)
 	// SignatoryAccess lists the logged reads of one assertion, newest first.
 	SignatoryAccess(ctx context.Context, tenant sea.TenantID, id sea.VisitID, version int) ([]SignatoryAccess, error)
 }
@@ -290,8 +294,11 @@ func (d Deps) RecordVgmResponse(ctx context.Context, c Command, response, source
 	})
 }
 
-// ReadVgmSignatory returns the authorised person's name and logs the read. A purpose other than a customs audit, a
-// legal claim or the person's own request is refused before anything is logged, as is an actor without the right.
+// ReadVgmSignatory logs the read and then returns the authorised person's name. A purpose other than a customs
+// audit, a legal claim or the person's own request is refused before anything is logged, as is an actor without the
+// right. The log entry is committed in a transaction of its own before the name is read in a second one: the
+// database returns the name only against a committed entry, so no read leaves the database without its log. When
+// the second step fails the entry stays, a read logged that returned nothing.
 func (d Deps) ReadVgmSignatory(ctx context.Context, c Command, version int, purpose string) (string, error) {
 	if err := d.signatoryScope(ctx, c); err != nil {
 		return "", err
@@ -299,11 +306,11 @@ func (d Deps) ReadVgmSignatory(ctx context.Context, c Command, version int, purp
 	if !kernel.AccessPurpose(purpose).ForRetainedData() {
 		return "", fmt.Errorf("%w: a signatory is read for a customs audit, a legal claim or the person's own request", sea.ErrInvalidVGM)
 	}
-	var name string
+	var access, name string
 	var found bool
 	err := d.Tx.WithinTransaction(ctx, func(txCtx context.Context) error {
 		var err error
-		name, found, err = d.Visits.Signatory(txCtx, sea.VisitID(c.Subject), version, c.Scope.ActorID, purpose)
+		access, found, err = d.Visits.LogSignatoryRead(txCtx, sea.VisitID(c.Subject), version, c.Scope.ActorID, purpose)
 		return err
 	})
 	if err != nil {
@@ -311,6 +318,17 @@ func (d Deps) ReadVgmSignatory(ctx context.Context, c Command, version int, purp
 	}
 	if !found {
 		return "", fmt.Errorf("%w: VGM assertion %d of %s", bentorepo.ErrNotFound, version, c.Subject)
+	}
+	err = d.Tx.WithinTransaction(ctx, func(txCtx context.Context) error {
+		var err error
+		name, found, err = d.Visits.Signatory(txCtx, access)
+		return err
+	})
+	if err != nil {
+		return "", err
+	}
+	if !found {
+		return "", fmt.Errorf("sea application: the logged read %s of VGM assertion %d of %s returned no name", access, version, c.Subject)
 	}
 	return name, nil
 }

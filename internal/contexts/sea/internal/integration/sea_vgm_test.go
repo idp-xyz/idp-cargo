@@ -94,7 +94,7 @@ func TestVGMOnPostgres(t *testing.T) {
 		t.Fatalf("forging a log entry: %v (state %s), want 42501", err, sqlState(err))
 	}
 	if err = f.within(t, func(ctx context.Context, e bentopg.Executor) error {
-		_, err := e.Exec(ctx, `SELECT cargo_sea.read_vgm_signatory('CV-1',1,'ops-1','DOCUMENTS')`)
+		_, err := e.Exec(ctx, `SELECT cargo_sea.log_vgm_signatory_read('CV-1',1,'ops-1','DOCUMENTS')`)
 		return err
 	}); sqlState(err) != "23514" {
 		t.Fatalf("the function with a documents purpose: %v (state %s), want 23514", err, sqlState(err))

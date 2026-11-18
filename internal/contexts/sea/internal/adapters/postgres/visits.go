@@ -320,14 +320,32 @@ func (s VisitStore) live(ctx context.Context, sql string, args ...any) (sea.Visi
 	return sea.VisitID(id), err == nil, err
 }
 
-// Signatory reads the authorised person's name and logs the read. An unknown assertion has ok false and writes no log.
-func (s VisitStore) Signatory(ctx context.Context, id sea.VisitID, version int, actor, purpose string) (string, bool, error) {
+// LogSignatoryRead logs a read of the authorised person's name and answers the log entry's id. An unknown assertion
+// has ok false and writes no log.
+func (s VisitStore) LogSignatoryRead(ctx context.Context, id sea.VisitID, version int, actor, purpose string) (string, bool, error) {
+	q, err := s.DB.RequireExecutor(ctx)
+	if err != nil {
+		return "", false, err
+	}
+	var access *string
+	if err = q.QueryRow(ctx, `SELECT cargo_sea.log_vgm_signatory_read($1,$2,$3,$4)::text`, string(id), version, actor, purpose).Scan(&access); err != nil {
+		return "", false, err
+	}
+	if access == nil {
+		return "", false, nil
+	}
+	return *access, true, nil
+}
+
+// Signatory reads the name against a log entry committed by an earlier transaction. The database answers nothing
+// for an entry of this transaction, of another tenant or more than a minute old.
+func (s VisitStore) Signatory(ctx context.Context, access string) (string, bool, error) {
 	q, err := s.DB.RequireExecutor(ctx)
 	if err != nil {
 		return "", false, err
 	}
 	var name *string
-	if err = q.QueryRow(ctx, `SELECT cargo_sea.read_vgm_signatory($1,$2,$3,$4)`, string(id), version, actor, purpose).Scan(&name); err != nil {
+	if err = q.QueryRow(ctx, `SELECT cargo_sea.read_logged_vgm_signatory($1::uuid)`, access).Scan(&name); err != nil {
 		return "", false, err
 	}
 	if name == nil {

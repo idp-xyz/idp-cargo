@@ -116,6 +116,10 @@ func TestHTTPSeaOnPostgres(t *testing.T) {
 	auditor := mint(tenant, "auditor-1", "sea:ReadVgmSignatory")
 	dpo := mint(tenant, "dpo-1", "sea:ReadVgmSignatoryAccess")
 	stranger := mint(other, "ops-9", "sea:*")
+	// the wildcards grant every action but the two reads that are granted by name only
+	everything := mint(tenant, "admin-1", "sea:*")
+	root := mint(tenant, "root-1", "*")
+	strangerAuditor := mint(other, "auditor-9", "sea:ReadVgmSignatory", "sea:ReadVgmSignatoryAccess")
 
 	post := func(token, key, path, ifMatch, body string) apiResponse {
 		t.Helper()
@@ -436,15 +440,24 @@ func TestHTTPSeaOnPostgres(t *testing.T) {
 	c.expect("the operator reads no signatory", c.do("POST", reads, ops, audit), 403, "FORBIDDEN")
 	c.expect("nor does sea:Read", c.do("POST", reads, reader, audit), 403, "FORBIDDEN")
 	c.expect("nor the reader of the log", c.do("POST", reads, dpo, audit), 403, "FORBIDDEN")
+	c.expect("nor every SEA permission", c.do("POST", reads, everything, audit), 403, "FORBIDDEN")
+	c.expect("nor every permission", c.do("POST", reads, root, audit), 403, "FORBIDDEN")
 	c.expect("a purpose that is none of the three", c.do("POST", reads, auditor, `{"purpose":"MARKETING"}`), 422, "")
 	c.expect("no purpose", c.do("POST", reads, auditor, `{}`), 422, "")
 	c.expect("an assertion that does not exist", c.do("POST", "/v1/container-visits/CV-1/vgm-assertions/9/signatory-reads", auditor, audit), 404, "NOT_FOUND")
-	c.expect("another tenant, whatever it holds", c.do("POST", reads, stranger, audit), 404, "NOT_FOUND")
+	c.expect("another tenant's auditor", c.do("POST", reads, strangerAuditor, audit), 404, "NOT_FOUND")
+	c.expect("another tenant with every SEA permission", c.do("POST", reads, stranger, audit), 403, "FORBIDDEN")
 	if r := c.do("POST", reads, auditor, audit); r.status != 200 || r.body["name"] != "Ada Lovelace" || len(r.body) != 1 {
 		t.Fatalf("the signatory: %d %v", r.status, r.body)
 	}
 	c.expect("the log without its permission", c.do("GET", reads, auditor, ""), 403, "FORBIDDEN")
 	c.expect("the log with sea:Read", c.do("GET", reads, reader, ""), 403, "FORBIDDEN")
+	c.expect("the log with every SEA permission", c.do("GET", reads, everything, ""), 403, "FORBIDDEN")
+	c.expect("the log with every permission", c.do("GET", reads, root, ""), 403, "FORBIDDEN")
+	// the log of an assertion the tenant does not have is an empty list, the same for any id
+	if l := c.do("GET", reads, strangerAuditor, ""); l.status != 200 || dig(l.body, "signatory_reads", 0) != nil {
+		t.Fatalf("another tenant's log: %d %v", l.status, l.body)
+	}
 	status, logged := raw(reads, dpo)
 	var log struct {
 		Reads []struct {
