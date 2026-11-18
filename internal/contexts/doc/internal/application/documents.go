@@ -25,7 +25,7 @@ func (d Deps) build(ctx context.Context, s Scope, id doc.DocumentID, src Source,
 	if d.Facts == nil || d.Parties == nil || d.Directory == nil {
 		return doc.Content{}, ErrMissingDependency
 	}
-	if src.Kind == doc.KindHBL {
+	if src.Kind.SeaHouse() {
 		return d.buildHouseBill(ctx, s, id, src)
 	}
 	facts, err := d.Facts.Latest(ctx, s.TenantID, src.MovementID)
@@ -100,7 +100,7 @@ func (d Deps) buildHouseBill(ctx context.Context, s Scope, id doc.DocumentID, sr
 		}
 		orders = append(orders, parties)
 	}
-	return doc.OceanHouseContent(id, src.ShipmentID, ocean, issuer, orders, src.Entered)
+	return doc.OceanHouseContent(src.Kind, id, src.ShipmentID, ocean, issuer, orders, src.Entered)
 }
 
 // Draft drafts a document.
@@ -176,11 +176,14 @@ func (d Deps) change(ctx context.Context, c Command, read func(context.Context, 
 }
 
 // sourceOf is what the latest version was built from, with the entered fields, agent and, for a HAWB whose
-// shipment AIR now associates with another movement, the movement a command changes.
-func sourceOf(m *doc.Document, payment, handling, agent, movement string) Source {
+// shipment AIR now associates with another movement, the movement a command changes. The release and the number of
+// originals are the latest version's; a release a command names replaces both (EXPRESS with none, ORIGINALS with its
+// count), and a number alone replaces only the count.
+func sourceOf(m *doc.Document, payment, handling, agent, movement, release string, originals int) Source {
 	st, latest := m.State(), m.Latest().Doc
 	src := Source{Kind: st.Kind, MovementID: st.MovementID, ShipmentID: st.ShipmentID, AgentPartyID: latest.Consignee.PartyID,
-		Entered: doc.Entered{PaymentIndicator: latest.PaymentIndicator, HandlingInformation: latest.HandlingInformation}}
+		Entered: doc.Entered{PaymentIndicator: latest.PaymentIndicator, HandlingInformation: latest.HandlingInformation,
+			Release: latest.ReleaseType, Originals: latest.OriginalCount}}
 	if payment != "" {
 		src.Entered.PaymentIndicator = payment
 	}
@@ -193,6 +196,11 @@ func sourceOf(m *doc.Document, payment, handling, agent, movement string) Source
 	if movement != "" {
 		src.MovementID = movement
 	}
+	if release != "" {
+		src.Entered.Release, src.Entered.Originals = release, originals
+	} else if originals != 0 {
+		src.Entered.Originals = originals
+	}
 	return src
 }
 
@@ -203,13 +211,15 @@ type Revise struct {
 	Handling     string
 	AgentPartyID string
 	MovementID   string
+	Release      string
+	Originals    int
 	Amendment    bool
 }
 
 func (d Deps) Revise(ctx context.Context, c Command, r Revise) (Receipt, error) {
 	var content doc.Content
 	return d.change(ctx, c, func(ctx context.Context, m *doc.Document) (err error) {
-		content, err = d.build(ctx, c.Scope, m.ID(), sourceOf(m, r.Payment, r.Handling, r.AgentPartyID, r.MovementID), c.OccurredAt)
+		content, err = d.build(ctx, c.Scope, m.ID(), sourceOf(m, r.Payment, r.Handling, r.AgentPartyID, r.MovementID, r.Release, r.Originals), c.OccurredAt)
 		return err
 	}, func(_ context.Context, m *doc.Document) error {
 		if r.Amendment {
@@ -254,7 +264,7 @@ func (d Deps) Issue(ctx context.Context, c Command, overrideReason string, amend
 	var gate doc.IssueGate
 	return d.change(ctx, c, func(ctx context.Context, m *doc.Document) (err error) {
 		latest := m.Latest()
-		if m.State().Kind == doc.KindHBL {
+		if m.State().Kind.SeaHouse() {
 			if d.Ocean == nil {
 				return ErrMissingDependency
 			}
@@ -320,6 +330,20 @@ func (d Deps) Abandon(ctx context.Context, c Command, reason string) (Receipt, e
 		return err
 	}, func(_ context.Context, m *doc.Document) error {
 		return m.AbandonAmendment(orders, reason, c.Scope.ActorID, c.OccurredAt)
+	})
+}
+
+// ReturnOriginal records one original of the current version returned to the issuer.
+func (d Deps) ReturnOriginal(ctx context.Context, c Command, serial int, evidence string) (Receipt, error) {
+	return d.change(ctx, c, nil, func(_ context.Context, m *doc.Document) error {
+		return m.ReturnOriginal(serial, evidence, c.Scope.ActorID, c.OccurredAt)
+	})
+}
+
+// SurrenderOriginals records every original of the current version surrendered at origin.
+func (d Deps) SurrenderOriginals(ctx context.Context, c Command, evidence string) (Receipt, error) {
+	return d.change(ctx, c, nil, func(_ context.Context, m *doc.Document) error {
+		return m.SurrenderOriginals(evidence, c.Scope.ActorID, c.OccurredAt)
 	})
 }
 

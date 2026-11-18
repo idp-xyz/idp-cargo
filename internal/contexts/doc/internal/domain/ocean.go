@@ -7,11 +7,18 @@ import (
 	"time"
 )
 
-// Release types of an HBL. EXPRESS releases to the named consignee and issues no originals; the originals of
-// ORIGINALS, and a consignee to order, come with the next slice.
+// Release types of a sea house document. EXPRESS releases an HBL to the named consignee and issues no originals.
+// ORIGINALS issues one to nine original bills. SEA_WAYBILL is a house sea waybill: a named consignee and no originals.
 const (
-	ReleaseExpress   = "EXPRESS"
-	ReleaseOriginals = "ORIGINALS"
+	ReleaseExpress    = "EXPRESS"
+	ReleaseOriginals  = "ORIGINALS"
+	ReleaseSeaWaybill = "SEA_WAYBILL"
+
+	// Statuses of an original bill: out with its holder; back with the issuer for an amendment or a cancellation;
+	// surrendered with the whole set at origin (telex release). Each change is a new record.
+	OriginalIssued      = "ISSUED"
+	OriginalReturned    = "RETURNED"
+	OriginalSurrendered = "SURRENDERED_AT_ORIGIN"
 )
 
 // OceanFacts is what DOC reads of SEA's OceanDocFacts v1 (relationship SEA -> DOC).
@@ -95,10 +102,12 @@ func hblNumber(s string) bool {
 	return true
 }
 
-// OceanHouseContent builds an HBL of one shipment. The number is the HBL SEA drew. The consignee is named and the
-// release type is EXPRESS; a consignee to order and the originals are the next slice. The on-board date is stated
+// OceanHouseContent builds an HBL or a house sea waybill of one shipment. The number is the one SEA drew. An HBL
+// is EXPRESS, or ORIGINALS with one to nine bills. The consignee is the orders': a named party, or the text to
+// order COM holds (TO ORDER, or TO ORDER OF a holder), which only an HBL issued as originals carries, with a named
+// notify party (C11). A house sea waybill names its consignee and issues no originals. The on-board date is stated
 // when the facts state it, and issuing requires it.
-func OceanHouseContent(id DocumentID, shipment string, f OceanFacts, issuer Issuer, orders []OrderParties, entered Entered) (Content, error) {
+func OceanHouseContent(kind Kind, id DocumentID, shipment string, f OceanFacts, issuer Issuer, orders []OrderParties, entered Entered) (Content, error) {
 	switch {
 	case !f.Final:
 		return Content{}, ErrSourceNotFinal
@@ -120,13 +129,18 @@ func OceanHouseContent(id DocumentID, shipment string, f OceanFacts, issuer Issu
 	if !hblNumber(h.HBL) {
 		return Content{}, fmt.Errorf("%w: HBL %q", ErrInvalidDocument, h.HBL)
 	}
+	release, originals, err := seaRelease(kind, entered)
+	if err != nil {
+		return Content{}, err
+	}
 	receipt := f.PlaceOfReceipt
 	if receipt == "" {
 		receipt = f.PortOfLoading
 	}
-	c := Content{Kind: string(KindHBL), DocumentID: string(id), Number: h.HBL, IssuerCapacity: KindHBL.Capacity(), Issuer: issuer,
-		IssuePlace: Airport{Code: f.PortOfLoading}, LocationEdition: f.Edition, ReleaseType: ReleaseExpress, PaymentIndicator: entered.PaymentIndicator,
-		Source: SourceRef{Contract: "OceanDocFacts v1", MovementID: f.MovementID, Version: f.Version, SHA256: f.SHA256}, ConsolidationID: f.ConsolidationID,
+	c := Content{Kind: string(kind), DocumentID: string(id), Number: h.HBL, IssuerCapacity: kind.Capacity(), Issuer: issuer,
+		IssuePlace: Airport{Code: f.PortOfLoading}, LocationEdition: f.Edition, ReleaseType: release, OriginalCount: originals,
+		PaymentIndicator: entered.PaymentIndicator,
+		Source:           SourceRef{Contract: "OceanDocFacts v1", MovementID: f.MovementID, Version: f.Version, SHA256: f.SHA256}, ConsolidationID: f.ConsolidationID,
 		ShipmentID: shipment, Origin: Airport{Code: receipt}, Destination: Airport{Code: f.PortOfDischarge}, MasterBill: f.MasterBill, Vessel: f.Vessel,
 		Voyage: f.Voyage, PlaceOfReceipt: receipt, PortOfLoading: f.PortOfLoading, PortOfDischarge: f.PortOfDischarge, OnBoardAt: f.OnBoardAt.UTC(),
 		HandlingInformation: strings.TrimSpace(entered.HandlingInformation),
@@ -162,11 +176,20 @@ func OceanHouseContent(id DocumentID, shipment string, f OceanFacts, issuer Issu
 		if !ok {
 			return Content{}, fmt.Errorf("%w: COM's parties of order %s were not read", ErrInvalidDocument, orderID)
 		}
+		toOrder := o.Consignee != nil && !o.Consignee.Named && !blank(o.Consignee.ToOrder)
 		switch {
 		case o.Shipper == nil || !o.Shipper.Named:
 			return Content{}, fmt.Errorf("%w: order %s names no shipper", ErrIncomplete, orderID)
-		case o.Consignee == nil || !o.Consignee.Named:
-			return Content{}, fmt.Errorf("%w: order %s names no consignee; an HBL to order comes later", ErrIncomplete, orderID)
+		case o.Consignee == nil || (!o.Consignee.Named && !toOrder):
+			return Content{}, fmt.Errorf("%w: order %s names no consignee", ErrIncomplete, orderID)
+		case o.Consignee.ToOrder != "" && !toOrderText(o.Consignee.ToOrder):
+			return Content{}, fmt.Errorf("%w: order %s's consignee text is not TO ORDER, or TO ORDER OF a holder, on one line of at most %d characters (C11)",
+				ErrIncomplete, orderID, maxText)
+		case toOrder && (kind != KindHBL || release != ReleaseOriginals):
+			return Content{}, fmt.Errorf("%w: order %s's consignee is %s, which only an HBL issued as originals carries (C11)", ErrIncomplete, orderID,
+				o.Consignee.ToOrder)
+		case toOrder && (o.Notify == nil || !o.Notify.Named):
+			return Content{}, fmt.Errorf("%w: order %s names no notify party for a bill to order (C11)", ErrIncomplete, orderID)
 		case o.Transport.Mode != "" && o.Transport.Mode != "SEA":
 			return Content{}, fmt.Errorf("%w: order %s requests %s", ErrIncomplete, orderID, o.Transport.Mode)
 		}
@@ -193,6 +216,41 @@ func OceanHouseContent(id DocumentID, shipment string, f OceanFacts, issuer Issu
 		c.Notify = &n
 	}
 	return c, nil
+}
+
+// seaRelease is the release an HBL or a house sea waybill is drafted with.
+func seaRelease(kind Kind, entered Entered) (string, int, error) {
+	switch kind {
+	case KindHBL:
+		release := entered.Release
+		if release == "" {
+			release = ReleaseExpress
+		}
+		switch release {
+		case ReleaseExpress:
+			if entered.Originals != 0 {
+				return "", 0, fmt.Errorf("%w: an EXPRESS bill issues no originals", ErrInvalidChange)
+			}
+			return release, 0, nil
+		case ReleaseOriginals:
+			if entered.Originals < 1 || entered.Originals > 9 {
+				return "", 0, fmt.Errorf("%w: originals are from 1 to 9", ErrInvalidChange)
+			}
+			return release, entered.Originals, nil
+		default:
+			return "", 0, fmt.Errorf("%w: an HBL is EXPRESS or ORIGINALS", ErrInvalidChange)
+		}
+	case KindHouseSeaWaybill:
+		if entered.Release != "" && entered.Release != ReleaseSeaWaybill {
+			return "", 0, fmt.Errorf("%w: a house sea waybill is SEA_WAYBILL", ErrInvalidChange)
+		}
+		if entered.Originals != 0 {
+			return "", 0, fmt.Errorf("%w: a house sea waybill issues no originals", ErrInvalidChange)
+		}
+		return ReleaseSeaWaybill, 0, nil
+	default:
+		return "", 0, fmt.Errorf("%w: kind %s", ErrInvalidDocument, kind)
+	}
 }
 
 func port(code string) bool { return len(code) == 5 && code == strings.ToUpper(code) }

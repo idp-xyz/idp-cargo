@@ -104,14 +104,15 @@ func (m *Module) command(id, tenant, actor, action, subject string, expected int
 func (m *Module) DraftTransportDocument(ctx context.Context, cmd api.DraftTransportDocument) (api.Receipt, error) {
 	r, err := m.deps(cmd.TenantID, cmd.CommandID).Draft(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, api.ActionDraftTransportDocument,
 		cmd.DocumentID, 0, cmd.OccurredAt, cmd), application.Source{Kind: domain.Kind(cmd.Kind), MovementID: cmd.MovementID, ShipmentID: cmd.ShipmentID,
-		AgentPartyID: cmd.AgentPartyID, Entered: domain.Entered{PaymentIndicator: cmd.PaymentIndicator, HandlingInformation: cmd.HandlingInformation}})
+		AgentPartyID: cmd.AgentPartyID, Entered: domain.Entered{PaymentIndicator: cmd.PaymentIndicator, HandlingInformation: cmd.HandlingInformation,
+			Release: cmd.Release, Originals: cmd.Originals}})
 	return receipt(r, err)
 }
 
 func (m *Module) RefreshDocumentDraft(ctx context.Context, cmd api.RefreshDocumentDraft) (api.Receipt, error) {
 	r, err := m.deps(cmd.TenantID, cmd.CommandID).Revise(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, api.ActionRefreshDocumentDraft,
 		cmd.DocumentID, cmd.ExpectedRevision, cmd.OccurredAt, cmd), application.Revise{Reason: cmd.Reason, Payment: cmd.PaymentIndicator,
-		Handling: cmd.HandlingInformation, AgentPartyID: cmd.AgentPartyID, MovementID: cmd.MovementID})
+		Handling: cmd.HandlingInformation, AgentPartyID: cmd.AgentPartyID, MovementID: cmd.MovementID, Release: cmd.Release, Originals: cmd.Originals})
 	return receipt(r, err)
 }
 
@@ -130,7 +131,20 @@ func (m *Module) IssueTransportDocument(ctx context.Context, cmd api.IssueTransp
 func (m *Module) OpenDocumentAmendment(ctx context.Context, cmd api.OpenDocumentAmendment) (api.Receipt, error) {
 	r, err := m.deps(cmd.TenantID, cmd.CommandID).Revise(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, api.ActionOpenDocumentAmendment,
 		cmd.DocumentID, cmd.ExpectedRevision, cmd.OccurredAt, cmd), application.Revise{Reason: cmd.Reason, Payment: cmd.PaymentIndicator,
-		Handling: cmd.HandlingInformation, AgentPartyID: cmd.AgentPartyID, MovementID: cmd.MovementID, Amendment: true})
+		Handling: cmd.HandlingInformation, AgentPartyID: cmd.AgentPartyID, MovementID: cmd.MovementID, Release: cmd.Release, Originals: cmd.Originals,
+		Amendment: true})
+	return receipt(r, err)
+}
+
+func (m *Module) ReturnOriginal(ctx context.Context, cmd api.ReturnOriginal) (api.Receipt, error) {
+	r, err := m.deps(cmd.TenantID, cmd.CommandID).ReturnOriginal(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, api.ActionReturnOriginal,
+		cmd.DocumentID, cmd.ExpectedRevision, cmd.OccurredAt, cmd), cmd.Serial, cmd.Evidence)
+	return receipt(r, err)
+}
+
+func (m *Module) SurrenderOriginals(ctx context.Context, cmd api.SurrenderOriginals) (api.Receipt, error) {
+	r, err := m.deps(cmd.TenantID, cmd.CommandID).SurrenderOriginals(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, api.ActionSurrenderOriginals,
+		cmd.DocumentID, cmd.ExpectedRevision, cmd.OccurredAt, cmd), cmd.Evidence)
 	return receipt(r, err)
 }
 
@@ -220,6 +234,18 @@ func (m *Module) GetDocumentVersion(ctx context.Context, q api.GetDocumentVersio
 	return out, nil
 }
 
+func (m *Module) ListOriginals(ctx context.Context, q api.ListOriginals) ([]api.Original, error) {
+	d, _, err := m.reads(q.TenantID).Document(ctx, domain.TenantID(q.TenantID), domain.DocumentID(q.DocumentID))
+	if err != nil {
+		return nil, classify(err)
+	}
+	var out []api.Original
+	for _, o := range d.Originals() {
+		out = append(out, api.Original{Version: o.Version, Serial: o.Serial, Record: o.Record, Status: o.Status, By: o.By, At: o.At, Evidence: o.Evidence})
+	}
+	return out, nil
+}
+
 func (m *Module) ListDocumentsForShipment(ctx context.Context, q api.ListDocumentsForShipment) ([]api.DocumentSummary, error) {
 	return m.list(ctx, q.TenantID, q.ShipmentID, "")
 }
@@ -242,8 +268,9 @@ func (m *Module) list(ctx context.Context, tenant, shipment, consolidation strin
 }
 
 // GetHouseDocumentSnapshot answers TransportDocumentSnapshot v1 for FIN: the valid issued version of the shipment's
-// house document (a HAWB in N1), issued or under amendment, or the version issued last at or before q.At; anything
-// else is not found.
+// house document (a HAWB, an HBL or a house sea waybill), issued, under amendment or with its originals surrendered,
+// or the version issued last at or before q.At; anything else is not found. The master number is the MAWB's, or the
+// master bill's for a sea document.
 func (m *Module) GetHouseDocumentSnapshot(ctx context.Context, q api.GetHouseDocumentSnapshot) (api.TransportDocumentSnapshot, error) {
 	if q.TenantID == "" || q.ShipmentID == "" {
 		return api.TransportDocumentSnapshot{}, classify(application.ErrInvalidQuery)
@@ -255,7 +282,7 @@ func (m *Module) GetHouseDocumentSnapshot(ctx context.Context, q api.GetHouseDoc
 	}
 	var house []application.Summary
 	for _, s := range found {
-		if s.Kind.House() && (s.State == domain.StateIssued || s.State == domain.StateAmending) {
+		if s.Kind.House() && (s.State == domain.StateIssued || s.State == domain.StateAmending || s.State == domain.StateSurrendered) {
 			house = append(house, s)
 		}
 	}
@@ -288,8 +315,12 @@ func (m *Module) GetHouseDocumentSnapshot(ctx context.Context, q api.GetHouseDoc
 		}
 	}
 	c := v.Doc
+	master := c.MAWB
+	if st.Kind.SeaHouse() {
+		master = c.MasterBill
+	}
 	return api.TransportDocumentSnapshot{DocumentID: string(st.DocumentID), Kind: string(st.Kind), Version: v.No, VersionStatus: d.Status(v.No),
-		SHA256: v.SHA256, Number: c.Number, MasterNumber: c.MAWB, ShipmentID: st.ShipmentID, ConsolidationID: c.ConsolidationID,
+		SHA256: v.SHA256, Number: c.Number, MasterNumber: master, ShipmentID: st.ShipmentID, ConsolidationID: c.ConsolidationID,
 		LegalEntityID: st.LegalEntityID, IssuedAt: v.Issue.At, Origin: c.Origin.Code, Destination: c.Destination.Code, Pieces: c.Cargo.Pieces,
 		GrossGrams: c.Cargo.GrossGrams, ChargeableGrams: c.Cargo.ChargeableGrams}, nil
 }
@@ -361,6 +392,7 @@ func classify(err error) error {
 		errors.Is(err, domain.ErrPartiesDiverge), errors.Is(err, domain.ErrIncomplete), errors.Is(err, domain.ErrNotLocked),
 		errors.Is(err, domain.ErrCreditHold), errors.Is(err, domain.ErrCreditUndecided), errors.Is(err, domain.ErrIssuanceBlocked),
 		errors.Is(err, domain.ErrIssuerNotVerified), errors.Is(err, domain.ErrInvalidAuthority), errors.Is(err, domain.ErrNumberIssued),
+		errors.Is(err, domain.ErrOriginalsOut), errors.Is(err, domain.ErrNoTemplate),
 		errors.Is(err, domain.ErrNotDispatchable), errors.Is(err, domain.ErrTransferBlocked), errors.Is(err, domain.ErrTransferNotReserved),
 		errors.Is(err, domain.ErrInvalidDispatch), errors.Is(err, domain.ErrCopyChanged),
 		errors.Is(err, application.ErrInvalidQuery), errors.Is(err, application.ErrInvalidCommand), errors.Is(err, application.ErrUnknownSource),

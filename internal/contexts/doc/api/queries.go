@@ -7,13 +7,24 @@ import (
 	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
-// Document states.
+// Document states. SURRENDERED is an issued document whose originals were all surrendered at origin (telex
+// release): its issued version stays the valid one.
 const (
-	StateDraft     = "DRAFT"
-	StateApproved  = "APPROVED"
-	StateIssued    = "ISSUED"
-	StateAmending  = "AMENDING"
-	StateCancelled = "CANCELLED"
+	StateDraft       = "DRAFT"
+	StateApproved    = "APPROVED"
+	StateIssued      = "ISSUED"
+	StateAmending    = "AMENDING"
+	StateSurrendered = "SURRENDERED"
+	StateCancelled   = "CANCELLED"
+)
+
+// Release types of a version: an air waybill is CONSIGNEE_NAMED; an HBL is EXPRESS (no originals, released to the
+// named consignee) or ORIGINALS (one to nine original bills); a house sea waybill is SEA_WAYBILL.
+const (
+	ReleaseConsigneeNamed = "CONSIGNEE_NAMED"
+	ReleaseExpress        = "EXPRESS"
+	ReleaseOriginals      = "ORIGINALS"
+	ReleaseSeaWaybill     = "SEA_WAYBILL"
 )
 
 // Version statuses: DRAFT or APPROVED while in progress; ISSUED for the valid version; SUPERSEDED once an
@@ -87,18 +98,19 @@ type DocumentVersion struct {
 }
 
 // TransportDocumentContent v1. Weights are in grams and volumes in cubic centimetres. An air waybill's airports carry
-// their UN/LOCODE and the IATA code frozen in AIR's facts; an HBL carries the ports, the vessel and the on-board
-// date from OceanDocFacts. Parties carry no contacts.
+// their UN/LOCODE and the IATA code frozen in AIR's facts; an HBL and a house sea waybill carry the ports, the
+// vessel, the master bill and the on-board date from OceanDocFacts, and an HBL issued as originals their number.
+// Parties carry no contacts; the consignee of a bill to order is the order's text (Party.ToOrder).
 type DocumentContent struct {
 	Kind                string             `json:"kind"`
 	DocumentID          string             `json:"document_id"`
 	Number              string             `json:"number"`
-	MAWB                string             `json:"mawb"`
-	IssuerCapacity      string             `json:"issuer_capacity"` // CONSOLIDATOR or AGENT_OF_CARRIER
+	MAWB                string             `json:"mawb,omitempty"`
+	IssuerCapacity      string             `json:"issuer_capacity"` // CONSOLIDATOR, AGENT_OF_CARRIER or NVOCC_CARRIER
 	Issuer              Issuer             `json:"issuer"`
 	IssuePlace          Airport            `json:"issue_place"`
 	LocationEdition     string             `json:"location_edition"`
-	ReleaseType         string             `json:"release_type"` // CONSIGNEE_NAMED
+	ReleaseType         string             `json:"release_type"` // CONSIGNEE_NAMED, EXPRESS, ORIGINALS or SEA_WAYBILL
 	PaymentIndicator    string             `json:"payment_indicator"`
 	Source              SourceRef          `json:"source"`
 	ConsolidationID     string             `json:"consolidation_id"`
@@ -106,7 +118,7 @@ type DocumentContent struct {
 	Airline             Airline            `json:"airline"`
 	Origin              Airport            `json:"origin"`
 	Destination         Airport            `json:"destination"`
-	Flights             []Flight           `json:"flights"`
+	Flights             []Flight           `json:"flights,omitempty"`
 	Shipper             Party              `json:"shipper"`
 	Consignee           Party              `json:"consignee"`
 	Notify              *Party             `json:"notify_party,omitempty"`
@@ -122,6 +134,7 @@ type DocumentContent struct {
 	PortOfDischarge     string             `json:"port_of_discharge,omitempty"`
 	OnBoardAt           time.Time          `json:"on_board_at,omitzero"`
 	Containers          []ShippedContainer `json:"containers,omitempty"`
+	Originals           int                `json:"originals,omitempty"`
 }
 
 // ShippedContainer is one container of an HBL, as the published facts stated it.
@@ -197,6 +210,7 @@ type Party struct {
 	Identifiers   []Identifier `json:"identifiers,omitempty"`
 	Address       *Address     `json:"address,omitempty"`
 	Overridden    bool         `json:"overridden,omitempty"`
+	ToOrder       string       `json:"to_order,omitempty"` // the consignee of a bill to order: the order's text, no party
 }
 
 type Transport struct {
@@ -295,4 +309,31 @@ type Queries interface {
 	ListDocumentsForShipment(ctx context.Context, q ListDocumentsForShipment) ([]DocumentSummary, error)
 	ListDocumentsForConsolidation(ctx context.Context, q ListDocumentsForConsolidation) ([]DocumentSummary, error)
 	GetIssuanceAuthority(ctx context.Context, q GetIssuanceAuthority) (IssuanceAuthority, error)
+	ListOriginals(ctx context.Context, q ListOriginals) ([]Original, error)
+}
+
+// Statuses of an original bill.
+const (
+	OriginalIssued      = "ISSUED"                // out, with its holder
+	OriginalReturned    = "RETURNED"              // back with the issuer, for an amendment or a cancellation
+	OriginalSurrendered = "SURRENDERED_AT_ORIGIN" // surrendered with the whole set at origin (telex release)
+)
+
+// Original is one record of an original bill of an issued version. A serial's records are numbered from 1; the one
+// with the highest number is the original's status. The first is its issue; later ones carry evidence.
+type Original struct {
+	Version  int
+	Serial   int
+	Record   int
+	Status   string
+	By       string
+	At       time.Time
+	Evidence string
+}
+
+// ListOriginals reads the original records of a document, by version, serial and record number. A document
+// without originals has none.
+type ListOriginals struct {
+	TenantID   string
+	DocumentID string
 }

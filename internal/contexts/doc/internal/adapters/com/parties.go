@@ -96,6 +96,9 @@ func (p Parties) Contacts(ctx context.Context, tenant doc.TenantID, actor, order
 func partyOf(v comapi.OrderPartyView) *doc.Party {
 	p := &doc.Party{Version: v.Version, Named: v.Kind == comapi.KindParty, PartyID: v.PartyID, PartyRevision: v.PartyRevision, LegalName: v.LegalName,
 		EnglishName: v.EnglishName, CountryCode: v.CountryCode, Overridden: v.Address != nil && v.Address.Source == comapi.FromOrder}
+	if v.Kind == comapi.KindToOrder {
+		p.ToOrder = v.ToOrder
+	}
 	for _, i := range v.Identifiers {
 		p.Identifiers = append(p.Identifiers, doc.Identifier{Type: i.Type, Country: i.Country, Value: i.Value, None: i.None})
 	}

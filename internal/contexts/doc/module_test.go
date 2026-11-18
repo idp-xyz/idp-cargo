@@ -86,11 +86,32 @@ func TestTheModelEmitsThePublishedEventTypes(t *testing.T) {
 	if err = a.Withdraw("closed", "legal-1", at); err != nil {
 		t.Fatal(err)
 	}
+	// an HBL to order, issued as originals and surrendered at origin
+	ocean := domain.OceanFacts{MovementID: "OM-1", Version: 1, SHA256: strings.Repeat("ef", 32), Final: true, ConsolidationID: "C-2", LegalEntityID: "LE",
+		MasterBill: "LINU2611000457", Vessel: "EVER GIVEN", Voyage: "0123W", PortOfLoading: "CNSHG", PortOfDischarge: "DEHAM", OnBoardAt: at,
+		Houses: []domain.OceanHouse{{ShipmentID: "SH-L", HBL: "SHAL0000001", Packs: 6, Package: "CT", GrossGrams: 312_000, Goods: "Cartons",
+			OrderIDs: []string{"O-L"}}}}
+	seaOrders := []domain.OrderParties{{OrderID: "O-L", Revision: 3, Transport: domain.Transport{Mode: "SEA"}, Shipper: party("S", "CN"),
+		Consignee: &domain.Party{ToOrder: "TO ORDER OF BANK OF CHINA", Version: 1}, Notify: party("N", "DE"), Locks: []string{"DOC-L1"}}}
+	bill, err := domain.OceanHouseContent(domain.KindHBL, "DOC-L1", "SH-L", ocean, issuer, seaOrders, domain.Entered{PaymentIndicator: domain.PaymentPrepaid,
+		Release: domain.ReleaseOriginals, Originals: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := domain.DraftDocument("T", "DOC-L1", bill, "doc-1", at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = errors.Join(h.Approve("doc-2", at), h.Issue(domain.IssueGate{Ocean: ocean, Orders: seaOrders, OverrideReason: "FIN not in service",
+		IssuerVerified: true, AuthorityID: "A", AuthorityVersion: 1}, "doc-2", at), h.SurrenderOriginals("telex release", "doc-2", at)); err != nil {
+		t.Fatal(err)
+	}
 	published := map[string]bool{api.TransportDocumentDrafted: true, api.TransportDocumentApproved: true, api.TransportDocumentIssued: true,
 		api.TransportDocumentAmendmentOpened: true, api.TransportDocumentAmended: true, api.TransportDocumentAmendmentAbandoned: true,
-		api.TransportDocumentCancelled: true, api.IssuanceAuthorityRecorded: true, api.IssuanceAuthorityWithdrawn: true}
+		api.TransportDocumentCancelled: true, api.OriginalBillsSurrendered: true, api.IssuanceAuthorityRecorded: true,
+		api.IssuanceAuthorityWithdrawn: true}
 	emitted := map[string]bool{}
-	for _, e := range append(d.Pending(), a.Pending()...) {
+	for _, e := range append(append(d.Pending(), h.Pending()...), a.Pending()...) {
 		if !published[e.Type] {
 			t.Errorf("event type %s is not published by package api", e.Type)
 		}
@@ -99,15 +120,26 @@ func TestTheModelEmitsThePublishedEventTypes(t *testing.T) {
 	if len(emitted) != len(published) {
 		t.Fatalf("emitted %v, published %v", emitted, published)
 	}
-	// the content type package api publishes reads every field the model writes
-	v := d.Latest()
-	var published1 api.DocumentContent
-	if err = json.Unmarshal(v.Content, &published1); err != nil {
-		t.Fatal(err)
+	// the content type package api publishes reads every field the model writes, of an air waybill and of a bill
+	// to order with its originals
+	for _, v := range []domain.Version{d.Latest(), h.Latest()} {
+		var published1 api.DocumentContent
+		if err = json.Unmarshal(v.Content, &published1); err != nil {
+			t.Fatal(err)
+		}
+		again, _ := json.Marshal(published1)
+		if string(again) != string(v.Content) {
+			t.Fatalf("api.DocumentContent loses fields:\n%s\n%s", v.Content, again)
+		}
 	}
-	again, _ := json.Marshal(published1)
-	if string(again) != string(v.Content) {
-		t.Fatalf("api.DocumentContent loses fields:\n%s\n%s", v.Content, again)
+	// the states, release types and original statuses package api publishes are the model's
+	for published, model := range map[string]string{api.StateSurrendered: string(domain.StateSurrendered), api.ReleaseExpress: domain.ReleaseExpress,
+		api.ReleaseOriginals: domain.ReleaseOriginals, api.ReleaseSeaWaybill: domain.ReleaseSeaWaybill, api.ReleaseConsigneeNamed: domain.ReleaseConsigneeNamed,
+		api.OriginalIssued: domain.OriginalIssued, api.OriginalReturned: domain.OriginalReturned, api.OriginalSurrendered: domain.OriginalSurrendered,
+		api.KindHouseSeaWaybill: string(domain.KindHouseSeaWaybill)} {
+		if published != model {
+			t.Errorf("package api publishes %q for the model's %q", published, model)
+		}
 	}
 }
 
@@ -126,6 +158,8 @@ func TestClassifyMapsCausesToAPIKinds(t *testing.T) {
 		{domain.ErrIssuanceBlocked, api.ErrRejected},
 		{domain.ErrPartiesDiverge, api.ErrRejected},
 		{domain.ErrNumberIssued, api.ErrRejected},
+		{domain.ErrOriginalsOut, api.ErrRejected},
+		{domain.ErrNoTemplate, api.ErrRejected},
 		{application.ErrUnknownSource, api.ErrRejected},
 		{kernel.ErrOutsideRecordWindow, api.ErrRejected},
 	} {
