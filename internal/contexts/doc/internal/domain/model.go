@@ -33,6 +33,8 @@ var (
 	ErrIssuanceBlocked   = errors.New("doc: DOC_ISSUANCE_BLOCKED: the legal entity holds no issuance authority in force for the kind, place and airline (OD-10)")
 	ErrIssuerNotVerified = errors.New("doc: the issuing legal entity is not VERIFIED in ORG")
 	ErrInvalidAuthority  = errors.New("doc: invalid issuance authority")
+	ErrOriginalsOut      = errors.New("doc: DOC_ORIGINALS_OUT: an original of the valid version is still out")
+	ErrNoTemplate        = errors.New("doc: DOC_NO_TEMPLATE: no template renders a document of this kind yet")
 	ErrNumberIssued      = errors.New("doc: DOC_NUMBER_ISSUED: another shipment or movement of the legal entity was issued the number; a number is issued for one of them only (G08-04)")
 )
 
@@ -40,15 +42,23 @@ var (
 type Kind string
 
 const (
-	KindHAWB Kind = "HAWB"
-	KindMAWB Kind = "MAWB"
-	KindHBL  Kind = "HBL"
+	KindHAWB            Kind = "HAWB"
+	KindMAWB            Kind = "MAWB"
+	KindHBL             Kind = "HBL"
+	KindHouseSeaWaybill Kind = "HOUSE_SEA_WAYBILL"
 )
 
-func (k Kind) valid() bool { return k == KindHAWB || k == KindMAWB || k == KindHBL }
+func (k Kind) valid() bool {
+	return k == KindHAWB || k == KindMAWB || k == KindHBL || k == KindHouseSeaWaybill
+}
 
-// house is a document of one shipment: a HAWB or an HBL.
-func (k Kind) House() bool { return k == KindHAWB || k == KindHBL }
+// House is a document of one shipment: a HAWB, an HBL or a house sea waybill.
+func (k Kind) House() bool {
+	return k == KindHAWB || k == KindHBL || k == KindHouseSeaWaybill
+}
+
+// SeaHouse is an HBL or a house sea waybill, built from OceanDocFacts.
+func (k Kind) SeaHouse() bool { return k == KindHBL || k == KindHouseSeaWaybill }
 
 // Capacity is the capacity the issuer signs in: consolidator for a HAWB, agent of the airline for a MAWB the
 // forwarder executes, and NVOCC for an HBL. The NVOCC filing itself is checked as the issuance authority, which
@@ -57,7 +67,7 @@ func (k Kind) Capacity() string {
 	switch k {
 	case KindMAWB:
 		return "AGENT_OF_CARRIER"
-	case KindHBL:
+	case KindHBL, KindHouseSeaWaybill:
 		return "NVOCC_CARRIER"
 	default:
 		return "CONSOLIDATOR"

@@ -3,9 +3,12 @@ package domain
 import (
 	"fmt"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 // What DOC reads before its transaction (T3) to build a version.
@@ -139,7 +142,8 @@ type Address struct {
 	UNLocode     string   `json:"un_locode,omitempty"`
 }
 
-// Party is a document party as frozen: a named ORG party with its names, identifiers and documentary address.
+// Party is a document party as frozen: a named ORG party with its names, identifiers and documentary address, or
+// the consignee of a bill to order, which is the order's text only (TO ORDER, or TO ORDER OF a holder; C11).
 // Contacts are never part of a document (P5).
 type Party struct {
 	PartyID       string       `json:"party_id"`
@@ -150,17 +154,19 @@ type Party struct {
 	Identifiers   []Identifier `json:"identifiers,omitempty"`
 	Address       *Address     `json:"address,omitempty"`
 	Overridden    bool         `json:"overridden,omitempty"` // an address given on the order
+	ToOrder       string       `json:"to_order,omitempty"`   // the order's text for a consignee to order
 	Version       int64        `json:"-"`                    // the order party version COM reported
 	Named         bool         `json:"-"`                    // false for a TO ORDER consignee
 }
 
 // same reports whether two orders name the same party: the same ORG party at the same revision with the same
-// documentary address.
+// documentary address, or the same text to order.
 func (p *Party) same(o *Party) bool {
 	if p == nil || o == nil {
 		return p == o
 	}
-	return p.Named == o.Named && p.PartyID == o.PartyID && p.PartyRevision == o.PartyRevision && reflect.DeepEqual(p.Address, o.Address)
+	return p.Named == o.Named && p.PartyID == o.PartyID && p.PartyRevision == o.PartyRevision && p.ToOrder == o.ToOrder &&
+		reflect.DeepEqual(p.Address, o.Address)
 }
 
 type Transport struct {
@@ -243,12 +249,15 @@ type Content struct {
 	PortOfDischarge     string             `json:"port_of_discharge,omitempty"`
 	OnBoardAt           time.Time          `json:"on_board_at,omitzero"`
 	Containers          []ShippedContainer `json:"containers,omitempty"`
+	OriginalCount       int                `json:"originals,omitempty"`
 }
 
 // Entered is what the person drafting enters: the payment indicator and handling information.
 type Entered struct {
 	PaymentIndicator    string
 	HandlingInformation string
+	Release             string // EXPRESS or ORIGINALS for an HBL; a house sea waybill is SEA_WAYBILL; an air waybill's is CONSIGNEE_NAMED or empty
+	Originals           int    // 1 to 9 when Release is ORIGINALS; an air waybill has none
 }
 
 func (e Entered) valid() bool {
@@ -269,6 +278,8 @@ func common(kind Kind, id DocumentID, f Facts, issuer Issuer, entered Entered) (
 		return Content{}, fmt.Errorf("%w: the issuer is the movement's operating legal entity %s", ErrInvalidDocument, f.LegalEntityID)
 	case !entered.valid():
 		return Content{}, fmt.Errorf("%w: payment indicator PREPAID or COLLECT and handling information of at most %d characters", ErrInvalidChange, maxText)
+	case entered.Originals != 0 || (entered.Release != "" && entered.Release != ReleaseConsigneeNamed):
+		return Content{}, fmt.Errorf("%w: an air waybill is released to its named consignee and has no originals", ErrInvalidChange)
 	}
 	return Content{Kind: string(kind), DocumentID: string(id), MAWB: f.MAWB, IssuerCapacity: kind.Capacity(), Issuer: issuer, IssuePlace: f.Origin,
 		LocationEdition: f.Edition, ReleaseType: ReleaseConsigneeNamed, PaymentIndicator: entered.PaymentIndicator,
@@ -369,10 +380,24 @@ func MasterContent(id DocumentID, f Facts, issuer Issuer, agent Party, entered E
 }
 
 // complete checks what a version of its kind needs before approval: for a HAWB, a Chinese shipper's customs or
-// credit code and the consignee's identifier or its recorded absence, as manifests need them (O1).
+// credit code and the consignee's identifier or its recorded absence, as manifests need them (O1). A house sea
+// document holds its release and number of originals together (an HBL is EXPRESS with none or ORIGINALS with one to
+// nine; a sea waybill is SEA_WAYBILL with none), and a consignee to order carries a text of the form COM holds.
 func (c Content) complete() error {
 	if !Kind(c.Kind).House() {
 		return nil
+	}
+	switch Kind(c.Kind) {
+	case KindHBL:
+		express := c.ReleaseType == ReleaseExpress && c.OriginalCount == 0
+		originals := c.ReleaseType == ReleaseOriginals && c.OriginalCount >= 1 && c.OriginalCount <= 9
+		if !express && !originals {
+			return fmt.Errorf("%w: an HBL is EXPRESS with no originals, or ORIGINALS with one to nine", ErrIncomplete)
+		}
+	case KindHouseSeaWaybill:
+		if c.ReleaseType != ReleaseSeaWaybill || c.OriginalCount != 0 {
+			return fmt.Errorf("%w: a house sea waybill is SEA_WAYBILL with no originals", ErrIncomplete)
+		}
 	}
 	has := func(p Party, types ...string) bool {
 		for _, i := range p.Identifiers {
@@ -385,8 +410,28 @@ func (c Content) complete() error {
 	if c.Shipper.CountryCode == "CN" && !has(c.Shipper, "CN_USCC", "CN_CUSTOMS") {
 		return fmt.Errorf("%w: a Chinese shipper's unified social credit code or customs code", ErrIncomplete)
 	}
+	if c.Consignee.ToOrder != "" && !toOrderText(c.Consignee.ToOrder) {
+		return fmt.Errorf("%w: the consignee's text is not TO ORDER, or TO ORDER OF a holder, on one line of at most %d characters", ErrIncomplete, maxText)
+	}
+	if c.ToOrder() {
+		if Kind(c.Kind) != KindHBL || c.ReleaseType != ReleaseOriginals || c.Notify == nil || c.Notify.PartyID == "" {
+			return fmt.Errorf("%w: a consignee to order is on an HBL issued as originals that names a notify party (C11)", ErrIncomplete)
+		}
+		return nil
+	}
 	if c.Consignee.CountryCode != "CN" && len(c.Consignee.Identifiers) == 0 {
 		return fmt.Errorf("%w: the consignee's registration code, or its recorded absence", ErrIncomplete)
 	}
 	return nil
+}
+
+// ToOrder reports a consignee to order: the order's text, not a named party.
+func (c Content) ToOrder() bool { return c.Consignee.ToOrder != "" }
+
+var toOrderForm = regexp.MustCompile(`^TO ORDER( OF \S.*)?$`)
+
+// toOrderText reports a text DOC accepts for a consignee to order, the form COM holds: TO ORDER, or TO ORDER OF a
+// holder, on one line of at most maxText characters with no control character.
+func toOrderText(s string) bool {
+	return utf8.RuneCountInString(s) <= maxText && toOrderForm.MatchString(s) && !strings.ContainsFunc(s, unicode.IsControl)
 }

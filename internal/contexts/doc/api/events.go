@@ -14,8 +14,10 @@ const (
 	TransportDocumentAmended            = "TransportDocumentAmended.v1"
 	TransportDocumentAmendmentAbandoned = "TransportDocumentAmendmentAbandoned.v1"
 	TransportDocumentCancelled          = "TransportDocumentCancelled.v1"
-	IssuanceAuthorityRecorded           = "IssuanceAuthorityRecorded.v1"
-	IssuanceAuthorityWithdrawn          = "IssuanceAuthorityWithdrawn.v1"
+	// OriginalBillsSurrendered: every original of the valid version was surrendered at origin.
+	OriginalBillsSurrendered   = "OriginalBillsSurrendered.v1"
+	IssuanceAuthorityRecorded  = "IssuanceAuthorityRecorded.v1"
+	IssuanceAuthorityWithdrawn = "IssuanceAuthorityWithdrawn.v1"
 	// Dispatch events (DOC V0.2) have the dispatch as subject and name the document and version; never a recipient's
 	// name or a contact.
 	DocumentDispatchPrepared       = "DocumentDispatchPrepared.v1"

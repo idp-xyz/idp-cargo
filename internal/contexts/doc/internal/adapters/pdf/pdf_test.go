@@ -2,6 +2,7 @@ package pdf
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -65,6 +66,17 @@ func structure(t *testing.T, pdf []byte) (objects int, pages int) {
 		}
 	}
 	return size - 1, bytes.Count(pdf, []byte("/Type /Page "))
+}
+
+// The template is the air waybill's. A bill of lading laid out on it would read "Not negotiable".
+func TestASeaDocumentHasNoTemplateYet(t *testing.T) {
+	for _, kind := range []doc.Kind{doc.KindHBL, doc.KindHouseSeaWaybill} {
+		r := house(1)
+		r.Doc.Kind = string(kind)
+		if pdf, err := (Renderer{}).Render(r); !errors.Is(err, doc.ErrNoTemplate) || pdf != nil {
+			t.Errorf("%s rendered under %s: %v", kind, Template, err)
+		}
+	}
 }
 
 func TestHouseWaybillRendersToAValidDeterministicPDF(t *testing.T) {

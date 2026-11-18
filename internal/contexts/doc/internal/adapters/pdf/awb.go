@@ -118,9 +118,13 @@ func pair(p *Page, x, top, w1, w2, min float64, maxLines int, label1, text1, lab
 
 // Render lays out one version: the issuer, parties, route, flights, cargo, security status, issue place and date;
 // a MAWB lists its houses; a version that is not issued carries a draft mark; a dispatch copy lists the contacts
-// provided with consent.
+// provided with consent. The template is the air waybill's: a sea document has none yet and is refused rather than
+// laid out as a non-negotiable air waybill.
 func (Renderer) Render(r app.Rendering) ([]byte, error) {
 	c := r.Doc
+	if c.Kind != string(doc.KindHAWB) && c.Kind != string(doc.KindMAWB) {
+		return nil, fmt.Errorf("%w: %s under %s", doc.ErrNoTemplate, c.Kind, Template)
+	}
 	page := &Page{}
 	pages := []*Page{page}
 	const left, width = 36.0, PageWidth - 72

@@ -1,6 +1,7 @@
-// Package api is the published language of DOC (Transport Documents) V0.2, the N1 air line: the house air
-// waybill (HAWB) and the master air waybill (MAWB) of an air consolidation, rendered to PDF and dispatched with the
-// P5 records (dispatch.go). It imports only the standard library and the kernel.
+// Package api is the published language of DOC (Transport Documents): the house air waybill (HAWB) and the master
+// air waybill (MAWB) of an air consolidation, rendered to PDF and dispatched with the P5 records (dispatch.go), and
+// the house bill of lading (HBL) and house sea waybill of a sea shipment, built from SEA's OceanDocFacts v1, with
+// the originals of an HBL. It imports only the standard library and the kernel.
 //
 // A document is drafted from AIR's finalized facts (AirDocFacts v1, relationship 11): a HAWB from the house of one
 // FUL shipment, with the shipper, consignee and notify party COM froze on the orders of its parts (OrderParties
@@ -23,9 +24,10 @@ import (
 
 // Document kinds.
 const (
-	KindHAWB = "HAWB"
-	KindMAWB = "MAWB"
-	KindHBL  = "HBL"
+	KindHAWB            = "HAWB"
+	KindMAWB            = "MAWB"
+	KindHBL             = "HBL"
+	KindHouseSeaWaybill = "HOUSE_SEA_WAYBILL"
 )
 
 // Payment indicators of the freight.
@@ -38,6 +40,11 @@ const (
 // A HAWB names its ShipmentID; a MAWB its AgentPartyID, the destination agent. One document of a kind that is not
 // cancelled per shipment (HAWB) or consolidation (MAWB). The issuing legal entity is the movement's operating
 // legal entity, VERIFIED in ORG; the issue place is the movement's origin.
+//
+// An HBL or a house sea waybill is drafted from the latest OceanDocFacts version instead and names its ShipmentID;
+// a shipment has one of the two that is not cancelled. Release says how an HBL is released. The consignee is the
+// orders': a consignee to order (COM's TO ORDER text) is carried only by an HBL issued as ORIGINALS whose orders
+// name a notify party (C11).
 type DraftTransportDocument struct {
 	CommandID           string
 	TenantID            string
@@ -49,13 +56,18 @@ type DraftTransportDocument struct {
 	AgentPartyID        string
 	PaymentIndicator    string
 	HandlingInformation string
+	Release             string // an HBL: EXPRESS (also when empty) or ORIGINALS; a house sea waybill: SEA_WAYBILL or empty
+	Originals           int    // 1 to 9 when Release is ORIGINALS, otherwise 0
 	OccurredAt          time.Time
 }
 
 // RefreshDocumentDraft writes the next draft version from AIR's latest facts and COM's or ORG's current parties,
 // with a reason; empty entered fields keep those of the latest version. An approved draft needs approval again;
 // during an amendment the amendment's draft is replaced and needs approval again. MovementID, for a HAWB, names
-// the movement AIR now associates the shipment with (a rollover); empty keeps the document's.
+// the movement AIR now associates the shipment with (a rollover); empty keeps the document's. An HBL's release and
+// number of originals may change: a non-empty Release sets both Release and Originals (EXPRESS with 0 makes an
+// ORIGINALS bill EXPRESS, ORIGINALS needs its count); an empty Release with a non-zero Originals changes only the
+// number; both empty keep the latest version's. An air waybill has neither.
 type RefreshDocumentDraft struct {
 	CommandID           string
 	TenantID            string
@@ -67,6 +79,8 @@ type RefreshDocumentDraft struct {
 	HandlingInformation string
 	AgentPartyID        string
 	MovementID          string
+	Release             string // an HBL: EXPRESS or ORIGINALS; a house sea waybill: SEA_WAYBILL; empty keeps the release
+	Originals           int    // 1 to 9 when Release is ORIGINALS; with an empty Release, a non-zero number replaces the count
 	OccurredAt          time.Time
 }
 
@@ -102,7 +116,9 @@ type IssueTransportDocument struct {
 // parties, with a reason. The issued version stays valid until the amendment is issued. To change parties, the
 // API client releases the document's lock in COM after this command commits, sets the party, then refreshes the
 // draft. A HAWB whose shipment was rolled to another movement names it in MovementID: the amendment names the new
-// master under the same number.
+// master under the same number. A document issued as originals is amended once every original of the issued
+// version is returned (ReturnOriginal); a surrendered document is not amended. Release and Originals change an
+// HBL's release and number of originals as RefreshDocumentDraft's do; an amendment to EXPRESS issues no originals.
 type OpenDocumentAmendment struct {
 	CommandID           string
 	TenantID            string
@@ -114,11 +130,13 @@ type OpenDocumentAmendment struct {
 	HandlingInformation string
 	AgentPartyID        string
 	MovementID          string
+	Release             string // an HBL: EXPRESS or ORIGINALS; a house sea waybill: SEA_WAYBILL; empty keeps the release
+	Originals           int    // 1 to 9 when Release is ORIGINALS; with an empty Release, a non-zero number replaces the count
 	OccurredAt          time.Time
 }
 
 // IssueDocumentAmendment issues the amendment's approved draft under the same number, with the gates of
-// IssueTransportDocument; the version it replaces is superseded.
+// IssueTransportDocument; the version it replaces is superseded. A version of originals gets its own set.
 type IssueDocumentAmendment struct {
 	CommandID            string
 	TenantID             string
@@ -130,7 +148,8 @@ type IssueDocumentAmendment struct {
 }
 
 // AbandonDocumentAmendment discards the amendment's draft with a reason; the issued version stays. A HAWB's order
-// parties must be locked for the document again and unchanged since the issued version.
+// parties must be locked for the document again and unchanged since the issued version. The originals returned for
+// the amendment are recorded as handed back (ISSUED again), with the reason as evidence.
 type AbandonDocumentAmendment struct {
 	CommandID        string
 	TenantID         string
@@ -141,9 +160,37 @@ type AbandonDocumentAmendment struct {
 	OccurredAt       time.Time
 }
 
-// CancelTransportDocument cancels a draft, approved, issued or amending document with a reason (an amendment's
-// draft is discarded). An issued number stays with its shipment or movement: a later document of the same shipment
-// may issue it again, another never. The API client then releases the document's lock in COM.
+// ReturnOriginal records that one original of the valid issued version, which is out, is back with the issuer, with
+// evidence. The document stays ISSUED.
+type ReturnOriginal struct {
+	CommandID        string
+	TenantID         string
+	ActorID          string
+	DocumentID       string
+	ExpectedRevision int64
+	Serial           int
+	Evidence         string
+	OccurredAt       time.Time
+}
+
+// SurrenderOriginals records that every original of the valid issued version was surrendered to the issuer at
+// origin (telex release), with evidence. An original returned earlier is surrendered with the rest, whether each is
+// out or back with the issuer. The issued version stays valid; the document's state becomes SURRENDERED.
+type SurrenderOriginals struct {
+	CommandID        string
+	TenantID         string
+	ActorID          string
+	DocumentID       string
+	ExpectedRevision int64
+	Evidence         string
+	OccurredAt       time.Time
+}
+
+// CancelTransportDocument cancels a draft, approved, issued, amending or surrendered document with a reason (an
+// amendment's draft is discarded). While an original of the valid version is out the cancellation is refused
+// (DOC_ORIGINALS_OUT): each is returned first, or all were surrendered. An issued number stays with its shipment or
+// movement: a later document of the same shipment may issue it again, another never. The API client then releases
+// the document's lock in COM.
 type CancelTransportDocument struct {
 	CommandID        string
 	TenantID         string
@@ -201,6 +248,8 @@ type Commands interface {
 	OpenDocumentAmendment(ctx context.Context, cmd OpenDocumentAmendment) (Receipt, error)
 	IssueDocumentAmendment(ctx context.Context, cmd IssueDocumentAmendment) (Receipt, error)
 	AbandonDocumentAmendment(ctx context.Context, cmd AbandonDocumentAmendment) (Receipt, error)
+	ReturnOriginal(ctx context.Context, cmd ReturnOriginal) (Receipt, error)
+	SurrenderOriginals(ctx context.Context, cmd SurrenderOriginals) (Receipt, error)
 	CancelTransportDocument(ctx context.Context, cmd CancelTransportDocument) (Receipt, error)
 	RecordIssuanceAuthority(ctx context.Context, cmd RecordIssuanceAuthority) (Receipt, error)
 	WithdrawIssuanceAuthority(ctx context.Context, cmd WithdrawIssuanceAuthority) (Receipt, error)
@@ -215,6 +264,8 @@ const (
 	ActionOpenDocumentAmendment     = "OpenDocumentAmendment"
 	ActionIssueDocumentAmendment    = "IssueDocumentAmendment"
 	ActionAbandonDocumentAmendment  = "AbandonDocumentAmendment"
+	ActionReturnOriginal            = "ReturnOriginal"
+	ActionSurrenderOriginals        = "SurrenderOriginals"
 	ActionCancelTransportDocument   = "CancelTransportDocument"
 	ActionRecordIssuanceAuthority   = "RecordIssuanceAuthority" // subject: the authority
 	ActionWithdrawIssuanceAuthority = "WithdrawIssuanceAuthority"

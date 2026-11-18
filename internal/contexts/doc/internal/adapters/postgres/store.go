@@ -89,6 +89,16 @@ type (
 		Reason      string    `json:"reason"`
 		EnteredAt   time.Time `json:"entered_at"`
 	}
+	originalRow struct {
+		VersionNo int       `json:"version_no"`
+		Serial    int       `json:"serial"`
+		RecordNo  int       `json:"record_no"`
+		Status    string    `json:"status"`
+		Actor     string    `json:"actor"`
+		At        time.Time `json:"at"`
+		Evidence  *string   `json:"evidence"`
+		EnteredAt time.Time `json:"entered_at"`
+	}
 )
 
 func child(table string) string {
@@ -127,13 +137,15 @@ func readDocument(ctx context.Context, q queryRower, tenant doc.TenantID, id doc
 	var shipment, cancelReason, cancelledBy *string
 	var cancelledAt *time.Time
 	var revision int64
-	var versions, approvals, issues, discards []byte
+	var versions, approvals, issues, discards, originals []byte
 	err := q.QueryRow(ctx, `SELECT d.kind,d.movement_id,d.consolidation_id,d.shipment_id,d.number,d.legal_entity_id,d.state,d.cancel_reason,d.cancelled_by,
         d.cancelled_at,d.revision,`+child("document_version")+`,`+child("document_version_approval")+`,`+child("document_version_issue")+`,`+
-		child("document_version_discard")+`
+		child("document_version_discard")+`,
+        (SELECT coalesce(json_agg(o ORDER BY o.version_no, o.serial, o.record_no), '[]') FROM cargo_doc.original o
+          WHERE o.tenant_id=d.tenant_id AND o.document_id=d.document_id)
       FROM cargo_doc.transport_document d WHERE d.tenant_id=$1 AND d.document_id=$2`, string(tenant), string(id)).Scan(&kind, &st.MovementID,
 		&st.ConsolidationID, &shipment, &st.Number, &st.LegalEntityID, &state, &cancelReason, &cancelledBy, &cancelledAt, &revision, &versions, &approvals,
-		&issues, &discards)
+		&issues, &discards, &originals)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, 0, fmt.Errorf("%w: document %s", bentorepo.ErrNotFound, id)
 	}
@@ -173,7 +185,20 @@ func readDocument(ctx context.Context, q queryRower, tenant doc.TenantID, id doc
 		at(x.VersionNo).Discard = &doc.Discard{By: x.DiscardedBy, At: utc(x.DiscardedAt), Reason: x.Reason, EnteredAt: utc(x.EnteredAt)}
 	}
 	m, err := doc.RestoreDocument(st)
-	return m, revision, err
+	if err != nil {
+		return nil, 0, err
+	}
+	var loaded []originalRow
+	if err = json.Unmarshal(originals, &loaded); err != nil {
+		return nil, 0, err
+	}
+	var rows []doc.Original
+	for _, o := range loaded {
+		rows = append(rows, doc.Original{Version: o.VersionNo, Serial: o.Serial, Record: o.RecordNo, Status: o.Status, By: o.Actor, At: utc(o.At),
+			Evidence: deref(o.Evidence), EnteredAt: utc(o.EnteredAt)})
+	}
+	m.RememberOriginals(rows)
+	return m, revision, nil
 }
 
 // Insert writes a new document at revision 1 with its first version.
@@ -192,7 +217,7 @@ func (s DocumentStore) Insert(ctx context.Context, m *doc.Document) (int64, erro
 		switch pgErr.ConstraintName {
 		case "transport_document_pkey":
 			return 0, fmt.Errorf("%w: document %s", bentorepo.ErrAlreadyExists, st.DocumentID)
-		case "transport_document_one_house", "transport_document_one_master":
+		case "transport_document_one_house", "transport_document_one_master", "transport_document_one_hbl", "transport_document_one_sea_house":
 			return 0, fmt.Errorf("%w: the %s of %s%s has a document already", bentorepo.ErrConflict, st.Kind, st.ShipmentID, st.ConsolidationID)
 		}
 	}
@@ -271,6 +296,12 @@ func writeAdded(ctx context.Context, q bentopg.Executor, m *doc.Document) error 
 		x := v.Discard
 		if err := exec(`INSERT INTO cargo_doc.document_version_discard (tenant_id,document_id,version_no,discarded_by,discarded_at,reason,entered_at)
             VALUES ($1,$2,$3,$4,$5,$6,$7)`, v.No, x.By, x.At, x.Reason, x.EnteredAt); err != nil {
+			return err
+		}
+	}
+	for _, o := range m.AddedOriginals() {
+		if err := exec(`INSERT INTO cargo_doc.original (tenant_id,document_id,version_no,serial,record_no,status,actor,at,evidence,entered_at)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, o.Version, o.Serial, o.Record, o.Status, o.By, o.At, orNull(o.Evidence), o.EnteredAt); err != nil {
 			return err
 		}
 	}

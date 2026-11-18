@@ -1,8 +1,10 @@
 package domain
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"time"
 )
 
@@ -10,11 +12,12 @@ import (
 type State string
 
 const (
-	StateDraft     State = "DRAFT"
-	StateApproved  State = "APPROVED"
-	StateIssued    State = "ISSUED"
-	StateAmending  State = "AMENDING"
-	StateCancelled State = "CANCELLED"
+	StateDraft       State = "DRAFT"
+	StateApproved    State = "APPROVED"
+	StateIssued      State = "ISSUED"
+	StateAmending    State = "AMENDING"
+	StateSurrendered State = "SURRENDERED"
+	StateCancelled   State = "CANCELLED"
 )
 
 // Version statuses, derived from what follows a version.
@@ -118,9 +121,24 @@ func (st DocumentState) Subject() string {
 
 // Document is the aggregate root (TransportDocument).
 type Document struct {
-	state    DocumentState
-	snapshot []Version // the versions as persisted, with their records
-	pending  []Event
+	state     DocumentState
+	snapshot  []Version // the versions as persisted, with their records
+	pending   []Event
+	originals []Original // every original row, loaded and added, in order
+	added     []Original // original rows written since the document was loaded
+}
+
+// Original is one immutable record of an original bill: the records of a serial are numbered from 1, and the one
+// with the highest number is the original's status.
+type Original struct {
+	Version   int
+	Serial    int
+	Record    int
+	Status    string
+	By        string
+	At        time.Time
+	Evidence  string
+	EnteredAt time.Time
 }
 
 // Event carries identifiers only.
@@ -138,13 +156,14 @@ type Event struct {
 }
 
 const (
-	eventDrafted   = "TransportDocumentDrafted.v1"
-	eventApproved  = "TransportDocumentApproved.v1"
-	eventIssued    = "TransportDocumentIssued.v1"
-	eventOpened    = "TransportDocumentAmendmentOpened.v1"
-	eventAmended   = "TransportDocumentAmended.v1"
-	eventAbandoned = "TransportDocumentAmendmentAbandoned.v1"
-	eventCancelled = "TransportDocumentCancelled.v1"
+	eventDrafted     = "TransportDocumentDrafted.v1"
+	eventApproved    = "TransportDocumentApproved.v1"
+	eventIssued      = "TransportDocumentIssued.v1"
+	eventOpened      = "TransportDocumentAmendmentOpened.v1"
+	eventAmended     = "TransportDocumentAmended.v1"
+	eventAbandoned   = "TransportDocumentAmendmentAbandoned.v1"
+	eventCancelled   = "TransportDocumentCancelled.v1"
+	eventSurrendered = "OriginalBillsSurrendered.v1"
 )
 
 // DraftDocument drafts a document from its first version's content. A HAWB covers one FUL shipment and a MAWB
@@ -274,6 +293,9 @@ func (d *Document) OpenAmendment(c Content, reason, by string, at time.Time) err
 	if d.state.State != StateIssued {
 		return ErrInvalidTransition
 	}
+	if err := d.originalsReturned(); err != nil {
+		return err
+	}
 	if err := d.addVersion(c, reason, by, at); err != nil {
 		return err
 	}
@@ -313,19 +335,35 @@ func (d *Document) AbandonAmendment(orders []OrderParties, reason, by string, at
 		return err
 	}
 	d.latest().Discard = &Discard{By: by, At: at.UTC(), Reason: reason}
+	// the originals returned for the amendment are handed back: the issued version is the document again
+	if issued, ok := d.Current(); ok && issued.Doc.ReleaseType == ReleaseOriginals {
+		for serial := 1; serial <= issued.Doc.OriginalCount; serial++ {
+			if status, _ := d.originalStatus(issued.No, serial); status == OriginalReturned {
+				d.addOriginal(Original{Version: issued.No, Serial: serial, Status: OriginalIssued, By: by, At: at.UTC(), Evidence: reason})
+			}
+		}
+	}
 	d.state.State = StateIssued
 	d.record(eventAbandoned, at)
 	return nil
 }
 
-// Cancel cancels a draft, approved, issued or amending document with a reason; an amendment's draft is
-// discarded with it. An issued number stays with its shipment or movement; the holder releases the order
+// Cancel cancels a draft, approved, issued, amending or surrendered document with a reason; an amendment's draft
+// is discarded with it. No original of the valid version may still be out: each is returned, or all were
+// surrendered at origin. An issued number stays with its shipment or movement; the holder releases the order
 // parties' lock in COM afterwards (C12).
 func (d *Document) Cancel(reason, by string, at time.Time) error {
 	switch d.state.State {
-	case StateDraft, StateApproved, StateIssued, StateAmending:
+	case StateDraft, StateApproved, StateIssued, StateAmending, StateSurrendered:
 	default:
 		return ErrInvalidTransition
+	}
+	if cur, ok := d.Current(); ok && cur.Doc.ReleaseType == ReleaseOriginals {
+		for serial := 1; serial <= cur.Doc.OriginalCount; serial++ {
+			if status, _ := d.originalStatus(cur.No, serial); status != OriginalReturned && status != OriginalSurrendered {
+				return fmt.Errorf("%w: original %d of version %d is still out; it is returned first", ErrOriginalsOut, serial, cur.No)
+			}
+		}
 	}
 	if !text(reason) {
 		return fmt.Errorf("%w: a cancellation needs a reason", ErrInvalidChange)
@@ -357,11 +395,11 @@ func (d *Document) issue(g IssueGate, by string, at time.Time) error {
 	switch {
 	case !g.IssuerVerified:
 		return ErrIssuerNotVerified
-	case d.state.Kind == KindHBL && (g.Ocean.MovementID != src.MovementID || !g.Ocean.Final || g.Ocean.Version != src.Version || g.Ocean.SHA256 != src.SHA256):
+	case d.state.Kind.SeaHouse() && (g.Ocean.MovementID != src.MovementID || !g.Ocean.Final || g.Ocean.Version != src.Version || g.Ocean.SHA256 != src.SHA256):
 		return fmt.Errorf("%w: built on OceanDocFacts version %d, SEA's latest is %d (final %v)", ErrSourceStale, src.Version, g.Ocean.Version, g.Ocean.Final)
-	case d.state.Kind == KindHBL && g.Ocean.OnBoardAt.IsZero():
-		return fmt.Errorf("%w: an HBL is issued from facts that state the on-board date", ErrIncomplete)
-	case d.state.Kind != KindHBL && (!g.Facts.Final || g.Facts.MovementID != src.MovementID || g.Facts.Version != src.Version || g.Facts.SHA256 != src.SHA256):
+	case d.state.Kind.SeaHouse() && g.Ocean.OnBoardAt.IsZero():
+		return fmt.Errorf("%w: a house sea document is issued from facts that state the on-board date", ErrIncomplete)
+	case !d.state.Kind.SeaHouse() && (!g.Facts.Final || g.Facts.MovementID != src.MovementID || g.Facts.Version != src.Version || g.Facts.SHA256 != src.SHA256):
 		return fmt.Errorf("%w: built on AirDocFacts version %d, AIR's latest is %d (final %v)", ErrSourceStale, src.Version, g.Facts.Version, g.Facts.Final)
 	case !identifier(g.AuthorityID) || g.AuthorityVersion < 1:
 		return ErrIssuanceBlocked
@@ -387,8 +425,123 @@ func (d *Document) issue(g IssueGate, by string, at time.Time) error {
 		return err
 	}
 	v.Issue = &Issue{By: by, At: at.UTC(), AuthorityID: g.AuthorityID, AuthorityVersion: g.AuthorityVersion, Credit: credit}
+	if v.Doc.ReleaseType == ReleaseOriginals {
+		for serial := 1; serial <= v.Doc.OriginalCount; serial++ {
+			d.addOriginal(Original{Version: v.No, Serial: serial, Status: OriginalIssued, By: by, At: at.UTC()})
+		}
+	}
 	return nil
 }
+
+// ReturnOriginal records that one original of the valid issued version was returned to the issuer, with evidence.
+// An amendment of a document issued as originals waits until every original is returned, and so does a
+// cancellation unless all were surrendered.
+func (d *Document) ReturnOriginal(serial int, evidence, by string, at time.Time) error {
+	cur, ok := d.Current()
+	if d.state.State != StateIssued || !ok || cur.Doc.ReleaseType != ReleaseOriginals {
+		return fmt.Errorf("%w: an original is returned on a document issued as originals", ErrInvalidTransition)
+	}
+	if status, _ := d.originalStatus(cur.No, serial); status != OriginalIssued {
+		return fmt.Errorf("%w: original %d of version %d is not out", ErrInvalidTransition, serial, cur.No)
+	}
+	if !text(evidence) {
+		return fmt.Errorf("%w: returning an original records the evidence", ErrInvalidChange)
+	}
+	if err := d.changeable(by, at); err != nil {
+		return err
+	}
+	d.addOriginal(Original{Version: cur.No, Serial: serial, Status: OriginalReturned, By: by, At: at.UTC(), Evidence: evidence})
+	return nil
+}
+
+// SurrenderOriginals records that every original of the valid version was surrendered to the issuer at origin
+// (telex release), with evidence. An original that is already back with the issuer is surrendered with the rest:
+// whether each is out or returned, the issuer ends up holding the whole set. The version stays the issued document;
+// the document becomes SURRENDERED.
+func (d *Document) SurrenderOriginals(evidence, by string, at time.Time) error {
+	cur, ok := d.Current()
+	if d.state.State != StateIssued || !ok || cur.Doc.ReleaseType != ReleaseOriginals {
+		return fmt.Errorf("%w: originals are surrendered on an issued document that has them", ErrInvalidTransition)
+	}
+	if !text(evidence) {
+		return fmt.Errorf("%w: a surrender records the evidence", ErrInvalidChange)
+	}
+	if err := d.changeable(by, at); err != nil {
+		return err
+	}
+	for serial := 1; serial <= cur.Doc.OriginalCount; serial++ {
+		d.addOriginal(Original{Version: cur.No, Serial: serial, Status: OriginalSurrendered, By: by, At: at.UTC(), Evidence: evidence})
+	}
+	d.state.State = StateSurrendered
+	d.record(eventSurrendered, at)
+	return nil
+}
+
+// originalsReturned refuses an amendment of an originals document until every original of the valid version is back.
+func (d *Document) originalsReturned() error {
+	cur, ok := d.Current()
+	if !ok || cur.Doc.ReleaseType != ReleaseOriginals {
+		return nil
+	}
+	if !d.originalsAll(cur.No, cur.Doc.OriginalCount, OriginalReturned) {
+		return fmt.Errorf("%w: the originals of version %d are returned before it is amended", ErrOriginalsOut, cur.No)
+	}
+	return nil
+}
+
+// addOriginal writes the next record of an original.
+func (d *Document) addOriginal(o Original) {
+	o.Record = 1
+	for _, x := range d.originals {
+		if x.Version == o.Version && x.Serial == o.Serial && x.Record >= o.Record {
+			o.Record = x.Record + 1
+		}
+	}
+	d.originals = append(d.originals, o)
+	d.added = append(d.added, o)
+}
+
+// originalStatus is the status of an original: that of its record with the highest number.
+func (d *Document) originalStatus(version, serial int) (string, bool) {
+	status, record := "", 0
+	for _, o := range d.originals {
+		if o.Version == version && o.Serial == serial && o.Record > record {
+			status, record = o.Status, o.Record
+		}
+	}
+	return status, record > 0
+}
+
+func (d *Document) originalsAll(version, count int, status string) bool {
+	if count < 1 {
+		return false
+	}
+	for serial := 1; serial <= count; serial++ {
+		got, ok := d.originalStatus(version, serial)
+		if !ok || got != status {
+			return false
+		}
+	}
+	return true
+}
+
+// RememberOriginals loads the original records already stored. It is called when the document is read.
+func (d *Document) RememberOriginals(rows []Original) {
+	d.originals = append([]Original(nil), rows...)
+	d.added = nil
+}
+
+// Originals returns every original record, by version, serial and record number.
+func (d *Document) Originals() []Original {
+	out := append([]Original(nil), d.originals...)
+	slices.SortStableFunc(out, func(a, b Original) int {
+		return cmp.Or(cmp.Compare(a.Version, b.Version), cmp.Compare(a.Serial, b.Serial), cmp.Compare(a.Record, b.Record))
+	})
+	return out
+}
+
+// AddedOriginals returns the original rows written since the document was loaded.
+func (d *Document) AddedOriginals() []Original { return append([]Original(nil), d.added...) }
 
 // locked checks that COM reports every order of a house version with its parties locked for the document and
 // unchanged since the version froze them (C12).
@@ -481,6 +634,9 @@ func (d *Document) lastChange() time.Time {
 			last = later(last, v.Discard.At)
 		}
 	}
+	for _, o := range d.originals {
+		last = later(last, o.At)
+	}
 	return last
 }
 
@@ -492,6 +648,16 @@ func (d *Document) record(kind string, at time.Time) {
 
 // Stamp records when DOC entered what was written since the document was loaded (T1).
 func (d *Document) Stamp(entered time.Time) {
+	for i := range d.originals {
+		if d.originals[i].EnteredAt.IsZero() {
+			d.originals[i].EnteredAt = entered.UTC()
+		}
+	}
+	for i := range d.added {
+		if d.added[i].EnteredAt.IsZero() {
+			d.added[i].EnteredAt = entered.UTC()
+		}
+	}
 	for i := range d.state.Versions {
 		v := &d.state.Versions[i]
 		if v.EnteredAt.IsZero() {
@@ -578,7 +744,7 @@ func (d *Document) validate() error {
 		if last.Issue != nil || last.Approval == nil || issued {
 			return fmt.Errorf("APPROVED")
 		}
-	case StateIssued:
+	case StateIssued, StateSurrendered:
 		if !issued || (last.Issue == nil && last.Discard == nil) {
 			return fmt.Errorf("ISSUED")
 		}
@@ -633,5 +799,6 @@ func (d *Document) Added() (versions []Version, approvals, issues, discards []Ve
 // Acknowledge is permitted only after the transaction holding the document and its Outbox events commits.
 func (d *Document) Acknowledge() {
 	d.pending = nil
+	d.added = nil
 	d.snapshot = append([]Version(nil), d.state.Versions...)
 }
