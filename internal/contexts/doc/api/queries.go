@@ -86,33 +86,52 @@ type DocumentVersion struct {
 	Doc        DocumentContent
 }
 
-// TransportDocumentContent v1. Weights are in grams and volumes in cubic centimetres; airports carry their
-// UN/LOCODE and the IATA code frozen in AIR's facts (F2); parties carry no contacts.
+// TransportDocumentContent v1. Weights are in grams and volumes in cubic centimetres. An air waybill's airports carry
+// their UN/LOCODE and the IATA code frozen in AIR's facts; an HBL carries the ports, the vessel and the on-board
+// date from OceanDocFacts. Parties carry no contacts.
 type DocumentContent struct {
-	Kind                string     `json:"kind"`
-	DocumentID          string     `json:"document_id"`
-	Number              string     `json:"number"`
-	MAWB                string     `json:"mawb"`
-	IssuerCapacity      string     `json:"issuer_capacity"` // CONSOLIDATOR or AGENT_OF_CARRIER
-	Issuer              Issuer     `json:"issuer"`
-	IssuePlace          Airport    `json:"issue_place"`
-	LocationEdition     string     `json:"location_edition"`
-	ReleaseType         string     `json:"release_type"` // CONSIGNEE_NAMED
-	PaymentIndicator    string     `json:"payment_indicator"`
-	Source              SourceRef  `json:"source"`
-	ConsolidationID     string     `json:"consolidation_id"`
-	ShipmentID          string     `json:"shipment_id,omitempty"`
-	Airline             Airline    `json:"airline"`
-	Origin              Airport    `json:"origin"`
-	Destination         Airport    `json:"destination"`
-	Flights             []Flight   `json:"flights"`
-	Shipper             Party      `json:"shipper"`
-	Consignee           Party      `json:"consignee"`
-	Notify              *Party     `json:"notify_party,omitempty"`
-	Orders              []OrderRef `json:"orders,omitempty"`
-	Cargo               Cargo      `json:"cargo"`
-	Security            Security   `json:"security"`
-	HandlingInformation string     `json:"handling_information,omitempty"`
+	Kind                string             `json:"kind"`
+	DocumentID          string             `json:"document_id"`
+	Number              string             `json:"number"`
+	MAWB                string             `json:"mawb"`
+	IssuerCapacity      string             `json:"issuer_capacity"` // CONSOLIDATOR or AGENT_OF_CARRIER
+	Issuer              Issuer             `json:"issuer"`
+	IssuePlace          Airport            `json:"issue_place"`
+	LocationEdition     string             `json:"location_edition"`
+	ReleaseType         string             `json:"release_type"` // CONSIGNEE_NAMED
+	PaymentIndicator    string             `json:"payment_indicator"`
+	Source              SourceRef          `json:"source"`
+	ConsolidationID     string             `json:"consolidation_id"`
+	ShipmentID          string             `json:"shipment_id,omitempty"`
+	Airline             Airline            `json:"airline"`
+	Origin              Airport            `json:"origin"`
+	Destination         Airport            `json:"destination"`
+	Flights             []Flight           `json:"flights"`
+	Shipper             Party              `json:"shipper"`
+	Consignee           Party              `json:"consignee"`
+	Notify              *Party             `json:"notify_party,omitempty"`
+	Orders              []OrderRef         `json:"orders,omitempty"`
+	Cargo               Cargo              `json:"cargo"`
+	Security            Security           `json:"security"`
+	HandlingInformation string             `json:"handling_information,omitempty"`
+	MasterBill          string             `json:"master_bill_number,omitempty"`
+	Vessel              string             `json:"vessel,omitempty"`
+	Voyage              string             `json:"voyage,omitempty"`
+	PlaceOfReceipt      string             `json:"place_of_receipt,omitempty"`
+	PortOfLoading       string             `json:"port_of_loading,omitempty"`
+	PortOfDischarge     string             `json:"port_of_discharge,omitempty"`
+	OnBoardAt           time.Time          `json:"on_board_at,omitzero"`
+	Containers          []ShippedContainer `json:"containers,omitempty"`
+}
+
+// ShippedContainer is one container of an HBL, as the published facts stated it.
+type ShippedContainer struct {
+	Number     string `json:"number"`
+	SizeType   string `json:"size_type,omitempty"`
+	SealNumber string `json:"seal_number"`
+	Packs      int64  `json:"packs"`
+	GrossGrams int64  `json:"gross_weight_grams"`
+	VolumeCm3  int64  `json:"volume_cubic_centimetres"`
 }
 
 type Issuer struct {

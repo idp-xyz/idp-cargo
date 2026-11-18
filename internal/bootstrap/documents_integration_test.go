@@ -70,7 +70,11 @@ func TestTransportDocumentsWithEveryContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	docModule, err := platform.DOC(airModule, comModule, orgModule, finModule, allowAll{})
+	seaModule, err := platform.SEA(bookModule, fulModule, allowAll{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	docModule, err := platform.DOC(airModule, seaModule, comModule, orgModule, finModule, allowAll{})
 	if err != nil {
 		t.Fatal(err)
 	}

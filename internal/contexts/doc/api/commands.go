@@ -25,6 +25,7 @@ import (
 const (
 	KindHAWB = "HAWB"
 	KindMAWB = "MAWB"
+	KindHBL  = "HBL"
 )
 
 // Payment indicators of the freight.

@@ -25,6 +25,9 @@ func (d Deps) build(ctx context.Context, s Scope, id doc.DocumentID, src Source,
 	if d.Facts == nil || d.Parties == nil || d.Directory == nil {
 		return doc.Content{}, ErrMissingDependency
 	}
+	if src.Kind == doc.KindHBL {
+		return d.buildHouseBill(ctx, s, id, src)
+	}
 	facts, err := d.Facts.Latest(ctx, s.TenantID, src.MovementID)
 	if err != nil {
 		return doc.Content{}, err
@@ -66,6 +69,38 @@ func (d Deps) build(ctx context.Context, s Scope, id doc.DocumentID, src Source,
 		return doc.MasterContent(id, facts, issuer, agent, src.Entered)
 	}
 	return doc.Content{}, fmt.Errorf("%w: kind %q", ErrInvalidCommand, src.Kind)
+}
+
+func (d Deps) buildHouseBill(ctx context.Context, s Scope, id doc.DocumentID, src Source) (doc.Content, error) {
+	if d.Ocean == nil || d.Parties == nil || d.Directory == nil {
+		return doc.Content{}, ErrMissingDependency
+	}
+	ocean, err := d.Ocean.Latest(ctx, s.TenantID, src.MovementID)
+	if err != nil {
+		return doc.Content{}, err
+	}
+	issuer, err := d.Directory.Issuer(ctx, s.TenantID, ocean.LegalEntityID)
+	if err != nil {
+		return doc.Content{}, err
+	}
+	var orderIDs []string
+	for _, h := range ocean.Houses {
+		if h.ShipmentID == src.ShipmentID {
+			orderIDs = append(orderIDs, h.OrderIDs...)
+		}
+	}
+	if len(orderIDs) == 0 {
+		return doc.Content{}, fmt.Errorf("%w: %s", doc.ErrMasterMismatch, src.ShipmentID)
+	}
+	var orders []doc.OrderParties
+	for _, o := range orderIDs {
+		parties, err := d.Parties.Order(ctx, s.TenantID, s.ActorID, o)
+		if err != nil {
+			return doc.Content{}, err
+		}
+		orders = append(orders, parties)
+	}
+	return doc.OceanHouseContent(id, src.ShipmentID, ocean, issuer, orders, src.Entered)
 }
 
 // Draft drafts a document.
@@ -219,7 +254,14 @@ func (d Deps) Issue(ctx context.Context, c Command, overrideReason string, amend
 	var gate doc.IssueGate
 	return d.change(ctx, c, func(ctx context.Context, m *doc.Document) (err error) {
 		latest := m.Latest()
-		if gate.Facts, err = d.Facts.Latest(ctx, c.Scope.TenantID, latest.Doc.Source.MovementID); err != nil {
+		if m.State().Kind == doc.KindHBL {
+			if d.Ocean == nil {
+				return ErrMissingDependency
+			}
+			if gate.Ocean, err = d.Ocean.Latest(ctx, c.Scope.TenantID, latest.Doc.Source.MovementID); err != nil {
+				return err
+			}
+		} else if gate.Facts, err = d.Facts.Latest(ctx, c.Scope.TenantID, latest.Doc.Source.MovementID); err != nil {
 			return err
 		}
 		issuer, err := d.Directory.Issuer(ctx, c.Scope.TenantID, m.State().LegalEntityID)
@@ -227,7 +269,7 @@ func (d Deps) Issue(ctx context.Context, c Command, overrideReason string, amend
 			return err
 		}
 		gate.IssuerVerified = issuer.Verified
-		if m.State().Kind != doc.KindHAWB {
+		if !m.State().Kind.House() {
 			return nil
 		}
 		if gate.Orders, err = d.orders(ctx, c.Scope, latest); err != nil {
@@ -272,7 +314,7 @@ func (d Deps) Issue(ctx context.Context, c Command, overrideReason string, amend
 func (d Deps) Abandon(ctx context.Context, c Command, reason string) (Receipt, error) {
 	var orders []doc.OrderParties
 	return d.change(ctx, c, func(ctx context.Context, m *doc.Document) (err error) {
-		if current, ok := m.Current(); ok && m.State().Kind == doc.KindHAWB {
+		if current, ok := m.Current(); ok && m.State().Kind.House() {
 			orders, err = d.orders(ctx, c.Scope, current)
 		}
 		return err
