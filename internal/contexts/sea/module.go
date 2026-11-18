@@ -304,10 +304,18 @@ func (m *Module) RecordStuffingDone(ctx context.Context, cmd api.RecordStuffingD
 	return receipt(r, err)
 }
 
+// AssertVgm's request hash does not cover the signatory's name. The hash is kept on the receipt, which the
+// application role reads, beside every other field of the command in the assertion: a hash over the name would
+// confirm a guessed name to anyone who reads those tables, although the name itself is kept apart. A retry that
+// states another name is therefore answered the first receipt, and the name stored is the first. A receipt written
+// before V2.71 was hashed with the name and is still answered.
 func (m *Module) AssertVgm(ctx context.Context, cmd api.AssertVgm) (api.Receipt, error) {
-	r, err := m.deps(cmd.TenantID, cmd.CommandID).AssertVGM(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, api.ActionAssertVgm, cmd.VisitID,
-		cmd.ExpectedRevision, cmd.OccurredAt, cmd), cmd.Mass, cmd.Method, cmd.ResponsiblePartyID, cmd.ResponsiblePartyRevision, stored(cmd.DeterminedAt),
-		cmd.LateReason, cmd.Signatory)
+	unnamed := cmd
+	unnamed.Signatory = ""
+	c := m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, api.ActionAssertVgm, cmd.VisitID, cmd.ExpectedRevision, cmd.OccurredAt, unnamed)
+	c.Earlier = cmd
+	r, err := m.deps(cmd.TenantID, cmd.CommandID).AssertVGM(ctx, c, cmd.Mass, cmd.Method, cmd.ResponsiblePartyID, cmd.ResponsiblePartyRevision,
+		stored(cmd.DeterminedAt), cmd.LateReason, cmd.Signatory)
 	return receipt(r, err)
 }
 

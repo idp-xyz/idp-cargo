@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	seaapi "go.idp.xyz/idp-cargo/internal/contexts/sea/api"
 	"go.idp.xyz/idp-cargo/internal/foundation/identity"
 	transport "go.idp.xyz/idp-cargo/internal/transport/http"
 )
@@ -120,8 +121,13 @@ func (permissions) AuthorizeBookingAction(ctx context.Context, tenant, actor, ac
 }
 
 // AuthorizeSeaAction covers SEA's commands and the two reads SEA itself authorizes: a VGM signatory's name
-// ("sea:ReadVgmSignatory") and the log of those reads ("sea:ReadVgmSignatoryAccess"). "sea:Read" grants neither.
+// ("sea:ReadVgmSignatory") and the log of those reads ("sea:ReadVgmSignatoryAccess"). Those two are granted by name
+// only: "sea:Read", "sea:*" and "*" grant neither, so that a general grant never includes a person's name kept
+// apart (the owner's decision of 2026-11-18, with P4, P6 and P7).
 func (permissions) AuthorizeSeaAction(ctx context.Context, tenant, actor, action, _ string) error {
+	if action == seaapi.ActionReadVgmSignatory || action == seaapi.ActionReadVgmSignatoryLog {
+		return identity.AuthorizeNamed(ctx, "sea", tenant, actor, action)
+	}
 	return identity.Authorize(ctx, "sea", tenant, actor, action)
 }
 

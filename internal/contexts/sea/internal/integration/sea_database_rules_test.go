@@ -218,8 +218,8 @@ func TestDatabaseRules(t *testing.T) {
             gross_weight_unit,gross_weight) SELECT $1,'OM-1',entry_no,9,'OB-X',1,'O-X',1,'CT','KGM',1 FROM e`, "23514", "house_bill_facts_with_entry"},
 		"a container without load lines": {`INSERT INTO cargo_sea.house_bill_stuffing (tenant_id,movement_id,entry_no,stuffing_no,execution_id,load_unit_no,
             type_code,packs,line_nos,seal,sealed_at) VALUES ($1,'OM-1',1,9,'X-9',2,'42G1',1,'{}','S-9',now())`, "23514", "house_bill_stuffing_line_nos_check"},
-		"cancelled with a house": {`UPDATE cargo_sea.ocean_movement SET state='CANCELLED',cancel_reason='x',cancelled_by='x',cancelled_at=now()
-            WHERE tenant_id=$1 AND movement_id='OM-1'`, "23514", "ocean_movement_consistent"},
+		"cancelled with a house": {`UPDATE cargo_sea.ocean_movement SET state='CANCELLED',cancel_reason='x',cancelled_by='x',cancelled_at=now(),
+            revision=revision+1 WHERE tenant_id=$1 AND movement_id='OM-1'`, "23514", "ocean_movement_consistent"},
 		"a co-loader on an own container":     {fmt.Sprintf(movement, "CO_LOADER"), "23514", "ocean_movement_carrier_role"},
 		"a movement without its booking link": {fmt.Sprintf(movement, "CARRIER"), "23514", "ocean_movement_consistent"},
 	} {

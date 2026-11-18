@@ -240,6 +240,22 @@ func Authorize(ctx context.Context, bc, tenantID, actorID, action string) error 
 	return nil
 }
 
+// AuthorizeNamed is Authorize for an action that is granted by name only: the principal must hold
+// "<context>:<Action>" itself, and the wildcards "<context>:*" and "*" do not grant it. It is for reads of personal
+// data that is kept apart, which a general grant must not include.
+func AuthorizeNamed(ctx context.Context, bc, tenantID, actorID, action string) error {
+	p, ok := PrincipalFrom(ctx)
+	switch {
+	case !ok:
+		return fmt.Errorf("%w: no verified principal", ErrDenied)
+	case p.TenantID != tenantID || p.ActorID != actorID:
+		return fmt.Errorf("%w: the principal acts for another tenant or actor", ErrDenied)
+	case !slices.Contains(p.Permissions, bc+":"+action):
+		return fmt.Errorf("%w: %s:%s, which is granted by name only", ErrDenied, bc, action)
+	}
+	return nil
+}
+
 // Require is Authorize for the principal's own tenant and actor, as queries ask it.
 func Require(ctx context.Context, bc, action string) (Principal, error) {
 	p, ok := PrincipalFrom(ctx)
