@@ -606,3 +606,109 @@ func TestACarrierFactOnACancelledMovement(t *testing.T) {
 		t.Fatalf("cancelled: %v", err)
 	}
 }
+
+// A loading recorded after the facts are final returns the movement to OPEN when it changes the on-board date they
+// state, and the next finalization states it. The on-board date is the earliest loading, a container's or the
+// carrier's.
+func TestALoadingChangesThePublishedOnBoardDate(t *testing.T) {
+	p := stuffed(plan("SH-1", "C-1", 1), 1, "CN-SEAL-1")
+	m := open(t, booking(1))
+	if err := errors.Join(m.Associate(p, "H1", "ops", at), m.RecordMasterBill("MAEU123456789", BillCarrierMBL, sha, "ops", at.Add(time.Hour))); err != nil {
+		t.Fatal(err)
+	}
+	v := assigned(t, m)
+	sealed(t, v, "CN-SEAL-1", 2)
+	if err := errors.Join(v.StuffingDone(m, "", "cfs", at.Add(21*time.Hour)), v.AssertVGM(m, kernel.Quantity{Unit: "KGM", Amount: plate.TareKg},
+		VgmMethod1, "LE", 1, at.Add(22*time.Hour), "", "Ada Lovelace", "ops", at.Add(22*time.Hour))); err != nil {
+		t.Fatal(err)
+	}
+	when := at.Add(23 * time.Hour)
+	finalize := func(at time.Time) DocFactsVersion {
+		t.Helper()
+		if err := m.Finalize([]Plan{p}, []VisitState{v.State()}, "ops", at); err != nil {
+			t.Fatal(err)
+		}
+		got, current, ok := m.DocFactsVersion(0)
+		if !ok || !current {
+			t.Fatal("the version just published is not current")
+		}
+		return got
+	}
+	if first := finalize(when); strings.Contains(string(first.Content), "on_board_at") || !first.Facts.OnBoardAt.IsZero() {
+		t.Fatalf("facts without a loading state no on-board date: %s", first.Content)
+	}
+	if again, err := RestoreMovement(m.State()); err != nil || !again.changesOnBoard(when) {
+		t.Fatalf("restored: %v", err)
+	}
+	// a gate-in is no loading; the loading is one the published facts do not state
+	gateAt, loadedAt := when.Add(time.Hour), when.Add(2*time.Hour)
+	if _, _, err := v.RecordContainerEvent(EventGateIn, loc("CNSHG"), gateAt, "terminal", "GIN-1", "ops", gateAt); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := v.RecordContainerEvent(EventLoaded, loc("CNSHG"), loadedAt, "terminal", "LD-1", "ops", loadedAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.LoadedOnBoard(loadedAt, "ops", when.Add(-time.Hour)); !errors.Is(err, ErrInvalidChange) || m.State().State != StateFinal {
+		t.Fatalf("a loading recorded before the finalization: %v %s", err, m.State().State)
+	}
+	if err := m.LoadedOnBoard(loadedAt, "ops", loadedAt); err != nil || m.State().State != StateOpen {
+		t.Fatalf("a loading the published facts do not state: %v %s", err, m.State().State)
+	}
+	if e := m.Pending()[len(m.Pending())-1]; e.Type != eventSuperseded || e.FactsVersion != 1 {
+		t.Fatalf("event: %+v", e)
+	}
+	again := loadedAt.Add(time.Hour)
+	if second := finalize(again); second.No != 2 || !second.Facts.OnBoardAt.Equal(loadedAt) || !strings.Contains(string(second.Content), `"on_board_at":"`) {
+		t.Fatalf("the second version: %s", second.Content)
+	}
+	// a later loading, a container's or the carrier's, and the carrier's other reports leave the published date
+	if err := m.LoadedOnBoard(loadedAt.Add(time.Minute), "ops", again); err != nil || m.State().State != StateFinal {
+		t.Fatalf("a later loading: %v %s", err, m.State().State)
+	}
+	report := CarrierFact{Kind: CarrierLoaded, BillNumber: "MAEU123456789", Vessel: "EVER GIVEN", Voyage: "0123W", Source: "line", Reference: "LD-2",
+		SHA256: strings.Repeat("ab", 32), OccurredAt: loadedAt.Add(time.Minute)}
+	if _, added, err := m.RecordCarrierFact(report, nil, "ops", again); err != nil || !added || m.State().State != StateFinal {
+		t.Fatalf("the carrier's later loading: %v %s", err, m.State().State)
+	}
+	departed := report
+	departed.Kind, departed.Reference, departed.OccurredAt = CarrierDeparted, "DEP-1", loadedAt.Add(-3*time.Hour)
+	if _, added, err := m.RecordCarrierFact(departed, nil, "ops", again); err != nil || !added || m.State().State != StateFinal {
+		t.Fatalf("a departure: %v %s", err, m.State().State)
+	}
+	// the carrier's earlier loading changes it
+	earlier := report
+	earlier.Reference, earlier.OccurredAt = "LD-3", loadedAt.Add(-time.Hour)
+	no, added, err := m.RecordCarrierFact(earlier, nil, "ops", again)
+	events := m.Pending()
+	if err != nil || !added || no != 3 || m.State().State != StateOpen || events[len(events)-2].Type != eventSuperseded ||
+		events[len(events)-2].FactsVersion != 2 || events[len(events)-1].Type != eventCarrier || events[len(events)-1].FactNo != 3 {
+		t.Fatalf("the carrier's earlier loading: %v %s %+v", err, m.State().State, events[len(events)-2:])
+	}
+	if third := finalize(again.Add(time.Hour)); third.No != 3 || !third.Facts.OnBoardAt.Equal(earlier.OccurredAt) {
+		t.Fatalf("the third version: %s", third.Content)
+	}
+}
+
+// A co-load has no container of its own: its on-board date is the co-loader's report of the loading.
+func TestACoLoadTakesItsOnBoardDateFromTheCarrier(t *testing.T) {
+	p := plan("SH-1", "C-1", 1)
+	m := open(t, coload())
+	if err := errors.Join(m.Associate(p, "H1", "ops", at), m.RecordMasterBill("SHA-HAM/2611-0042", BillCoLoad, sha, "ops", at.Add(time.Hour))); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Finalize([]Plan{p}, nil, "ops", at.Add(2*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	loadedAt := at.Add(3 * time.Hour)
+	if _, _, err := m.RecordCarrierFact(CarrierFact{Kind: CarrierLoaded, BillNumber: "SHA-HAM/2611-0042", Vessel: "EVER GIVEN", Voyage: "0123W",
+		Source: "co-loader", Reference: "LD-1", SHA256: strings.Repeat("ab", 32), OccurredAt: loadedAt}, nil, "ops", loadedAt); err != nil ||
+		m.State().State != StateOpen {
+		t.Fatalf("the co-loader's loading: %v %s", err, m.State().State)
+	}
+	if err := m.Finalize([]Plan{p}, nil, "ops", at.Add(4*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if got, current, ok := m.DocFactsVersion(0); !ok || !current || got.No != 2 || !got.Facts.OnBoardAt.Equal(loadedAt) {
+		t.Fatalf("the second version: %s", got.Content)
+	}
+}

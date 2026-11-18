@@ -622,9 +622,35 @@ func (m *Movement) Supersede(by string, at time.Time) error {
 	return nil
 }
 
+// changesOnBoard reports whether a loading at occurred changes the on-board date the latest published facts state:
+// they state none, or a later one. The on-board date is the earliest loading recorded.
+func (m *Movement) changesOnBoard(occurred time.Time) bool {
+	n := len(m.state.DocFacts)
+	if n == 0 {
+		return false
+	}
+	published := m.state.DocFacts[n-1].Facts.OnBoardAt
+	return published.IsZero() || occurred.Before(published)
+}
+
+// LoadedOnBoard returns a FINAL movement to OPEN when a container's loading at occurred changes the on-board date
+// its published facts state, as a new seal does. A loading that leaves the published date as it is, and a movement
+// that is not FINAL, are left as they are.
+func (m *Movement) LoadedOnBoard(occurred time.Time, by string, at time.Time) error {
+	if m.state.State != StateFinal || !m.changesOnBoard(occurred) {
+		return nil
+	}
+	if err := m.changeable(by, at); err != nil {
+		return err
+	}
+	m.reopen(at)
+	return nil
+}
+
 // RecordCarrierFact records a carrier's report. liveContainers are the movement's containers that are not released.
 // The same source reference with the same content returns the fact already recorded and leaves the movement as it
-// is; with other content it is refused. The movement's state does not change.
+// is; with other content it is refused. A LOADED_ON_BOARD report that changes the on-board date the published facts
+// state returns a FINAL movement to OPEN. Any other report leaves the movement's state as it is.
 func (m *Movement) RecordCarrierFact(f CarrierFact, liveContainers []string, by string, at time.Time) (int, bool, error) {
 	if m.state.State != StateOpen && m.state.State != StateFinal {
 		return 0, false, ErrInvalidTransition
@@ -664,6 +690,9 @@ func (m *Movement) RecordCarrierFact(f CarrierFact, liveContainers []string, by 
 	}
 	if err := m.changeable(by, at); err != nil {
 		return 0, false, err
+	}
+	if f.Kind == CarrierLoaded && m.state.State == StateFinal && m.changesOnBoard(f.OccurredAt) {
+		m.reopen(at)
 	}
 	f.No, f.By, f.At = len(m.state.CarrierFacts)+1, by, at.UTC()
 	m.state.CarrierFacts = append(m.state.CarrierFacts, f)

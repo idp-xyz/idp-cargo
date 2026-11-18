@@ -110,7 +110,8 @@ type AssertVgm struct {
 // A container is gated in only once its verified gross mass is submitted, and loaded only once it is gated in.
 // Stuffing is recorded by RecordStuffingDone. The source reference is recorded once: the same message again returns
 // the same event and leaves the revision, and the same reference with other content is refused. Location is the
-// UN/LOCODE where the fact happened. HappenedAt is when it happened; OccurredAt is when it is recorded.
+// UN/LOCODE where the fact happened. HappenedAt is when it happened; OccurredAt is when it is recorded. A loading
+// that changes the on-board date the movement's published facts state returns a FINAL movement to OPEN.
 type RecordContainerEvent struct {
 	CommandID        string
 	TenantID         string

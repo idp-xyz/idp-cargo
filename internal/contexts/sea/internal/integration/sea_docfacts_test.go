@@ -9,13 +9,15 @@ import (
 	"strings"
 	"testing"
 
+	bentopg "go.idp.xyz/idp-bento-go/postgres"
 	"go.idp.xyz/idp-cargo/internal/contexts/sea/api"
 	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
 // TestOceanDocFactsOnPostgres publishes a movement's facts once its container has a seal and a VGM. The carrier's
-// acceptance, a gate-in and a loading are recorded afterwards and leave the movement FINAL. A new seal returns it to
-// OPEN without rewriting the published version.
+// acceptance and a gate-in are recorded afterwards and leave the movement FINAL. A loading returns it to OPEN,
+// because the published facts state no on-board date, and the next finalization states it. A later report of the
+// loading leaves that version current. No published version is rewritten.
 func TestOceanDocFactsOnPostgres(t *testing.T) {
 	ctx := context.Background()
 	f := newFixture(t)
@@ -96,21 +98,31 @@ func TestOceanDocFactsOnPostgres(t *testing.T) {
 	if err != nil || gated.EventNo != 1 || gated.NewRevision != 6 || f.get(t, "OM-1").State != api.StateFinal {
 		t.Fatalf("a gate-in leaves the facts final: %+v %v", gated, err)
 	}
-	loaded, err := f.module.RecordContainerEvent(ctx, api.RecordContainerEvent{CommandID: "load-1", TenantID: f.tenant, ActorID: "ops-1", VisitID: "CV-1",
-		ExpectedRevision: 6, Kind: api.EventLoaded, Location: shanghai, HappenedAt: f.hours(6), Source: "terminal", Reference: "LD-1", OccurredAt: f.hours(6)})
-	still, stillErr := f.module.GetOceanDocFacts(ctx, api.GetOceanDocFacts{TenantID: f.tenant, MovementID: "OM-1"})
-	if err != nil || stillErr != nil || loaded.EventNo != 2 || loaded.NewRevision != 7 || f.visit(t, "CV-1").Status != api.VisitLoaded ||
-		f.get(t, "OM-1").State != api.StateFinal || still.Status != api.DocFactsFinal || !still.OnBoardAt.IsZero() {
-		t.Fatalf("a loading leaves the published facts final: %+v %+v %v %v", loaded, still, err, stillErr)
-	}
 	if err = f.past(t, `WITH v AS (UPDATE cargo_sea.container_visit SET revision=revision+1 WHERE tenant_id=$1 AND visit_id='CV-1' RETURNING visit_id)
         INSERT INTO cargo_sea.container_seal (tenant_id,visit_id,seal_no,number,party,applied_at,source,recorded_by,recorded_at,entered_at)
         SELECT $1,visit_id,2,'CUS-9','CUSTOMS',now(),'x','x',now(),now() FROM v`); sqlState(err) != "23514" || !strings.Contains(err.Error(), "while the movement is open") {
 		t.Fatalf("a seal that leaves the movement final: %v", err)
 	}
+	// the published facts state no on-board date, and say so by leaving it out
+	if content := f.publishedContent(t, "OM-1", 1); strings.Contains(content, "on_board_at") || strings.Contains(content, "0001-01-01") {
+		t.Fatalf("facts without a loading: %s", content)
+	}
+	if err = f.past(t, `WITH v AS (UPDATE cargo_sea.container_visit SET status='LOADED', revision=revision+1 WHERE tenant_id=$1 AND visit_id='CV-1' RETURNING visit_id)
+        INSERT INTO cargo_sea.container_event (tenant_id,visit_id,event_no,kind,location_code,occurred_at,source,reference,recorded_by,recorded_at,entered_at)
+        SELECT $1,visit_id,2,'LOADED_ON_BOARD','CNSHG',now(),'x','LD-PAST','x',now(),now() FROM v`); sqlState(err) != "23514" || !strings.Contains(err.Error(), "on-board date") {
+		t.Fatalf("a loading that leaves the movement final: %v", err)
+	}
+	// a loading the published facts do not state returns the movement to OPEN
+	loaded, err := f.module.RecordContainerEvent(ctx, api.RecordContainerEvent{CommandID: "load-1", TenantID: f.tenant, ActorID: "ops-1", VisitID: "CV-1",
+		ExpectedRevision: 6, Kind: api.EventLoaded, Location: shanghai, HappenedAt: f.hours(6), Source: "terminal", Reference: "LD-1", OccurredAt: f.hours(6)})
+	first, firstErr := f.module.GetOceanDocFacts(ctx, api.GetOceanDocFacts{TenantID: f.tenant, MovementID: "OM-1"})
+	if m := f.get(t, "OM-1"); err != nil || firstErr != nil || loaded.EventNo != 2 || loaded.NewRevision != 7 || f.visit(t, "CV-1").Status != api.VisitLoaded ||
+		m.State != api.StateOpen || m.Revision != 6 || first.Version != 1 || first.Status != api.DocFactsSuperseded || !first.OnBoardAt.IsZero() {
+		t.Fatalf("a loading supersedes facts that state no on-board date: %+v %s rev %d %+v %v %v", loaded, m.State, m.Revision, first.Status, err, firstErr)
+	}
 	sealed, err := f.seal("seal-late", "CV-1", 7, "CUS-1", api.SealCustoms, 7)
-	if err != nil || sealed.SealNo != 2 || sealed.NewRevision != 8 || f.get(t, "OM-1").State != api.StateOpen {
-		t.Fatalf("a seal reopens the movement: %+v %v", sealed, err)
+	if m := f.get(t, "OM-1"); err != nil || sealed.SealNo != 2 || sealed.NewRevision != 8 || m.State != api.StateOpen || m.Revision != 6 {
+		t.Fatalf("a seal on an open movement: %+v %v", sealed, err)
 	}
 	f.w.plan("SH-1", "C-1", 2)
 	f.stuffing("SH-1", "X-1", 1, "22G1", "CN-SEAL-1")
@@ -124,6 +136,21 @@ func TestOceanDocFactsOnPostgres(t *testing.T) {
 	again, err := f.module.GetOceanDocFacts(ctx, api.GetOceanDocFacts{TenantID: f.tenant, MovementID: "OM-1", Version: 1})
 	if err != nil || again.Status != api.DocFactsSuperseded || again.Version != 1 {
 		t.Fatalf("the published version: %+v %v", again.Status, err)
+	}
+	// the next finalization states the on-board date and the seal recorded since
+	second, err := f.module.FinalizeOceanDocFacts(ctx, api.FinalizeOceanDocFacts{CommandID: "fin-2", TenantID: f.tenant, ActorID: "ops-1", MovementID: "OM-1",
+		ExpectedRevision: 7, OccurredAt: f.hours(9)})
+	current, currentErr := f.module.GetOceanDocFacts(ctx, api.GetOceanDocFacts{TenantID: f.tenant, MovementID: "OM-1"})
+	if err != nil || currentErr != nil || second.FactsVersion != 2 || second.NewRevision != 8 || current.Status != api.DocFactsFinal ||
+		!current.OnBoardAt.Equal(f.hours(6)) || current.Containers[0].SealNumber != "CUS-1" || !strings.Contains(f.publishedContent(t, "OM-1", 2), `"on_board_at":"`) {
+		t.Fatalf("the second version: %+v %+v %v %v", second, current, err, currentErr)
+	}
+	// the carrier's later report of the same loading leaves the published date, and the movement FINAL
+	report, err := f.module.RecordOceanCarrierFact(ctx, api.RecordOceanCarrierFact{CommandID: "load-report", TenantID: f.tenant, ActorID: "line-1", MovementID: "OM-1",
+		ExpectedRevision: 8, Kind: api.CarrierLoaded, ContainerNumber: "CSQU3054383", Vessel: "EVER GIVEN", Voyage: "0123W", Source: "line", Reference: "LD-REPORT",
+		SHA256: strings.Repeat("cd", 32), HappenedAt: f.hours(7), OccurredAt: f.hours(9)})
+	if m := f.get(t, "OM-1"); err != nil || report.FactNo != 1 || report.NewRevision != 8 || m.State != api.StateFinal || m.DocFactsVersion != 2 {
+		t.Fatalf("a later loading leaves the facts final: %+v %s %v", report, m.State, err)
 	}
 	var finalized, superseded bool
 	for _, e := range f.outbox(t) {
@@ -142,8 +169,33 @@ func TestOceanDocFactsOnPostgres(t *testing.T) {
 	}
 }
 
+// publishedContent reads a published version's JSON as the database holds it.
+func (f *fixture) publishedContent(t *testing.T, movement string, version int) string {
+	t.Helper()
+	var content string
+	if err := f.within(t, func(ctx context.Context, e bentopg.Executor) error {
+		return e.QueryRow(ctx, `SELECT content FROM cargo_sea.ocean_doc_facts_version WHERE tenant_id=$1 AND movement_id=$2 AND version_no=$3`,
+			f.tenant, movement, version).Scan(&content)
+	}); err != nil {
+		t.Fatalf("version %d of %s: %v", version, movement, err)
+	}
+	return content
+}
+
 // publishOwnFacts finalizes one own-container movement whose visit is VGM_SUBMITTED at revision 4.
 func (f *fixture) publishOwnFacts(t *testing.T) {
+	t.Helper()
+	f.stuffOwnContainer(t)
+	got, err := f.module.FinalizeOceanDocFacts(context.Background(), api.FinalizeOceanDocFacts{CommandID: "fin-1", TenantID: f.tenant, ActorID: "ops-1",
+		MovementID: "OM-1", ExpectedRevision: 4, OccurredAt: f.hours(5)})
+	if err != nil || got.FactsVersion != 1 || got.NewRevision != 5 || f.get(t, "OM-1").State != api.StateFinal {
+		t.Fatalf("finalized: %+v %v", got, err)
+	}
+}
+
+// stuffOwnContainer leaves the own-container movement OM-1 OPEN at revision 4, ready to be finalized, with its visit
+// CV-1 VGM_SUBMITTED at revision 4.
+func (f *fixture) stuffOwnContainer(t *testing.T) {
 	t.Helper()
 	ctx := context.Background()
 	f.w.booking("BK-1", "C-1", "EVER GIVEN", "9811000", "0123W", 1, f.hours(72))
@@ -178,11 +230,6 @@ func (f *fixture) publishOwnFacts(t *testing.T) {
 		Mass: kernel.Quantity{Unit: "KGM", Amount: 2200}, Method: api.VgmMethod1, ResponsiblePartyID: "LE", ResponsiblePartyRevision: 1,
 		DeterminedAt: f.hours(4), Signatory: "Ada Lovelace", OccurredAt: f.hours(4)}); err != nil {
 		t.Fatal(err)
-	}
-	got, err := f.module.FinalizeOceanDocFacts(ctx, api.FinalizeOceanDocFacts{CommandID: "fin-1", TenantID: f.tenant, ActorID: "ops-1", MovementID: "OM-1",
-		ExpectedRevision: 4, OccurredAt: f.hours(5)})
-	if err != nil || got.FactsVersion != 1 || got.NewRevision != 5 || f.get(t, "OM-1").State != api.StateFinal {
-		t.Fatalf("finalized: %+v %v", got, err)
 	}
 }
 

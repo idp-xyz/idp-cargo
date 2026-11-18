@@ -39,7 +39,7 @@ type OceanDocFacts struct {
 	PortOfDischarge        string         `json:"port_of_discharge"`
 	LocationEdition        string         `json:"location_edition"`
 	ETD                    time.Time      `json:"etd"`
-	OnBoardAt              time.Time      `json:"on_board_at,omitempty"`
+	OnBoardAt              time.Time      `json:"on_board_at,omitzero"` // omitempty does not omit a zero time
 	Containers             []DocContainer `json:"containers"`
 	Houses                 []DocHouse     `json:"houses"`
 }
@@ -246,6 +246,13 @@ func (m *Movement) oceanDocFacts(version int, houses []Entry, visits []VisitStat
 			}
 		}
 		f.Containers = append(f.Containers, c)
+	}
+	// The carrier's own report of a loading counts as a container's does. A co-load has no container of its own, so
+	// its on-board date comes only from here.
+	for _, c := range st.CarrierFacts {
+		if c.Kind == CarrierLoaded && (f.OnBoardAt.IsZero() || c.OccurredAt.Before(f.OnBoardAt)) {
+			f.OnBoardAt = c.OccurredAt.UTC()
+		}
 	}
 	slices.SortFunc(houses, func(a, b Entry) int { return strings.Compare(a.HBL, b.HBL) })
 	for _, h := range houses {
