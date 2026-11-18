@@ -1,6 +1,6 @@
-// Package doc assembles the DOC (Transport Documents) bounded context, V0.2: the HAWB and MAWB of the N1 air line,
-// rendered to PDF and dispatched with the P5 records. Code outside DOC uses it through package api; everything under
-// internal/ is private to DOC.
+// Package doc assembles the DOC (Transport Documents) bounded context, V0.2: the HAWB and MAWB of the N1 air line and
+// the HBL and the house sea waybill of the sea line, rendered to PDF and dispatched with the P5 records. Code outside
+// DOC uses it through package api; everything under internal/ is private to DOC.
 package doc
 
 import (

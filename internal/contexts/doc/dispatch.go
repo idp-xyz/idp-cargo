@@ -32,7 +32,11 @@ func (m *Module) RenderDocumentVersion(ctx context.Context, q api.RenderDocument
 	if err != nil {
 		return api.RenderedDocument{}, classify(err)
 	}
-	return api.RenderedDocument{DocumentID: q.DocumentID, Version: in.Version, Status: in.Status, Template: m.renderer.Template(), PDF: pdf, SHA256: sum}, nil
+	template, ok := m.renderer.Template(domain.Kind(in.Doc.Kind))
+	if !ok {
+		return api.RenderedDocument{}, classify(domain.ErrNoTemplate)
+	}
+	return api.RenderedDocument{DocumentID: q.DocumentID, Version: in.Version, Status: in.Status, Template: template, PDF: pdf, SHA256: sum}, nil
 }
 
 func (m *Module) GetDispatchCopy(ctx context.Context, q api.GetDispatchCopy) (api.DispatchCopy, error) {

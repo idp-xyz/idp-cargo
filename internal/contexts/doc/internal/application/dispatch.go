@@ -70,7 +70,7 @@ type DispatchInput struct {
 // those of the party versions the version froze. A contact of ORG's address book goes by the narrower of the consent
 // COM froze and ORG's current one, so a consent withdrawn since the order counts; one ORG erased counts as erased.
 func (d Deps) copyContacts(ctx context.Context, s Scope, v doc.Version) (OrderContacts, error) {
-	if v.Doc.Kind != string(doc.KindHAWB) || len(v.Doc.Orders) == 0 {
+	if !doc.Kind(v.Doc.Kind).House() || len(v.Doc.Orders) == 0 {
 		return OrderContacts{}, nil
 	}
 	ref := v.Doc.Orders[0]
@@ -153,6 +153,10 @@ func (d Deps) PrepareDispatch(ctx context.Context, c Command, in DispatchInput) 
 	if err != nil {
 		return Receipt{}, err
 	}
+	template, ok := d.Renderer.Template(doc.Kind(v.Doc.Kind))
+	if !ok {
+		return Receipt{}, fmt.Errorf("%w: %s", doc.ErrNoTemplate, v.Doc.Kind)
+	}
 	country, err := d.Directory.Country(ctx, c.Scope.TenantID, in.Recipient)
 	if err != nil {
 		return Receipt{}, err
@@ -177,7 +181,7 @@ func (d Deps) PrepareDispatch(ctx context.Context, c Command, in DispatchInput) 
 		return Receipt{}, err
 	}
 	state := doc.DispatchState{DispatchID: c.Subject, DocumentID: in.DocumentID, Version: v.No, VersionStatus: status, Recipient: recipient,
-		OrderingParty: contacts.OrderingParty, Channel: in.Channel, Contacts: decided, CopySHA256: doc.Digest(pdf), Template: d.Renderer.Template(),
+		OrderingParty: contacts.OrderingParty, Channel: in.Channel, Contacts: decided, CopySHA256: doc.Digest(pdf), Template: template,
 		RegisterYear: register.Year, RegisterState: register.State}
 	return d.write(ctx, c, hash, "DocumentDispatch", func(txCtx context.Context) (Receipt, aggregate, error) {
 		current, _, err := d.Documents.Read(txCtx, c.Scope.TenantID, in.DocumentID)
@@ -224,12 +228,12 @@ func (d Deps) DispatchCopy(ctx context.Context, s Scope, id string) ([]byte, *do
 			}
 		}
 	}
-	if st.Template != d.Renderer.Template() {
-		return nil, nil, fmt.Errorf("%w: rendered under template %s", doc.ErrCopyChanged, st.Template)
-	}
 	v, err := version(m, st.Version)
 	if err != nil {
 		return nil, nil, err
+	}
+	if template, ok := d.Renderer.Template(doc.Kind(v.Doc.Kind)); !ok || st.Template != template {
+		return nil, nil, fmt.Errorf("%w: rendered under template %s", doc.ErrCopyChanged, st.Template)
 	}
 	contacts, err := d.copyContacts(ctx, s, v)
 	if err != nil {

@@ -7,9 +7,10 @@ import (
 
 // DOC V0.2: rendering and DocumentDispatch (decisions N1-DOC OD-4 A, OD-5 A; privacy decision P5).
 //
-// A version renders to PDF under a template (TemplateAWB): the same version, status and contacts give the same
-// bytes, and DOC keeps no PDF. Every copy that leaves the tenant is a dispatch to one ORG party over one channel:
-// DOC decides each contact of the document's parties for the recipient and records the decision with identifiers
+// A version renders to PDF under a template (TemplateAWB or TemplateHBL, one per kind of document): the same version,
+// status and contacts give the same bytes, and DOC keeps no PDF. Every copy that leaves the tenant is a dispatch to
+// one ORG party over one channel: DOC decides each contact of the document's parties for the recipient and records
+// the decision with identifiers
 // only (never a name, phone or e-mail), with the copy's SHA-256. The ordering party gets back the contacts it gave
 // on the order and its own (NOT_PROVIDED); any other contact goes to a party in mainland China only with consent to
 // be provided to others (PROVISION), and to a party abroad, Hong Kong, Macao and Taiwan included, only with consent
@@ -24,8 +25,12 @@ import (
 // abroad only while ORG holds them; after FAILED the client releases them. Until ORG consumes DOC's events, the client
 // must not release the reservation of a dispatch recorded SENT or UNKNOWN: ORG cannot tell.
 
-// TemplateAWB is the air waybill layout of V0.2.
-const TemplateAWB = "IDP-AWB-V1"
+// TemplateAWB is the air waybill layout of V0.2, for the HAWB and the MAWB; TemplateHBL is the layout of the house
+// bill of lading and the house sea waybill.
+const (
+	TemplateAWB = "IDP-AWB-V1"
+	TemplateHBL = "IDP-HBL-V1"
+)
 
 // Recipient roles.
 const (

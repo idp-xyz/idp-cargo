@@ -144,7 +144,8 @@ type ORGConsent struct {
 
 // Renderer renders a version to PDF under its template.
 type Renderer interface {
-	Template() string
+	// Template names the template that renders a document of the kind; ok is false when none does.
+	Template(kind doc.Kind) (name string, ok bool)
 	Render(r Rendering) ([]byte, error)
 }
 
