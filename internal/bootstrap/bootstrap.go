@@ -237,13 +237,13 @@ type ORGForDOC interface {
 
 // DOC assembles the DOC bounded context. air answers AirDocFacts v1 (relationship 11), com OrderParties v1, org
 // LegalEntityRef v1, PartyRef v1 and ContactTransferRegister v1, and fin CreditStatus v1, each through its query side.
-func (p *Platform) DOC(air airapi.AirDocFactsQueries, com comapi.OrderPartyQueries, org ORGForDOC, credit finapi.CreditStatusQueries, auth docapi.Authorizer,
+func (p *Platform) DOC(air airapi.AirDocFactsQueries, sea doc.OceanFactsReader, com comapi.OrderPartyQueries, org ORGForDOC, credit finapi.CreditStatusQueries, auth docapi.Authorizer,
 	opts ...doc.Option) (*doc.Module, error) {
 	db, err := p.newDB()
 	if err != nil {
 		return nil, err
 	}
-	return doc.New(db, air, com, org, credit, auth, opts...)
+	return doc.New(db, air, sea, com, org, credit, auth, opts...)
 }
 
 // ORGForFIN is what FIN reads of ORG: party roles, legal entities and party identities.

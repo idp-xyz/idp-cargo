@@ -22,9 +22,11 @@ import (
 	orgacl "go.idp.xyz/idp-cargo/internal/contexts/doc/internal/adapters/org"
 	"go.idp.xyz/idp-cargo/internal/contexts/doc/internal/adapters/pdf"
 	"go.idp.xyz/idp-cargo/internal/contexts/doc/internal/adapters/postgres"
+	seaacl "go.idp.xyz/idp-cargo/internal/contexts/doc/internal/adapters/sea"
 	"go.idp.xyz/idp-cargo/internal/contexts/doc/internal/application"
 	"go.idp.xyz/idp-cargo/internal/contexts/doc/internal/domain"
 	finapi "go.idp.xyz/idp-cargo/internal/contexts/fin/api"
+	seaapi "go.idp.xyz/idp-cargo/internal/contexts/sea/api"
 	"go.idp.xyz/idp-cargo/internal/foundation/bento"
 	"go.idp.xyz/idp-cargo/internal/kernel"
 )
@@ -36,6 +38,7 @@ type Module struct {
 	db        *bentopg.DB
 	outbox    *bentooutbox.Store
 	facts     application.Facts
+	ocean     application.Ocean
 	parties   application.Parties
 	directory application.Directory
 	credit    application.Credit
@@ -59,16 +62,23 @@ var (
 
 // New assembles DOC. air answers AirDocFacts v1 (relationship 11), com OrderParties v1 and org LegalEntityRef v1,
 // PartyRef v1 and ContactTransferRegister v1; DOC writes to none of them.
-func New(db *bentopg.DB, air airapi.AirDocFactsQueries, com comapi.OrderPartyQueries, org orgacl.ORG, fin finapi.CreditStatusQueries, auth api.Authorizer,
+// OceanFactsReader is the read of OceanDocFacts v1 (SEA -> DOC).
+type OceanFactsReader interface {
+	GetOceanDocFacts(ctx context.Context, q seaapi.GetOceanDocFacts) (seaapi.OceanDocFacts, error)
+}
+
+// New assembles DOC. air answers AirDocFacts v1 (relationship 11), sea OceanDocFacts v1, com OrderParties v1 and org
+// LegalEntityRef v1, PartyRef v1 and ContactTransferRegister v1; DOC writes to none of them.
+func New(db *bentopg.DB, air airapi.AirDocFactsQueries, sea OceanFactsReader, com comapi.OrderPartyQueries, org orgacl.ORG, fin finapi.CreditStatusQueries, auth api.Authorizer,
 	opts ...Option) (*Module, error) {
-	if db == nil || air == nil || com == nil || org == nil || fin == nil || auth == nil {
-		return nil, errors.New("doc: module needs a database, AIR's facts, COM's parties, ORG, FIN's credit status and an authorizer")
+	if db == nil || air == nil || sea == nil || com == nil || org == nil || fin == nil || auth == nil {
+		return nil, errors.New("doc: module needs a database, AIR's facts, SEA's facts, COM's parties, ORG, FIN's credit status and an authorizer")
 	}
 	outbox, err := bentooutbox.NewStore(db)
 	if err != nil {
 		return nil, err
 	}
-	m := &Module{db: db, outbox: outbox, facts: airacl.Facts{AIR: air}, parties: comacl.Parties{COM: com}, directory: orgacl.Directory{ORG: org},
+	m := &Module{db: db, outbox: outbox, facts: airacl.Facts{AIR: air}, ocean: seaacl.Facts{SEA: sea}, parties: comacl.Parties{COM: com}, directory: orgacl.Directory{ORG: org},
 		credit: finacl.Credit{FIN: fin}, renderer: pdf.Renderer{}, auth: auth, window: kernel.DefaultRecordWindow}
 	for _, opt := range opts {
 		opt(m)
@@ -245,7 +255,7 @@ func (m *Module) GetHouseDocumentSnapshot(ctx context.Context, q api.GetHouseDoc
 	}
 	var house []application.Summary
 	for _, s := range found {
-		if s.Kind == domain.KindHAWB && (s.State == domain.StateIssued || s.State == domain.StateAmending) {
+		if s.Kind.House() && (s.State == domain.StateIssued || s.State == domain.StateAmending) {
 			house = append(house, s)
 		}
 	}
@@ -310,6 +320,7 @@ func (m *Module) deps(tenant, commandID string) application.Deps {
 		Clock:       m.clock,
 		Window:      m.window,
 		Facts:       m.facts,
+		Ocean:       m.ocean,
 		Parties:     m.parties,
 		Directory:   m.directory,
 		Credit:      m.credit,

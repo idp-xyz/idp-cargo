@@ -104,6 +104,11 @@ type Facts interface {
 	Latest(ctx context.Context, tenant doc.TenantID, movement string) (doc.Facts, error)
 }
 
+// Ocean reads SEA's latest OceanDocFacts v1 version of a movement, outside DOC's transactions.
+type Ocean interface {
+	Latest(ctx context.Context, tenant doc.TenantID, movement string) (doc.OceanFacts, error)
+}
+
 // Parties reads COM's OrderParties v1 of an order (COM -> DOC), outside DOC's transactions: without contacts for a
 // version, and with them, for the purpose DOCUMENTS and the actor's authorization (COM logs the read), for a copy.
 type Parties interface {
@@ -193,6 +198,7 @@ type Deps struct {
 	Clock       Clock
 	Window      kernel.RecordWindow
 	Facts       Facts
+	Ocean       Ocean
 	Parties     Parties
 	Directory   Directory
 	Credit      Credit

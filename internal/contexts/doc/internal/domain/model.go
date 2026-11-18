@@ -22,7 +22,7 @@ var (
 	ErrInvalidTransition = errors.New("doc: invalid state transition")
 	ErrInvalidChange     = errors.New("doc: invalid change")
 	ErrConflict          = errors.New("doc: concurrent revision conflict")
-	ErrSourceNotFinal    = errors.New("doc: DOC_SOURCE_NOT_FINAL: AIR's latest AirDocFacts version is not FINAL; AIR finalizes the movement's facts first")
+	ErrSourceNotFinal    = errors.New("doc: DOC_SOURCE_NOT_FINAL: the latest facts version is not FINAL; the movement's facts are finalized first")
 	ErrSourceStale       = errors.New("doc: DOC_SOURCE_STALE: the version was built on facts or parties that changed since; refresh it")
 	ErrMasterMismatch    = errors.New("doc: DOC_MASTER_MISMATCH: AIR's facts no longer show the shipment under the master")
 	ErrPartiesDiverge    = errors.New("doc: DOC_PARTIES_DIVERGE: the orders of the house name different shippers, consignees or notify parties")
@@ -42,17 +42,26 @@ type Kind string
 const (
 	KindHAWB Kind = "HAWB"
 	KindMAWB Kind = "MAWB"
+	KindHBL  Kind = "HBL"
 )
 
-func (k Kind) valid() bool { return k == KindHAWB || k == KindMAWB }
+func (k Kind) valid() bool { return k == KindHAWB || k == KindMAWB || k == KindHBL }
+
+// house is a document of one shipment: a HAWB or an HBL.
+func (k Kind) House() bool { return k == KindHAWB || k == KindHBL }
 
 // Capacity is the capacity the issuer signs in: consolidator for a HAWB, agent of the airline for a MAWB the
-// forwarder executes.
+// forwarder executes, and NVOCC for an HBL. The NVOCC filing itself is checked as the issuance authority, which
+// development records from simulated evidence until the pilot.
 func (k Kind) Capacity() string {
-	if k == KindMAWB {
+	switch k {
+	case KindMAWB:
 		return "AGENT_OF_CARRIER"
+	case KindHBL:
+		return "NVOCC_CARRIER"
+	default:
+		return "CONSOLIDATOR"
 	}
-	return "CONSOLIDATOR"
 }
 
 // Release type of air waybills: non-negotiable, released to the named consignee.

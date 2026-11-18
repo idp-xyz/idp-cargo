@@ -24,6 +24,7 @@ import (
 	"go.idp.xyz/idp-cargo/internal/contexts/doc/api"
 	finapi "go.idp.xyz/idp-cargo/internal/contexts/fin/api"
 	orgapi "go.idp.xyz/idp-cargo/internal/contexts/org/api"
+	seaapi "go.idp.xyz/idp-cargo/internal/contexts/sea/api"
 	scope "go.idp.xyz/idp-cargo/internal/foundation/bento"
 	"go.idp.xyz/idp-cargo/internal/kernel"
 )
@@ -72,6 +73,7 @@ type world struct {
 	mu        sync.Mutex
 	at        time.Time
 	facts     map[string]airapi.AirDocFacts
+	ocean     map[string]seaapi.OceanDocFacts
 	orders    map[string]comapi.OrderParties
 	register  string              // the register's state; OK when empty
 	safeguard string              // the kind of safeguard in force, if any
@@ -100,6 +102,16 @@ func (w *world) GetAirDocFacts(_ context.Context, q airapi.GetAirDocFacts) (aira
 	}
 	f.TenantID = q.TenantID
 	return f, nil
+}
+
+func (w *world) GetOceanDocFacts(_ context.Context, q seaapi.GetOceanDocFacts) (seaapi.OceanDocFacts, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	got, ok := w.ocean[q.MovementID]
+	if !ok {
+		return seaapi.OceanDocFacts{}, fmt.Errorf("%w: stub", seaapi.ErrNotFound)
+	}
+	return got, nil
 }
 
 func (w *world) GetOrderParties(_ context.Context, q comapi.GetOrderParties) (comapi.OrderParties, error) {
@@ -237,8 +249,8 @@ func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	at := time.Now().UTC().Add(-24 * time.Hour).Truncate(time.Microsecond)
 	f := &fixture{db: testDB(t), at: at, tenant: "cargo-doc-" + time.Now().UTC().Format("20060102T150405.000000000"),
-		w: &world{at: at, facts: map[string]airapi.AirDocFacts{}, orders: map[string]comapi.OrderParties{}}}
-	m, err := docmodule.New(f.db, f.w, f.w, f.w, f.w, allow{})
+		w: &world{at: at, facts: map[string]airapi.AirDocFacts{}, ocean: map[string]seaapi.OceanDocFacts{}, orders: map[string]comapi.OrderParties{}}}
+	m, err := docmodule.New(f.db, f.w, f.w, f.w, f.w, f.w, allow{})
 	if err != nil {
 		t.Fatal(err)
 	}

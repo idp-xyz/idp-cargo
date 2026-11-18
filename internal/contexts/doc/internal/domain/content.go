@@ -211,30 +211,38 @@ type Security struct {
 
 // Content is a version's content.
 type Content struct {
-	Kind                string     `json:"kind"`
-	DocumentID          string     `json:"document_id"`
-	Number              string     `json:"number"`
-	MAWB                string     `json:"mawb"`
-	IssuerCapacity      string     `json:"issuer_capacity"`
-	Issuer              Issuer     `json:"issuer"`
-	IssuePlace          Airport    `json:"issue_place"`
-	LocationEdition     string     `json:"location_edition"`
-	ReleaseType         string     `json:"release_type"`
-	PaymentIndicator    string     `json:"payment_indicator"`
-	Source              SourceRef  `json:"source"`
-	ConsolidationID     string     `json:"consolidation_id"`
-	ShipmentID          string     `json:"shipment_id,omitempty"`
-	Airline             Airline    `json:"airline"`
-	Origin              Airport    `json:"origin"`
-	Destination         Airport    `json:"destination"`
-	Flights             []Flight   `json:"flights"`
-	Shipper             Party      `json:"shipper"`
-	Consignee           Party      `json:"consignee"`
-	Notify              *Party     `json:"notify_party,omitempty"`
-	Orders              []OrderRef `json:"orders,omitempty"`
-	Cargo               Cargo      `json:"cargo"`
-	Security            Security   `json:"security"`
-	HandlingInformation string     `json:"handling_information,omitempty"`
+	Kind                string             `json:"kind"`
+	DocumentID          string             `json:"document_id"`
+	Number              string             `json:"number"`
+	MAWB                string             `json:"mawb,omitempty"`
+	IssuerCapacity      string             `json:"issuer_capacity"`
+	Issuer              Issuer             `json:"issuer"`
+	IssuePlace          Airport            `json:"issue_place"`
+	LocationEdition     string             `json:"location_edition"`
+	ReleaseType         string             `json:"release_type"`
+	PaymentIndicator    string             `json:"payment_indicator"`
+	Source              SourceRef          `json:"source"`
+	ConsolidationID     string             `json:"consolidation_id"`
+	ShipmentID          string             `json:"shipment_id,omitempty"`
+	Airline             Airline            `json:"airline,omitempty"`
+	Origin              Airport            `json:"origin"`
+	Destination         Airport            `json:"destination"`
+	Flights             []Flight           `json:"flights,omitempty"`
+	Shipper             Party              `json:"shipper"`
+	Consignee           Party              `json:"consignee"`
+	Notify              *Party             `json:"notify_party,omitempty"`
+	Orders              []OrderRef         `json:"orders,omitempty"`
+	Cargo               Cargo              `json:"cargo"`
+	Security            Security           `json:"security,omitempty"`
+	HandlingInformation string             `json:"handling_information,omitempty"`
+	MasterBill          string             `json:"master_bill_number,omitempty"`
+	Vessel              string             `json:"vessel,omitempty"`
+	Voyage              string             `json:"voyage,omitempty"`
+	PlaceOfReceipt      string             `json:"place_of_receipt,omitempty"`
+	PortOfLoading       string             `json:"port_of_loading,omitempty"`
+	PortOfDischarge     string             `json:"port_of_discharge,omitempty"`
+	OnBoardAt           time.Time          `json:"on_board_at,omitzero"`
+	Containers          []ShippedContainer `json:"containers,omitempty"`
 }
 
 // Entered is what the person drafting enters: the payment indicator and handling information.
@@ -363,7 +371,7 @@ func MasterContent(id DocumentID, f Facts, issuer Issuer, agent Party, entered E
 // complete checks what a version of its kind needs before approval: for a HAWB, a Chinese shipper's customs or
 // credit code and the consignee's identifier or its recorded absence, as manifests need them (O1).
 func (c Content) complete() error {
-	if c.Kind != string(KindHAWB) {
+	if !Kind(c.Kind).House() {
 		return nil
 	}
 	has := func(p Party, types ...string) bool {

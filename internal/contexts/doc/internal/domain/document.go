@@ -110,7 +110,7 @@ type DocumentState struct {
 
 // Subject is what a document's number is issued for: a HAWB's shipment, a MAWB's movement.
 func (st DocumentState) Subject() string {
-	if st.Kind == KindHAWB {
+	if st.Kind.House() {
 		return st.ShipmentID
 	}
 	return st.MovementID
@@ -155,7 +155,7 @@ func DraftDocument(tenant TenantID, id DocumentID, c Content, by string, at time
 	}
 	d := &Document{state: DocumentState{TenantID: tenant, DocumentID: id, Kind: Kind(c.Kind), MovementID: c.Source.MovementID,
 		ConsolidationID: c.ConsolidationID, ShipmentID: c.ShipmentID, Number: c.Number, LegalEntityID: c.Issuer.LegalEntityID, State: StateDraft}}
-	if (d.state.Kind == KindHAWB) == blank(d.state.ShipmentID) {
+	if d.state.Kind.House() == blank(d.state.ShipmentID) {
 		return nil, ErrInvalidDocument
 	}
 	if err := d.addVersion(c, "", by, at); err != nil {
@@ -170,7 +170,7 @@ func (d *Document) addVersion(c Content, reason, by string, at time.Time) error 
 	st := &d.state
 	moved := c.Source.MovementID != st.MovementID || c.ConsolidationID != st.ConsolidationID
 	if c.DocumentID != string(st.DocumentID) || Kind(c.Kind) != st.Kind || c.ShipmentID != st.ShipmentID || c.Number != st.Number ||
-		c.Issuer.LegalEntityID != st.LegalEntityID || (moved && (st.Kind != KindHAWB || len(st.Versions) == 0)) {
+		c.Issuer.LegalEntityID != st.LegalEntityID || (moved && (!st.Kind.House() || len(st.Versions) == 0)) {
 		return fmt.Errorf("%w: another shipment, number or issuer is another document, and so is another movement for a MAWB", ErrInvalidChange)
 	}
 	if len(st.Versions) > 0 && !text(reason) {
@@ -246,6 +246,7 @@ func (d *Document) SelfApproval(actor string) bool {
 // authority in force.
 type IssueGate struct {
 	Facts            Facts
+	Ocean            OceanFacts
 	Orders           []OrderParties
 	Credit           CreditDecision
 	OverrideReason   string
@@ -303,7 +304,7 @@ func (d *Document) AbandonAmendment(orders []OrderParties, reason, by string, at
 	if !text(reason) {
 		return fmt.Errorf("%w: abandoning an amendment needs a reason", ErrInvalidChange)
 	}
-	if issued, ok := d.Current(); ok && d.state.Kind == KindHAWB {
+	if issued, ok := d.Current(); ok && d.state.Kind.House() {
 		if err := d.locked(issued.Doc, orders); err != nil {
 			return err
 		}
@@ -356,13 +357,17 @@ func (d *Document) issue(g IssueGate, by string, at time.Time) error {
 	switch {
 	case !g.IssuerVerified:
 		return ErrIssuerNotVerified
-	case !g.Facts.Final || g.Facts.MovementID != src.MovementID || g.Facts.Version != src.Version || g.Facts.SHA256 != src.SHA256:
+	case d.state.Kind == KindHBL && (g.Ocean.MovementID != src.MovementID || !g.Ocean.Final || g.Ocean.Version != src.Version || g.Ocean.SHA256 != src.SHA256):
+		return fmt.Errorf("%w: built on OceanDocFacts version %d, SEA's latest is %d (final %v)", ErrSourceStale, src.Version, g.Ocean.Version, g.Ocean.Final)
+	case d.state.Kind == KindHBL && g.Ocean.OnBoardAt.IsZero():
+		return fmt.Errorf("%w: an HBL is issued from facts that state the on-board date", ErrIncomplete)
+	case d.state.Kind != KindHBL && (!g.Facts.Final || g.Facts.MovementID != src.MovementID || g.Facts.Version != src.Version || g.Facts.SHA256 != src.SHA256):
 		return fmt.Errorf("%w: built on AirDocFacts version %d, AIR's latest is %d (final %v)", ErrSourceStale, src.Version, g.Facts.Version, g.Facts.Final)
 	case !identifier(g.AuthorityID) || g.AuthorityVersion < 1:
 		return ErrIssuanceBlocked
 	}
 	credit := Credit{Basis: CreditNotRequired}
-	if d.state.Kind == KindHAWB {
+	if d.state.Kind.House() {
 		if err := d.locked(v.Doc, g.Orders); err != nil {
 			return err
 		}
@@ -544,7 +549,7 @@ func (d *Document) validate() error {
 	st := d.state
 	n := len(st.Versions)
 	if !identifier(string(st.TenantID)) || !identifier(string(st.DocumentID)) || !st.Kind.valid() || blank(st.Number) || n == 0 ||
-		(st.Kind == KindHAWB) == blank(st.ShipmentID) {
+		(st.Kind.House()) == blank(st.ShipmentID) {
 		return fmt.Errorf("identity")
 	}
 	for i, v := range st.Versions {
