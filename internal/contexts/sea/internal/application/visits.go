@@ -83,11 +83,11 @@ func (d Deps) AssignContainer(ctx context.Context, c Command, movement sea.Movem
 }
 
 // ChangeVisit runs a command on a stored visit locked at the expected revision. apply may read the visit's
-// movement in the transaction (Movement). A gate-in, a loading, another container fact or the carrier's
-// acceptance of a VGM is recorded while the movement is FINAL and leaves it FINAL. A new seal, a new VGM
-// assertion, or the carrier's rejection returns a FINAL movement to OPEN in the same transaction: a rejection
-// means the published facts no longer hold. Stuffing, a release and anything else are still refused while the
-// movement is FINAL.
+// movement in the transaction (Movement). A gate-in, another container fact or the carrier's acceptance of a VGM
+// is recorded while the movement is FINAL and leaves it FINAL. A new seal, a new VGM assertion, the carrier's
+// rejection, or a loading that changes the on-board date the published facts state returns a FINAL movement to
+// OPEN in the same transaction: each changes what the published facts say. Stuffing, a release and anything else
+// are still refused while the movement is FINAL.
 func (d Deps) ChangeVisit(ctx context.Context, c Command, apply func(context.Context, *sea.Visit) (seal int, err error)) (Receipt, error) {
 	if d.Visits == nil || d.Movements == nil {
 		return Receipt{}, ErrMissingDependency
@@ -123,12 +123,20 @@ func (d Deps) ChangeVisit(ctx context.Context, c Command, apply func(context.Con
 		if len(v.Pending()) == 0 {
 			return Receipt{SubjectID: c.Subject, NewRevision: revision, EventNo: eventNo}, nil, nil
 		}
-		if len(v.AddedSeals()) > 0 || len(v.AddedAssertions()) > 0 || v.RejectedResponse() {
-			if err = mv.Supersede(c.Scope.ActorID, c.OccurredAt); err != nil {
-				return Receipt{}, nil, err
+		switch {
+		case len(v.AddedSeals()) > 0 || len(v.AddedAssertions()) > 0 || v.RejectedResponse():
+			err = mv.Supersede(c.Scope.ActorID, c.OccurredAt)
+		case mv.State().State == sea.StateFinal && len(v.AddedEvents()) == 0 && v.RespondedAssertion() == 0:
+			err = sea.ErrInvalidTransition
+		default:
+			for _, e := range v.AddedEvents() {
+				if e.Kind == sea.EventLoaded && err == nil {
+					err = mv.LoadedOnBoard(e.OccurredAt, c.Scope.ActorID, c.OccurredAt)
+				}
 			}
-		} else if mv.State().State == sea.StateFinal && len(v.AddedEvents()) == 0 && v.RespondedAssertion() == 0 {
-			return Receipt{}, nil, sea.ErrInvalidTransition
+		}
+		if err != nil {
+			return Receipt{}, nil, err
 		}
 		aggs := make([]aggregate, 0, 2)
 		if len(mv.Pending()) > 0 {

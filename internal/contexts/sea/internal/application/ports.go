@@ -328,7 +328,8 @@ func (d Deps) Change(ctx context.Context, c Command, read func(context.Context, 
 }
 
 // RecordCarrierFact records a carrier report on a movement that is OPEN or FINAL. The movement's revision does not
-// move, so a FINAL movement stays at the revision its document facts were published.
+// move, so a FINAL movement stays at the revision its document facts were published; only a loading that returns a
+// FINAL movement to OPEN is a step of its revision.
 func (d Deps) RecordCarrierFact(ctx context.Context, c Command, fact sea.CarrierFact) (Receipt, error) {
 	if d.Movements == nil || d.Visits == nil {
 		return Receipt{}, ErrMissingDependency
@@ -359,6 +360,7 @@ func (d Deps) RecordCarrierFact(ctx context.Context, c Command, fact sea.Carrier
 				live = append(live, v.State().Number)
 			}
 		}
+		final := m.State().State == sea.StateFinal
 		no, added, err := m.RecordCarrierFact(fact, live, c.Scope.ActorID, c.OccurredAt)
 		if err != nil {
 			return Receipt{}, nil, err
@@ -367,6 +369,11 @@ func (d Deps) RecordCarrierFact(ctx context.Context, c Command, fact sea.Carrier
 			return Receipt{SubjectID: c.Subject, NewRevision: revision, FactNo: no}, nil, nil
 		}
 		m.Stamp(entered)
+		if final && m.State().State == sea.StateOpen {
+			if revision, err = d.Movements.Save(txCtx, m, revision); err != nil {
+				return Receipt{}, nil, err
+			}
+		}
 		if err = d.Movements.InsertCarrierFacts(txCtx, m); err != nil {
 			return Receipt{}, nil, err
 		}

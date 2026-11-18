@@ -131,9 +131,11 @@ type EndHouseBillAssociation struct {
 }
 
 // FinalizeOceanDocFacts publishes the next OceanDocFacts v1 of an OPEN movement and makes the movement FINAL.
-// FUL's plan of every live house is read before the transaction. A later link, refresh, end, new seal or new VGM
-// assertion, or the carrier's rejection, returns the movement to OPEN and leaves the published version as it was.
-// A container fact or the carrier's acceptance does not.
+// FUL's plan of every live house is read before the transaction. The facts state the on-board date when a loading
+// is recorded: the earliest, as a container's LOADED_ON_BOARD event or the carrier's LOADED_ON_BOARD fact. A later
+// link, refresh, end, new seal or new VGM assertion, the carrier's rejection, or a loading that changes that date,
+// returns the movement to OPEN and leaves the published version as it was; finalizing again publishes the next
+// version. Any other container or carrier fact, and the carrier's acceptance, do not.
 type FinalizeOceanDocFacts struct {
 	CommandID        string
 	TenantID         string
@@ -145,7 +147,9 @@ type FinalizeOceanDocFacts struct {
 
 // RecordOceanCarrierFact records a carrier report: loaded on board, departed, rolled or discharged. It names one
 // live container of the movement, or the current master bill, or a live house's HBL. The same source reference
-// again returns the fact already recorded. The movement's state and revision do not change, including when it is FINAL.
+// again returns the fact already recorded. The movement's state and revision do not change, including when it is
+// FINAL, with one exception: a LOADED_ON_BOARD report that changes the on-board date the published facts state
+// (they state none, or a later one) returns a FINAL movement to OPEN, and the receipt names its next revision.
 // HappenedAt is when the carrier says it happened; OccurredAt is when it is recorded. SHA256 is the carrier message.
 type RecordOceanCarrierFact struct {
 	CommandID        string
@@ -182,7 +186,7 @@ type CancelOceanMovement struct {
 // in MovementID's place. Container visit commands name the visit (VisitID, with its revision) instead of a
 // movement, RecordContainerSeal the seal's number in the visit's history, AssertVgm or RecordVgmResponse the
 // assertion's version, and RecordContainerEvent the event's number. RecordOceanCarrierFact names the fact; the
-// movement's revision does not move.
+// movement's revision moves only when the fact returns a FINAL movement to OPEN.
 type Receipt struct {
 	CommandID    string
 	MovementID   string

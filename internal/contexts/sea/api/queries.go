@@ -8,8 +8,8 @@ import (
 )
 
 // Movement states: OPEN; FINAL once its facts are finalized for DOC, until a link, a refresh, an end, a new seal,
-// a new VGM assertion or the carrier's rejection returns it to OPEN. A container fact or the carrier's acceptance
-// leaves it FINAL. CANCELLED.
+// a new VGM assertion, the carrier's rejection, or a loading that changes the published on-board date returns it
+// to OPEN. Any other container or carrier fact, and the carrier's acceptance, leave it FINAL. CANCELLED.
 const (
 	StateOpen      = "OPEN"
 	StateFinal     = "FINAL"
@@ -154,6 +154,10 @@ type House struct {
 // OceanMovement is an ocean movement with its voyage legs, master bill references, live houses and totals. Totals
 // are given in GRM and CMQ when every live house's weight (volume) is in a metric unit SEA converts (KGM, GRM, TNE;
 // MTQ, DMQ, LTR, CMQ), and are empty otherwise; houses without a volume add none.
+//
+// Revision is the movement's own. A container visit has its own revision, and a carrier fact is recorded without a
+// step of the movement's, so Containers and CarrierFacts change while Revision stays. A reader that caches a
+// movement by its revision alone misses them.
 type OceanMovement struct {
 	TenantID               string
 	MovementID             string
@@ -277,7 +281,7 @@ type OceanDocFacts struct {
 	PortOfDischarge        string         `json:"port_of_discharge"`
 	LocationEdition        string         `json:"location_edition"`
 	ETD                    time.Time      `json:"etd"`
-	OnBoardAt              time.Time      `json:"on_board_at,omitempty"`
+	OnBoardAt              time.Time      `json:"on_board_at,omitzero"` // the earliest loading recorded; zero when none was
 	Containers             []DocContainer `json:"containers"`
 	Houses                 []DocHouse     `json:"houses"`
 	SHA256                 string         `json:"-"`
