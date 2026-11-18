@@ -89,6 +89,7 @@ type (
 		No              int    `json:"share_no"`
 		ShipmentID      string `json:"shipment_id"`
 		JobID           string `json:"job_id"`
+		Used            bool   `json:"used"`
 		Quantity        int64  `json:"quantity"`
 		Unit            string `json:"unit"`
 		Amount          int64  `json:"amount_minor"`
@@ -177,7 +178,7 @@ func scanPool(row pgx.Row, tenant fin.TenantID) (*fin.ConsolCostPool, int64, err
 		placed := false
 		for i := range a.Lines {
 			if a.Lines[i].LineNo == s.LineNo {
-				a.Lines[i].Shares = append(a.Lines[i].Shares, fin.Share{No: s.No, ShipmentID: s.ShipmentID, JobID: s.JobID, Quantity: s.Quantity,
+				a.Lines[i].Shares = append(a.Lines[i].Shares, fin.Share{No: s.No, ShipmentID: s.ShipmentID, JobID: s.JobID, Used: s.Used, Quantity: s.Quantity,
 					Unit: s.Unit, Amount: s.Amount, Local: s.Local})
 				placed = true
 			}
@@ -343,8 +344,8 @@ func writePool(ctx context.Context, q bentopg.Executor, p *fin.ConsolCostPool) e
 			}
 			for _, sh := range la.Shares {
 				if err := exec(`INSERT INTO cargo_fin.pool_apportionment_share (tenant_id,pool_id,apportionment_no,line_no,share_no,shipment_id,job_id,
-                    quantity,unit,amount_minor,local_minor) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, a.No, la.LineNo, sh.No, sh.ShipmentID, sh.JobID,
-					sh.Quantity, orNull(sh.Unit), sh.Amount, sh.Local); err != nil {
+                    used,quantity,unit,amount_minor,local_minor) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, a.No, la.LineNo, sh.No, sh.ShipmentID,
+					sh.JobID, sh.Used, sh.Quantity, orNull(sh.Unit), sh.Amount, sh.Local); err != nil {
 					return err
 				}
 			}
@@ -367,7 +368,8 @@ func writePool(ctx context.Context, q bentopg.Executor, p *fin.ConsolCostPool) e
 	return nil
 }
 
-// SharesOfJob lists a job's shares under each pool line's latest apportionment, by pool and line.
+// SharesOfJob lists a job's shares under each pool line's latest apportionment, by pool and line; a line that left the
+// job's house out is not listed: the job carries nothing of it.
 func (s PoolStore) SharesOfJob(ctx context.Context, tenant fin.TenantID, job string) ([]app.PoolShare, error) {
 	q, err := s.DB.ReadExecutor(ctx)
 	if err != nil {
@@ -381,7 +383,7 @@ func (s PoolStore) SharesOfJob(ctx context.Context, tenant fin.TenantID, job str
       JOIN cargo_fin.pool_apportionment a ON a.tenant_id=sh.tenant_id AND a.pool_id=sh.pool_id AND a.apportionment_no=sh.apportionment_no
       JOIN cargo_fin.pool_cost_line cl ON cl.tenant_id=sh.tenant_id AND cl.pool_id=sh.pool_id AND cl.line_no=sh.line_no
       JOIN cargo_fin.pool_cost_version v ON v.tenant_id=sh.tenant_id AND v.pool_id=sh.pool_id AND v.line_no=al.line_no AND v.version_no=al.line_version
-      WHERE sh.tenant_id=$1 AND sh.job_id=$2 AND sh.apportionment_no = (SELECT max(l2.apportionment_no) FROM cargo_fin.pool_apportionment_line l2
+      WHERE sh.tenant_id=$1 AND sh.job_id=$2 AND sh.used AND sh.apportionment_no = (SELECT max(l2.apportionment_no) FROM cargo_fin.pool_apportionment_line l2
         WHERE l2.tenant_id=sh.tenant_id AND l2.pool_id=sh.pool_id AND l2.line_no=sh.line_no)
       ORDER BY sh.pool_id, sh.line_no`, string(tenant), job)
 	if err != nil {

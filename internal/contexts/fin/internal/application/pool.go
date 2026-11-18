@@ -173,12 +173,14 @@ func (d Deps) RevisePoolCost(ctx context.Context, c Command, in RevisePoolCostAs
 }
 
 // ApportionAsk is an apportionment as asked: the lines (every line when empty) and a method overriding each line's
-// default, or MANUAL with one line, shares and a reason.
+// default, or MANUAL with one line, shares and a reason, and the houses that take no part in them.
 type ApportionAsk struct {
-	LineNos []int
-	Method  string
-	Manual  []fin.ManualShare
-	Reason  string
+	LineNos   []int
+	Method    string
+	Manual    []fin.ManualShare
+	NotUsed   []string
+	AllHouses bool
+	Reason    string
 }
 
 // ApportionPoolCosts divides pool cost lines over the house jobs: PHY answers the consolidation's basis first (T3);
@@ -208,7 +210,7 @@ func (d Deps) ApportionPoolCosts(ctx context.Context, c Command, in ApportionAsk
 		jobs, err = d.Jobs.OpenJobsFor(txCtx, c.Scope.TenantID, pool.State().LegalEntityID, shipments)
 		return err
 	}, func(_ context.Context, pool *fin.ConsolCostPool, _ *fin.FinancePolicy) (Receipt, error) {
-		input := fin.ApportionInput{LineNos: in.LineNos, Method: in.Method, Manual: in.Manual, Reason: in.Reason, Jobs: jobs}
+		input := fin.ApportionInput{LineNos: in.LineNos, Method: in.Method, Manual: in.Manual, NotUsed: in.NotUsed, AllHouses: in.AllHouses, Reason: in.Reason, Jobs: jobs}
 		if err := pool.Apportion(input, basis, c.Scope.ActorID, c.OccurredAt); err != nil {
 			return Receipt{}, err
 		}

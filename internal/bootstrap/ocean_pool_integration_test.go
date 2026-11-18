@@ -916,3 +916,247 @@ func TestTwoOwnContainersAndASplitHouseAreCostedWithPHYAndFIN(t *testing.T) {
 		}
 	}
 }
+
+// A house received at the CFS but never stuffed into the sealed own container bears no cost of the container and no
+// longer holds up the pool, with the real ORG, RATE, COM, FUL, PHY and FIN (V2.78; BOOK, SEA and DOC are not needed:
+// nothing here books, moves or bills the container). Three LCL orders are consolidated in one own container, A and B are
+// stuffed and the container sealed, C is received and weighed (800 kg, 2 m3) but never stuffed (the case the V2.77 review
+// ran). FIN's pool carries the container's ocean freight, CNY 1,000.00 (100,000 minor), by CHARGEABLE (W/M):
+//  1. PHY's cost basis shows C with no loaded packs;
+//  2. the freight apportioned over all three, as before, is stage PLANNED and gives C a share, 300 : 300 : 300 milli
+//     freight tonnes of the planned scope (6 packs and 300 kg each): 100,000 / 3 is 33,333.33 each, the unit left goes to
+//     the first house, so 33,334 / 33,333 / 33,333;
+//  3. with the creditor's invoice matched, the pool cannot be closed (FIN_POOL_NOT_CLOSABLE);
+//  4. the same line apportioned again with C in NotUsed is stage ACTUAL on the loaded measures of A and B: W/M of A 312 kg
+//     under 0.8 m3 is 800, of B 288 kg over 0.2 m3 is 288, 1088 in all; 100,000 divides 73,529.41 / 26,470.59, the floors
+//     73,529 and 26,470 leave one unit, to the larger remainder (B): 73,529 / 26,471. C's share is not used and zero;
+//  5. C's job carries no pool cost and A's and B's carry their shares;
+//  6. the pool closes, and GetConsolProfit answers with all three houses, C bearing nothing: A sells USD 600.00 (CNY
+//     4,274.04), B USD 250.00 (CNY 1,780.85), so their profits are 427,404 - 73,529 = 353,875 and 178,085 - 26,471 = 151,614,
+//     and C's job, which sells USD 400.00 (CNY 2,849.36), is listed too with no pool cost and a profit of its revenue.
+//
+// This solves FIN's side of the V2.77 limit: FIN no longer charges the house left behind and the pool can close. It does
+// not solve the house itself: C is still attached to the consolidation in PHY, which can neither ship it nor release it
+// while the container is sealed, and that is PHY's to solve. FIN does not know which houses are in which container, so
+// the person apportioning names the house to leave out.
+func TestAHouseLeftOutOfTheContainerBearsNoCostWithEveryContext(t *testing.T) {
+	ctx := context.Background()
+	platform := openPlatform(t)
+	orgModule, err := platform.ORG(allowAll{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rateModule, err := platform.RATE(orgModule, allowAll{}, marginFloor(2000))
+	if err != nil {
+		t.Fatal(err)
+	}
+	comModule, err := platform.COM(orgModule, rateModule, allowAll{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fulModule, phyModule, err := platform.FULAndPHY(comModule, allowAll{}, allowAll{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	finModule, err := platform.FIN(orgModule, rateModule, fulModule, &DocumentSnapshots{}, phyModule, allowAll{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tenant := uniqueTenant("cargo-left-out-")
+	seedORG(t, platform, tenant, "party-a", "party-b", "party-c", "line-1")
+	at := time.Now().UTC().Add(-48 * time.Hour).Truncate(time.Microsecond)
+	departs := at.Add(72 * time.Hour)
+	hours := func(h int) time.Time { return at.Add(time.Duration(h) * time.Hour) }
+	kg := func(n int64) kernel.Quantity { return kernel.Quantity{Unit: "KGM", Amount: n} }
+	cmq := func(n int64) kernel.Quantity { return kernel.Quantity{Unit: "CMQ", Amount: n} }
+	cny := func(n int64) kernel.Money { return kernel.Money{Currency: "CNY", Minor: n} }
+	unlocode := func(code string) kernel.LocationCode { return kernel.LocationCode{Scheme: kernel.UNLOCODE, Code: code} }
+	must := func(what string, err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("%s: %v", what, err)
+		}
+	}
+	phyOK := func(_ phyapi.Receipt, err error) { t.Helper(); must("PHY", err) }
+	evidence := func(source, ref string, h int) phyapi.Evidence {
+		return phyapi.Evidence{Source: source, Reference: ref, OccurredAt: hours(h)}
+	}
+	_, err = orgModule.ApproveRole(ctx, orgapi.ApproveRole{CommandID: "role-line-1", TenantID: tenant, ActorID: "org-officer", LegalEntityID: "LE",
+		PartyID: "line-1", ExpectedRevision: 1, RoleCode: orgapi.RoleCarrier, ValidFrom: at.Add(-time.Hour), EvidenceRef: "service contract", OccurredAt: at})
+	must("role line-1", err)
+
+	// three orders by sea, one shipment each (6 cartons of 300 kg, no volume declared), houses of the own container C-1
+	contexts := slice{org: orgModule, rate: rateModule, com: comModule, ful: fulModule, tenant: tenant, at: at, departs: departs}
+	planSeaSellOnly(t, contexts, "party-a", "A", 60_000)
+	planSeaSellOnly(t, contexts, "party-b", "B", 25_000)
+	planSeaSellOnly(t, contexts, "party-c", "C", 40_000)
+	phyOK(phyModule.CreateConsolidation(ctx, phyapi.CreateConsolidation{CommandID: "consol", TenantID: tenant, ActorID: "ops-1", ConsolidationID: "C-1",
+		Mode: phyapi.ModeSea, Kind: phyapi.KindSeaLCLOwn, OperatingLegalEntityID: "LE", Origin: unlocode("CNSHA"), Destination: unlocode("DEHAM"),
+		PlannedDeparture: departs.Add(6 * time.Hour), HouseCutOff: departs.Add(-6 * time.Hour), OccurredAt: hours(8)}))
+	phyOK(phyModule.PlanLoadUnit(ctx, phyapi.PlanLoadUnit{CommandID: "plan-unit", TenantID: tenant, ActorID: "ops-1", ConsolidationID: "C-1",
+		ExpectedRevision: 1, Kind: phyapi.LoadUnitContainer, TypeCode: "22G1", OccurredAt: hours(8)}))
+	for _, s := range []string{"SH-A", "SH-B", "SH-C"} {
+		phyOK(phyModule.AttachHouse(ctx, phyapi.AttachHouse{CommandID: "attach-" + s, TenantID: tenant, ActorID: "ops-1", ConsolidationID: "C-1", ShipmentID: s,
+			OccurredAt: hours(9)}))
+		record(t, ctx, fulModule, tenant, "ful-attach-"+s, s, "C-1", 3, hours(9))
+	}
+
+	// FIN: the policy with its ESTIMATE rate (the orders are sold in USD), the three jobs priced from their orders' quotes,
+	// and the pool of the consolidation with the container's freight
+	_, err = finModule.OpenFinancePolicy(ctx, finapi.OpenFinancePolicy{CommandID: "fin-policy", TenantID: tenant, ActorID: "acct-1", LegalEntityID: "LE",
+		FunctionalCurrency: "CNY", BookCode: "MAIN", OccurredAt: hours(11)})
+	must("finance policy", err)
+	_, err = finModule.RecordExchangeRate(ctx, finapi.RecordExchangeRate{CommandID: "fin-rate-estimate", TenantID: tenant, ActorID: "acct-1", LegalEntityID: "LE",
+		ExpectedRevision: 1, RateType: finapi.RateEstimate, From: "USD", Rate: 71_234, Scale: 4, FromDigits: 2, ToDigits: 2, ValidFrom: at, ValidUntil: at.AddDate(0, 1, 0),
+		Source: "CFETS central parity", OccurredAt: hours(11)})
+	must("estimate rate", err)
+	houses := []struct{ shipment, job string }{{"SH-A", "JOB-A"}, {"SH-B", "JOB-B"}, {"SH-C", "JOB-C"}}
+	for _, s := range []string{"A", "B", "C"} {
+		job := "JOB-" + s
+		r, err := finModule.OpenFreightJob(ctx, finapi.OpenFreightJob{CommandID: "fin-job-" + s, TenantID: tenant, ActorID: "fin-1", JobID: job, ShipmentID: "SH-" + s,
+			OccurredAt: hours(11)})
+		must("open "+job, err)
+		_, err = finModule.ApplyPricingBasis(ctx, finapi.ApplyPricingBasis{CommandID: "fin-quote-" + s, TenantID: tenant, ActorID: "fin-1", JobID: job,
+			ExpectedRevision: r.NewRevision, QuoteID: "Q-" + s, OrderID: "O-" + s, OccurredAt: hours(11)})
+		must("the pricing basis of "+job, err)
+	}
+	_, err = finModule.OpenConsolCostPool(ctx, finapi.OpenConsolCostPool{CommandID: "fin-pool", TenantID: tenant, ActorID: "fin-1", PoolID: "P-1",
+		ConsolidationID: "C-1", OccurredAt: hours(12)})
+	must("open the pool", err)
+	pool := func() finapi.ConsolCostPool {
+		t.Helper()
+		p, err := finModule.GetConsolCostPool(ctx, finapi.GetConsolCostPool{TenantID: tenant, PoolID: "P-1"})
+		must("the pool", err)
+		return p
+	}
+	_, err = finModule.RecordConsolCost(ctx, finapi.RecordConsolCost{CommandID: "fin-cost-freight", TenantID: tenant, ActorID: "fin-1", PoolID: "P-1",
+		ExpectedRevision: pool().Revision, ChargeCode: "OCEAN_FREIGHT", SupplierRef: "LINE-BK-1", Method: finapi.MethodChargeable,
+		Cost: finapi.ChargeSide{PartyID: "line-1", Amount: cny(100_000)}, Reason: "line's quote for the container", OccurredAt: hours(12)})
+	must("the freight line", err)
+
+	// PHY: the consolidation closed to houses, all three lots received and weighed at the CFS, A and B stuffed and the
+	// container sealed; C is never stuffed
+	c, err := phyModule.GetConsolidation(ctx, phyapi.GetConsolidation{TenantID: tenant, ConsolidationID: "C-1"})
+	must("consolidation", err)
+	phyOK(phyModule.CloseConsolidation(ctx, phyapi.CloseConsolidation{CommandID: "close", TenantID: tenant, ActorID: "ops-1", ConsolidationID: "C-1",
+		ExpectedRevision: c.Revision, OccurredAt: hours(13)}))
+	cfs := phyapi.Facility{Location: c.Current.Origin, Code: "SHA-CFS1"}
+	weights := map[string]int64{"A": 312, "B": 288, "C": 800}
+	volumes := map[string]int64{"A": 800_000, "B": 200_000, "C": 2_000_000}
+	for _, s := range []string{"A", "B", "C"} {
+		lot := "L-" + s
+		phyOK(phyModule.ReceiveCargo(ctx, phyapi.ReceiveCargo{CommandID: "rcv-" + s, TenantID: tenant, ActorID: "cfs-1", LotID: lot, ShipmentID: "SH-" + s,
+			Facility: cfs, Packs: 6, PackageType: "CT", Condition: phyapi.ConditionGood, Evidence: evidence("CFS-WMS", "GRN-"+s, 14), OccurredAt: hours(14)}))
+		phyOK(phyModule.RecordCargoMeasurement(ctx, phyapi.RecordCargoMeasurement{CommandID: "weigh-" + s, TenantID: tenant, ActorID: "cfs-1", LotID: lot,
+			ExpectedRevision: 1, GrossWeight: kg(weights[s]), Volume: cmq(volumes[s]), Method: phyapi.MethodScale, Evidence: evidence("CFS-SCALE", "W-"+s, 14),
+			OccurredAt: hours(14)}))
+		phyOK(phyModule.CompleteReceipt(ctx, phyapi.CompleteReceipt{CommandID: "complete-" + s, TenantID: tenant, ActorID: "cfs-1", LotID: lot, ExpectedRevision: 2,
+			OccurredAt: hours(14)}))
+	}
+	phyOK(phyModule.OpenLoadExecution(ctx, phyapi.OpenLoadExecution{CommandID: "stuff", TenantID: tenant, ActorID: "cfs-1", ExecutionID: "X-1",
+		ConsolidationID: "C-1", Kind: phyapi.ExecutionStuffing, Facility: cfs, LoadUnitNo: 1, OccurredAt: hours(15)}))
+	phyOK(phyModule.StartLoading(ctx, phyapi.StartLoading{CommandID: "start", TenantID: tenant, ActorID: "cfs-1", ExecutionID: "X-1", ExpectedRevision: 1,
+		OccurredAt: hours(15)}))
+	for i, s := range []string{"A", "B"} {
+		phyOK(phyModule.RecordCargoLoaded(ctx, phyapi.RecordCargoLoaded{CommandID: "load-" + s, TenantID: tenant, ActorID: "cfs-1", ExecutionID: "X-1",
+			ExpectedRevision: int64(2 + i), LotID: "L-" + s, Packs: 6, Evidence: evidence("CFS-TALLY", "T-"+s, 15), OccurredAt: hours(15)}))
+	}
+	phyOK(phyModule.CloseLoadExecution(ctx, phyapi.CloseLoadExecution{CommandID: "seal", TenantID: tenant, ActorID: "cfs-1", ExecutionID: "X-1",
+		ExpectedRevision: 4, Evidence: evidence(phyapi.EvidenceSeal, "CN-SEAL-77120", 15), OccurredAt: hours(15)}))
+
+	// 1. PHY's cost basis: A and B loaded with their measures, C with no loaded packs, and still a live house
+	b, err := phyModule.GetPhysicalCostBasis(ctx, phyapi.GetPhysicalCostBasis{TenantID: tenant, ConsolidationID: "C-1"})
+	must("PHY's cost basis", err)
+	if b.Kind != phyapi.KindSeaLCLOwn || len(b.Houses) != 3 {
+		t.Fatalf("PHY's cost basis: %+v", b)
+	}
+	for i, want := range []struct{ packs, kilos, cubicCm int64 }{{6, 312, 800_000}, {6, 288, 200_000}, {0, 0, 0}} {
+		h := b.Houses[i]
+		if h.ShipmentID != houses[i].shipment || h.Packs != 6 || h.GrossWeight != kg(300) || h.LoadedPacks != want.packs ||
+			(want.packs > 0 && (h.LoadedGrossWeight != kg(want.kilos) || h.LoadedVolume != cmq(want.cubicCm))) {
+			t.Fatalf("PHY's cost basis, house %d: %+v", i, h)
+		}
+	}
+	latest := func() finapi.PoolApportionment {
+		t.Helper()
+		p := pool()
+		return p.Apportionments[len(p.Apportionments)-1]
+	}
+	share := func(no int, quantity, amount int64) finapi.PoolShare {
+		return finapi.PoolShare{ShareNo: no, ShipmentID: houses[no-1].shipment, JobID: houses[no-1].job, Quantity: quantity, Unit: "MWM", Amount: cny(amount), Local: cny(amount)}
+	}
+	closePool := func(id string, h int) error {
+		_, err := finModule.CloseConsolCostPool(ctx, finapi.CloseConsolCostPool{CommandID: id, TenantID: tenant, ActorID: "fin-1", PoolID: "P-1",
+			ExpectedRevision: pool().Revision, OccurredAt: hours(h)})
+		return err
+	}
+
+	// 2. the freight over all three houses: PLANNED, and C has a share
+	_, err = finModule.ApportionConsolCosts(ctx, finapi.ApportionConsolCosts{CommandID: "fin-apportion-all", TenantID: tenant, ActorID: "fin-1", PoolID: "P-1",
+		ExpectedRevision: pool().Revision, OccurredAt: hours(16)})
+	must("apportion over all three houses", err)
+	all := latest()
+	if all.Stage != finapi.BasisPlanned || len(all.Lines) != 1 || all.Lines[0].Method != finapi.MethodChargeable || len(all.Lines[0].Shares) != 3 ||
+		all.Lines[0].Shares[0] != share(1, 300, 33_334) || all.Lines[0].Shares[1] != share(2, 300, 33_333) || all.Lines[0].Shares[2] != share(3, 300, 33_333) {
+		t.Fatalf("the freight over all three houses: %+v", all)
+	}
+
+	// 3. the creditor's invoice is matched final; the pool cannot be closed while C takes part and is not loaded
+	_, err = finModule.RecordCreditorInvoice(ctx, finapi.RecordCreditorInvoice{CommandID: "fin-invoice", TenantID: tenant, ActorID: "ap-1", InvoiceID: "CI-LINE-1",
+		LegalEntityID: "LE", CreditorPartyID: "line-1", SupplierInvoiceNo: "LINE-INV-2611-1", InvoiceDate: hours(17).Format(time.DateOnly), Currency: "CNY",
+		Lines: []finapi.CreditorInvoiceLine{{ChargeCode: "OCEAN_FREIGHT", Amount: 100_000}}, OccurredAt: hours(17)})
+	must("record the line's invoice", err)
+	invoice, err := finModule.GetCreditorInvoice(ctx, finapi.GetCreditorInvoice{TenantID: tenant, InvoiceID: "CI-LINE-1"})
+	must("the line's invoice", err)
+	_, err = finModule.MatchCreditorInvoice(ctx, finapi.MatchCreditorInvoice{CommandID: "fin-match", TenantID: tenant, ActorID: "ap-1", InvoiceID: "CI-LINE-1",
+		ExpectedRevision: invoice.Revision, Matches: []finapi.CreditorMatch{{LineNo: 1, Target: finapi.AccrualRef{Kind: "POOL_COST", ID: "P-1", LineNo: 1}, Amount: 100_000,
+			Final: true}}, OccurredAt: hours(18)})
+	must("match the line's invoice", err)
+	if err := closePool("fin-close-early", 19); err == nil || !strings.Contains(err.Error(), "FIN_POOL_NOT_CLOSABLE") {
+		t.Fatalf("closing with C taking part and not loaded: %v", err)
+	}
+
+	// 4. the same line with C left out: ACTUAL, A and B share the whole line by their loaded W/M, C's share is not used
+	_, err = finModule.ApportionConsolCosts(ctx, finapi.ApportionConsolCosts{CommandID: "fin-apportion-used", TenantID: tenant, ActorID: "fin-1", PoolID: "P-1",
+		ExpectedRevision: pool().Revision, NotUsed: []string{"SH-C"}, OccurredAt: hours(20)})
+	must("apportion with SH-C left out", err)
+	used := latest()
+	notUsed := finapi.PoolShare{ShareNo: 3, ShipmentID: "SH-C", JobID: "JOB-C", NotUsed: true, Amount: cny(0), Local: cny(0)}
+	if used.ApportionmentNo != 2 || used.Stage != finapi.BasisActual || len(used.Lines) != 1 || used.Lines[0].Amount != cny(100_000) || len(used.Lines[0].Shares) != 3 ||
+		used.Lines[0].Shares[0] != share(1, 800, 73_529) || used.Lines[0].Shares[1] != share(2, 288, 26_471) || used.Lines[0].Shares[2] != notUsed {
+		t.Fatalf("the freight with SH-C left out: %+v", used)
+	}
+
+	// 5. C's job carries no pool cost
+	profit := func(job string) finapi.JobProfit {
+		t.Helper()
+		p, err := finModule.GetJobProfit(ctx, finapi.GetJobProfit{TenantID: tenant, JobID: job})
+		must("profit of "+job, err)
+		return p
+	}
+	if a, bb, cc := profit("JOB-A"), profit("JOB-B"), profit("JOB-C"); a.PoolCost != cny(73_529) || len(a.PoolShares) != 1 || bb.PoolCost != cny(26_471) ||
+		len(bb.PoolShares) != 1 || cc.PoolCost != cny(0) || len(cc.PoolShares) != 0 || cc.Revenue != cny(284_936) || cc.Profit != cny(284_936) {
+		t.Fatalf("the jobs: A %+v, B %+v, C %+v", a, bb, cc)
+	}
+
+	// 6. the pool closes, and GetConsolProfit answers
+	must("close the pool", closePool("fin-close", 21))
+	if p := pool(); p.State != finapi.PoolClosed || len(p.Apportionments) != 2 || p.Apportionments[0].Stage != finapi.BasisPlanned {
+		t.Fatalf("the closed pool: %+v", p)
+	}
+	consol, err := finModule.GetConsolProfit(ctx, finapi.GetConsolProfit{TenantID: tenant, ConsolidationID: "C-1"})
+	must("consolidation profit", err)
+	// C stays a house of the consolidation: listed with pool cost zero and its own revenue and profit, so the houses' revenue
+	// is the consolidation's, 427,404 + 178,085 + 284,936 = 890,425
+	var revenue int64
+	for _, h := range consol.Houses {
+		revenue += h.Revenue.Minor
+	}
+	if consol.State != finapi.PoolClosed || consol.Pooled != cny(100_000) || consol.Apportioned != cny(100_000) || consol.Unapportioned != cny(0) || len(consol.Houses) != 3 ||
+		consol.Houses[0].ShipmentID != "SH-A" || consol.Houses[0].Revenue != cny(427_404) || consol.Houses[0].PoolCost != cny(73_529) || consol.Houses[0].Profit != cny(353_875) ||
+		consol.Houses[1].ShipmentID != "SH-B" || consol.Houses[1].Revenue != cny(178_085) || consol.Houses[1].PoolCost != cny(26_471) || consol.Houses[1].Profit != cny(151_614) ||
+		consol.Houses[2].ShipmentID != "SH-C" || consol.Houses[2].JobID != "JOB-C" || consol.Houses[2].Revenue != cny(284_936) || consol.Houses[2].PoolCost != cny(0) ||
+		consol.Houses[2].Profit != cny(284_936) || revenue != 890_425 {
+		t.Fatalf("the consolidation's profit: %+v", consol)
+	}
+}

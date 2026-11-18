@@ -11,10 +11,10 @@ import (
 
 // FIN V0.4 (FB3): the consol cost pool of a consolidation under one legal entity. Carrier and co-loader costs of the
 // whole consolidation are recorded on the pool and apportioned to the house jobs: by chargeable weight (air, OD-6 A),
-// by W/M freight tonnes (LCL), by volume, by pieces, or by hand with a reason. FIN V0.5 (FB4): creditor invoices match
-// the pool's lines; an apportionment divides each line's current cost (what is matched plus what is still accrued), a
-// person releases what no invoice will consume, and the pool closes once every line is matched final or released and
-// apportioned on the loaded basis at its final cost; it reopens with a reason.
+// by W/M freight tonnes (LCL), by volume, by pieces, by gross weight, by shipment, or by hand with a reason. FIN V0.5
+// (FB4): creditor invoices match the pool's lines; an apportionment divides each line's current cost (what is matched
+// plus what is still accrued), a person releases what no invoice will consume, and the pool closes once every line is
+// matched final or released and apportioned on the loaded basis at its final cost; it reopens with a reason.
 
 // Pool states.
 const (
@@ -34,6 +34,11 @@ const (
 	MethodVolume     = "VOLUME"
 	MethodPieces     = "PIECES"
 	MethodManual     = "MANUAL"
+	// MethodGrossWeight divides by each house's gross weight in grams (planned at PLANNED, loaded at ACTUAL), as
+	// CargoWise's Gross Weight method does.
+	MethodGrossWeight = "GROSS_WEIGHT"
+	// MethodShipment gives each house that takes part an equal share, as CargoWise's Shipment method does.
+	MethodShipment = "SHIPMENT"
 	// MethodRetained keeps a line's cost on the consolidation, with a reason, once PHY reports it cancelled or without
 	// a house left to bear it: as CargoWise leaves a consol charge on the consol when it is not apportioned, the cost is
 	// the consolidation's own (a dead freight or cancellation charge), not a house's.
@@ -47,10 +52,12 @@ const (
 	BasisPlanned = "PLANNED"
 )
 
-// Basis quantity units on shares: chargeable grams, cubic centimetres, pieces, milli freight tonnes (W/M: one
-// thousandth of a tonne or of a cubic metre, whichever is greater).
+// Basis quantity units on shares: grams (chargeable under CHARGEABLE in air, gross under GROSS_WEIGHT), cubic
+// centimetres, pieces, milli freight tonnes (W/M: one thousandth of a tonne or of a cubic metre, whichever is greater)
+// and shipments (one per house that takes part).
 const (
-	UnitChargeableGrams = "GRM"
+	UnitChargeableGrams = "GRM" // chargeable or gross grams, by the line's method
+	UnitShipments       = "SHP"
 	UnitCubicCm         = "CMQ"
 	UnitPieces          = "PCS"
 	UnitMilliFreightTon = "MWM"
@@ -130,11 +137,13 @@ type PoolCostLine struct {
 }
 
 // Share is one house job's share of a pool cost line under an apportionment: the basis quantity it was weighted by
-// and the share in the line currency and in the functional currency (each conserved by largest remainder).
+// and the share in the line currency and in the functional currency (each conserved by largest remainder). A house
+// that took no part in the apportionment (Used false) keeps a share of quantity 0, no unit and amounts 0.
 type Share struct {
 	No         int
 	ShipmentID string
 	JobID      string
+	Used       bool
 	Quantity   int64
 	Unit       string
 	Amount     int64
@@ -329,7 +338,7 @@ func (p *ConsolCostPool) RecordCost(code, description, supplierRef, method strin
 	switch {
 	case !ValidChargeCode(code) || (description != "" && !text(description)) || !text(reason) || (supplierRef != "" && !text(supplierRef)):
 		return fmt.Errorf("%w: a pool cost names its charge code and a reason", ErrInvalid)
-	case method != MethodChargeable && method != MethodVolume && method != MethodPieces && method != MethodManual:
+	case !validLineMethod(method):
 		return fmt.Errorf("%w: apportionment method %q", ErrInvalid, method)
 	}
 	v, err := p.costVersion(1, in, "", conv, by, at)
@@ -353,7 +362,7 @@ func (p *ConsolCostPool) RecordEstimate(basisID string, lines []EstimateLine, me
 	switch {
 	case !identifier(basisID):
 		return fmt.Errorf("%w: a rated estimate names its basis", ErrInvalid)
-	case method != MethodChargeable && method != MethodVolume && method != MethodPieces && method != MethodManual:
+	case !validLineMethod(method):
 		return fmt.Errorf("%w: apportionment method %q", ErrInvalid, method)
 	case len(lines) == 0:
 		return fmt.Errorf("%w: RATE rated no cost for the consolidation", ErrNotPriceable)
@@ -442,25 +451,45 @@ type ManualShare struct {
 }
 
 // ApportionInput is an apportionment as asked: the lines (every line when empty), a method overriding each line's
-// default (or MANUAL with one line, shares and a reason), and the jobs the application resolved: the open job of the
-// pool's legal entity per house shipment.
+// default (or MANUAL with one line, shares and a reason), the houses that take no part in these lines (none named: each
+// line keeps the houses its latest apportionment left out, or all take part), and the jobs the application resolved:
+// the open job of the pool's legal entity per house shipment.
 type ApportionInput struct {
 	LineNos []int
 	Method  string
 	Manual  []ManualShare
-	Reason  string
-	Jobs    map[string]string
+	NotUsed []string
+	// AllHouses takes every live house into the lines, whatever their latest apportionment left out. Without it and
+	// without NotUsed each line keeps the houses its latest apportionment left out.
+	AllHouses bool
+	Reason    string
+	Jobs      map[string]string
+}
+
+// validLineMethod is a method a cost line may carry as its default and an apportionment may name (RETAINED is only
+// named by an apportionment).
+func validLineMethod(method string) bool {
+	switch method {
+	case MethodChargeable, MethodVolume, MethodPieces, MethodManual, MethodGrossWeight, MethodShipment:
+		return true
+	}
+	return false
 }
 
 // Apportion divides the named cost lines' latest versions over the house jobs by the basis PHY answers: the loaded
-// facts when every house has loading evidence (ACTUAL), the attach plan scope otherwise (PLANNED). Shares conserve
-// the line amount and its local amount by largest remainder (ties to the first shipment in order). A new
-// apportionment supersedes an earlier one line by line.
+// facts when every house that takes part has loading evidence (ACTUAL), the attach plan scope otherwise (PLANNED).
+// Shares conserve the line amount and its local amount by largest remainder (ties to the first shipment in order).
+// Houses named in NotUsed take no part: the quantities, the amounts and the stage are those of the houses that take
+// part, and a house left out keeps a share marked not used with zero amounts. A new apportionment supersedes an
+// earlier one line by line.
 func (p *ConsolCostPool) Apportion(in ApportionInput, basis CostBasis, by string, at time.Time) error {
 	if err := p.open(by, at); err != nil {
 		return err
 	}
 	if in.Method == MethodRetained {
+		if len(in.NotUsed) > 0 || in.AllHouses {
+			return fmt.Errorf("%w: a cost retained on the consolidation has no houses to leave out", ErrInvalid)
+		}
 		return p.retain(in, basis, by, at)
 	}
 	if basis.ConsolidationID != p.state.ConsolidationID || len(basis.Houses) == 0 {
@@ -478,11 +507,28 @@ func (p *ConsolCostPool) Apportion(in ApportionInput, basis CostBasis, by string
 	}
 	houses := slices.Clone(basis.Houses)
 	slices.SortFunc(houses, func(a, b HouseFacts) int { return cmpString(a.ShipmentID, b.ShipmentID) })
+	if in.AllHouses && len(in.NotUsed) > 0 {
+		return fmt.Errorf("%w: every house takes part or the houses left out are named, not both", ErrInvalid)
+	}
+	named, err := notUsedHouses(in.NotUsed, houses)
+	if err != nil {
+		return err
+	}
+	// each line's houses left out: those named, or with none named (and not AllHouses) those its latest apportionment left
+	// out that are still live; the stage is PLANNED while a house that takes part in any of the lines is not loaded
+	leftOut := map[int]map[string]bool{}
 	stage := BasisActual
-	for _, h := range houses {
-		if h.LoadedPacks == 0 {
-			stage = BasisPlanned
-			break
+	for _, no := range lineNos {
+		leftOut[no] = named
+		if len(in.NotUsed) == 0 && !in.AllHouses {
+			if leftOut[no], err = p.carriedLeftOut(no, houses); err != nil {
+				return err
+			}
+		}
+		for _, h := range houses {
+			if !leftOut[no][h.ShipmentID] && h.LoadedPacks == 0 {
+				stage = BasisPlanned
+			}
 		}
 	}
 	jobs := make([]string, len(houses))
@@ -501,20 +547,26 @@ func (p *ConsolCostPool) Apportion(in ApportionInput, basis CostBasis, by string
 			method = in.Method
 		}
 		la := LineApportionment{LineNo: no, LineVersion: v.No, Method: method, Amount: cost, Local: local}
+		notUsed := leftOut[no]
+		var taking []HouseFacts // the houses that take part in this line, in shipment order
+		for _, h := range houses {
+			if !notUsed[h.ShipmentID] {
+				taking = append(taking, h)
+			}
+		}
 		var quantities []int64
 		var unit string
-		var err error
 		if method == MethodManual {
 			if len(lineNos) != 1 || !text(in.Reason) {
 				return fmt.Errorf("%w: a manual apportionment divides one line with a reason", ErrInvalid)
 			}
 			la.Reason = in.Reason
-			if quantities, err = manualQuantities(houses, in.Manual, cost); err != nil {
+			if quantities, err = manualQuantities(taking, in.Manual, cost); err != nil {
 				return err
 			}
 			unit = ""
 		} else {
-			if quantities, unit, err = methodQuantities(method, p.state.Mode, stage, houses); err != nil {
+			if quantities, unit, err = methodQuantities(method, p.state.Mode, stage, taking); err != nil {
 				return err
 			}
 		}
@@ -526,15 +578,58 @@ func (p *ConsolCostPool) Apportion(in ApportionInput, basis CostBasis, by string
 		if err != nil {
 			return err
 		}
+		k := 0 // the next house that takes part
 		for i, h := range houses {
-			la.Shares = append(la.Shares, Share{No: i + 1, ShipmentID: h.ShipmentID, JobID: jobs[i], Quantity: quantities[i], Unit: unit,
-				Amount: amounts[i], Local: locals[i]})
+			share := Share{No: i + 1, ShipmentID: h.ShipmentID, JobID: jobs[i]}
+			if !notUsed[h.ShipmentID] {
+				share.Used, share.Quantity, share.Unit, share.Amount, share.Local = true, quantities[k], unit, amounts[k], locals[k]
+				k++
+			}
+			la.Shares = append(la.Shares, share)
 		}
 		a.Lines = append(a.Lines, la)
 	}
 	p.state.Apportionments = append(p.state.Apportionments, a)
 	p.record(eventPoolApportioned, at, a.No)
 	return nil
+}
+
+// carriedLeftOut is the houses a line's latest apportionment left out that are still live houses of the consolidation
+// (none for a line not apportioned yet, one retained, or one that used every house): the line keeps them out until
+// another list is named or AllHouses is asked. Not every live house may be among them.
+func (p *ConsolCostPool) carriedLeftOut(lineNo int, houses []HouseFacts) (map[string]bool, error) {
+	out := map[string]bool{}
+	_, la, ok := p.SharesOfLine(lineNo)
+	if !ok {
+		return out, nil
+	}
+	for _, s := range la.Shares {
+		if !s.Used && slices.ContainsFunc(houses, func(h HouseFacts) bool { return h.ShipmentID == s.ShipmentID }) {
+			out[s.ShipmentID] = true
+		}
+	}
+	if len(out) == len(houses) && len(houses) > 0 {
+		return nil, fmt.Errorf("%w: every house still live was left out of line %d; name the houses that take part or ask for all", ErrInvalid, lineNo)
+	}
+	return out, nil
+}
+
+// notUsedHouses reads the houses an apportionment leaves out: each a live house once, and not every house.
+func notUsedHouses(named []string, houses []HouseFacts) (map[string]bool, error) {
+	out := map[string]bool{}
+	for _, id := range named {
+		switch {
+		case out[id]:
+			return nil, fmt.Errorf("%w: house %s is left out twice", ErrInvalid, id)
+		case !slices.ContainsFunc(houses, func(h HouseFacts) bool { return h.ShipmentID == id }):
+			return nil, fmt.Errorf("%w: %s is not a live house of the consolidation", ErrInvalid, id)
+		}
+		out[id] = true
+	}
+	if len(out) == len(houses) && len(houses) > 0 {
+		return nil, fmt.Errorf("%w: every house is left out", ErrInvalid)
+	}
+	return out, nil
 }
 
 // retain keeps the named lines' costs (every line when none is named) on the consolidation, with a reason: allowed
@@ -582,8 +677,8 @@ func cmpString(a, b string) int {
 	return 0
 }
 
-// manualQuantities reads hand-given shares: every house exactly once, non-negative, summing to the line amount; the
-// shares are their own weights, so largest remainder reproduces them exactly.
+// manualQuantities reads hand-given shares: every house that takes part exactly once, non-negative, summing to the
+// line amount; the shares are their own weights, so largest remainder reproduces them exactly.
 func manualQuantities(houses []HouseFacts, manual []ManualShare, amount int64) ([]int64, error) {
 	if len(manual) != len(houses) {
 		return nil, fmt.Errorf("%w: %d shares for %d houses", ErrManualShares, len(manual), len(houses))
@@ -625,6 +720,13 @@ func methodQuantities(method, mode, stage string, houses []HouseFacts) ([]int64,
 		switch method {
 		case MethodPieces:
 			out[i], unit = packs, UnitPieces
+		case MethodShipment:
+			out[i], unit = 1, UnitShipments
+		case MethodGrossWeight:
+			if out[i], err = grams(weight); err != nil {
+				return nil, "", err
+			}
+			unit = UnitChargeableGrams
 		case MethodVolume:
 			if out[i], err = cubicCm(volume); err != nil {
 				return nil, "", err
@@ -760,10 +862,11 @@ func split(amount int64, quantities []int64) ([]int64, error) {
 
 // Close closes the pool once its costs are final: every line matched with a final match or released, by creditor
 // invoices neither disputed nor awaiting a variance approval; and every line's latest apportionment divided its final
-// cost on PHY's current basis with every house loaded (ACTUAL), naming exactly the live houses and, for a weighed
-// method, their current quantities. A line whose final cost is zero needs no apportionment (or one of zero). Once PHY
-// cancelled the consolidation or no house is left on it, there is no basis to compare: the latest apportionments at
-// the final costs stand. The pool then takes no change until reopened.
+// cost on PHY's current basis with every house it used loaded (ACTUAL), naming exactly the live houses and, for a
+// weighed method, the used houses' current quantities; a house it left out is compared for its presence only. A line
+// whose final cost is zero needs no apportionment (or one of zero). Once PHY cancelled the consolidation or no house
+// is left on it, there is no basis to compare: the latest apportionments at the final costs stand. The pool then takes
+// no change until reopened.
 func (p *ConsolCostPool) Close(basis CostBasis, by string, at time.Time) error {
 	if err := p.open(by, at); err != nil {
 		return err
@@ -774,10 +877,6 @@ func (p *ConsolCostPool) Close(basis CostBasis, by string, at time.Time) error {
 		return fmt.Errorf("%w: PHY answered consolidation %s for %s", ErrInvalid, basis.ConsolidationID, p.state.ConsolidationID)
 	}
 	gone := basis.State == "CANCELLED" || len(houses) == 0
-	loaded := !gone
-	for _, h := range houses {
-		loaded = loaded && h.LoadedPacks > 0
-	}
 	for _, l := range p.state.Lines {
 		c := p.consumed[l.No]
 		status := p.LineStatus(l.No)
@@ -801,28 +900,52 @@ func (p *ConsolCostPool) Close(basis CostBasis, by string, at time.Time) error {
 			return fmt.Errorf("%w: cost line %d is retained on the consolidation while PHY reports houses on it", ErrPoolNotClosable, l.No)
 		case cost == 0 && local == 0, gone:
 			continue // every share is zero, or no basis is left to compare
-		case a.Stage != BasisActual || !loaded || len(la.Shares) != len(houses):
+		case a.Stage != BasisActual || len(la.Shares) != len(houses) || !usedLoaded(la.Shares, houses):
 			return fmt.Errorf("%w: cost line %d is not apportioned on the current loaded basis", ErrPoolNotClosable, l.No)
+		}
+		var taking []HouseFacts // the houses the apportionment used
+		for i, h := range houses {
+			if la.Shares[i].ShipmentID != h.ShipmentID {
+				return fmt.Errorf("%w: cost line %d is not apportioned on the current loaded basis (house %s)", ErrPoolNotClosable, l.No, h.ShipmentID)
+			}
+			if la.Shares[i].Used {
+				taking = append(taking, h)
+			}
 		}
 		var quantities []int64
 		var unit string
 		if la.Method != MethodManual {
 			var err error
-			if quantities, unit, err = methodQuantities(la.Method, p.state.Mode, BasisActual, houses); err != nil {
+			if quantities, unit, err = methodQuantities(la.Method, p.state.Mode, BasisActual, taking); err != nil {
 				return fmt.Errorf("%w: cost line %d: %w", ErrPoolNotClosable, l.No, err)
 			}
 		}
-		for i, h := range houses {
-			s := la.Shares[i]
-			if s.ShipmentID != h.ShipmentID || (quantities != nil && (s.Quantity != quantities[i] || s.Unit != unit)) {
-				return fmt.Errorf("%w: cost line %d is not apportioned on the current loaded basis (house %s)", ErrPoolNotClosable, l.No, h.ShipmentID)
+		k := 0 // the next house used
+		for _, s := range la.Shares {
+			if !s.Used {
+				continue // compared for its presence only
 			}
+			if quantities != nil && (s.Quantity != quantities[k] || s.Unit != unit) {
+				return fmt.Errorf("%w: cost line %d is not apportioned on the current loaded basis (house %s)", ErrPoolNotClosable, l.No, s.ShipmentID)
+			}
+			k++
 		}
 	}
 	c := PoolClosure{No: len(p.state.Closures) + 1, By: by, At: at.UTC()}
 	p.state.Closures, p.state.State = append(p.state.Closures, c), PoolClosed
 	p.record(eventPoolClosed, at, c.No)
 	return nil
+}
+
+// usedLoaded tells that every house a line's shares used has loaded packs on PHY's current basis (a share is read
+// against the house at its place; the caller compares the names).
+func usedLoaded(shares []Share, houses []HouseFacts) bool {
+	for i, s := range shares {
+		if s.Used && i < len(houses) && houses[i].LoadedPacks == 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // Reopen reopens a CLOSED pool with a reason, such as a creditor invoice arriving late (OD-10 A).

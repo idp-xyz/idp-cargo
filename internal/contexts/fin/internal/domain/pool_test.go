@@ -343,3 +343,517 @@ func TestApportionWMOwnContainer(t *testing.T) {
 		t.Fatalf("the shares do not conserve the line: %+v", s)
 	}
 }
+
+// threeHouses is an air consolidation of three loaded houses, for the apportionments that leave one out. Gross weight
+// and volume as loaded (planned in brackets):
+//
+//	HS1 10 packs, 300 kg (310 kg), 1.2 m³ (2 m³)   chargeable 300,000 g (volumetric 200,000 g)
+//	HS2  5 packs, 100 kg  (90 kg),  1.2 m³ (1 m³)   chargeable 200,000 g (volumetric 200,000 g)
+//	HS3  8 packs, 150 kg (160 kg), 1.2 m³ (1.5 m³) chargeable 200,000 g (volumetric 200,000 g)
+func threeHouses() CostBasis {
+	return CostBasis{ConsolidationID: "CONSOL-1", Revision: 7, Kind: "AIR_CONSOL", OperatingLegalEntityID: "LE", State: "CLOSED",
+		Houses: []HouseFacts{
+			{ShipmentID: "HS1", Packs: 10, GrossWeight: kg(310), Volume: mtq(2), LoadedPacks: 10, LoadedGrossWeight: kg(300), LoadedVolume: cmq(1_200_000),
+				LastLoadedAt: hour(1)},
+			{ShipmentID: "HS2", Packs: 5, GrossWeight: kg(90), Volume: mtq(1), LoadedPacks: 5, LoadedGrossWeight: kg(100), LoadedVolume: cmq(1_200_000),
+				LastLoadedAt: hour(1)},
+			{ShipmentID: "HS3", Packs: 8, GrossWeight: kg(160), Volume: cmq(1_500_000), LoadedPacks: 8, LoadedGrossWeight: kg(150),
+				LoadedVolume: cmq(1_200_000), LastLoadedAt: hour(1)},
+		}}
+}
+
+func threeJobs() map[string]string {
+	return map[string]string{"HS1": "JOB-1", "HS2": "JOB-2", "HS3": "JOB-3"}
+}
+
+// unloaded is a house with nothing loaded yet: PHY answers zero loaded facts.
+func unloaded(b *CostBasis, house int) {
+	b.Houses[house].LoadedPacks, b.Houses[house].LoadedGrossWeight, b.Houses[house].LoadedVolume = 0, kernel.Quantity{}, kernel.Quantity{}
+}
+
+type wantShare struct {
+	quantity, amount int64
+	unit             string
+}
+
+func checkShares(t *testing.T, name string, got []Share, left int, want []wantShare, amount int64) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("%s: %d shares: %+v", name, len(got), got)
+	}
+	var sum, local int64
+	for i, s := range got {
+		sum, local = sum+s.Amount, local+s.Local
+		if i == left {
+			if s.Used || s.Quantity != 0 || s.Unit != "" || s.Amount != 0 || s.Local != 0 {
+				t.Errorf("%s: share %d should be left out and zero: %+v", name, i+1, s)
+			}
+			continue
+		}
+		if !s.Used || s.Quantity != want[i].quantity || s.Unit != want[i].unit || s.Amount != want[i].amount || s.Local != want[i].amount ||
+			s.No != i+1 || s.JobID != "JOB-"+s.ShipmentID[2:] {
+			t.Errorf("%s: share %d is %+v, want %+v", name, i+1, s, want[i])
+		}
+	}
+	if sum != amount || local != amount {
+		t.Errorf("%s: the shares sum to %d (%d local), the line is %d", name, sum, local, amount)
+	}
+}
+
+// With no house left out every method gives the shares it always gave, 100,000 minor over the three houses of
+// threeHouses with ties and remainders to the first in shipment order:
+//
+//	CHARGEABLE   300,000 : 200,000 : 200,000 g  -> 42,857.14 / 28,571.43 / 28,571.43; one unit left to HS2 (tie, first)
+//	VOLUME       1,200,000 cm³ each             -> 33,333.33 each; the unit left goes to HS1
+//	PIECES       10 : 5 : 8                     -> 43,478.26 / 21,739.13 / 34,782.61; the unit left goes to HS3 (.61)
+//	GROSS_WEIGHT 300,000 : 100,000 : 150,000 g  -> 54,545.45 / 18,181.82 / 27,272.73; two left to HS2 (.82) and HS3 (.73)
+//	SHIPMENT     1 each                         -> 33,333.33 each; the unit left goes to HS1
+func TestApportionNothingLeftOutKeepsEveryMethod(t *testing.T) {
+	for _, tc := range []struct {
+		method string
+		want   []wantShare
+	}{
+		{MethodChargeable, []wantShare{{300_000, 42_857, "GRM"}, {200_000, 28_572, "GRM"}, {200_000, 28_571, "GRM"}}},
+		{MethodVolume, []wantShare{{1_200_000, 33_334, "CMQ"}, {1_200_000, 33_333, "CMQ"}, {1_200_000, 33_333, "CMQ"}}},
+		{MethodPieces, []wantShare{{10, 43_478, "PCS"}, {5, 21_739, "PCS"}, {8, 34_783, "PCS"}}},
+		{MethodGrossWeight, []wantShare{{300_000, 54_545, "GRM"}, {100_000, 18_182, "GRM"}, {150_000, 27_273, "GRM"}}},
+		{MethodShipment, []wantShare{{1, 33_334, "SHP"}, {1, 33_333, "SHP"}, {1, 33_333, "SHP"}}},
+	} {
+		p := pool(t, threeHouses())
+		recordCost(t, p, "AIRFREIGHT", cny(100_000), tc.method)
+		if err := p.Apportion(ApportionInput{Jobs: threeJobs()}, threeHouses(), "ops-1", hour(4)); err != nil {
+			t.Fatalf("%s: %v", tc.method, err)
+		}
+		a := p.State().Apportionments[0]
+		if a.Stage != BasisActual {
+			t.Errorf("%s: stage %s", tc.method, a.Stage)
+		}
+		checkShares(t, tc.method, a.Lines[0].Shares, -1, tc.want, 100_000)
+	}
+}
+
+// With HS2 left out, the two houses that take part share the line (100,000 minor); HS2 keeps a share that is not used.
+//
+//	CHARGEABLE   300,000 : 200,000 g   -> 3 : 2 -> 60,000 / 40,000
+//	VOLUME       1,200,000 : 1,200,000 -> 1 : 1 -> 50,000 / 50,000
+//	PIECES       10 : 8                -> 55,555.56 / 44,444.44; the unit left goes to HS1 (.56) -> 55,556 / 44,444
+//	GROSS_WEIGHT 300,000 : 150,000 g   -> 2 : 1 -> 66,666.67 / 33,333.33; the unit left goes to HS1 -> 66,667 / 33,333
+//	SHIPMENT     1 : 1                 -> 50,000 / 50,000
+func TestApportionLeavingOneOfThreeHousesOut(t *testing.T) {
+	for _, tc := range []struct {
+		method string
+		want   []wantShare
+	}{
+		{MethodChargeable, []wantShare{{300_000, 60_000, "GRM"}, {}, {200_000, 40_000, "GRM"}}},
+		{MethodVolume, []wantShare{{1_200_000, 50_000, "CMQ"}, {}, {1_200_000, 50_000, "CMQ"}}},
+		{MethodPieces, []wantShare{{10, 55_556, "PCS"}, {}, {8, 44_444, "PCS"}}},
+		{MethodGrossWeight, []wantShare{{300_000, 66_667, "GRM"}, {}, {150_000, 33_333, "GRM"}}},
+		{MethodShipment, []wantShare{{1, 50_000, "SHP"}, {}, {1, 50_000, "SHP"}}},
+	} {
+		p := pool(t, threeHouses())
+		recordCost(t, p, "AIRFREIGHT", cny(100_000), tc.method)
+		if err := p.Apportion(ApportionInput{NotUsed: []string{"HS2"}, Jobs: threeJobs()}, threeHouses(), "ops-1", hour(4)); err != nil {
+			t.Fatalf("%s: %v", tc.method, err)
+		}
+		checkShares(t, tc.method, p.State().Apportionments[0].Lines[0].Shares, 1, tc.want, 100_000)
+	}
+	// the same through a method override of a line recorded by another method, and the first house left out
+	p := pool(t, threeHouses())
+	recordCost(t, p, "AIRFREIGHT", cny(100_000), MethodChargeable)
+	if err := p.Apportion(ApportionInput{Method: MethodShipment, NotUsed: []string{"HS1"}, Jobs: threeJobs()}, threeHouses(), "ops-1", hour(4)); err != nil {
+		t.Fatal(err)
+	}
+	checkShares(t, "override", p.State().Apportionments[0].Lines[0].Shares, 0, []wantShare{{}, {1, 50_000, "SHP"}, {1, 50_000, "SHP"}}, 100_000)
+	if la := p.State().Apportionments[0].Lines[0]; la.Method != MethodShipment {
+		t.Fatalf("method %s", la.Method)
+	}
+}
+
+// A house left out has no basis to give: a weight FIN cannot convert or a missing volume of the house left out refuses
+// nothing, and the houses that take part having no basis is FIN_POOL_NO_BASIS.
+func TestApportionBasisIsThatOfTheHousesThatTakePart(t *testing.T) {
+	b := threeHouses()
+	b.Houses[1].LoadedGrossWeight = kernel.Quantity{Unit: "LBR", Amount: 100}
+	b.Houses[1].LoadedVolume = kernel.Quantity{}
+	p := pool(t, b)
+	recordCost(t, p, "AIRFREIGHT", cny(100_000), MethodChargeable)
+	if err := p.Apportion(ApportionInput{Jobs: threeJobs()}, b, "ops-1", hour(4)); !errors.Is(err, ErrPoolUnit) {
+		t.Fatalf("pounds with the house taking part: %v", err)
+	}
+	if err := p.Apportion(ApportionInput{NotUsed: []string{"HS2"}, Jobs: threeJobs()}, b, "ops-1", hour(4)); err != nil {
+		t.Fatalf("pounds with the house left out: %v", err)
+	}
+	b = threeHouses()
+	b.Houses[0].LoadedVolume, b.Houses[2].LoadedVolume = kernel.Quantity{}, kernel.Quantity{}
+	p = pool(t, b)
+	recordCost(t, p, "AIRFREIGHT", cny(100_000), MethodVolume)
+	if err := p.Apportion(ApportionInput{Jobs: threeJobs()}, b, "ops-1", hour(4)); err != nil {
+		t.Fatalf("one house has the volume: %v", err)
+	}
+	if err := p.Apportion(ApportionInput{NotUsed: []string{"HS2"}, Jobs: threeJobs()}, b, "ops-1", hour(5)); !errors.Is(err, ErrPoolNoBasis) {
+		t.Fatalf("no volume among the houses that take part: %v", err)
+	}
+}
+
+func TestApportionNotUsedRefusals(t *testing.T) {
+	p := pool(t, threeHouses())
+	recordCost(t, p, "AIRFREIGHT", cny(100_000), MethodChargeable)
+	for name, notUsed := range map[string][]string{
+		"named twice":     {"HS2", "HS2"},
+		"not a house":     {"HS9"},
+		"one of them not": {"HS2", "HS9"},
+		"every house":     {"HS3", "HS1", "HS2"},
+	} {
+		if err := p.Apportion(ApportionInput{NotUsed: notUsed, Jobs: threeJobs()}, threeHouses(), "ops-1", hour(4)); !errors.Is(err, ErrInvalid) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if len(p.State().Apportionments) != 0 {
+		t.Fatalf("a refused apportionment was kept")
+	}
+	// RETAINED leaves no house out: on a cancelled consolidation it keeps the cost, but not with a list of houses
+	gone := CostBasis{ConsolidationID: "CONSOL-1", Revision: 8, Kind: "AIR_CONSOL", OperatingLegalEntityID: "LE", State: "CANCELLED"}
+	if err := p.Apportion(ApportionInput{Method: MethodRetained, NotUsed: []string{"HS1"}, Reason: "dead freight"}, gone, "ops-1", hour(4)); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("retained with houses left out: %v", err)
+	}
+	if err := p.Apportion(ApportionInput{Method: MethodRetained, Reason: "dead freight"}, gone, "ops-1", hour(4)); err != nil {
+		t.Fatalf("retained: %v", err)
+	}
+	// the job of a house left out is still needed
+	if err := p.Apportion(ApportionInput{NotUsed: []string{"HS2"}, Jobs: map[string]string{"HS1": "JOB-1", "HS3": "JOB-3"}}, threeHouses(), "ops-1", hour(5)); !errors.Is(err, ErrPoolJobMissing) {
+		t.Fatalf("job of the house left out: %v", err)
+	}
+}
+
+// MANUAL names the houses that take part and none else.
+func TestApportionManualWithAHouseLeftOut(t *testing.T) {
+	p := pool(t, threeHouses())
+	recordCost(t, p, "AIRFREIGHT", cny(100_000), MethodManual)
+	manual := func(shares ...ManualShare) ApportionInput {
+		return ApportionInput{LineNos: []int{1}, Method: MethodManual, Manual: shares, NotUsed: []string{"HS2"}, Reason: "agreed", Jobs: threeJobs()}
+	}
+	for name, in := range map[string]ApportionInput{
+		"names the house left out": manual(ManualShare{"HS1", 30_000}, ManualShare{"HS2", 10_000}, ManualShare{"HS3", 60_000}),
+		"names it instead":         manual(ManualShare{"HS1", 30_000}, ManualShare{"HS2", 70_000}),
+		"omits one taking part":    manual(ManualShare{"HS1", 100_000}),
+	} {
+		if err := p.Apportion(in, threeHouses(), "ops-1", hour(4)); !errors.Is(err, ErrManualShares) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if err := p.Apportion(manual(ManualShare{"HS3", 70_000}, ManualShare{"HS1", 30_000}), threeHouses(), "ops-1", hour(4)); err != nil {
+		t.Fatal(err)
+	}
+	s := p.State().Apportionments[0].Lines[0].Shares
+	checkShares(t, "manual", s, 1, []wantShare{{30_000, 30_000, ""}, {}, {70_000, 70_000, ""}}, 100_000)
+}
+
+// The stage is that of the houses that take part.
+func TestApportionStageIsThatOfTheHousesThatTakePart(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		unloaded int
+		notUsed  []string
+		stage    string
+	}{
+		{"the house left out is not loaded", 1, []string{"HS2"}, BasisActual},
+		{"a house taking part is not loaded", 2, []string{"HS2"}, BasisPlanned},
+		{"nothing left out, one not loaded", 1, nil, BasisPlanned},
+		{"all loaded, one left out", -1, []string{"HS2"}, BasisActual},
+	} {
+		b := threeHouses()
+		if tc.unloaded >= 0 {
+			unloaded(&b, tc.unloaded)
+		}
+		p := pool(t, b)
+		recordCost(t, p, "AIRFREIGHT", cny(100_000), MethodChargeable)
+		if err := p.Apportion(ApportionInput{NotUsed: tc.notUsed, Jobs: threeJobs()}, b, "ops-1", hour(4)); err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if got := p.State().Apportionments[0].Stage; got != tc.stage {
+			t.Errorf("%s: stage %s, want %s", tc.name, got, tc.stage)
+		}
+	}
+}
+
+// GROSS_WEIGHT divides by the planned gross weight at PLANNED and the loaded gross weight at ACTUAL, in grams:
+//
+//	PLANNED (HS3 not loaded)  310,000 : 90,000 : 160,000 g -> 55,357.14 / 16,071.43 / 28,571.43; the unit left goes to HS2 (tie, first)
+//	ACTUAL                    300,000 : 100,000 : 150,000 g -> as the test above
+//
+// A weight in a unit FIN cannot convert is FIN_POOL_UNIT; a volume is of no matter to it.
+func TestApportionGrossWeightPlannedAndActual(t *testing.T) {
+	b := threeHouses()
+	unloaded(&b, 2)
+	p := pool(t, b)
+	recordCost(t, p, "AIRFREIGHT", cny(100_000), MethodGrossWeight)
+	if err := p.Apportion(ApportionInput{Jobs: threeJobs()}, b, "ops-1", hour(4)); err != nil {
+		t.Fatal(err)
+	}
+	a := p.State().Apportionments[0]
+	checkShares(t, "planned", a.Lines[0].Shares, -1, []wantShare{{310_000, 55_357, "GRM"}, {90_000, 16_072, "GRM"}, {160_000, 28_571, "GRM"}}, 100_000)
+	if a.Stage != BasisPlanned {
+		t.Fatalf("stage %s", a.Stage)
+	}
+	b = threeHouses()
+	b.Houses[0].LoadedVolume = kernel.Quantity{}
+	p = pool(t, b)
+	recordCost(t, p, "AIRFREIGHT", cny(100_000), MethodGrossWeight)
+	if err := p.Apportion(ApportionInput{Jobs: threeJobs()}, b, "ops-1", hour(4)); err != nil {
+		t.Fatalf("a missing volume: %v", err)
+	}
+	checkShares(t, "actual", p.State().Apportionments[0].Lines[0].Shares, -1, []wantShare{{300_000, 54_545, "GRM"}, {100_000, 18_182, "GRM"},
+		{150_000, 27_273, "GRM"}}, 100_000)
+	b.Houses[0].LoadedGrossWeight = kernel.Quantity{Unit: "LBR", Amount: 100}
+	if err := p.Apportion(ApportionInput{Jobs: threeJobs()}, b, "ops-1", hour(5)); !errors.Is(err, ErrPoolUnit) {
+		t.Fatalf("pounds: %v", err)
+	}
+	for i := range b.Houses {
+		b.Houses[i].LoadedGrossWeight = kernel.Quantity{}
+	}
+	if err := p.Apportion(ApportionInput{Jobs: threeJobs()}, b, "ops-1", hour(5)); !errors.Is(err, ErrPoolNoBasis) {
+		t.Fatalf("no weights: %v", err)
+	}
+}
+
+// SHIPMENT gives each house that takes part the same share; the minor units that do not divide go to the first houses in
+// shipment order: 100,001 over three houses is 33,333.67 each, the floors leave two units, to HS1 and HS2; over the two
+// that take part (HS1 and HS3) 100,001 leaves one, to HS1.
+func TestApportionShipmentExtraMinorUnits(t *testing.T) {
+	p := pool(t, threeHouses())
+	recordCost(t, p, "AIRFREIGHT", cny(100_001), MethodShipment)
+	if err := p.Apportion(ApportionInput{Jobs: threeJobs()}, threeHouses(), "ops-1", hour(4)); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Apportion(ApportionInput{NotUsed: []string{"HS2"}, Jobs: threeJobs()}, threeHouses(), "ops-1", hour(5)); err != nil {
+		t.Fatal(err)
+	}
+	st := p.State()
+	checkShares(t, "three", st.Apportionments[0].Lines[0].Shares, -1, []wantShare{{1, 33_334, "SHP"}, {1, 33_334, "SHP"}, {1, 33_333, "SHP"}}, 100_001)
+	checkShares(t, "two", st.Apportionments[1].Lines[0].Shares, 1, []wantShare{{1, 50_001, "SHP"}, {}, {1, 50_000, "SHP"}}, 100_001)
+	// a cost of zero is shared as zero
+	z := pool(t, threeHouses())
+	recordCost(t, z, "AIRFREIGHT", cny(0), MethodShipment)
+	if err := z.Apportion(ApportionInput{Jobs: threeJobs()}, threeHouses(), "ops-1", hour(4)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRecordCostAcceptsTheNewMethods(t *testing.T) {
+	p := pool(t, airBasis())
+	recordCost(t, p, "AIRFREIGHT", cny(100), MethodGrossWeight)
+	recordCost(t, p, "HANDLING", cny(100), MethodShipment)
+	if err := p.RecordCost("X", "", "", MethodRetained, SideInput{Amount: cny(1)}, "r", policy(t), "ops-1", hour(3)); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("a line is never recorded as retained: %v", err)
+	}
+	est := []EstimateLine{{ChargeCode: "AIRFREIGHT", LineNo: 1, HasCost: true, CreditorPartyID: "CARRIER-1", CreditorRevision: 3, Cost: cny(100)}}
+	q := pool(t, airBasis())
+	if err := q.RecordEstimate("BASIS-1", est, MethodShipment, policy(t), "ops-1", hour(3)); err != nil {
+		t.Fatalf("a rated estimate by shipment: %v", err)
+	}
+}
+
+// closable is a pool of the three houses with one line of 100,000 matched final, apportioned as asked at hour 4.
+func closable(t *testing.T, method string, notUsed []string, b CostBasis) *ConsolCostPool {
+	t.Helper()
+	p := pool(t, b)
+	recordCost(t, p, "AIRFREIGHT", cny(100_000), method)
+	p.Matched(map[int]Consumption{1: {Amount: 100_000, Local: 100_000, Final: true}})
+	if err := p.Apportion(ApportionInput{NotUsed: notUsed, Jobs: threeJobs()}, b, "ops-1", hour(4)); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// The close compares a line over the houses its latest apportionment used.
+func TestCloseOverTheHousesUsed(t *testing.T) {
+	for _, method := range []string{MethodChargeable, MethodGrossWeight, MethodVolume, MethodPieces, MethodShipment} {
+		b := threeHouses()
+		unloaded(&b, 1) // HS2 never loaded, left out
+		p := closable(t, method, []string{"HS2"}, b)
+		if st := p.State().Apportionments[0].Stage; st != BasisActual {
+			t.Fatalf("%s: stage %s", method, st)
+		}
+		if err := p.Close(b, "ops-1", hour(6)); err != nil {
+			t.Errorf("%s: a line leaving out the house never loaded does not close: %v", method, err)
+		}
+	}
+	b := threeHouses()
+	unloaded(&b, 1)
+	for name, change := range map[string]func(*CostBasis){
+		"a house taking part is not loaded": func(b *CostBasis) { unloaded(b, 2) },
+		"a used house re-weighed":           func(b *CostBasis) { b.Houses[0].LoadedGrossWeight = kg(320) },
+		"a house attached since": func(b *CostBasis) {
+			b.Houses = append(b.Houses, HouseFacts{ShipmentID: "HS4", LoadedPacks: 1, LoadedGrossWeight: kg(1)})
+		},
+		"a house detached since":               func(b *CostBasis) { b.Houses = b.Houses[:2] },
+		"a house in the place of one left out": func(b *CostBasis) { b.Houses[1].ShipmentID = "HS2A" },
+	} {
+		p := closable(t, MethodGrossWeight, []string{"HS2"}, b)
+		c := b
+		c.Houses = append([]HouseFacts(nil), b.Houses...)
+		change(&c)
+		if err := p.Close(c, "ops-1", hour(6)); !errors.Is(err, ErrPoolNotClosable) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	// a line by SHIPMENT has no weighed quantity to compare, and still refuses once a house it used is not loaded
+	sp := closable(t, MethodShipment, []string{"HS2"}, b)
+	c := b
+	c.Houses = append([]HouseFacts(nil), b.Houses...)
+	unloaded(&c, 2)
+	if err := sp.Close(c, "ops-1", hour(6)); !errors.Is(err, ErrPoolNotClosable) {
+		t.Errorf("a line by shipment with a house used not loaded: %v", err)
+	}
+	// the house left out may change as it likes, and be loaded: only its presence is compared
+	p := closable(t, MethodGrossWeight, []string{"HS2"}, b)
+	c = b
+	c.Houses = append([]HouseFacts(nil), b.Houses...)
+	c.Houses[1].LoadedPacks, c.Houses[1].LoadedGrossWeight = 3, kg(999)
+	if err := p.Close(c, "ops-1", hour(6)); err != nil {
+		t.Errorf("the house left out changed: %v", err)
+	}
+}
+
+// A line apportioned with nothing left out still refuses the close while any house is not loaded, and so does a line
+// apportioned again with the house that was left out taking part, until that house is loaded.
+func TestCloseWithNothingLeftOutNeedsEveryHouseLoaded(t *testing.T) {
+	b := threeHouses()
+	unloaded(&b, 1)
+	p := closable(t, MethodChargeable, nil, b) // PLANNED: HS2 not loaded
+	if st := p.State().Apportionments[0].Stage; st != BasisPlanned {
+		t.Fatalf("stage %s", st)
+	}
+	if err := p.Close(b, "ops-1", hour(6)); !errors.Is(err, ErrPoolNotClosable) {
+		t.Fatalf("closed with a house not loaded: %v", err)
+	}
+	// the same line apportioned again with HS2 taking part, while it is still not loaded: the close is refused
+	l := closable(t, MethodChargeable, []string{"HS2"}, b)
+	if err := l.Apportion(ApportionInput{AllHouses: true, Jobs: threeJobs()}, b, "ops-1", hour(5)); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Close(b, "ops-1", hour(6)); !errors.Is(err, ErrPoolNotClosable) {
+		t.Fatalf("closed with the house taking part not loaded: %v", err)
+	}
+	// loaded at last and apportioned over all three: it closes
+	loaded := threeHouses()
+	if err := l.Apportion(ApportionInput{AllHouses: true, Jobs: threeJobs()}, loaded, "ops-1", hour(7)); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Close(loaded, "ops-1", hour(8)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A house left out of a line stays out of it when the line is apportioned again with nothing named; AllHouses takes
+// every live house in again, another list replaces it, and each line keeps its own.
+func TestApportionKeepsTheHousesLeftOut(t *testing.T) {
+	p := pool(t, threeHouses())
+	recordCost(t, p, "AIRFREIGHT", cny(100_000), MethodShipment)
+	recordCost(t, p, "HANDLING", cny(60_000), MethodShipment)
+	recordCost(t, p, "TERMINAL", cny(30_000), MethodShipment)
+	apportion := func(h int, in ApportionInput) []LineApportionment {
+		t.Helper()
+		in.Jobs = threeJobs()
+		if err := p.Apportion(in, threeHouses(), "ops-1", hour(h)); err != nil {
+			t.Fatal(err)
+		}
+		return p.State().Apportionments[len(p.State().Apportionments)-1].Lines
+	}
+	used := func(la LineApportionment) (out string) {
+		for _, s := range la.Shares {
+			if s.Used {
+				out += s.ShipmentID[2:]
+			}
+		}
+		return out
+	}
+	// line 1 leaves HS2 out, line 2 leaves HS3 out, line 3 all take part
+	apportion(4, ApportionInput{LineNos: []int{1}, NotUsed: []string{"HS2"}})
+	apportion(4, ApportionInput{LineNos: []int{2}, NotUsed: []string{"HS3"}})
+	apportion(4, ApportionInput{LineNos: []int{3}})
+	// with nothing named, each line keeps its own list, in one command
+	got := apportion(5, ApportionInput{})
+	if used(got[0]) != "13" || used(got[1]) != "12" || used(got[2]) != "123" {
+		t.Fatalf("carried lists: %q %q %q", used(got[0]), used(got[1]), used(got[2]))
+	}
+	if got[0].Shares[0].Amount != 50_000 || got[0].Shares[1].Amount != 0 || got[1].Shares[2].Amount != 0 {
+		t.Fatalf("shares: %+v / %+v", got[0].Shares, got[1].Shares)
+	}
+	// MANUAL takes the carried list too
+	manual := ApportionInput{LineNos: []int{1}, Method: MethodManual, Manual: []ManualShare{{"HS1", 10_000}, {"HS3", 90_000}}, Reason: "agreed"}
+	if got = apportion(6, manual); used(got[0]) != "13" {
+		t.Fatalf("manual: %q", used(got[0]))
+	}
+	manual.Manual = []ManualShare{{"HS1", 10_000}, {"HS2", 10_000}, {"HS3", 80_000}}
+	if err := p.Apportion(ApportionInput{LineNos: []int{1}, Method: MethodManual, Manual: manual.Manual, Reason: "x", Jobs: threeJobs()}, threeHouses(),
+		"ops-1", hour(6)); !errors.Is(err, ErrManualShares) {
+		t.Fatalf("manual naming the house kept out: %v", err)
+	}
+	// another list replaces the line's
+	if got = apportion(7, ApportionInput{LineNos: []int{1}, NotUsed: []string{"HS1"}}); used(got[0]) != "23" {
+		t.Fatalf("replaced: %q", used(got[0]))
+	}
+	// AllHouses takes everyone back in, in every line of the command
+	got = apportion(8, ApportionInput{AllHouses: true})
+	if used(got[0]) != "123" || used(got[1]) != "123" || used(got[2]) != "123" {
+		t.Fatalf("all houses: %q %q %q", used(got[0]), used(got[1]), used(got[2]))
+	}
+	// AllHouses with a list, and with RETAINED, is refused
+	for name, in := range map[string]ApportionInput{
+		"all and a list": {AllHouses: true, NotUsed: []string{"HS2"}, Jobs: threeJobs()},
+	} {
+		if err := p.Apportion(in, threeHouses(), "ops-1", hour(9)); !errors.Is(err, ErrInvalid) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	gone := CostBasis{ConsolidationID: "CONSOL-1", Revision: 8, Kind: "AIR_CONSOL", OperatingLegalEntityID: "LE", State: "CANCELLED"}
+	if err := p.Apportion(ApportionInput{Method: MethodRetained, AllHouses: true, Reason: "r"}, gone, "ops-1", hour(9)); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("retained with AllHouses: %v", err)
+	}
+}
+
+// A house detached since is dropped from the carried list; when every house still live was left out the command is
+// refused, as when every house is named.
+func TestCarriedListDropsHousesNoLongerLive(t *testing.T) {
+	p := pool(t, threeHouses())
+	recordCost(t, p, "AIRFREIGHT", cny(100_000), MethodShipment)
+	if err := p.Apportion(ApportionInput{NotUsed: []string{"HS2", "HS3"}, Jobs: threeJobs()}, threeHouses(), "ops-1", hour(4)); err != nil {
+		t.Fatal(err)
+	}
+	// HS1 detached: HS2 and HS3 are all that is left, and both were left out
+	b := threeHouses()
+	b.Houses = b.Houses[1:]
+	if err := p.Apportion(ApportionInput{Jobs: threeJobs()}, b, "ops-1", hour(5)); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("every house still live left out: %v", err)
+	}
+	// HS3 detached instead: HS2 stays out, HS1 takes part, the dropped HS3 is not named by any share
+	b = threeHouses()
+	b.Houses = b.Houses[:2]
+	if err := p.Apportion(ApportionInput{Jobs: threeJobs()}, b, "ops-1", hour(5)); err != nil {
+		t.Fatal(err)
+	}
+	checkShares(t, "after a detach", p.State().Apportionments[1].Lines[0].Shares, 1, []wantShare{{1, 100_000, "SHP"}, {}}, 100_000)
+}
+
+// The stage of an apportionment that names no house to leave out is that of the houses its lines keep out of it: a house
+// left out and not loaded does not make it PLANNED.
+func TestStageOfAnApportionmentThatCarriesTheHousesLeftOut(t *testing.T) {
+	b := threeHouses()
+	unloaded(&b, 1)
+	p := pool(t, b)
+	recordCost(t, p, "AIRFREIGHT", cny(100_000), MethodChargeable)
+	for i, in := range []ApportionInput{{NotUsed: []string{"HS2"}}, {}, {AllHouses: true}} {
+		in.Jobs = threeJobs()
+		if err := p.Apportion(in, b, "ops-1", hour(4+i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := []string{}
+	for _, a := range p.State().Apportionments {
+		got = append(got, a.Stage)
+	}
+	if got[0] != BasisActual || got[1] != BasisActual || got[2] != BasisPlanned {
+		t.Fatalf("stages %v", got)
+	}
+}

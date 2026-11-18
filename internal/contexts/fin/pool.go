@@ -42,7 +42,8 @@ func (m *Module) ApportionConsolCosts(ctx context.Context, cmd api.ApportionCons
 	}
 	r, err := m.deps(cmd.TenantID, cmd.CommandID).ApportionPoolCosts(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID,
 		api.ActionApportionConsolCosts, cmd.PoolID, cmd.ExpectedRevision, cmd.OccurredAt, cmd),
-		application.ApportionAsk{LineNos: append([]int(nil), cmd.LineNos...), Method: cmd.Method, Manual: manual, Reason: cmd.Reason})
+		application.ApportionAsk{LineNos: append([]int(nil), cmd.LineNos...), Method: cmd.Method, Manual: manual,
+			NotUsed: append([]string(nil), cmd.NotUsed...), AllHouses: cmd.AllHouses, Reason: cmd.Reason})
 	return receipt(r, err)
 }
 
@@ -82,7 +83,7 @@ func poolView(p *domain.ConsolCostPool, revision int64) api.ConsolCostPool {
 			lv := api.ApportionedLine{LineNo: la.LineNo, LineVersion: la.LineVersion, Method: la.Method, Reason: la.Reason,
 				Amount: kernel.Money{Currency: currency, Minor: la.Amount}, Local: local(la.Local)}
 			for _, s := range la.Shares {
-				lv.Shares = append(lv.Shares, api.PoolShare{ShareNo: s.No, ShipmentID: s.ShipmentID, JobID: s.JobID, Quantity: s.Quantity, Unit: s.Unit,
+				lv.Shares = append(lv.Shares, api.PoolShare{ShareNo: s.No, ShipmentID: s.ShipmentID, JobID: s.JobID, NotUsed: !s.Used, Quantity: s.Quantity, Unit: s.Unit,
 					Amount: kernel.Money{Currency: currency, Minor: s.Amount}, Local: local(s.Local)})
 			}
 			av.Lines = append(av.Lines, lv)
@@ -147,11 +148,13 @@ func (m *Module) GetConsolProfit(ctx context.Context, q api.GetConsolProfit) (ap
 				continue
 			}
 			for _, s := range la.Shares {
-				apportioned += s.Local
 				if byShipment[s.ShipmentID] == nil {
-					byShipment[s.ShipmentID] = &house{jobID: s.JobID}
+					byShipment[s.ShipmentID] = &house{jobID: s.JobID} // a house the lines name is listed, bearing cost or not
 				}
-				byShipment[s.ShipmentID].pool += s.Local
+				if s.Used { // a house left out carries nothing of the line
+					apportioned += s.Local
+					byShipment[s.ShipmentID].pool += s.Local
+				}
 			}
 		}
 		out.Pooled, out.Matched, out.Apportioned, out.Retained = local(pooled), local(matched), local(apportioned), local(retained)
