@@ -489,8 +489,9 @@ const (
 )
 
 // OpenConsolCostPool opens the consol cost pool of a consolidation (FIN V0.4, FB3): FIN reads PHY's
-// PhysicalCostBasis v1; the consolidation must be an air consolidation or an LCL co-load and not cancelled, and its
-// operating legal entity, VERIFIED in ORG, becomes the pool's (FIN_CROSS_LEGAL_ENTITY otherwise; cross-entity pools
+// PhysicalCostBasis v1; the consolidation must be an air consolidation, an LCL co-load or an LCL consolidation in the
+// forwarder's own container (AIR_CONSOL, SEA_LCL_COLOAD or SEA_LCL_OWN) and not cancelled, and its operating legal
+// entity, VERIFIED in ORG, becomes the pool's (FIN_CROSS_LEGAL_ENTITY otherwise; cross-entity pools
 // come with intercompany charges). One pool per consolidation and legal entity (UL-08); the pool freezes the
 // functional currency and book. Matching creditor invoices and closing the pool come with FB4.
 type OpenConsolCostPool struct {

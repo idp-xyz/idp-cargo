@@ -25,7 +25,7 @@ const (
 // Pool modes, from the PHY consolidation kind.
 const (
 	PoolModeAir    = "AIR"     // AIR_CONSOL: chargeable weight at 6000 cm³ per kg, rounded up to 0.5 kg
-	PoolModeSeaLCL = "SEA_LCL" // SEA_LCL_COLOAD: freight tonnes, 1 m³ per 1000 kg (W/M)
+	PoolModeSeaLCL = "SEA_LCL" // SEA_LCL_COLOAD and SEA_LCL_OWN: freight tonnes, 1 m³ per 1000 kg (W/M)
 )
 
 // Apportionment methods (OD-6 A: CHARGEABLE is the default of both modes).
@@ -90,7 +90,7 @@ type HouseFacts struct {
 type CostBasis struct {
 	ConsolidationID        string
 	Revision               int64
-	Kind                   string // AIR_CONSOL or SEA_LCL_COLOAD
+	Kind                   string // AIR_CONSOL, SEA_LCL_COLOAD or SEA_LCL_OWN
 	OperatingLegalEntityID string
 	State                  string
 	Houses                 []HouseFacts
@@ -222,7 +222,8 @@ const (
 )
 
 // OpenPool opens the pool of a consolidation under the legal entity's policy. PHY must know the consolidation, its
-// kind must be an air consolidation or an LCL co-load, and its operating legal entity must be the pool's (S04,
+// kind must be an air consolidation, an LCL co-load or an LCL consolidation in the forwarder's own container
+// (SEA_LCL_OWN, which has the pool mode of a co-load), and its operating legal entity must be the pool's (S04,
 // cross-entity, is out of scope).
 func OpenPool(st PoolState, policy *FinancePolicy, basis CostBasis, by string, at time.Time) (*ConsolCostPool, error) {
 	p := policy.State()
@@ -230,7 +231,7 @@ func OpenPool(st PoolState, policy *FinancePolicy, basis CostBasis, by string, a
 	switch basis.Kind {
 	case "AIR_CONSOL":
 		mode = PoolModeAir
-	case "SEA_LCL_COLOAD":
+	case "SEA_LCL_COLOAD", "SEA_LCL_OWN":
 		mode = PoolModeSeaLCL
 	}
 	switch {

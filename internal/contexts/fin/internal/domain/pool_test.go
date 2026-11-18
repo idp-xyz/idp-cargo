@@ -274,3 +274,72 @@ func TestPoolRestoreRoundTrip(t *testing.T) {
 		t.Fatalf("added: %v %v %v %v", lines, versions, lineOf, apportionments)
 	}
 }
+
+// A pool opens for the three consolidation kinds PHY reports as having shared costs and for no other: an air
+// consolidation (mode AIR), an LCL co-load and an LCL consolidation in the forwarder's own container (mode SEA_LCL).
+func TestOpenPoolByConsolidationKind(t *testing.T) {
+	for _, tc := range []struct {
+		kind, mode string
+	}{
+		{"AIR_CONSOL", PoolModeAir},
+		{"SEA_LCL_COLOAD", PoolModeSeaLCL},
+		{"SEA_LCL_OWN", PoolModeSeaLCL},
+		{"", ""},
+		{"SEA_FCL", ""},
+	} {
+		basis := airBasis()
+		basis.Kind = tc.kind
+		p, err := OpenPool(PoolState{TenantID: "T", PoolID: "P", ConsolidationID: "CONSOL-1", LegalEntityID: "LE"}, policy(t), basis, "ops-1", hour(2))
+		if tc.mode == "" {
+			if !errors.Is(err, ErrNotOpenable) {
+				t.Errorf("kind %q: %v", tc.kind, err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("kind %q: %v; want mode %s", tc.kind, err, tc.mode)
+		} else if p.State().Mode != tc.mode {
+			t.Errorf("kind %q: mode %q, want %s", tc.kind, p.State().Mode, tc.mode)
+		}
+	}
+}
+
+// W/M of an own-container consolidation, in milli freight tonnes, each measure rounded up to the milli unit:
+//
+//	HS1 1250 kg, 0.8 m³: weight 1250 over volume 800            -> 1250
+//	HS2  200 kg, 2.4 m³: volume 2400 over weight 200            -> 2400
+//	HS3 350.5 kg, 0.3 m³: weight 350.5 rounds up to 351, volume 300 -> 351
+//
+// 4001 in all. 1000.00 (100,000 minor) divides 31242.19 / 59985.00 / 8772.81: the floors 31242, 59985 and 8772 sum to
+// 99,999 and the one minor unit left goes to the largest remainder (HS3, 3228 of 4001), so 31,242 / 59,985 / 8,773.
+func TestApportionWMOwnContainer(t *testing.T) {
+	basis := CostBasis{ConsolidationID: "CONSOL-1", Revision: 3, Kind: "SEA_LCL_OWN", OperatingLegalEntityID: "LE", State: "CLOSED",
+		Houses: []HouseFacts{
+			{ShipmentID: "HS1", Packs: 4, LoadedPacks: 4, LoadedGrossWeight: kg(1250), LoadedVolume: cmq(800_000), LastLoadedAt: hour(1)},
+			{ShipmentID: "HS2", Packs: 2, LoadedPacks: 2, LoadedGrossWeight: kg(200), LoadedVolume: cmq(2_400_000), LastLoadedAt: hour(1)},
+			{ShipmentID: "HS3", Packs: 1, LoadedPacks: 1, LoadedGrossWeight: kernel.Quantity{Unit: "GRM", Amount: 350_500}, LoadedVolume: cmq(300_000),
+				LastLoadedAt: hour(1)},
+		}}
+	p := pool(t, basis)
+	if p.State().Mode != PoolModeSeaLCL {
+		t.Fatalf("mode %s", p.State().Mode)
+	}
+	recordCost(t, p, "OCEANFREIGHT", cny(100_000), MethodChargeable)
+	in := ApportionInput{Jobs: map[string]string{"HS1": "JOB-1", "HS2": "JOB-2", "HS3": "JOB-3"}}
+	if err := p.Apportion(in, basis, "ops-1", hour(4)); err != nil {
+		t.Fatal(err)
+	}
+	a := p.State().Apportionments[0]
+	s := a.Lines[0].Shares
+	if a.Stage != BasisActual || len(s) != 3 {
+		t.Fatalf("apportionment: %+v", a)
+	}
+	for i, want := range []struct{ quantity, amount int64 }{{1250, 31_242}, {2400, 59_985}, {351, 8_773}} {
+		if s[i].Quantity != want.quantity || s[i].Amount != want.amount || s[i].Local != want.amount || s[i].Unit != UnitMilliFreightTon {
+			t.Errorf("share %d: %+v, want %+v", i+1, s[i], want)
+		}
+	}
+	if s[0].Amount+s[1].Amount+s[2].Amount != 100_000 || s[0].Local+s[1].Local+s[2].Local != 100_000 {
+		t.Fatalf("the shares do not conserve the line: %+v", s)
+	}
+}
