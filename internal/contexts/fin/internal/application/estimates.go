@@ -196,7 +196,7 @@ func (d Deps) RatePool(ctx context.Context, c Command, in RatePoolInput) (Receip
 		if err != nil {
 			return err
 		}
-		mode := map[string]string{"AIR_CONSOL": "AIR", "SEA_LCL_COLOAD": "SEA"}[cb.Kind]
+		mode := map[string]string{"AIR_CONSOL": "AIR", "SEA_LCL_COLOAD": "SEA", "SEA_LCL_OWN": "SEA"}[cb.Kind]
 		if mode == "" || cb.OperatingLegalEntityID != st.LegalEntityID || len(cb.Houses) == 0 {
 			return fmt.Errorf("%w: PHY reports consolidation %s of kind %s with %d houses", fin.ErrNotPriceable, st.ConsolidationID, cb.Kind, len(cb.Houses))
 		}
