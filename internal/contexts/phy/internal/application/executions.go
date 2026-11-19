@@ -44,7 +44,12 @@ func (h OpenLoadExecution) Handle(ctx context.Context, c OpenLoadExecutionComman
 				return Receipt{}, nil, err
 			}
 			_, taken := uses[c.LoadUnitNo]
-			x, err = phy.OpenStuffing(c.Scope.TenantID, c.ExecutionID, consol, c.LoadUnitNo, c.Facility, taken, c.Scope.ActorID, c.OccurredAt)
+			cancelled, err := h.Executions.LastCancellations(txCtx, c.Scope.TenantID, c.ConsolidationID)
+			if err != nil {
+				return Receipt{}, nil, err
+			}
+			x, err = phy.OpenStuffingAfter(c.Scope.TenantID, c.ExecutionID, consol, c.LoadUnitNo, c.Facility, taken, cancelled[c.LoadUnitNo],
+				c.Scope.ActorID, c.OccurredAt)
 			if err != nil {
 				return Receipt{}, nil, err
 			}
@@ -264,6 +269,23 @@ func (h CloseLoadExecution) Handle(ctx context.Context, c CloseLoadExecutionComm
 			return 0, x.Seal(consol, c.Evidence, c.Scope.ActorID, c.OccurredAt)
 		}
 		return 0, x.Close(c.Evidence, c.Scope.ActorID, c.OccurredAt)
+	})
+}
+
+type CancelLoadExecutionCommand struct {
+	ExecutionCommand
+	Reason string
+}
+
+// CancelLoadExecution gives up a stuffing that holds no live packs, under the consolidation's FOR SHARE lock and the
+// execution's FOR UPDATE lock: a load into the stuffing and its cancellation wait for each other, so a cancelled
+// stuffing never holds a live pack, and an opening of a second stuffing on the unit reads the stuffing as it is once
+// this commits.
+type CancelLoadExecution struct{ Deps }
+
+func (h CancelLoadExecution) Handle(ctx context.Context, c CancelLoadExecutionCommand) (Receipt, error) {
+	return h.execute(ctx, c.ExecutionCommand, c, ActionCancelLoadExecution, func(_ context.Context, _ *phy.Consolidation, x *phy.LoadExecution) (int, error) {
+		return 0, x.Cancel(c.Reason, c.Scope.ActorID, c.OccurredAt)
 	})
 }
 

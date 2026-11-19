@@ -125,6 +125,13 @@ func (m *Module) CloseLoadExecution(ctx context.Context, cmd api.CloseLoadExecut
 	return toReceipt(r, err)
 }
 
+func (m *Module) CancelLoadExecution(ctx context.Context, cmd api.CancelLoadExecution) (api.Receipt, error) {
+	r, err := application.CancelLoadExecution{Deps: m.deps(cmd.TenantID, cmd.CommandID)}.Handle(ctx, application.CancelLoadExecutionCommand{
+		ExecutionCommand: executionCommand(cmd.CommandID, cmd.TenantID, cmd.ActorID, cmd.ExecutionID, cmd.ExpectedRevision, cmd.OccurredAt),
+		Reason:           cmd.Reason})
+	return toReceipt(r, err)
+}
+
 func (m *Module) RecordCarrierLoadEvidence(ctx context.Context, cmd api.RecordCarrierLoadEvidence) (api.Receipt, error) {
 	r, err := application.RecordCarrierLoadEvidence{Deps: m.deps(cmd.TenantID, cmd.CommandID)}.Handle(ctx, application.RecordCarrierLoadEvidenceCommand{
 		ExecutionCommand: executionCommand(cmd.CommandID, cmd.TenantID, cmd.ActorID, cmd.ExecutionID, cmd.ExpectedRevision, cmd.OccurredAt),
@@ -199,6 +206,13 @@ func (m *Module) GetPhysicalLoadEvidence(ctx context.Context, q api.GetPhysicalL
 		out.ReceivedPacks += v.ReceivedPacks
 		out.Lots = append(out.Lots, e)
 	}
+	// The executions with lines of the shipment are every execution that can hold live packs of its lots: the lot's
+	// measure is divided over them as the cost basis divides it, so both answer the same figure for an execution.
+	all := make([]*domain.LoadExecution, len(executions))
+	for i, r := range executions {
+		all[i] = r.Execution
+	}
+	allotment := domain.AllotLots(all, byID)
 	for _, r := range executions {
 		v := executionView(r)
 		t := api.TenderEvidence{ExecutionID: v.ExecutionID, Revision: v.Revision, ConsolidationID: v.ConsolidationID, Kind: v.Kind, State: v.State,
@@ -209,7 +223,7 @@ func (m *Module) GetPhysicalLoadEvidence(ctx context.Context, q api.GetPhysicalL
 				t.Lines = append(t.Lines, l)
 			}
 		}
-		t.LoadedPacks, t.GrossWeight, t.Volume = r.Execution.HouseMeasure(shipment, byID)
+		t.LoadedPacks, t.GrossWeight, t.Volume = r.Execution.HouseMeasureAllotted(shipment, byID, allotment)
 		pieces := r.Execution.HousePieces(shipment)
 		t.Departed, t.Arrived, t.Offloaded = pieces.Departed, pieces.Arrived, pieces.Offloaded
 		for _, e := range v.CarrierEvidence {
@@ -270,7 +284,8 @@ func executionView(r application.ExecutionRead) api.LoadExecution {
 		ConsolidationID: string(st.ConsolidationID), Kind: string(st.Kind), Mode: string(st.Mode),
 		Facility: api.Facility{Location: st.Facility.Location, Code: st.Facility.Code}, LoadUnitNo: st.LoadUnitNo, State: string(st.State),
 		TenderedPacks: x.Tendered(),
-		OpenedAt:      st.OpenedAt, StartedAt: st.StartedAt, ClosedAt: st.ClosedAt}
+		OpenedAt:      st.OpenedAt, StartedAt: st.StartedAt, ClosedAt: st.ClosedAt, CancelledBy: st.CancelledBy, CancelledAt: st.CancelledAt,
+		CancelReason: st.CancelReason}
 	if !st.ClosedAt.IsZero() {
 		out.CloseEvidence = evidenceView(st.CloseEvidence)
 	}

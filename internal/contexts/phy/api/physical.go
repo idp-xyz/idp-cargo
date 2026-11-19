@@ -167,6 +167,8 @@ const (
 	ExecutionLoading = "LOADING"
 	ExecutionOnHold  = "ON_HOLD"
 	ExecutionClosed  = "CLOSED"
+	// ExecutionCancelled is a stuffing given up with no live packs (CancelLoadExecution), terminal and kept as history.
+	ExecutionCancelled = "CANCELLED"
 )
 
 // Reversal reasons, hold reasons and carrier facts.
@@ -196,7 +198,9 @@ const (
 //   - a TENDER of an AIR_CONSOL or SEA_LCL_COLOAD consolidation, OPEN or CLOSED, at the airline terminal or the
 //     co-loader's CFS; it names no load unit;
 //   - the STUFFING of a planned container (LoadUnitNo) of a CLOSED SEA_LCL_OWN consolidation, at the forwarder's
-//     CFS (PHY V0.3). A unit takes one stuffing; its cargo is checked against the unit's limits as it is stuffed: a
+//     CFS (PHY V0.3). A unit has at most one stuffing that is not cancelled (CancelLoadExecution gives up an
+//     empty one);
+//     its cargo is checked against the unit's limits as it is stuffed: a
 //     line taking the container, its tare and cargo, over the default maximum gross, or its cargo over the capacity,
 //     is recorded and holds the execution (OVERWEIGHT), which a release with its evidence (such as the plate)
 //     lifts. Weights are in GRM, KGM or TNE and volumes in CMQ, DMQ, LTR or MTQ.
@@ -292,6 +296,25 @@ type CloseLoadExecution struct {
 	OccurredAt       time.Time
 }
 
+// CancelLoadExecution gives up a stuffing that holds no live packs: a STUFFING that is OPEN, LOADING or ON_HOLD with
+// nothing loaded, or with every loaded pack unloaded again. The reason is required (500 characters) and the business
+// time is not before the execution's last change. The execution becomes CANCELLED: terminal, it keeps its lines,
+// reversals and holds as history and takes no further command, and it records who gave it up, when and why
+// (LoadExecution). A hold still placed ends with it. The container is PLANNED again: it can take a new stuffing (a new
+// execution id) or be removed with RemovePlannedLoadUnit. A stuffing with live packs, a sealed one and a tender are
+// refused (ErrRejected); a tender is closed with its receipt, a sealed container stays sealed. The event is
+// LoadExecutionCancelled.v1, which carries the load unit; its reason, free text, stays out of it. Authorised as the
+// other load execution commands are, on the execution's consolidation (ActionCancelLoadExecution).
+type CancelLoadExecution struct {
+	CommandID        string
+	TenantID         string
+	ActorID          string
+	ExecutionID      string
+	ExpectedRevision int64
+	Reason           string
+	OccurredAt       time.Time
+}
+
 // RecordCarrierLoadEvidence records the carrier's status of a closed tender's pieces (OD-4: entered by hand in
 // N1), of the master or of one house (ShipmentID), on a flight or voyage. A source reference recorded already
 // with the same content is accepted again without change; with other content it is rejected. More pieces than
@@ -355,6 +378,7 @@ type PhysicalCommands interface {
 	PlaceLoadExecutionOnHold(ctx context.Context, cmd PlaceLoadExecutionOnHold) (Receipt, error)
 	ReleaseLoadExecutionHold(ctx context.Context, cmd ReleaseLoadExecutionHold) (Receipt, error)
 	CloseLoadExecution(ctx context.Context, cmd CloseLoadExecution) (Receipt, error)
+	CancelLoadExecution(ctx context.Context, cmd CancelLoadExecution) (Receipt, error)
 	RecordCarrierLoadEvidence(ctx context.Context, cmd RecordCarrierLoadEvidence) (Receipt, error)
 	ResolveLoadingDiscrepancy(ctx context.Context, cmd ResolveLoadingDiscrepancy) (Receipt, error)
 }
@@ -527,6 +551,10 @@ type LoadExecution struct {
 	StartedAt       time.Time
 	ClosedAt        time.Time
 	CloseEvidence   Evidence
+	// CancelledBy, CancelledAt and CancelReason say who gave up a CANCELLED stuffing, when and why; empty otherwise.
+	CancelledBy     string
+	CancelledAt     time.Time
+	CancelReason    string
 	Lines           []LoadLine
 	Reversals       []Reversal
 	Holds           []Hold
@@ -596,10 +624,19 @@ type LotEvidence struct {
 // TenderEvidence is what PhysicalLoadEvidence v1 tells of a load execution with lines of the shipment: the
 // shipment's lines (with their reversals applied); its live packs with their gross weight and volume, lines
 // measured for themselves as measured and apportioned lines at their lot's latest measurement (so a terminal
-// weight taken after the tender counts; volumes in different units are not added); the pieces of the shipment
+// weight taken after the tender counts; volumes in different units are not added; since V2.82 a lot loaded in more than
+// one execution is measured over all of them, so the figures of a lot's executions add up to its measure, see below);
+// the pieces of the shipment
 // the carrier's evidence shows departed, arrived and offloaded (its own reports, or the master's when they
 // cover the tender); the tender receipt, the carrier's evidence of the master and of the shipment, and their
 // open discrepancies.
+// A container's figure for a lot is its part of the lot's measure as the lot is loaded now: it can change after the
+// container is sealed, when another container loads or unloads packs of the lot, when packs of the lot are measured
+// for themselves elsewhere, or when the lot is measured again (a lot of 6 packs at 301 kg with 5 packs in a sealed
+// container reads 250 kg there, and 251 kg once a second container takes the sixth pack). The digest of the packing
+// list changes with it. The digest is there for a reader that keeps it (none does yet: the step that holds an
+// apportionment back while a container is reworked will). FIN's close comparison today notices a moved figure because
+// the house's recorded quantity differs from the one PHY's basis gives now, and asks for a new apportionment.
 type TenderEvidence struct {
 	ExecutionID       string
 	Revision          int64
@@ -657,7 +694,10 @@ type GetPhysicalCostBasis struct {
 // HouseCostBasis is one live house of PhysicalCostBasis v1: the scope PHY froze when it attached the house
 // (Packs, GrossWeight, Volume) and what its tenders actually loaded (lines measured for themselves as
 // measured, apportioned lines at their lot's latest measurement; packs, weight or volume in mixed units are
-// not added and read zero). A house nothing was loaded of has zero LoadedPacks and a zero LastLoadedAt.
+// not added and read zero). A lot loaded in more than one load execution is measured over all of them (since V2.82):
+// its apportioned packs share what the lot's measure leaves after the lines measured for themselves, so a house whose
+// packs are all loaded and whose own measurements do not exceed its lots' reads the lots' measure. A house nothing was
+// loaded of has zero LoadedPacks and a zero LastLoadedAt.
 type HouseCostBasis struct {
 	ShipmentID         string
 	MembershipRevision int64
@@ -679,9 +719,11 @@ type HouseCostBasis struct {
 // LoadedVolume. Where they do not (mixed units) the totals read zero, and an entry keeps the measure of its own
 // stuffing; two lots of one house in one unit with different volume units make the entry's volume read zero too, as
 // HouseMeasure reads a stuffing's mixed units. A zero volume cannot tell a lot with no volume from mixed units. The
-// entries of a house need not add up to the measure of its lot: weights are apportioned inside one stuffing, so packs
-// weighed for themselves in one unit and the rest of the lot in another can add up to more, and a lot split over two
-// stuffings loses what rounding down takes in each.
+// entries of a house add up to the measure of its lot when all the lot's packs are loaded, however they are split over
+// the stuffings (since V2.82): the lot's measure less what its lines measured for themselves took is shared over its
+// apportioned packs, and divided over the stuffings by the largest remainder, equal remainders going to the lower unit
+// number. Lines measured for themselves are believed: when they exceed the lot's measure nothing is left for the other
+// packs and the entries add up to more than the lot. A lot part loaded takes a share of its measure rounded down.
 type HouseUnitLoad struct {
 	UnitNo            int
 	ExecutionID       string
@@ -706,10 +748,19 @@ type PhysicalCostBasis struct {
 	PackingLists           []UnitPackingList // one for every load unit that has a stuffing, in unit order
 }
 
-// UnitPackingList is what one load unit holds as this basis reads it, with a digest of it. Two bases answer the same
-// Digest for a unit exactly when they answer the same stuffing, state and lines for it: a reader that kept a digest can
-// tell that anything it would apportion on has changed, whatever changed it (a load, an unload, the seal, a lot
-// measured again, more packs received of a lot). Digest is the SHA-256, in hexadecimal, of this text: the lines "unit
+// UnitPackingList is what one load unit holds as this basis reads it, with a digest of it.
+// A container's figure for a lot is its part of the lot's measure as the lot is loaded now: it can change after the
+// container is sealed, when another container loads or unloads packs of the lot, when packs of the lot are measured
+// for themselves elsewhere, or when the lot is measured again (a lot of 6 packs at 301 kg with 5 packs in a sealed
+// container reads 250 kg there, and 251 kg once a second container takes the sixth pack). The digest of the packing
+// list changes with it. The digest is there for a reader that keeps it (none does yet: the step that holds an
+// apportionment back while a container is reworked will). FIN's close comparison today notices a moved figure because
+// the house's recorded quantity differs from the one PHY's basis gives now, and asks for a new apportionment.
+//
+// Two bases answer the same Digest for a unit exactly when they answer the same stuffing, state and lines for it: a
+// reader that kept a digest can tell that anything it would apportion on has changed, whatever changed it (a load, an
+// unload, the seal, a lot measured again, more packs received of a lot, a load or unload in another
+// container). Digest is the SHA-256, in hexadecimal, of this text: the lines "unit
 // <UnitNo>", "execution <ExecutionID>" and "state <ExecutionState>", the strings as Go quoted strings, and then for
 // each line in shipment order the line "line <ShipmentID> <LoadedPacks> <weight unit> <weight amount> <volume unit>
 // <volume amount>" (strings quoted, numbers in decimal); every line ends with a line feed. A unit with a stuffing and

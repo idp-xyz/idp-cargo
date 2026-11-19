@@ -221,7 +221,9 @@ func (m *Module) GetConsolidation(ctx context.Context, q api.GetConsolidation) (
 	return out, nil
 }
 
-// loadUnit is a unit as published: PLANNED, IN_USE while its stuffing is open, CLOSED once it is closed, or REMOVED.
+// loadUnit is a unit as published: PLANNED, IN_USE while its stuffing is open, CLOSED once it is closed, or REMOVED. A
+// stuffing given up (CANCELLED) is not a use of the unit: uses holds the unit's stuffing that is not cancelled, so the
+// unit is PLANNED again without one.
 func loadUnit(u domain.PlannedLoadUnit, uses map[int]application.UnitUse) api.PlannedLoadUnit {
 	l := u.Limits
 	out := api.PlannedLoadUnit{UnitNo: u.No, Kind: string(u.Kind), TypeCode: l.TypeCode, TEUTenths: l.TEUTenths, MaxGrossKg: l.MaxGrossKg,

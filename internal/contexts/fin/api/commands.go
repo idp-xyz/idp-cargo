@@ -584,11 +584,10 @@ type ManualShare struct {
 // tells. They need every house that takes part loaded (stage ACTUAL) and every load unit of the consolidation sealed
 // (status CLOSED in PHY): otherwise they are refused with FIN_POOL_NO_BASIS, because a house part-loaded into the
 // sealed units would be counted in fewer containers than it ends up in. A unit that was planned and never opened is
-// removed in PHY first; a unit on which a stuffing was opened and that holds nothing can be neither sealed nor
-// removed in this version of PHY (it has no command that gives up an empty stuffing), so until it has one the lines
-// are apportioned by another method (MANUAL takes any division, the count or the TEU worked out by hand). They are
-// refused too when no house that takes part is in a container. TEU is refused with FIN_POOL_UNIT when a unit a house
-// that takes part is in is missing from the basis's load units or is given without a TEU. A command that names no
+// removed in PHY first; a stuffing opened on a unit and left empty is given up in PHY (CancelLoadExecution), and the
+// unit is then removed or stuffed again. They are refused too when no house that takes part is in a container. TEU is
+// refused with FIN_POOL_UNIT when a unit a house that takes part is in is missing from the basis's load units or is
+// given without a TEU. A command that names no
 // LineNos takes every line, so on a pool with a line by CONTAINER_COUNT or TEU it is refused as a whole until the
 // containers are sealed: name the other lines to apportion them earlier. A cost line can carry any method but RETAINED
 // as its default through RecordConsolCost and through RateConsolCostPool (its Method applies to every rated line); no

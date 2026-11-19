@@ -296,6 +296,7 @@ const (
 	ActionPlaceLoadExecutionOnHold          = "PlaceLoadExecutionOnHold"
 	ActionReleaseLoadExecutionHold          = "ReleaseLoadExecutionHold"
 	ActionCloseLoadExecution                = "CloseLoadExecution"
+	ActionCancelLoadExecution               = "CancelLoadExecution"
 	ActionRecordCarrierLoadEvidence         = "RecordCarrierLoadEvidence"
 	ActionResolveLoadingDiscrepancy         = "ResolveLoadingDiscrepancy"
 )

@@ -14,13 +14,13 @@ import (
 	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
-// GetPhysicalCostBasis answers PhysicalCostBasis v1: the consolidation and, of every live house, the scope PHY froze at
-// attach and what its tenders actually loaded, from one snapshot. Loaded measures follow PhysicalLoadEvidence v1: lines
-// measured for themselves count as measured, apportioned lines at their lot's latest measurement; quantities in mixed
-// units are not added and read zero. Of every house it also says what is loaded in each load unit (HouseUnitLoad,
-// measured as the totals are, for that unit's stuffing alone), each load unit carries the state and revision of its
-// stuffing's record, and each unit with a stuffing has its packing list with a digest (UnitPackingList), built from the
-// same figures.
+// GetPhysicalCostBasis answers PhysicalCostBasis v1: the consolidation and, of every live house, the scope PHY froze
+// at attach and what its tenders actually loaded, from one snapshot. Loaded measures follow PhysicalLoadEvidence v1:
+// lines measured for themselves count as measured, apportioned lines at their lot's latest measurement; quantities
+// in mixed units are not added and read zero. Of every house it also says what is loaded in each load unit
+// (HouseUnitLoad, measured as the totals are, over every stuffing the lot is loaded in: a lot's measure is divided
+// over them), each load unit carries the state and revision of its stuffing's record, and each unit with a stuffing
+// has its packing list with a digest (UnitPackingList), built from the same figures.
 func (m *Module) GetPhysicalCostBasis(ctx context.Context, q api.GetPhysicalCostBasis) (api.PhysicalCostBasis, error) {
 	c, revision, houses, executions, lots, err := m.reads(q.TenantID).CostBasis(ctx, domain.TenantID(q.TenantID),
 		domain.ConsolidationID(q.ConsolidationID))
@@ -32,20 +32,33 @@ func (m *Module) GetPhysicalCostBasis(ctx context.Context, q api.GetPhysicalCost
 		Mode: string(st.Mode), Kind: string(st.Kind), OperatingLegalEntityID: st.OperatingLegalEntityID, State: string(st.State),
 		Houses: []api.HouseCostBasis{}}
 	unitLines := map[int][]api.UnitPackingLine{}
-	for _, h := range houses {
-		byID := map[domain.CargoLotID]*domain.CargoLot{}
-		for _, r := range lots[h.ShipmentID] {
+	// A lot's measure is divided over every execution that holds live packs of it. A shipment is live in one
+	// consolidation only, and its packs leave a consolidation before it does (migration 000002,
+	// membership_entry_loaded),
+	// so this consolidation's executions are every execution that can hold live packs of its houses' lots.
+	byID := map[domain.CargoLotID]*domain.CargoLot{}
+	for _, rs := range lots {
+		for _, r := range rs {
 			byID[r.Lot.ID()] = r.Lot
 		}
+	}
+	all := make([]*domain.LoadExecution, len(executions))
+	for i, r := range executions {
+		all[i] = r.Execution
+	}
+	allotment := domain.AllotLots(all, byID)
+	for _, h := range houses {
 		e := h.Entry
 		house := api.HouseCostBasis{ShipmentID: string(h.ShipmentID), MembershipRevision: h.MembershipRevision,
 			Packs: e.Scope.Packs, GrossWeight: e.Scope.GrossWeight, Volume: e.Scope.Volume}
 		weight, volume := sum{}, sum{}
 		for _, r := range executions {
 			x := r.Execution
-			packs, w, v := x.HouseMeasure(h.ShipmentID, byID)
+			packs, w, v := x.HouseMeasureAllotted(h.ShipmentID, byID, allotment)
 			house.LoadedPacks += packs
-			// A unit with a stuffing is never removed (the database refuses it), so every stuffing's unit is a live one.
+			// A stuffing that is not cancelled keeps its unit (the database refuses to remove it) and a cancelled one
+			// has
+			// no live packs, so every unit with packs of a house is a live one.
 			if no := x.State().LoadUnitNo; packs > 0 && no > 0 {
 				house.Units = append(house.Units, api.HouseUnitLoad{UnitNo: no, ExecutionID: string(x.State().ExecutionID),
 					LoadedPacks: packs, LoadedGrossWeight: w, LoadedVolume: v})
@@ -70,7 +83,8 @@ func (m *Module) GetPhysicalCostBasis(ctx context.Context, q api.GetPhysicalCost
 	slices.SortFunc(out.Houses, func(a, b api.HouseCostBasis) int { return strings.Compare(a.ShipmentID, b.ShipmentID) })
 	uses := map[int]application.UnitUse{}
 	for _, r := range executions {
-		if st := r.Execution.State(); st.LoadUnitNo > 0 {
+		// A cancelled stuffing was given up with no live packs: its unit is PLANNED again, and it has no packing list.
+		if st := r.Execution.State(); st.LoadUnitNo > 0 && st.State != domain.ExecutionCancelled {
 			uses[st.LoadUnitNo] = application.UnitUse{ExecutionID: st.ExecutionID, State: st.State, Revision: r.Revision}
 			lines := unitLines[st.LoadUnitNo]
 			slices.SortFunc(lines, func(a, b api.UnitPackingLine) int { return strings.Compare(a.ShipmentID, b.ShipmentID) })

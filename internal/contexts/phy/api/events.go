@@ -35,6 +35,7 @@ const (
 	LoadExecutionHoldReleased   = "LoadExecutionHoldReleased.v1"
 	LoadExecutionResumed        = "LoadExecutionResumed.v1"
 	LoadExecutionClosed         = "LoadExecutionClosed.v1"
+	LoadExecutionCancelled      = "LoadExecutionCancelled.v1"
 	CarrierLoadEvidenceRecorded = "CarrierLoadEvidenceRecorded.v1"
 	LoadingDiscrepancyRecorded  = "LoadingDiscrepancyRecorded.v1"
 	LoadingDiscrepancyResolved  = "LoadingDiscrepancyResolved.v1"
@@ -46,8 +47,8 @@ const (
 // the membership entry, the consolidation the house is in or left, the one it came from on a transfer, and the
 // reason code. Cargo lot events carry the lot, its shipment and the item (receipt line, measurement version,
 // screening result or discrepancy); load execution events the execution, its consolidation, the shipment and lot a
-// line or hold is about, the item (line, reversal, hold, carrier evidence or discrepancy; for the opening of a
-// stuffing, its load unit) and a reason, hold, fact, kind or resolution code.
+// line or hold is about, the item (line, reversal, hold, carrier evidence or discrepancy; for the opening or the
+// cancellation of a stuffing, its load unit) and a reason, hold, fact, kind or resolution code.
 type EventPayload struct {
 	TenantID            string `json:"tenant_id"`
 	SubjectID           string `json:"subject_id"`

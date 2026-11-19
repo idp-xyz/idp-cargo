@@ -90,6 +90,10 @@ func (h RemovePlannedLoadUnit) Handle(ctx context.Context, c RemovePlannedLoadUn
 				return 0, err
 			}
 			_, inUse := uses[c.UnitNo]
-			return c.UnitNo, consol.RemovePlannedLoadUnit(c.UnitNo, c.Reason, c.Scope.ActorID, c.OccurredAt, inUse)
+			cancelled, err := h.Executions.LastCancellations(txCtx, c.Scope.TenantID, c.ConsolidationID)
+			if err != nil {
+				return 0, err
+			}
+			return c.UnitNo, consol.RemovePlannedLoadUnitAfter(c.UnitNo, c.Reason, c.Scope.ActorID, c.OccurredAt, inUse, cancelled[c.UnitNo])
 		})
 }

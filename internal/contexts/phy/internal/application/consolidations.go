@@ -259,18 +259,20 @@ func (h CancelConsolidation) Handle(ctx context.Context, c CancelConsolidationCo
 		})
 }
 
-// executions counts a consolidation's load executions that are not closed and the live packs its closed ones
-// tendered. Under the consolidation's FOR UPDATE lock they do not change, since every execution command locks
-// it FOR SHARE first.
+// executions counts a consolidation's load executions that are not closed (a cancelled one is ended, not open) and the
+// live packs its closed ones tendered. Under the consolidation's FOR UPDATE lock they do not change, since every
+// execution command locks it FOR SHARE first.
 func (d Deps) executions(ctx context.Context, tenant phy.TenantID, id phy.ConsolidationID) (open int, tendered int64, stuffed phy.Stuffed, err error) {
 	list, err := d.Executions.ByConsolidation(ctx, tenant, id)
 	if err != nil {
 		return 0, 0, phy.Stuffed{}, err
 	}
 	for _, x := range list {
-		if x.Execution.Current() == phy.ExecutionClosed {
+		switch x.Execution.Current() {
+		case phy.ExecutionClosed:
 			tendered += x.Execution.Tendered()
-		} else {
+		case phy.ExecutionCancelled:
+		default:
 			open++
 		}
 		if x.Execution.State().Kind == phy.ExecutionStuffing {
@@ -351,7 +353,7 @@ func (h ReconcileConsolidation) Handle(ctx context.Context, c ReconcileConsolida
 			}
 			open, discrepancies := 0, 0
 			for _, x := range list {
-				if x.Execution.Current() != phy.ExecutionClosed {
+				if s := x.Execution.Current(); s != phy.ExecutionClosed && s != phy.ExecutionCancelled {
 					open++
 				}
 				discrepancies += x.Execution.OpenDiscrepancies()

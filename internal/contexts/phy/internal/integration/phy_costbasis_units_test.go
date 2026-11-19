@@ -29,9 +29,12 @@ func (f *fixture) basis(t *testing.T) api.PhysicalCostBasis {
 // TestTheCostBasisShowsEachHouseInEachUnit stuffs two containers of an own-container consolidation with three houses: A
 // wholly in unit 1, B wholly in unit 2 and C split over both, 4 packs and 2. Each lot is 6 packs. A's lot is 312 kg and
 // 800,000 cm3, B's 288 kg and 200,000 cm3, C's 800 kg and 2,000,000 cm3. A stuffing measures a house as its totals are
-// measured, by itself: all of a lot's packs take its whole measure, and part of a lot's packs take their share rounded
-// down. So C's 4 packs in unit 1 are 4/6 of 800 kg = 533 kg and 4/6 of 2,000,000 cm3 = 1,333,333 cm3; its 2 packs in
-// unit 2 are 266 kg and 666,666 cm3, and the totals of C are the sums, 799 kg and 1,999,999 cm3. Unloading 1 of the 2
+// measured, over the lot: the packs of a lot loaded in more than one container divide its measure by the largest
+// remainder (V2.82; V2.81 measured each container alone and read 799 kg and 1,999,999 cm3 of C's lot). So C's 4 packs
+// in unit 1 are 533 kg and 1,333,333 cm3 (4/6 of 800 kg is 533.33, of 2,000,000 cm3 1,333,333.33), its 2 packs in
+// unit 2 are 267 kg and 666,667 cm3 (rounding down leaves 1 kg and 1 cm3, which go to the container with the larger
+// remainder, the one of 2 packs: .67 against .33), and the totals of C are the sums,
+// 800 kg and 2,000,000 cm3, the lot. Unloading 1 of the 2
 // packs leaves 1 pack, 1/6 of the lot: 133 kg and 333,333 cm3. xid is the execution id of the stuffing of a unit. The
 // ids sort opposite to the unit numbers, so that the order of units in the answers cannot come from the order the
 // stuffings are read in (by execution id).
@@ -198,11 +201,11 @@ func TestTheCostBasisShowsEachHouseInEachUnit(t *testing.T) {
 	load(2, "B", 6)
 	lineC2 := load(2, "C", 2)
 	full := map[string][]entry{"SH-A": {{1, 6, 312, 800_000}}, "SH-B": {{2, 6, 288, 200_000}},
-		"SH-C": {{1, 4, 533, 1_333_333}, {2, 2, 266, 666_666}}}
+		"SH-C": {{1, 4, 533, 1_333_333}, {2, 2, 267, 666_667}}}
 	check("all loaded", full)
 	lines("all loaded")
 	for _, h := range f.basis(t).Houses {
-		if h.ShipmentID == "SH-C" && (h.LoadedPacks != 6 || h.LoadedGrossWeight != kgm(799) || h.LoadedVolume != cmq(1_999_999)) {
+		if h.ShipmentID == "SH-C" && (h.LoadedPacks != 6 || h.LoadedGrossWeight != kgm(800) || h.LoadedVolume != cmq(2_000_000)) {
 			t.Errorf("C's totals: %+v", h)
 		}
 	}
