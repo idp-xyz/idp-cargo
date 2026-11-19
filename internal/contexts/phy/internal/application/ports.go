@@ -199,14 +199,17 @@ type ExecutionRead struct {
 	Revision  int64
 }
 
-// ExecutionStore loads and writes load executions. Consolidation returns the consolidation an execution
-// tenders, which never changes, so that a command locks it first; Load locks the execution FOR UPDATE; Read
-// takes no lock. ByConsolidation reads a consolidation's executions; WithLiveLot the ids of the LOADING or
-// ON_HOLD executions with live packs of a lot; HouseLoaded a house's live loaded packs in a consolidation.
-// UnitUse is the stuffing opened on a load unit: the unit is IN_USE while it is not CLOSED, and CLOSED with it.
+// ExecutionStore loads and writes load executions. Consolidation returns the consolidation an execution tenders, which
+// never changes, so that a command locks it first; Load locks the execution FOR UPDATE; Read takes no lock.
+// ByConsolidation reads a consolidation's executions; WithLiveLot the ids of the LOADING or ON_HOLD executions with
+// live packs of a lot; HouseLoaded a house's live loaded packs in a consolidation. UnitUse is the stuffing opened on a
+// load unit: the unit is IN_USE while it is not CLOSED, and CLOSED with it. Revision is the revision of the stuffing's
+// own record, which moves when the stuffing is written; it does not see a lot measured again, more packs received of a
+// lot, or the consolidation reopened.
 type UnitUse struct {
 	ExecutionID phy.LoadExecutionID
 	State       phy.ExecutionState
+	Revision    int64
 }
 
 type ExecutionStore interface {

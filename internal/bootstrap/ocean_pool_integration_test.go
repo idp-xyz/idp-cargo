@@ -4,6 +4,7 @@ package bootstrap
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -1158,5 +1159,208 @@ func TestAHouseLeftOutOfTheContainerBearsNoCostWithEveryContext(t *testing.T) {
 		consol.Houses[2].ShipmentID != "SH-C" || consol.Houses[2].JobID != "JOB-C" || consol.Houses[2].Revenue != cny(284_936) || consol.Houses[2].PoolCost != cny(0) ||
 		consol.Houses[2].Profit != cny(284_936) || revenue != 890_425 {
 		t.Fatalf("the consolidation's profit: %+v", consol)
+	}
+}
+
+// TestTheCostBasisTellsWhichHouseIsInWhichContainerWithPHYAndFIN runs the scenario of
+// TestTwoOwnContainersAndASplitHouseAreCostedWithPHYAndFIN (two own containers, A wholly in the first, B wholly in the
+// second, C split 4 + 2 packs) through the real ORG, RATE, COM, FUL, PHY and FIN and checks what V2.79 adds: PHY's cost
+// basis says which house is in which container, with the measures of each stuffing, and the state and revision of each
+// container's packing list; FIN carries those facts and uses none, so its apportionment of the freight by CHARGEABLE
+// gives exactly the shares of that test. The measures are that test's: A 312 kg and 800,000 cm3 in unit 1; B 288 kg and
+// 200,000 cm3 in unit 2; C 533 kg and 1,333,333 cm3 (4/6 of its lot) in unit 1 and 266 kg and 666,666 cm3 (2/6) in unit 2.
+// A stuffing's revision is 1 when opened, 2 once loading, one more for each of its two loads (4) and 5 once sealed.
+func TestTheCostBasisTellsWhichHouseIsInWhichContainerWithPHYAndFIN(t *testing.T) {
+	ctx := context.Background()
+	platform := openPlatform(t)
+	orgModule, err := platform.ORG(allowAll{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rateModule, err := platform.RATE(orgModule, allowAll{}, marginFloor(2000))
+	if err != nil {
+		t.Fatal(err)
+	}
+	comModule, err := platform.COM(orgModule, rateModule, allowAll{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fulModule, phyModule, err := platform.FULAndPHY(comModule, allowAll{}, allowAll{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	finModule, err := platform.FIN(orgModule, rateModule, fulModule, &DocumentSnapshots{}, phyModule, allowAll{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tenant := uniqueTenant("cargo-ocean-which-")
+	seedORG(t, platform, tenant, "party-a", "party-b", "party-c", "line-1")
+	at := time.Now().UTC().Add(-48 * time.Hour).Truncate(time.Microsecond)
+	departs := at.Add(72 * time.Hour)
+	hours := func(h int) time.Time { return at.Add(time.Duration(h) * time.Hour) }
+	kg := func(n int64) kernel.Quantity { return kernel.Quantity{Unit: "KGM", Amount: n} }
+	cmq := func(n int64) kernel.Quantity { return kernel.Quantity{Unit: "CMQ", Amount: n} }
+	unlocode := func(code string) kernel.LocationCode { return kernel.LocationCode{Scheme: kernel.UNLOCODE, Code: code} }
+	must := func(what string, err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("%s: %v", what, err)
+		}
+	}
+	phyOK := func(_ phyapi.Receipt, err error) { t.Helper(); must("PHY", err) }
+	evidence := func(source, ref string, h int) phyapi.Evidence {
+		return phyapi.Evidence{Source: source, Reference: ref, OccurredAt: hours(h)}
+	}
+	_, err = orgModule.ApproveRole(ctx, orgapi.ApproveRole{CommandID: "role-line-1", TenantID: tenant, ActorID: "org-officer", LegalEntityID: "LE",
+		PartyID: "line-1", ExpectedRevision: 1, RoleCode: orgapi.RoleCarrier, ValidFrom: at.Add(-time.Hour), EvidenceRef: "service contract", OccurredAt: at})
+	must("role line-1", err)
+	contexts := slice{org: orgModule, rate: rateModule, com: comModule, ful: fulModule, tenant: tenant, at: at, departs: departs}
+	for _, s := range []string{"A", "B", "C"} {
+		planSeaSellOnly(t, contexts, "party-"+strings.ToLower(s), s, 60_000)
+	}
+	phyOK(phyModule.CreateConsolidation(ctx, phyapi.CreateConsolidation{CommandID: "consol", TenantID: tenant, ActorID: "ops-1", ConsolidationID: "C-1",
+		Mode: phyapi.ModeSea, Kind: phyapi.KindSeaLCLOwn, OperatingLegalEntityID: "LE", Origin: unlocode("CNSHA"), Destination: unlocode("DEHAM"),
+		PlannedDeparture: departs.Add(6 * time.Hour), HouseCutOff: departs.Add(-6 * time.Hour), OccurredAt: hours(8)}))
+	for i := range 2 {
+		phyOK(phyModule.PlanLoadUnit(ctx, phyapi.PlanLoadUnit{CommandID: "plan-unit-" + string(rune('1'+i)), TenantID: tenant, ActorID: "ops-1", ConsolidationID: "C-1",
+			ExpectedRevision: int64(1 + i), Kind: phyapi.LoadUnitContainer, TypeCode: "22G1", OccurredAt: hours(8)}))
+	}
+	for _, s := range []string{"SH-A", "SH-B", "SH-C"} {
+		phyOK(phyModule.AttachHouse(ctx, phyapi.AttachHouse{CommandID: "attach-" + s, TenantID: tenant, ActorID: "ops-1", ConsolidationID: "C-1", ShipmentID: s,
+			OccurredAt: hours(9)}))
+		record(t, ctx, fulModule, tenant, "ful-attach-"+s, s, "C-1", 3, hours(9))
+	}
+	_, err = finModule.OpenFinancePolicy(ctx, finapi.OpenFinancePolicy{CommandID: "fin-policy", TenantID: tenant, ActorID: "acct-1", LegalEntityID: "LE",
+		FunctionalCurrency: "CNY", BookCode: "MAIN", OccurredAt: hours(10)})
+	must("finance policy", err)
+	_, err = finModule.RecordExchangeRate(ctx, finapi.RecordExchangeRate{CommandID: "fin-rate", TenantID: tenant, ActorID: "acct-1", LegalEntityID: "LE",
+		ExpectedRevision: 1, RateType: finapi.RateEstimate, From: "USD", Rate: 71_234, Scale: 4, FromDigits: 2, ToDigits: 2, ValidFrom: at,
+		ValidUntil: at.AddDate(0, 1, 0), Source: "CFETS central parity", OccurredAt: hours(10)})
+	must("estimate rate", err)
+	for _, s := range []string{"A", "B", "C"} {
+		_, err = finModule.OpenFreightJob(ctx, finapi.OpenFreightJob{CommandID: "fin-job-" + s, TenantID: tenant, ActorID: "fin-1", JobID: "JOB-" + s, ShipmentID: "SH-" + s,
+			OccurredAt: hours(10)})
+		must("open JOB-"+s, err)
+	}
+	_, err = finModule.OpenConsolCostPool(ctx, finapi.OpenConsolCostPool{CommandID: "fin-pool", TenantID: tenant, ActorID: "fin-1", PoolID: "P-1", ConsolidationID: "C-1",
+		OccurredAt: hours(12)})
+	must("open the pool", err)
+	_, err = finModule.RecordConsolCost(ctx, finapi.RecordConsolCost{CommandID: "fin-cost", TenantID: tenant, ActorID: "fin-1", PoolID: "P-1", ExpectedRevision: 1,
+		ChargeCode: "OCEAN_FREIGHT", Method: finapi.MethodChargeable, Cost: finapi.ChargeSide{PartyID: "line-1", Amount: usd(100_000)}, Reason: "the line's quote for two containers",
+		OccurredAt: hours(12)})
+	must("cost line", err)
+
+	// both lots weighed at the CFS: A 312 kg and 0.8 m3, B 288 kg and 0.2 m3, C 800 kg and 2 m3, 6 packs each
+	c, err := phyModule.GetConsolidation(ctx, phyapi.GetConsolidation{TenantID: tenant, ConsolidationID: "C-1"})
+	must("consolidation", err)
+	phyOK(phyModule.CloseConsolidation(ctx, phyapi.CloseConsolidation{CommandID: "close", TenantID: tenant, ActorID: "ops-1", ConsolidationID: "C-1",
+		ExpectedRevision: c.Revision, OccurredAt: hours(13)}))
+	cfs := phyapi.Facility{Location: c.Current.Origin, Code: "SHA-CFS1"}
+	weights := map[string]int64{"A": 312, "B": 288, "C": 800}
+	volumes := map[string]int64{"A": 800_000, "B": 200_000, "C": 2_000_000}
+	for _, s := range []string{"A", "B", "C"} {
+		lot := "L-" + s
+		phyOK(phyModule.ReceiveCargo(ctx, phyapi.ReceiveCargo{CommandID: "rcv-" + s, TenantID: tenant, ActorID: "cfs-1", LotID: lot, ShipmentID: "SH-" + s,
+			Facility: cfs, Packs: 6, PackageType: "CT", Condition: phyapi.ConditionGood, Evidence: evidence("CFS-WMS", "GRN-"+s, 14), OccurredAt: hours(14)}))
+		phyOK(phyModule.RecordCargoMeasurement(ctx, phyapi.RecordCargoMeasurement{CommandID: "weigh-" + s, TenantID: tenant, ActorID: "cfs-1", LotID: lot,
+			ExpectedRevision: 1, GrossWeight: kg(weights[s]), Volume: cmq(volumes[s]), Method: phyapi.MethodScale, Evidence: evidence("CFS-SCALE", "W-"+s, 14), OccurredAt: hours(14)}))
+		phyOK(phyModule.CompleteReceipt(ctx, phyapi.CompleteReceipt{CommandID: "complete-" + s, TenantID: tenant, ActorID: "cfs-1", LotID: lot,
+			ExpectedRevision: 2, OccurredAt: hours(14)}))
+	}
+	// two stuffings, one per container: X-1 takes all of A and 4 packs of C, X-2 all of B and the other 2 packs of C
+	revision := map[string]int64{}
+	for i, x := range []string{"X-1", "X-2"} {
+		phyOK(phyModule.OpenLoadExecution(ctx, phyapi.OpenLoadExecution{CommandID: "stuff-" + x, TenantID: tenant, ActorID: "cfs-1", ExecutionID: x,
+			ConsolidationID: "C-1", Kind: phyapi.ExecutionStuffing, Facility: cfs, LoadUnitNo: i + 1, OccurredAt: hours(15)}))
+		phyOK(phyModule.StartLoading(ctx, phyapi.StartLoading{CommandID: "start-" + x, TenantID: tenant, ActorID: "cfs-1", ExecutionID: x, ExpectedRevision: 1, OccurredAt: hours(15)}))
+		revision[x] = 2
+	}
+	basis := func() phyapi.PhysicalCostBasis {
+		t.Helper()
+		b, err := phyModule.GetPhysicalCostBasis(ctx, phyapi.GetPhysicalCostBasis{TenantID: tenant, ConsolidationID: "C-1"})
+		must("PHY's cost basis", err)
+		return b
+	}
+	for _, l := range []struct {
+		x, shipment string
+		packs       int64
+	}{{"X-1", "A", 6}, {"X-1", "C", 4}, {"X-2", "B", 6}, {"X-2", "C", 2}} {
+		phyOK(phyModule.RecordCargoLoaded(ctx, phyapi.RecordCargoLoaded{CommandID: "load-" + l.x + "-" + l.shipment, TenantID: tenant, ActorID: "cfs-1", ExecutionID: l.x,
+			ExpectedRevision: revision[l.x], LotID: "L-" + l.shipment, Packs: l.packs, Evidence: evidence("CFS-TALLY", "T-"+l.x+l.shipment, 15), OccurredAt: hours(15)}))
+		revision[l.x]++
+	}
+	// both containers are in use until sealed, then closed; each packing list is at the stuffing's revision
+	for i, u := range basis().LoadUnits {
+		if u.UnitNo != i+1 || u.Kind != phyapi.LoadUnitContainer || u.TypeCode != "22G1" || u.Status != phyapi.UnitStatusInUse || u.ExecutionID != []string{"X-1", "X-2"}[i] ||
+			u.ExecutionState != phyapi.ExecutionLoading || u.ExecutionRevision != 4 {
+			t.Fatalf("load unit %d before the seals: %+v", i+1, u)
+		}
+	}
+	type unitLoad struct {
+		unit, packs, kilos, cubicCm int64
+	}
+	unitLoads := func(b phyapi.PhysicalCostBasis) [][]unitLoad {
+		var out [][]unitLoad
+		for _, h := range b.Houses {
+			var loads []unitLoad
+			for _, e := range h.Units {
+				if e.ExecutionID != "X-"+string(rune('0'+e.UnitNo)) || e.LoadedGrossWeight.Unit != "KGM" || e.LoadedVolume.Unit != "CMQ" {
+					t.Fatalf("%s's entry %+v", h.ShipmentID, e)
+				}
+				loads = append(loads, unitLoad{int64(e.UnitNo), e.LoadedPacks, e.LoadedGrossWeight.Amount, e.LoadedVolume.Amount})
+			}
+			out = append(out, loads)
+		}
+		return out
+	}
+	wantLoads := [][]unitLoad{{{1, 6, 312, 800_000}}, {{2, 6, 288, 200_000}}, {{1, 4, 533, 1_333_333}, {2, 2, 266, 666_666}}}
+	if got := unitLoads(basis()); !reflect.DeepEqual(got, wantLoads) {
+		t.Fatalf("which house is in which container before the seals: %+v, want %+v", got, wantLoads)
+	}
+	for _, x := range []string{"X-1", "X-2"} {
+		phyOK(phyModule.CloseLoadExecution(ctx, phyapi.CloseLoadExecution{CommandID: "seal-" + x, TenantID: tenant, ActorID: "cfs-1", ExecutionID: x,
+			ExpectedRevision: revision[x], Evidence: evidence(phyapi.EvidenceSeal, "SEAL-"+x, 15), OccurredAt: hours(15)}))
+	}
+	b := basis()
+	for i, u := range b.LoadUnits {
+		if u.ExecutionState != phyapi.ExecutionClosed || u.ExecutionRevision != 5 || u.ExecutionID != []string{"X-1", "X-2"}[i] {
+			t.Fatalf("load unit %d after the seals: %+v", i+1, u)
+		}
+	}
+	if got := unitLoads(b); !reflect.DeepEqual(got, wantLoads) {
+		t.Fatalf("which house is in which container after the seals: %+v, want %+v", got, wantLoads)
+	}
+	if len(b.LoadUnits) != 2 || b.LoadUnits[0].UnitNo != 1 || b.LoadUnits[1].UnitNo != 2 || b.LoadUnits[0].Status != phyapi.UnitStatusClosed || b.LoadUnits[1].Status != phyapi.UnitStatusClosed {
+		t.Fatalf("the load units after the seals: %+v", b.LoadUnits)
+	}
+	// PHY's cost basis per house: SH-C's loaded packs, weight and volume are the sums over both containers (4 + 2 packs of
+	// its one lot of 800 kg and 2 m3). Each stuffing line takes its share of the lot's measure rounded down: 4/6 of 800 kg is
+	// 533 and 2/6 is 266, 4/6 of 2,000,000 cm3 is 1,333,333 and 2/6 is 666,666, so the sums are 799 kg and 1,999,999 cm3, one
+	// unit short of the lot's (the stand-in numbers of the other tests are whole). Here it changes nothing: W/M is still 2000.
+	for i, want := range []struct {
+		packs, kilos, cubicCm int64
+	}{{6, 312, 800_000}, {6, 288, 200_000}, {6, 799, 1_999_999}} {
+		h := b.Houses[i]
+		if h.ShipmentID != "SH-"+string(rune('A'+i)) || h.Packs != 6 || h.LoadedPacks != want.packs || h.LoadedGrossWeight != kg(want.kilos) || h.LoadedVolume != cmq(want.cubicCm) {
+			t.Fatalf("PHY's cost basis, house %d: %+v", i, h)
+		}
+	}
+	// FIN apportions the freight at ACTUAL on those measures: W/M 800 : 288 : 2000 of 3088, USD 100,000 -> 25,907 / 9,326 /
+	// 64,767 and CNY 712,340 -> 184,544 / 66,436 / 461,360 (the hand calculation is in the first test of this file), the same as if the
+	// three houses had been stuffed into one container
+	_, err = finModule.ApportionConsolCosts(ctx, finapi.ApportionConsolCosts{CommandID: "fin-apportion", TenantID: tenant, ActorID: "fin-1", PoolID: "P-1",
+		ExpectedRevision: 2, OccurredAt: hours(17)})
+	must("apportion", err)
+	pool, err := finModule.GetConsolCostPool(ctx, finapi.GetConsolCostPool{TenantID: tenant, PoolID: "P-1"})
+	must("the pool", err)
+	if len(pool.Apportionments) != 1 || pool.Apportionments[0].Stage != finapi.BasisActual {
+		t.Fatalf("the apportionment: %+v", pool.Apportionments)
+	}
+	shares := pool.Apportionments[0].Lines[0].Shares
+	for i, want := range []struct{ quantity, usd, cny int64 }{{800, 25_907, 184_544}, {288, 9_326, 66_436}, {2000, 64_767, 461_360}} {
+		if len(shares) != 3 || shares[i].Quantity != want.quantity || shares[i].Unit != "MWM" || shares[i].Amount != usd(want.usd) ||
+			shares[i].Local != (kernel.Money{Currency: "CNY", Minor: want.cny}) {
+			t.Fatalf("share %d: %+v, want %+v", i+1, shares, want)
+		}
 	}
 }

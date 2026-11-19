@@ -72,9 +72,18 @@ type PlannedLoadUnit struct {
 	EquipmentEdition string
 	Status           string // UnitStatusPlanned, UnitStatusInUse, UnitStatusClosed or UnitStatusRemoved
 	ExecutionID      string // the stuffing opened on the unit
-	PlannedAt        time.Time
-	RemoveReason     string
-	RemovedAt        time.Time
+	// ExecutionState is the state of that stuffing (the load execution states, such as OPEN, LOADING, ON_HOLD or
+	// CLOSED), empty while none is opened. ExecutionRevision is the revision of the stuffing's own record, 0 while none
+	// is opened: it moves when the stuffing itself is written (opened, loading started, a load, an unload, a hold, its
+	// release, the seal). It does not see what changes the unit's figures from outside the stuffing: a lot measured
+	// again, more packs received of a lot, the consolidation reopened. For a version of what the unit holds, use the
+	// digest of its UnitPackingList in the cost basis. A unit never gets a second stuffing, so the pair of execution id
+	// and revision never repeats. Status and ExecutionState are different things.
+	ExecutionState    string
+	ExecutionRevision int64
+	PlannedAt         time.Time
+	RemoveReason      string
+	RemovedAt         time.Time
 }
 
 // Consolidation is a consolidation with its current version, its version history, its live houses and its

@@ -668,6 +668,26 @@ type HouseCostBasis struct {
 	LoadedGrossWeight  kernel.Quantity
 	LoadedVolume       kernel.Quantity
 	LastLoadedAt       time.Time // business time of the latest live load line
+	// Units is what of the house is loaded in each load unit, in unit order: one entry for every unit whose stuffing
+	// holds live packs of the house. A house loaded only by tenders has none.
+	Units []HouseUnitLoad
+}
+
+// HouseUnitLoad is what of a house is loaded in one load unit: the live packs of its lines in the unit's stuffing,
+// with their weight and volume measured as the house's totals are. Where the units of measure allow the house's
+// totals to be added, the entries of a house loaded only by stuffings sum to its LoadedPacks, LoadedGrossWeight and
+// LoadedVolume. Where they do not (mixed units) the totals read zero, and an entry keeps the measure of its own
+// stuffing; two lots of one house in one unit with different volume units make the entry's volume read zero too, as
+// HouseMeasure reads a stuffing's mixed units. A zero volume cannot tell a lot with no volume from mixed units. The
+// entries of a house need not add up to the measure of its lot: weights are apportioned inside one stuffing, so packs
+// weighed for themselves in one unit and the rest of the lot in another can add up to more, and a lot split over two
+// stuffings loses what rounding down takes in each.
+type HouseUnitLoad struct {
+	UnitNo            int
+	ExecutionID       string
+	LoadedPacks       int64
+	LoadedGrossWeight kernel.Quantity
+	LoadedVolume      kernel.Quantity
 }
 
 // PhysicalCostBasis is PhysicalCostBasis v1 (PHY -> FIN): the physical facts FIN apportions a consolidation's
@@ -683,6 +703,31 @@ type PhysicalCostBasis struct {
 	State                  string
 	Houses                 []HouseCostBasis
 	LoadUnits              []PlannedLoadUnit
+	PackingLists           []UnitPackingList // one for every load unit that has a stuffing, in unit order
+}
+
+// UnitPackingList is what one load unit holds as this basis reads it, with a digest of it. Two bases answer the same
+// Digest for a unit exactly when they answer the same stuffing, state and lines for it: a reader that kept a digest can
+// tell that anything it would apportion on has changed, whatever changed it (a load, an unload, the seal, a lot
+// measured again, more packs received of a lot). Digest is the SHA-256, in hexadecimal, of this text: the lines "unit
+// <UnitNo>", "execution <ExecutionID>" and "state <ExecutionState>", the strings as Go quoted strings, and then for
+// each line in shipment order the line "line <ShipmentID> <LoadedPacks> <weight unit> <weight amount> <volume unit>
+// <volume amount>" (strings quoted, numbers in decimal); every line ends with a line feed. A unit with a stuffing and
+// no live packs has no lines and still has a digest.
+type UnitPackingList struct {
+	UnitNo         int
+	ExecutionID    string
+	ExecutionState string
+	Lines          []UnitPackingLine // the houses with live packs in the unit, in shipment order
+	Digest         string            // SHA-256, hexadecimal
+}
+
+// UnitPackingLine is what of one house is loaded in a unit: the same figures as the house's HouseUnitLoad for it.
+type UnitPackingLine struct {
+	ShipmentID        string
+	LoadedPacks       int64
+	LoadedGrossWeight kernel.Quantity
+	LoadedVolume      kernel.Quantity
 }
 
 // PhysicalCostBasisQueries is PhysicalCostBasis v1, which FIN reads.

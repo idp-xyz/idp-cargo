@@ -90,10 +90,47 @@ type HouseFacts struct {
 	LoadedGrossWeight kernel.Quantity
 	LoadedVolume      kernel.Quantity
 	LastLoadedAt      time.Time
+	// Units is what of the house is loaded in each load unit, in unit order. It is carried for the methods and checks
+	// that come next; no rule uses it in this version.
+	Units []HouseUnitFacts
+}
+
+// HouseUnitFacts is what of one house is loaded in one load unit (container): the live packs of its lines in the
+// unit's stuffing, with their weight and volume as PHY measures them.
+type HouseUnitFacts struct {
+	UnitNo            int
+	LoadedPacks       int64
+	LoadedGrossWeight kernel.Quantity
+	LoadedVolume      kernel.Quantity
+}
+
+// LoadUnitFacts is what PhysicalCostBasis v1 tells of one load unit (container) that is not removed: its type and TEU
+// in tenths, its status (PLANNED, IN_USE or CLOSED) and the state and revision of the record of the stuffing opened on
+// it, empty and zero while none is. The revision moves when the stuffing itself is written; it does not see a lot
+// measured again, more packs received of a lot or the consolidation reopened (the packing list's digest does). It is
+// carried for the methods and checks that come next; no rule uses it in this version.
+type LoadUnitFacts struct {
+	UnitNo            int
+	TypeCode          string
+	TEUTenths         int
+	Status            string
+	ExecutionID       string
+	ExecutionState    string
+	ExecutionRevision int64
+}
+
+// UnitPackingListFacts is the identity of what one load unit holds as PHY reads it: the stuffing, its state and the
+// digest of its packing list (the lines are the houses' Units). Two reads with the same digest read the same unit. It
+// is carried for the methods and checks that come next; no rule uses it in this version.
+type UnitPackingListFacts struct {
+	UnitNo         int
+	ExecutionID    string
+	ExecutionState string
+	Digest         string
 }
 
 // CostBasis is what FIN reads of PHY's PhysicalCostBasis v1: the consolidation, its operating legal entity and its
-// live houses.
+// live houses. LoadUnits are the load units PHY answers that are not removed, in unit order, carried and not used yet.
 type CostBasis struct {
 	ConsolidationID        string
 	Revision               int64
@@ -101,6 +138,8 @@ type CostBasis struct {
 	OperatingLegalEntityID string
 	State                  string
 	Houses                 []HouseFacts
+	LoadUnits              []LoadUnitFacts
+	PackingLists           []UnitPackingListFacts
 }
 
 // PoolCostVersion is one immutable version of a pool cost line: the creditor (may not be known yet), the amount in

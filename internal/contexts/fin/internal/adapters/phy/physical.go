@@ -33,8 +33,26 @@ func (p Physical) CostBasis(ctx context.Context, tenant fin.TenantID, consolidat
 	out := fin.CostBasis{ConsolidationID: b.ConsolidationID, Revision: b.Revision, Kind: b.Kind,
 		OperatingLegalEntityID: b.OperatingLegalEntityID, State: b.State}
 	for _, h := range b.Houses {
-		out.Houses = append(out.Houses, fin.HouseFacts{ShipmentID: h.ShipmentID, Packs: h.Packs, GrossWeight: h.GrossWeight, Volume: h.Volume,
-			LoadedPacks: h.LoadedPacks, LoadedGrossWeight: h.LoadedGrossWeight, LoadedVolume: h.LoadedVolume, LastLoadedAt: h.LastLoadedAt})
+		facts := fin.HouseFacts{ShipmentID: h.ShipmentID, Packs: h.Packs, GrossWeight: h.GrossWeight, Volume: h.Volume,
+			LoadedPacks: h.LoadedPacks, LoadedGrossWeight: h.LoadedGrossWeight, LoadedVolume: h.LoadedVolume, LastLoadedAt: h.LastLoadedAt}
+		for _, u := range h.Units {
+			facts.Units = append(facts.Units, fin.HouseUnitFacts{UnitNo: u.UnitNo, LoadedPacks: u.LoadedPacks, LoadedGrossWeight: u.LoadedGrossWeight,
+				LoadedVolume: u.LoadedVolume})
+		}
+		out.Houses = append(out.Houses, facts)
+	}
+	// The load units and the houses' unit loads are carried for the methods and checks that come next; no rule uses them
+	// yet.
+	for _, u := range b.LoadUnits {
+		if u.Status == phyapi.UnitStatusRemoved {
+			continue
+		}
+		out.LoadUnits = append(out.LoadUnits, fin.LoadUnitFacts{UnitNo: u.UnitNo, TypeCode: u.TypeCode, TEUTenths: u.TEUTenths, Status: u.Status,
+			ExecutionID: u.ExecutionID, ExecutionState: u.ExecutionState, ExecutionRevision: u.ExecutionRevision})
+	}
+	for _, l := range b.PackingLists {
+		out.PackingLists = append(out.PackingLists, fin.UnitPackingListFacts{UnitNo: l.UnitNo, ExecutionID: l.ExecutionID, ExecutionState: l.ExecutionState,
+			Digest: l.Digest})
 	}
 	return out, nil
 }

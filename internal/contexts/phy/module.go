@@ -228,7 +228,8 @@ func loadUnit(u domain.PlannedLoadUnit, uses map[int]application.UnitUse) api.Pl
 		TareKg: l.TareKg, CapacityCM3: l.CapacityCM3, EquipmentEdition: l.Edition, Status: string(u.Status), PlannedAt: u.PlannedAt,
 		RemoveReason: u.RemoveReason, RemovedAt: u.RemovedAt}
 	if use, ok := uses[u.No]; ok && u.Status == domain.UnitPlanned {
-		out.ExecutionID, out.Status = string(use.ExecutionID), api.UnitStatusInUse
+		out.ExecutionID, out.ExecutionState, out.ExecutionRevision = string(use.ExecutionID), string(use.State), use.Revision
+		out.Status = api.UnitStatusInUse
 		if use.State == domain.ExecutionClosed {
 			out.Status = api.UnitStatusClosed
 		}
