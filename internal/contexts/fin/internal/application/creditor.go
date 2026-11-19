@@ -234,14 +234,33 @@ func (d Deps) ReleasePoolAccrual(ctx context.Context, c Command, lineNo, expecte
 	})
 }
 
-// ClosePool closes a pool whose costs are final: PHY answers the consolidation's current basis first (T3).
+// ClosePool closes a pool whose costs are final: PHY answers the consolidation's current basis first (T3). A pool with
+// a line whose latest apportionment is by REVENUE also locks the houses' jobs, in job id order after the pool and
+// before the policy as ApportionPoolCosts does, and reads their revenue for the comparison; any other pool takes the
+// locks and reads what it always did. The jobs are also locked and read when the REVENUE line's final cost is zero or
+// the consolidation is gone, where Close compares nothing: more locks than needed, never a wrong result.
 func (d Deps) ClosePool(ctx context.Context, c Command) (Receipt, error) {
 	if d.Physical == nil {
 		return Receipt{}, ErrMissingDependency
 	}
 	var basis fin.CostBasis
-	return d.changePool(ctx, c, func(ctx context.Context, pool *fin.ConsolCostPool) (err error) {
+	return d.changePoolLocking(ctx, c, func(ctx context.Context, pool *fin.ConsolCostPool) (err error) {
 		basis, err = d.Physical.CostBasis(ctx, c.Scope.TenantID, pool.State().ConsolidationID)
+		return err
+	}, func(txCtx context.Context, pool *fin.ConsolCostPool) error {
+		if !pool.ByRevenue() {
+			return nil
+		}
+		shipments := make([]string, 0, len(basis.Houses))
+		for _, h := range basis.Houses {
+			shipments = append(shipments, h.ShipmentID)
+		}
+		jobs, err := d.Jobs.OpenJobsFor(txCtx, c.Scope.TenantID, pool.State().LegalEntityID, shipments)
+		if err != nil {
+			return err
+		}
+		revenue, err := d.houseRevenue(txCtx, c.Scope.TenantID, jobs)
+		pool.HouseRevenue(revenue)
 		return err
 	}, func(_ context.Context, pool *fin.ConsolCostPool, _ *fin.FinancePolicy) (Receipt, error) {
 		if err := pool.Close(basis, c.Scope.ActorID, c.OccurredAt); err != nil {

@@ -3,6 +3,8 @@ package application
 import (
 	"context"
 	"fmt"
+	"slices"
+	"strings"
 
 	fin "go.idp.xyz/idp-cargo/internal/contexts/fin/internal/domain"
 )
@@ -183,15 +185,48 @@ type ApportionAsk struct {
 	Reason    string
 }
 
+// houseRevenue reads the revenue by charge code at the estimate rate of the open jobs OpenJobsFor answered, per house
+// shipment, in the transaction that holds their locks (job id order, as they were locked).
+func (d Deps) houseRevenue(ctx context.Context, tenant fin.TenantID, jobs map[string]string) (map[string]map[string]int64, error) {
+	shipments := make([]string, 0, len(jobs))
+	for shipment := range jobs {
+		shipments = append(shipments, shipment)
+	}
+	slices.SortFunc(shipments, func(a, b string) int { return strings.Compare(jobs[a], jobs[b]) })
+	out := map[string]map[string]int64{}
+	for _, shipment := range shipments {
+		j, _, err := d.Jobs.Load(ctx, tenant, jobs[shipment])
+		if err != nil {
+			return nil, err
+		}
+		out[shipment] = j.EstimatedRevenue()
+	}
+	return out, nil
+}
+
+// apportionsByRevenue tells whether any line an apportionment names is divided by REVENUE: the command's method, or
+// the line's own while the command names none.
+func apportionsByRevenue(pool *fin.ConsolCostPool, in ApportionAsk) bool {
+	if in.Method != "" {
+		return in.Method == fin.MethodRevenue
+	}
+	lines := pool.State().Lines
+	if len(in.LineNos) == 0 {
+		return slices.ContainsFunc(lines, func(l fin.PoolCostLine) bool { return l.Method == fin.MethodRevenue })
+	}
+	return slices.ContainsFunc(in.LineNos, func(no int) bool { return no >= 1 && no <= len(lines) && lines[no-1].Method == fin.MethodRevenue })
+}
+
 // ApportionPoolCosts divides pool cost lines over the house jobs: PHY answers the consolidation's basis first (T3);
 // in the transaction FIN locks the houses' jobs in job id order, before the policy, and requires an OPEN job of the
-// pool's legal entity for every live house.
+// pool's legal entity for every live house. A line by REVENUE also reads those jobs' revenue under that lock.
 func (d Deps) ApportionPoolCosts(ctx context.Context, c Command, in ApportionAsk) (Receipt, error) {
 	if d.Physical == nil {
 		return Receipt{}, ErrMissingDependency
 	}
 	var basis fin.CostBasis
 	var jobs map[string]string
+	var revenue map[string]map[string]int64
 	return d.changePoolLocking(ctx, c, func(ctx context.Context, pool *fin.ConsolCostPool) (err error) {
 		st := pool.State()
 		basis, err = d.Physical.CostBasis(ctx, c.Scope.TenantID, st.ConsolidationID)
@@ -207,10 +242,16 @@ func (d Deps) ApportionPoolCosts(ctx context.Context, c Command, in ApportionAsk
 		for _, h := range basis.Houses {
 			shipments = append(shipments, h.ShipmentID)
 		}
-		jobs, err = d.Jobs.OpenJobsFor(txCtx, c.Scope.TenantID, pool.State().LegalEntityID, shipments)
+		if jobs, err = d.Jobs.OpenJobsFor(txCtx, c.Scope.TenantID, pool.State().LegalEntityID, shipments); err != nil {
+			return err
+		}
+		if apportionsByRevenue(pool, in) {
+			revenue, err = d.houseRevenue(txCtx, c.Scope.TenantID, jobs)
+		}
 		return err
 	}, func(_ context.Context, pool *fin.ConsolCostPool, _ *fin.FinancePolicy) (Receipt, error) {
-		input := fin.ApportionInput{LineNos: in.LineNos, Method: in.Method, Manual: in.Manual, NotUsed: in.NotUsed, AllHouses: in.AllHouses, Reason: in.Reason, Jobs: jobs}
+		input := fin.ApportionInput{LineNos: in.LineNos, Method: in.Method, Manual: in.Manual, NotUsed: in.NotUsed, AllHouses: in.AllHouses, Reason: in.Reason, Jobs: jobs,
+			Revenue: revenue}
 		if err := pool.Apportion(input, basis, c.Scope.ActorID, c.OccurredAt); err != nil {
 			return Receipt{}, err
 		}

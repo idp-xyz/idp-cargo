@@ -491,6 +491,10 @@ const (
 	// known once it is stuffed.
 	MethodContainerCount = "CONTAINER_COUNT"
 	MethodTEU            = "TEU"
+	// MethodRevenue divides by the revenue of the same charge code on each house's freight job (unit REV: minor units of
+	// the functional currency at the estimate rate), as CargoWise's Revenue method does (FIN V0.10). It reads FIN's own
+	// jobs, so it exists at both stages.
+	MethodRevenue = "REVENUE"
 	// MethodRetained keeps lines' costs on the consolidation (FIN V0.5), with a reason, once PHY reports it cancelled
 	// or without a house left: the consolidation's own cost, such as dead freight, as CargoWise leaves a consol charge
 	// on the consol when it is not apportioned.
@@ -585,10 +589,20 @@ type ManualShare struct {
 // are apportioned by another method (MANUAL takes any division, the count or the TEU worked out by hand). They are
 // refused too when no house that takes part is in a container. TEU is refused with FIN_POOL_UNIT when a unit a house
 // that takes part is in is missing from the basis's load units or is given without a TEU. A command that names no
-// LineNos takes every line, so on a pool with a line by one of these methods it is refused as a whole until the
-// containers are sealed: name the other lines to apportion them earlier. A cost line can carry either method as its
-// default through RecordConsolCost and through RateConsolCostPool (its Method applies to every rated line); no other
-// command names a line's method.
+// LineNos takes every line, so on a pool with a line by CONTAINER_COUNT or TEU it is refused as a whole until the
+// containers are sealed: name the other lines to apportion them earlier. A cost line can carry any method but RETAINED
+// as its default through RecordConsolCost and through RateConsolCostPool (its Method applies to every rated line); no
+// other command names a line's method. Since FIN V0.10 REVENUE weighs each house that takes part by the revenue of its
+// freight job under the cost line's own charge code, in the functional currency: each sell side's local amount as it
+// was converted when that version was written, at the ESTIMATE rate in force at its business time. A rate recorded
+// later does not move it; a revision of the side, or a re-rating or re-evaluation that writes a new version, converts
+// again and does move it, and the close then asks for a new apportionment. An invoice issued for the job does not
+// change it. It is accepted at PLANNED and at ACTUAL. A house without revenue under the code gets
+// a zero share; when none that takes part has any, or one has a negative revenue under it (a quote's discount line),
+// the command is refused with FIN_POOL_NO_BASIS naming the code. Each share records the revenue it used (quantity,
+// unit REV). The revenue is read in the command's transaction under the jobs' locks, and the close of the pool reads it
+// again: a line by REVENUE whose houses' revenue has changed since is refused with FIN_POOL_NOT_CLOSABLE until it is
+// apportioned again.
 type ApportionConsolCosts struct {
 	CommandID        string
 	TenantID         string

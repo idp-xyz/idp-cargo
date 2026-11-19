@@ -474,3 +474,124 @@ func TestDates(t *testing.T) {
 		t.Fatal("an instant is not a date")
 	}
 }
+
+// A job's revenue by charge code at the ESTIMATE rate: the latest sell side as it was converted when it was an
+// estimate,
+// whatever the rate of the debit note that billed it. Profit follows the invoice's rate instead and agrees with it
+// while nothing is invoiced. billedJob's sell sides at the ESTIMATE rate 7.1234 are USD 1,200.00 = 854,808
+// (AIR_FREIGHT),
+// CNY 300.00 (DOC_FEE), CNY -100.00 (LOYALTY, a quote's discount) and USD 200.00 = 142,468 (DEST_FEE).
+func TestEstimatedRevenueByCode(t *testing.T) {
+	p := billingPolicy(t)
+	j := billedJob(t, p)
+	numbers := counter{}
+	want := func(name string, wantRevenue map[string]int64) {
+		t.Helper()
+		got := j.EstimatedRevenue()
+		if len(got) != len(wantRevenue) {
+			t.Fatalf("%s: revenue %v, want %v", name, got, wantRevenue)
+		}
+		for code, v := range wantRevenue {
+			if got[code] != v {
+				t.Fatalf("%s: revenue %v, want %v", name, got, wantRevenue)
+			}
+		}
+	}
+	profitOf := func(code string) int64 {
+		for _, l := range j.Profit().Lines {
+			if l.ChargeCode == code {
+				return l.Revenue
+			}
+		}
+		return 0
+	}
+	base := map[string]int64{"AIR_FREIGHT": 854_808, "DOC_FEE": 30_000, "LOYALTY": -10_000, "DEST_FEE": 142_468}
+	want("a side never invoiced", base)
+	for code, v := range base {
+		if profitOf(code) != v {
+			t.Errorf("%s: Profit's revenue %d is not the estimated %d while nothing is invoiced", code, profitOf(code), v)
+		}
+	}
+
+	// two lines of one code are summed; a line with a cost only, and one with a zero sell side, add nothing
+	if err := j.RecordLine("AIR_FREIGHT", "", &SideInput{PartyID: "party-a", PartyRevision: 4, Amount: cny(1_000)}, nil, "surcharge", p, "fin-1", hour(1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.RecordLine("STORAGE", "", nil, &SideInput{Amount: cny(500)}, "storage cost", p, "fin-1", hour(1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.RecordLine("HANDLING", "", &SideInput{PartyID: "party-a", PartyRevision: 4, Amount: cny(0)}, nil, "not charged", p, "fin-1", hour(1)); err != nil {
+		t.Fatal(err)
+	}
+	base["AIR_FREIGHT"] = 854_808 + 1_000
+	want("two lines of one code, a cost-only line and a zero sell", base)
+
+	// invoiced at rates other than the estimate rate: the revenue does not move, Profit's does
+	issue := func(in DebitNoteInput, h int) {
+		t.Helper()
+		if err := j.IssueDebitNote(in, p, numbers.draw(p), "bill-1", hour(h)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	issue(debitNote("DN-1", "party-a", "CNY", 1, 2, 3), 2) // line 1 at the INVOICE rate 7.2000 = 864,000
+	issue(debitNote("DN-2", "agent-ny", "USD", 4), 3)      // line 4 at the ACCOUNTING rate 7.1000 = 142,000
+	want("invoiced at other rates", base)
+	if profitOf("AIR_FREIGHT") != 864_000+1_000 || profitOf("DEST_FEE") != 142_000 {
+		t.Fatalf("Profit's revenue after the invoices: %d, %d", profitOf("AIR_FREIGHT"), profitOf("DEST_FEE"))
+	}
+
+	// credited and returned to an estimate: the same figure; then revised and invoiced again: the revised estimate
+	j.Acknowledge()
+	credit := func(id, debit string, h int, writeOff bool, lines ...int) {
+		t.Helper()
+		in := CreditNoteInput{ID: id, DebitNoteID: debit, LineNos: lines, Reason: "wrong", InvoiceDate: day("2026-11-11"), WriteOff: writeOff}
+		if err := j.IssueCreditNote(in, p, numbers.draw(p), "bill-1", hour(h)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	credit("CN-1", "DN-1", 4, false, 1)
+	want("credited and returned to an estimate", base)
+	if profitOf("AIR_FREIGHT") != 854_808+1_000 {
+		t.Fatalf("Profit's revenue of the returned estimate: %d", profitOf("AIR_FREIGHT"))
+	}
+	if err := j.ReviseSide(1, SideSell, 3, SideInput{PartyID: "party-a", PartyRevision: 4, Amount: usd(100_000)}, "new price", p, "fin-1", hour(5)); err != nil {
+		t.Fatal(err)
+	}
+	base["AIR_FREIGHT"] = 712_340 + 1_000 // USD 1,000.00 at 7.1234
+	want("revised after the credit", base)
+	issue(debitNote("DN-3", "party-a", "CNY", 1), 6)
+	want("the revised side invoiced at the INVOICE rate 7.2000 = 720,000", base)
+	if profitOf("AIR_FREIGHT") != 720_000+1_000 {
+		t.Fatalf("Profit's revenue of the revised invoice: %d", profitOf("AIR_FREIGHT"))
+	}
+
+	// a debit note in the functional currency on a line in it has no rate: both agree
+	if profitOf("DOC_FEE") != base["DOC_FEE"] {
+		t.Fatalf("a line in the functional currency: Profit %d, estimated %d", profitOf("DOC_FEE"), base["DOC_FEE"])
+	}
+
+	// written off (the discount line with the line it discounts): the sides return at zero and add nothing
+	credit("CN-2", "DN-1", 7, true, 2, 3)
+	delete(base, "DOC_FEE")
+	delete(base, "LOYALTY")
+	want("written off", base)
+
+	// an INVOICED version with no version before it cannot be issued; a stored job that had one gives its own local
+	// amount, the nearest figure that is always defined
+	st := j.State()
+	v := st.Lines[3].Sell[1] // line 4, the USD debit note: ESTIMATED, then INVOICED
+	v.No = 1
+	st.Lines[3].Sell = []SideVersion{v}
+	for i := range st.Notes {
+		if st.Notes[i].ID == v.InvoiceID {
+			st.Notes[i].Lines[v.InvoiceLineNo-1].JobLineNo = 4
+		}
+	}
+	back, err := RestoreJob(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := back.EstimatedRevenue()["DEST_FEE"]; got != 142_000 {
+		t.Fatalf("an invoiced version with nothing before it: %d, want its own 142,000", got)
+	}
+}

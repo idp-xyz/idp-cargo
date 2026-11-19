@@ -542,6 +542,45 @@ func (j *FreightJob) Profit() Profit {
 	return out
 }
 
+// EstimatedRevenue is the job's revenue per charge code in the functional currency (minor units) at the ESTIMATE rate:
+// for each code, the sum over its charge lines of the local amount of the line's sell side as it was converted when it
+// was an estimate. That is the rate in force at the business time of the version (side converts with RateEstimate at
+// the time of the command that wrote it): a rate recorded later does not move the figure, while a revision of the
+// side, or a re-rating or re-evaluation that writes a new version, converts again and does. A line without a sell
+// side, or with a zero one, adds nothing; a code that sells nothing is absent.
+//
+// This is not Profit's revenue. Profit follows the latest sell version, and once a line is invoiced that version
+// carries the debit note's local amount at the invoice's or the accounting rate, so issuing an invoice moves it. An
+// apportionment by revenue records the figure it divided on and the close compares it again, and an invoice issued in
+// between must not refuse the close. So an INVOICED side is read through the version the debit note replaced: the
+// latest version before it that is not INVOICED, which has the same amount (IssueDebitNote copies it) at the estimate
+// rate (a credit note returns a side to a copy of that estimate, so an invoiced side always has one behind it). An
+// INVOICED version with no such version before it cannot be written by IssueDebitNote; if a stored job had one, its
+// own local amount is used, the nearest figure that is always defined. While nothing is invoiced the two agree, and a
+// line in the functional currency has no rate, so they agree for it always.
+func (j *FreightJob) EstimatedRevenue() map[string]int64 {
+	out := map[string]int64{}
+	for _, l := range j.state.Lines {
+		n := len(l.Sell)
+		if n == 0 {
+			continue
+		}
+		v := l.Sell[n-1]
+		if v.Status == StatusInvoiced {
+			for k := n - 2; k >= 0; k-- {
+				if l.Sell[k].Status != StatusInvoiced {
+					v = l.Sell[k]
+					break
+				}
+			}
+		}
+		if v.Local != 0 {
+			out[l.ChargeCode] += v.Local
+		}
+	}
+	return out
+}
+
 // Exposure is a debtor's exposure on the job in the functional currency while the job is open: the sell not yet
 // billed (ESTIMATED sides, WIP) and what is open of its debit notes, their unreversed lines' local amount in
 // proportion to what receipts have not settled.

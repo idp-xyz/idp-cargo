@@ -1139,7 +1139,7 @@ func TestRecordCostAcceptsTheContainerMethods(t *testing.T) {
 	p := pool(t, containerBasis())
 	recordCost(t, p, "SEAFREIGHT", cny(100), MethodContainerCount)
 	recordCost(t, p, "THC", cny(100), MethodTEU)
-	if err := p.RecordCost("X", "", "", "REVENUE", SideInput{Amount: cny(1)}, "r", policy(t), "ops-1", hour(3)); !errors.Is(err, ErrInvalid) {
+	if err := p.RecordCost("X", "", "", "NO_SUCH_METHOD", SideInput{Amount: cny(1)}, "r", policy(t), "ops-1", hour(3)); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("a method outside the list: %v", err)
 	}
 }
@@ -1250,5 +1250,407 @@ func TestContainerMethodsSkipAnEntryWithoutLoadedPacks(t *testing.T) {
 		if got[0].Quantity != want[0] || got[1].Quantity != want[1] || got[2].Quantity != want[2] {
 			t.Errorf("%s: %+v", m, got)
 		}
+	}
+}
+
+// houseRevenues is what the three jobs of threeHouses sell, by charge code, at the estimate rate: under AIRFREIGHT
+// 60,000 / 30,000 / 10,000, and other revenue under other codes that a line of AIRFREIGHT must not count.
+func houseRevenues() map[string]map[string]int64 {
+	return map[string]map[string]int64{
+		"HS1": {"AIRFREIGHT": 60_000, "THC": 5_000, "DOCFEE": 999},
+		"HS2": {"AIRFREIGHT": 30_000, "DOCFEE": 777},
+		"HS3": {"AIRFREIGHT": 10_000, "THC": 15_000},
+	}
+}
+
+func copyRevenues(r map[string]map[string]int64) map[string]map[string]int64 {
+	out := map[string]map[string]int64{}
+	for house, codes := range r {
+		out[house] = map[string]int64{}
+		for code, v := range codes {
+			out[house][code] = v
+		}
+	}
+	return out
+}
+
+// 10,001 minor of USD over three houses whose revenue under the line's code is 60,000 : 30,000 : 10,000 (6 : 3 : 1).
+//
+//	the line in USD: 10,001 x 6/10 = 6,000.6, x 3/10 = 3,000.3, x 1/10 = 1,000.1; the floors add up to 10,000 and the
+//	one minor unit left goes to the largest remainder (.6, HS1)               -> 6,001 / 3,000 / 1,000
+//	the local amount, 10,001 x 7.1234 = 71,241.12 -> 71,241: x 6/10 = 42,744.6, x 3/10 = 21,372.3, x 1/10 = 7,124.1;
+//	the floors add up to 71,240 and the unit left goes to HS1 (.6)             -> 42,745 / 21,372 / 7,124
+//
+// The revenue under THC and DOCFEE does not count, and each share records its house's revenue and the unit REV.
+func TestApportionByRevenue(t *testing.T) {
+	b := threeHouses()
+	p := pool(t, b)
+	recordCost(t, p, "AIRFREIGHT", usd(10_001), MethodRevenue)
+	cost, local := p.LineCost(1)
+	if local != 71_241 {
+		t.Fatalf("the line's local amount is %d, the hand calculation says 71,241", local)
+	}
+	if err := p.Apportion(ApportionInput{Jobs: threeJobs(), Revenue: houseRevenues()}, b, "ops-1", hour(4)); err != nil {
+		t.Fatal(err)
+	}
+	a := p.State().Apportionments[0]
+	if a.Stage != BasisActual || a.Lines[0].Method != MethodRevenue || a.Lines[0].Amount != 10_001 || a.Lines[0].Local != 71_241 {
+		t.Fatalf("apportionment: %+v", a)
+	}
+	wantQuantity, wantAmount, wantLocal := [3]int64{60_000, 30_000, 10_000}, [3]int64{6_001, 3_000, 1_000}, [3]int64{42_745, 21_372, 7_124}
+	var sum, localSum int64
+	for i, s := range a.Lines[0].Shares {
+		if !s.Used || s.Quantity != wantQuantity[i] || s.Unit != "REV" || s.Amount != wantAmount[i] || s.Local != wantLocal[i] ||
+			s.JobID != threeJobs()[s.ShipmentID] || s.No != i+1 {
+			t.Errorf("share %d is %+v", i+1, s)
+		}
+		sum, localSum = sum+s.Amount, localSum+s.Local
+	}
+	if sum != cost || localSum != local {
+		t.Errorf("the shares add up to %d (%d local), the line is %d (%d local)", sum, localSum, cost, local)
+	}
+}
+
+// Each line of a command is weighed by its own code: AIRFREIGHT 60,000 : 30,000 : 10,000 and THC 5,000 : 0 : 15,000, so
+// the second line gives the house with no THC revenue a zero share (100,000 x 5/20 = 25,000, x 15/20 = 75,000).
+func TestApportionByRevenueEachLineByItsOwnCode(t *testing.T) {
+	b := threeHouses()
+	p := pool(t, b)
+	recordCost(t, p, "AIRFREIGHT", cny(100_000), MethodRevenue)
+	recordCost(t, p, "THC", cny(100_000), MethodRevenue)
+	if err := p.Apportion(ApportionInput{Jobs: threeJobs(), Revenue: houseRevenues()}, b, "ops-1", hour(4)); err != nil {
+		t.Fatal(err)
+	}
+	lines := p.State().Apportionments[0].Lines
+	checkShares(t, "AIRFREIGHT", lines[0].Shares, -1, []wantShare{{60_000, 60_000, UnitRevenueMinor}, {30_000, 30_000, UnitRevenueMinor},
+		{10_000, 10_000, UnitRevenueMinor}}, 100_000)
+	checkShares(t, "THC", lines[1].Shares, -1, []wantShare{{5_000, 25_000, UnitRevenueMinor}, {0, 0, UnitRevenueMinor}, {15_000, 75_000, UnitRevenueMinor}}, 100_000)
+	// the command's method applies to every line the same way
+	q := pool(t, b)
+	recordCost(t, q, "AIRFREIGHT", cny(100_000), MethodShipment)
+	recordCost(t, q, "THC", cny(100_000), MethodChargeable)
+	if err := q.Apportion(ApportionInput{Method: MethodRevenue, Jobs: threeJobs(), Revenue: houseRevenues()}, b, "ops-1", hour(4)); err != nil {
+		t.Fatal(err)
+	}
+	for i, la := range q.State().Apportionments[0].Lines {
+		if la.Method != MethodRevenue || la.Shares[0].Quantity != p.State().Apportionments[0].Lines[i].Shares[0].Quantity {
+			t.Errorf("line %d under the command's method: %+v", i+1, la)
+		}
+	}
+}
+
+// A house with no revenue under the code gets a zero share; when no house that takes part has any, or one has a
+// negative
+// revenue, the apportionment is refused as FIN_POOL_NO_BASIS and nothing is written.
+func TestApportionByRevenueRefusals(t *testing.T) {
+	b := threeHouses()
+	refused := func(name string, revenue map[string]map[string]int64, notUsed []string, code string, wantInMessage ...string) {
+		t.Helper()
+		p := pool(t, b)
+		recordCost(t, p, code, cny(100_000), MethodRevenue)
+		err := p.Apportion(ApportionInput{NotUsed: notUsed, Jobs: threeJobs(), Revenue: revenue}, b, "ops-1", hour(4))
+		if !errors.Is(err, ErrPoolNoBasis) {
+			t.Fatalf("%s: %v", name, err)
+		}
+		for _, w := range wantInMessage {
+			if !strings.Contains(err.Error(), w) {
+				t.Errorf("%s: the message %q does not name %q", name, err, w)
+			}
+		}
+		if len(p.State().Apportionments) != 0 {
+			t.Errorf("%s: an apportionment was written", name)
+		}
+	}
+	refused("no house sells the code", houseRevenues(), nil, "STORAGE", "STORAGE")
+	refused("no revenue supplied", nil, nil, "AIRFREIGHT", "AIRFREIGHT")
+	refused("the one house that takes part has none", houseRevenues(), []string{"HS1", "HS2"}, "DOCFEE", "DOCFEE") // HS1 and HS2 sell it, HS3 does not
+	r := copyRevenues(houseRevenues())
+	r["HS3"]["THC"] = 0
+	refused("every house that takes part has none under the code", r, []string{"HS1"}, "THC", "THC")
+	r = copyRevenues(houseRevenues())
+	r["HS2"]["AIRFREIGHT"] = -5_000 // a quote's discount line under the code can make a house's sum negative
+	refused("a negative revenue", r, nil, "AIRFREIGHT", "HS2", "AIRFREIGHT")
+	// a negative revenue of a house left out is not a weight and does not matter
+	p := pool(t, b)
+	recordCost(t, p, "AIRFREIGHT", cny(100_000), MethodRevenue)
+	if err := p.Apportion(ApportionInput{NotUsed: []string{"HS2"}, Jobs: threeJobs(), Revenue: r}, b, "ops-1", hour(4)); err != nil {
+		t.Fatalf("a negative revenue of a house left out: %v", err)
+	}
+	checkShares(t, "left out", p.State().Apportionments[0].Lines[0].Shares, 1, []wantShare{{60_000, 85_714, UnitRevenueMinor}, {}, {10_000, 14_286, UnitRevenueMinor}}, 100_000)
+	// the existing refusals stay: every house needs its open job
+	p = pool(t, b)
+	recordCost(t, p, "AIRFREIGHT", cny(100_000), MethodRevenue)
+	if err := p.Apportion(ApportionInput{Jobs: map[string]string{"HS1": "JOB-1", "HS2": "JOB-2"}, Revenue: houseRevenues()}, b, "ops-1", hour(4)); !errors.Is(err, ErrPoolJobMissing) {
+		t.Fatalf("a house without a job: %v", err)
+	}
+}
+
+// REVENUE reads FIN's own jobs, so it needs neither the loaded stage nor sealed containers: it is accepted at PLANNED
+// (a
+// house not loaded) and at ACTUAL, where CONTAINER_COUNT is refused while a container is not sealed.
+func TestApportionByRevenueAtBothStages(t *testing.T) {
+	b := containerBasis()
+	b.LoadUnits[1].Status = "IN_USE" // a container not sealed
+	for name, c := range map[string]struct {
+		basis CostBasis
+		stage string
+	}{"ACTUAL, a container not sealed": {b, BasisActual}, "PLANNED": {func() CostBasis { x := copyOf(b); unloaded(&x, 2); return x }(), BasisPlanned}} {
+		p := pool(t, c.basis)
+		recordCost(t, p, "AIRFREIGHT", cny(100_000), MethodRevenue)
+		if err := p.Apportion(ApportionInput{Jobs: threeJobs(), Revenue: houseRevenues()}, c.basis, "ops-1", hour(4)); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		a := p.State().Apportionments[0]
+		if a.Stage != c.stage || a.Lines[0].Shares[0].Quantity != 60_000 || a.Lines[0].Shares[2].Quantity != 10_000 {
+			t.Errorf("%s: %+v", name, a)
+		}
+		q := pool(t, c.basis)
+		recordCost(t, q, "AIRFREIGHT", cny(100_000), MethodContainerCount)
+		if err := q.Apportion(ApportionInput{Jobs: threeJobs(), Revenue: houseRevenues()}, c.basis, "ops-1", hour(4)); !errors.Is(err, ErrPoolNoBasis) {
+			t.Errorf("%s: the container method is refused as before: %v", name, err)
+		}
+	}
+}
+
+// With a house left out the revenue is that of the houses that take part (60,000 : 10,000 over HS1 and HS3), and the
+// houses a line's latest apportionment left out stay out on a later command that names none.
+func TestApportionByRevenueWithAHouseLeftOutAndCarried(t *testing.T) {
+	b := threeHouses()
+	p := pool(t, b)
+	recordCost(t, p, "AIRFREIGHT", cny(70_001), MethodRevenue)
+	recordCost(t, p, "AIRFREIGHT", cny(70_001), MethodRevenue)
+	// 70,001 x 6/7 = 60,000.86 and x 1/7 = 10,000.14: the floors leave one unit, to HS1 (.86)
+	if err := p.Apportion(ApportionInput{LineNos: []int{1}, NotUsed: []string{"HS2"}, Jobs: threeJobs(), Revenue: houseRevenues()}, b, "ops-1", hour(4)); err != nil {
+		t.Fatal(err)
+	}
+	checkShares(t, "left out", p.State().Apportionments[0].Lines[0].Shares, 1, []wantShare{{60_000, 60_001, UnitRevenueMinor}, {}, {10_000, 10_000, UnitRevenueMinor}}, 70_001)
+	// line 2 names no list and was never apportioned: every house takes part; line 1 again keeps HS2 out
+	if err := p.Apportion(ApportionInput{Jobs: threeJobs(), Revenue: houseRevenues()}, b, "ops-1", hour(5)); err != nil {
+		t.Fatal(err)
+	}
+	second := p.State().Apportionments[1].Lines
+	checkShares(t, "line 1 carried", second[0].Shares, 1, []wantShare{{60_000, 60_001, UnitRevenueMinor}, {}, {10_000, 10_000, UnitRevenueMinor}}, 70_001)
+	for _, s := range second[1].Shares {
+		if !s.Used || s.Unit != UnitRevenueMinor {
+			t.Errorf("line 2 takes every house: %+v", s)
+		}
+	}
+	// the carried list is kept even when the revenue of the house left out is negative: it is not read
+	r := copyRevenues(houseRevenues())
+	r["HS2"]["AIRFREIGHT"] = -1
+	if err := p.Apportion(ApportionInput{LineNos: []int{1}, Jobs: threeJobs(), Revenue: r}, b, "ops-1", hour(6)); err != nil {
+		t.Fatalf("a carried list on a later command: %v", err)
+	}
+	if err := p.Apportion(ApportionInput{LineNos: []int{1}, AllHouses: true, Jobs: threeJobs(), Revenue: r}, b, "ops-1", hour(7)); !errors.Is(err, ErrPoolNoBasis) {
+		t.Fatalf("every house taking part again reads the negative revenue: %v", err)
+	}
+}
+
+// revenueClosable is a pool of the three loaded houses with one AIRFREIGHT line of 100,000 matched final and
+// apportioned
+// by REVENUE on revenue at hour 4.
+func revenueClosable(t *testing.T, notUsed []string, revenue map[string]map[string]int64) *ConsolCostPool {
+	t.Helper()
+	p := pool(t, threeHouses())
+	recordCost(t, p, "AIRFREIGHT", cny(100_000), MethodRevenue)
+	p.Matched(map[int]Consumption{1: {Amount: 100_000, Local: 100_000, Final: true}})
+	if err := p.Apportion(ApportionInput{NotUsed: notUsed, Jobs: threeJobs(), Revenue: revenue}, threeHouses(), "ops-1", hour(4)); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// The close compares the revenue of the houses that take part, under the line's code, with the quantities recorded.
+func TestCloseByRevenue(t *testing.T) {
+	b := threeHouses()
+	p := revenueClosable(t, nil, houseRevenues())
+	if !p.ByRevenue() {
+		t.Fatal("the pool has a line by REVENUE")
+	}
+	p.HouseRevenue(copyRevenues(houseRevenues()))
+	if err := p.Close(b, "ops-1", hour(6)); err != nil {
+		t.Fatalf("nothing changed: %v", err)
+	}
+	for name, change := range map[string]func(map[string]map[string]int64){
+		"a house's revenue grew":      func(r map[string]map[string]int64) { r["HS1"]["AIRFREIGHT"] += 1 },
+		"a house's revenue fell":      func(r map[string]map[string]int64) { r["HS3"]["AIRFREIGHT"] = 0 },
+		"a house with none sells":     func(r map[string]map[string]int64) { r["HS2"] = map[string]int64{"AIRFREIGHT": 1} },
+		"a house's revenue is gone":   func(r map[string]map[string]int64) { delete(r["HS2"], "AIRFREIGHT") },
+		"a negative revenue":          func(r map[string]map[string]int64) { r["HS3"]["AIRFREIGHT"] = -10_000 },
+		"a house the jobs do not say": func(r map[string]map[string]int64) { delete(r, "HS2") },
+	} {
+		p := revenueClosable(t, nil, houseRevenues())
+		r := copyRevenues(houseRevenues())
+		change(r)
+		p.HouseRevenue(r)
+		err := p.Close(b, "ops-1", hour(6))
+		if !errors.Is(err, ErrPoolNotClosable) {
+			t.Errorf("%s: %v", name, err)
+			continue
+		}
+		if name != "a house the jobs do not say" && (!strings.Contains(err.Error(), "cost line 1") || !strings.Contains(err.Error(), "revenue") || !strings.Contains(err.Error(), "apportion it again")) {
+			t.Errorf("%s: the message does not name the line and say the revenue changed: %v", name, err)
+		}
+	}
+	// revenue under another code changing does not matter, and without the jobs' revenue nothing can be compared
+	p = revenueClosable(t, nil, houseRevenues())
+	r := copyRevenues(houseRevenues())
+	r["HS1"]["THC"], r["HS2"]["THC"] = 1, 1
+	p.HouseRevenue(r)
+	if err := p.Close(b, "ops-1", hour(6)); err != nil {
+		t.Errorf("revenue under another code: %v", err)
+	}
+	p = revenueClosable(t, nil, houseRevenues())
+	if err := p.Close(b, "ops-1", hour(6)); !errors.Is(err, ErrPoolNotClosable) {
+		t.Errorf("no revenue read: %v", err)
+	}
+
+	// the revenue of a house left out may change as it likes: it is not compared; one that takes part is
+	r = copyRevenues(houseRevenues())
+	left := revenueClosable(t, []string{"HS2"}, r)
+	r["HS2"]["AIRFREIGHT"] = 1
+	left.HouseRevenue(r)
+	if err := left.Close(b, "ops-1", hour(6)); err != nil {
+		t.Errorf("the revenue of a house left out changed: %v", err)
+	}
+	r = copyRevenues(houseRevenues())
+	left = revenueClosable(t, []string{"HS2"}, r)
+	r["HS3"]["AIRFREIGHT"] = 11_000
+	left.HouseRevenue(r)
+	if err := left.Close(b, "ops-1", hour(6)); !errors.Is(err, ErrPoolNotClosable) {
+		t.Errorf("the revenue of a house that takes part changed: %v", err)
+	}
+
+	// apportioned again on the revenue now, the line closes
+	changed := copyRevenues(houseRevenues())
+	changed["HS1"]["AIRFREIGHT"] = 40_000
+	p = revenueClosable(t, nil, houseRevenues())
+	p.HouseRevenue(changed)
+	if err := p.Close(b, "ops-1", hour(6)); !errors.Is(err, ErrPoolNotClosable) {
+		t.Fatalf("revenue changed: %v", err)
+	}
+	if err := p.Apportion(ApportionInput{Jobs: threeJobs(), Revenue: changed}, b, "ops-1", hour(7)); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Close(b, "ops-1", hour(8)); err != nil {
+		t.Fatalf("apportioned again: %v", err)
+	}
+	if q := p.State().Apportionments[1].Lines[0].Shares[0].Quantity; q != 40_000 {
+		t.Errorf("the second apportionment recorded %d", q)
+	}
+	// a house with a zero share that the jobs do not answer for cannot be compared either
+	none := copyRevenues(houseRevenues())
+	delete(none["HS2"], "AIRFREIGHT")
+	p = revenueClosable(t, nil, none)
+	missing := copyRevenues(none)
+	delete(missing, "HS2")
+	p.HouseRevenue(missing)
+	if err := p.Close(b, "ops-1", hour(6)); !errors.Is(err, ErrPoolNotClosable) {
+		t.Errorf("a house the jobs do not say, with a zero share: %v", err)
+	}
+	p.HouseRevenue(none)
+	if err := p.Close(b, "ops-1", hour(6)); err != nil {
+		t.Errorf("a zero share on a house that still has no revenue under the code: %v", err)
+	}
+	// a share recorded in another unit than REV is not the revenue, whatever its quantity
+	st := revenueClosable(t, nil, houseRevenues()).State()
+	st.Apportionments[0].Lines[0].Shares[0].Unit = UnitCubicCm
+	odd, err := RestorePool(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	odd.Matched(map[int]Consumption{1: {Amount: 100_000, Local: 100_000, Final: true}})
+	odd.HouseRevenue(copyRevenues(houseRevenues()))
+	if err := odd.Close(b, "ops-1", hour(6)); !errors.Is(err, ErrPoolNotClosable) {
+		t.Errorf("a share in another unit: %v", err)
+	}
+	// a pool without a line by REVENUE does not ask for the revenue
+	other := closable(t, MethodGrossWeight, nil, b)
+	if other.ByRevenue() {
+		t.Error("a line by GROSS_WEIGHT is not by REVENUE")
+	}
+}
+
+// Every existing method gives the shares and closes as it did, whether the revenue is supplied or not.
+func TestExistingMethodsIgnoreRevenue(t *testing.T) {
+	b := threeHouses()
+	for _, method := range []string{MethodChargeable, MethodVolume, MethodPieces, MethodGrossWeight, MethodShipment} {
+		var shares [2][]Share
+		for i, revenue := range []map[string]map[string]int64{nil, houseRevenues()} {
+			p := pool(t, b)
+			recordCost(t, p, "AIRFREIGHT", cny(100_000), method)
+			p.Matched(map[int]Consumption{1: {Amount: 100_000, Local: 100_000, Final: true}})
+			if err := p.Apportion(ApportionInput{Jobs: threeJobs(), Revenue: revenue}, b, "ops-1", hour(4)); err != nil {
+				t.Fatalf("%s: %v", method, err)
+			}
+			shares[i] = p.State().Apportionments[0].Lines[0].Shares
+			p.HouseRevenue(revenue)
+			if err := p.Close(b, "ops-1", hour(6)); err != nil {
+				t.Errorf("%s with revenue %v: %v", method, revenue != nil, err)
+			}
+			if p.ByRevenue() {
+				t.Errorf("%s is not by REVENUE", method)
+			}
+		}
+		if len(shares[0]) != 3 {
+			t.Fatalf("%s: %+v", method, shares[0])
+		}
+		for k := range shares[0] {
+			if shares[0][k] != shares[1][k] || shares[0][k].Unit == UnitRevenueMinor {
+				t.Errorf("%s: share %d with revenue %+v, without %+v", method, k+1, shares[1][k], shares[0][k])
+			}
+		}
+	}
+}
+
+// REVENUE is a method a line may carry (and a rated estimate may name); a name outside the list is refused as before.
+func TestRecordCostAcceptsRevenue(t *testing.T) {
+	p := pool(t, airBasis())
+	recordCost(t, p, "AIRFREIGHT", cny(100), MethodRevenue)
+	est := []EstimateLine{{ChargeCode: "AIRFREIGHT", LineNo: 1, HasCost: true, CreditorPartyID: "CARRIER-1", CreditorRevision: 3, Cost: cny(100)}}
+	if err := pool(t, airBasis()).RecordEstimate("BASIS-1", est, MethodRevenue, policy(t), "ops-1", hour(3)); err != nil {
+		t.Fatalf("a rated estimate by revenue: %v", err)
+	}
+	if err := p.RecordCost("X", "", "", "NO_SUCH_METHOD", SideInput{Amount: cny(1)}, "r", policy(t), "ops-1", hour(3)); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("a method outside the list: %v", err)
+	}
+	b := threeHouses()
+	if err := p.Apportion(ApportionInput{Method: "NO_SUCH_METHOD", Jobs: threeJobs(), Revenue: houseRevenues()}, b, "ops-1", hour(4)); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("an apportionment by a method outside the list: %v", err)
+	}
+}
+
+// A pool whose first line is by SHIPMENT and whose second is by REVENUE has a line by REVENUE: ByRevenue is true (it
+// looks at every line, not the first), the close without the houses' revenue or after the second line's revenue changed
+// is refused, and with it the pool closes.
+func TestCloseOfAPoolWhoseSecondLineIsByRevenue(t *testing.T) {
+	b := threeHouses()
+	build := func() *ConsolCostPool {
+		p := pool(t, b)
+		recordCost(t, p, "AIRFREIGHT", cny(100_000), MethodShipment)
+		recordCost(t, p, "AIRFREIGHT", cny(100_000), MethodRevenue)
+		p.Matched(map[int]Consumption{1: {Amount: 100_000, Local: 100_000, Final: true}, 2: {Amount: 100_000, Local: 100_000, Final: true}})
+		if err := p.Apportion(ApportionInput{Jobs: threeJobs(), Revenue: houseRevenues()}, b, "ops-1", hour(4)); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	p := build()
+	if !p.ByRevenue() {
+		t.Fatal("the pool has a line by REVENUE, the second")
+	}
+	if err := p.Close(b, "ops-1", hour(6)); !errors.Is(err, ErrPoolNotClosable) {
+		t.Errorf("the close without the houses' revenue: %v", err)
+	}
+	changed := copyRevenues(houseRevenues())
+	changed["HS3"]["AIRFREIGHT"] = 11_000
+	p.HouseRevenue(changed)
+	if err := p.Close(b, "ops-1", hour(6)); !errors.Is(err, ErrPoolNotClosable) || !strings.Contains(err.Error(), "cost line 2") {
+		t.Errorf("the close after the second line's revenue changed: %v", err)
+	}
+	p = build()
+	p.HouseRevenue(copyRevenues(houseRevenues()))
+	if err := p.Close(b, "ops-1", hour(6)); err != nil {
+		t.Errorf("the close with the revenue unchanged: %v", err)
 	}
 }
