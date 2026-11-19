@@ -34,6 +34,10 @@ type executionRow struct {
 	StartedBy               string    `json:"started_by"`
 	StartedAt               time.Time `json:"started_at"`
 	StartedEnteredAt        time.Time `json:"started_entered_at"`
+	CancelledBy             string    `json:"cancelled_by"`
+	CancelledAt             time.Time `json:"cancelled_at"`
+	CancelEnteredAt         time.Time `json:"cancelled_entered_at"`
+	CancelReason            string    `json:"cancel_reason"`
 	ClosedBy                string    `json:"closed_by"`
 	ClosedAt                time.Time `json:"closed_at"`
 	ClosedEnteredAt         time.Time `json:"closed_entered_at"`
@@ -158,6 +162,7 @@ func readExecution(ctx context.Context, q queryRower, tenant phy.TenantID, id ph
 		Facility: phy.Facility{Location: unlocode(root.FacilityLocation), Code: root.FacilityCode}, LoadUnitNo: root.LoadUnitNo,
 		State:    phy.ExecutionState(root.State),
 		OpenedBy: root.OpenedBy, OpenedAt: utc(root.OpenedAt), OpenedEnteredAt: utc(root.OpenedEnteredAt),
+		CancelledBy: root.CancelledBy, CancelledAt: utc(root.CancelledAt), CancelEnteredAt: utc(root.CancelEnteredAt), CancelReason: root.CancelReason,
 		StartedBy: root.StartedBy, StartedAt: utc(root.StartedAt), StartedEnteredAt: utc(root.StartedEnteredAt),
 		ClosedBy: root.ClosedBy, ClosedAt: utc(root.ClosedAt), ClosedEnteredAt: utc(root.ClosedEnteredAt),
 		CloseEvidence: phy.Evidence{Source: root.CloseEvidenceSource, Reference: root.CloseEvidenceReference, SHA256: root.CloseEvidenceSHA256,
@@ -241,14 +246,15 @@ func (s ExecutionStore) Read(ctx context.Context, tenant phy.TenantID, id phy.Lo
 	return readExecution(ctx, q, tenant, id)
 }
 
-// UnitUses returns, by load unit, the stuffing opened on each of a consolidation's units.
+// UnitUses returns, by load unit, the stuffing opened on each of a consolidation's units that is not cancelled: a
+// stuffing given up leaves its unit without one.
 func (s ExecutionStore) UnitUses(ctx context.Context, tenant phy.TenantID, id phy.ConsolidationID) (map[int]app.UnitUse, error) {
 	q, err := s.DB.ReadExecutor(ctx)
 	if err != nil {
 		return nil, err
 	}
 	rows, err := q.Query(ctx, `SELECT load_unit_no, execution_id, state, revision FROM cargo_phy.load_execution
-      WHERE tenant_id=$1 AND consolidation_id=$2 AND load_unit_no IS NOT NULL`, string(tenant), string(id))
+      WHERE tenant_id=$1 AND consolidation_id=$2 AND load_unit_no IS NOT NULL AND state <> 'CANCELLED'`, string(tenant), string(id))
 	if err != nil {
 		return nil, err
 	}
@@ -262,6 +268,30 @@ func (s ExecutionStore) UnitUses(ctx context.Context, tenant phy.TenantID, id ph
 			return nil, err
 		}
 		out[no] = app.UnitUse{ExecutionID: phy.LoadExecutionID(execution), State: phy.ExecutionState(state), Revision: revision}
+	}
+	return out, rows.Err()
+}
+
+// LastCancellations returns, by load unit, the business time of the latest cancellation of a stuffing of the unit.
+func (s ExecutionStore) LastCancellations(ctx context.Context, tenant phy.TenantID, id phy.ConsolidationID) (map[int]time.Time, error) {
+	q, err := s.DB.ReadExecutor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := q.Query(ctx, `SELECT load_unit_no, max(cancelled_at) FROM cargo_phy.load_execution
+      WHERE tenant_id=$1 AND consolidation_id=$2 AND load_unit_no IS NOT NULL AND state = 'CANCELLED' GROUP BY load_unit_no`, string(tenant), string(id))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int]time.Time{}
+	for rows.Next() {
+		var no int
+		var at time.Time
+		if err = rows.Scan(&no, &at); err != nil {
+			return nil, err
+		}
+		out[no] = at.UTC()
 	}
 	return out, rows.Err()
 }
@@ -381,10 +411,11 @@ func (s ExecutionStore) Save(ctx context.Context, x *phy.LoadExecution, expected
 	var revision int64
 	err = q.QueryRow(ctx, `UPDATE cargo_phy.load_execution SET state=$3,started_by=$4,started_at=$5,started_entered_at=$6,closed_by=$7,closed_at=$8,
         closed_entered_at=$9,close_evidence_source=$10,close_evidence_reference=$11,close_evidence_sha256=$12,close_evidence_occurred_at=$13,
+        cancelled_by=$15,cancelled_at=$16,cancelled_entered_at=$17,cancel_reason=$18,
         revision=revision+1,updated_at=now() WHERE tenant_id=$1 AND execution_id=$2 AND revision=$14 RETURNING revision`,
 		string(st.TenantID), string(st.ExecutionID), string(st.State), orNull(st.StartedBy), orNull(st.StartedAt), orNull(st.StartedEnteredAt),
 		orNull(st.ClosedBy), orNull(st.ClosedAt), orNull(st.ClosedEnteredAt), orNull(ev.Source), orNull(ev.Reference), orNull(ev.SHA256),
-		orNull(ev.OccurredAt), expected).Scan(&revision)
+		orNull(ev.OccurredAt), expected, orNull(st.CancelledBy), orNull(st.CancelledAt), orNull(st.CancelEnteredAt), orNull(st.CancelReason)).Scan(&revision)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, fmt.Errorf("%w: load execution %s", bentorepo.ErrConflict, st.ExecutionID)
 	}

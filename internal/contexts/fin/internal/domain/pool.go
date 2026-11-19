@@ -870,12 +870,11 @@ func (p *ConsolCostPool) ByRevenue() bool {
 // At ACTUAL every load unit of the basis must also be sealed (status LoadUnitClosed): while a unit is planned or
 // loading, a house part-loaded into the sealed ones would be counted in fewer containers than it ends up in, and the
 // figure would stay wrong once the pool is closed. The houses' containers are final once every container of the
-// consolidation is sealed. A unit that was planned and never opened is removed in PHY first. A unit on which a
-// stuffing was opened and that holds nothing can be neither sealed nor removed in this version of PHY (it has no
-// command that gives up an empty stuffing); until it has one, the lines are apportioned by another method (MANUAL
-// takes any division, the count or the TEU worked out by hand). This does not require that a house is wholly loaded:
-// packs of a house left outside every sealed container count for nothing, and whether they still travel is PHY's
-// matter. The same rule holds at the close comparison, which calls this function.
+// consolidation is sealed. A unit that was planned and never opened is removed in PHY first. A stuffing opened on a
+// unit and left empty is given up in PHY (CancelLoadExecution), and the unit is then removed or stuffed again. This
+// does not require that a house is wholly loaded: packs of a house left outside every sealed container count for
+// nothing, and whether they still travel is PHY's matter. The same rule holds at the close comparison, which calls this
+// function.
 //
 // A house that takes part and is loaded but has no entry while others have has no container: its quantity is 0 and it
 // gets a zero share, as a house with no volume does under VOLUME. When no house has one (air, or a co-load loaded by
@@ -888,7 +887,7 @@ func containerQuantities(method, stage string, houses []HouseFacts, units []Load
 	}
 	for _, u := range units {
 		if u.Status != LoadUnitClosed {
-			return nil, "", fmt.Errorf("%w: %s needs every container sealed: load unit %d is %s; a unit never opened is removed in PHY, one opened and empty needs another method",
+			return nil, "", fmt.Errorf("%w: %s needs every container sealed: load unit %d is %s; a container still being stuffed is sealed in PHY, a stuffing opened and left empty is given up in PHY (CancelLoadExecution), a unit never opened is removed in PHY",
 				ErrPoolNoBasis, method, u.UnitNo, u.Status)
 		}
 	}

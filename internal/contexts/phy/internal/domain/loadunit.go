@@ -143,6 +143,12 @@ func (c *Consolidation) PlanLoadUnit(kind LoadUnitKind, limits UnitLimits, by st
 // RemovePlannedLoadUnit removes a planned unit with a reason, while the consolidation is OPEN or CLOSED and no
 // stuffing is opened on the unit (inUse, read under the consolidation's lock).
 func (c *Consolidation) RemovePlannedLoadUnit(no int, reason, by string, at time.Time, inUse bool) error {
+	return c.RemovePlannedLoadUnitAfter(no, reason, by, at, inUse, time.Time{})
+}
+
+// RemovePlannedLoadUnitAfter is RemovePlannedLoadUnit for a unit whose stuffings were given up: the removal is dated
+// not before the latest cancellation of a stuffing of the unit, lastCancelled (zero when none was).
+func (c *Consolidation) RemovePlannedLoadUnitAfter(no int, reason, by string, at time.Time, inUse bool, lastCancelled time.Time) error {
 	if s := c.Current().State; s != StateOpen && s != StateClosed {
 		return ErrInvalidTransition
 	}
@@ -157,6 +163,9 @@ func (c *Consolidation) RemovePlannedLoadUnit(no int, reason, by string, at time
 	}
 	if err := c.changeable(by, at); err != nil {
 		return err
+	}
+	if at.Before(lastCancelled) {
+		return fmt.Errorf("%w: a removal of unit %d is dated not before the cancellation of its stuffing", ErrInvalidChange, no)
 	}
 	u := &c.state.LoadUnits[no-1]
 	u.Status, u.RemoveReason, u.RemovedBy, u.RemovedAt = UnitRemoved, reason, by, at.UTC()

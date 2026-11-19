@@ -39,6 +39,8 @@ const (
 	ExecutionLoading ExecutionState = "LOADING"
 	ExecutionOnHold  ExecutionState = "ON_HOLD"
 	ExecutionClosed  ExecutionState = "CLOSED"
+	// ExecutionCancelled is a stuffing given up with no live packs (CancelLoadExecution): terminal, kept as history.
+	ExecutionCancelled ExecutionState = "CANCELLED"
 )
 
 var (
@@ -229,6 +231,10 @@ type LoadExecutionState struct {
 	ClosedAt         time.Time
 	ClosedEnteredAt  time.Time
 	CloseEvidence    Evidence
+	CancelledBy      string // who gave up the stuffing, when and why: set exactly when CANCELLED
+	CancelledAt      time.Time
+	CancelEnteredAt  time.Time
+	CancelReason     string
 	Lines            []LoadLine
 	Reversals        []Reversal
 	Holds            []Hold
@@ -255,6 +261,7 @@ const (
 	eventLoadExecutionHoldReleased   = "LoadExecutionHoldReleased.v1"
 	eventLoadExecutionResumed        = "LoadExecutionResumed.v1"
 	eventLoadExecutionClosed         = "LoadExecutionClosed.v1"
+	eventLoadExecutionCancelled      = "LoadExecutionCancelled.v1"
 	eventCarrierLoadEvidenceRecorded = "CarrierLoadEvidenceRecorded.v1"
 	eventLoadingDiscrepancyRecorded  = "LoadingDiscrepancyRecorded.v1"
 	eventLoadingDiscrepancyResolved  = "LoadingDiscrepancyResolved.v1"
@@ -290,9 +297,17 @@ func OpenLoadExecution(tenant TenantID, id LoadExecutionID, c *Consolidation, ki
 }
 
 // OpenStuffing opens the stuffing of a planned container of a CLOSED own-container LCL consolidation (its houses
-// frozen) at a facility of its origin, the forwarder's CFS. A unit takes one stuffing: taken reports whether an
-// execution was opened on it already. Business time is not before the consolidation's latest change (its close).
+// frozen) at a facility of its origin, the forwarder's CFS. A unit has at most one stuffing that is not cancelled:
+// taken reports whether one was opened on it already (a cancelled one, given up with nothing loaded, does not count).
+// Business time is not before the consolidation's latest change (its close).
 func OpenStuffing(tenant TenantID, id LoadExecutionID, c *Consolidation, unitNo int, facility Facility, taken bool, by string, at time.Time) (*LoadExecution, error) {
+	return OpenStuffingAfter(tenant, id, c, unitNo, facility, taken, time.Time{}, by, at)
+}
+
+// OpenStuffingAfter is OpenStuffing for a unit whose earlier stuffings were given up: the new stuffing is dated not
+// before the latest cancellation of a stuffing of the unit, lastCancelled (zero when none was).
+func OpenStuffingAfter(tenant TenantID, id LoadExecutionID, c *Consolidation, unitNo int, facility Facility, taken bool, lastCancelled time.Time,
+	by string, at time.Time) (*LoadExecution, error) {
 	if c == nil || !identifier(string(tenant)) || !identifier(string(id)) || c.Tenant() != tenant || !facility.valid() || blank(by) || at.IsZero() {
 		return nil, ErrInvalidExecution
 	}
@@ -319,6 +334,9 @@ func OpenStuffing(tenant TenantID, id LoadExecutionID, c *Consolidation, unitNo 
 	}
 	if at.Before(c.lastChange()) {
 		return nil, fmt.Errorf("%w: a stuffing is dated not before the consolidation's close and its units' changes", ErrInvalidChange)
+	}
+	if at.Before(lastCancelled) {
+		return nil, fmt.Errorf("%w: a stuffing of unit %d is dated not before the cancellation of the one before it", ErrInvalidChange, unitNo)
 	}
 	x := &LoadExecution{state: LoadExecutionState{TenantID: tenant, ExecutionID: id, ConsolidationID: c.ID(), Kind: ExecutionStuffing, Mode: c.Mode(),
 		Facility: facility, LoadUnitNo: unitNo, State: ExecutionOpen, OpenedBy: by, OpenedAt: at.UTC()}}
@@ -431,7 +449,18 @@ func (x *LoadExecution) Load(in LoadLine, c *Consolidation, lot *CargoLot, entry
 // volume in a unit PHY does not convert holds it too, as not checked. The line or measurement that crossed the
 // limits stays recorded (G06-05); an OVERWEIGHT hold already placed is not placed again. The limits are defaults:
 // the container's plate (SEA's) may allow more, which releasing the hold with its evidence records, and a later
-// line or measurement over them holds again. It reports whether it placed a hold; the hold takes the business time
+// line or measurement over them holds again.
+//
+// The check measures this stuffing by itself (unitCargo), as HouseMeasure did before V2.82, not as the cost basis now
+// does over every container a lot is loaded in (AllotLots). For a lot split over containers it can therefore read
+// either more or less than the allotted figure, so it can hold a container the allotted figure would not, and miss one
+// it would. Reading more: a lot of 6 packs and 600 kg with 2 packs weighed for themselves at 300 kg in container 1 and
+// the other 4 apportioned in container 2. Container 2 alone reads 600 x 4/6 = 400 kg, the allotted figure is the 300 kg
+// the weighed packs leave: a container whose limit lies between 300 and 400 kg of cargo is held without need. Reading
+// less: a lot of 10 packs and 1,000 kg with 2 packs weighed at 100 kg and 4 apportioned in container 1, and 4
+// apportioned in container 2. Container 2 alone reads 1,000 x 4/10 = 400 kg, the allotted figure is (1,000 - 100) x
+// 4/8 = 450 kg: an overweight between 400 and 450 kg is not held. The rule is not changed here. It reports whether it
+// placed a hold; the hold takes the business time
 // at, or the execution's last change if that is later.
 func (x *LoadExecution) HoldIfOverLimits(c *Consolidation, lots map[CargoLotID]*CargoLot, evidence Evidence, by string, at time.Time) bool {
 	if x.state.Kind != ExecutionStuffing || (x.state.State != ExecutionLoading && x.state.State != ExecutionOnHold) || c == nil ||
@@ -655,6 +684,9 @@ func (x *LoadExecution) hold(h Hold, by string, at time.Time) {
 // PASSED or NOT_REQUIRED, or none of its packs is live in the execution. Releasing the last hold resumes
 // loading.
 func (x *LoadExecution) ReleaseHold(no int, evidence Evidence, lotOutcome Outcome, by string, at time.Time) error {
+	if x.state.State == ExecutionCancelled {
+		return fmt.Errorf("%w: a cancelled execution takes no further command", ErrInvalidTransition)
+	}
 	if no < 1 || no > len(x.state.Holds) || !x.state.Holds[no-1].Placed() {
 		return fmt.Errorf("%w: hold %d", ErrHoldNotReleasable, no)
 	}
@@ -727,6 +759,39 @@ func (x *LoadExecution) close(evidence Evidence, by string, at time.Time) error 
 	evidence.OccurredAt = evidence.OccurredAt.UTC()
 	x.state.State, x.state.ClosedBy, x.state.ClosedAt, x.state.CloseEvidence = ExecutionClosed, by, at.UTC(), evidence
 	x.record(eventLoadExecutionClosed, at, "", "", 0, "")
+	return nil
+}
+
+// Cancel gives up a stuffing that holds no live packs: OPEN, LOADING or ON_HOLD, with nothing loaded or every loaded
+// pack unloaded again (a sealed container is closed for good, and a tender is closed with its receipt). The reason is
+// required text of at most 500 characters, and the business time is not before the execution's last change. The
+// execution becomes CANCELLED, terminal: it keeps its lines, reversals and holds as history and takes no further
+// command, and its container is planned again (the unit's status is derived from a stuffing that is not cancelled).
+// A hold still placed ends with the execution and stays recorded as placed: nothing is released, since nothing is
+// loaded to release. Carrier evidence and discrepancies follow a closed tender, so a stuffing that can be given up has
+// none open. Like Start and the hold commands, a cancellation is dated against the execution's own last change and
+// not against the consolidation's versions: one dated before a later reopen of the consolidation is accepted. The
+// event carries the load unit as its item, as the opening's does.
+func (x *LoadExecution) Cancel(reason, by string, at time.Time) error {
+	if x.state.Kind != ExecutionStuffing {
+		return fmt.Errorf("%w: only a stuffing is given up; a tender is closed with its receipt", ErrInvalidExecution)
+	}
+	switch x.state.State {
+	case ExecutionOpen, ExecutionLoading, ExecutionOnHold:
+	default:
+		return fmt.Errorf("%w: a stuffing is given up while OPEN, LOADING or ON_HOLD, this one is %s", ErrInvalidTransition, x.state.State)
+	}
+	if live := x.Tendered(); live > 0 {
+		return fmt.Errorf("%w: %d packs are still loaded; unload them before the stuffing is given up", ErrInvalidExecution, live)
+	}
+	if !text(reason) {
+		return fmt.Errorf("%w: giving up a stuffing needs a reason (500 characters)", ErrInvalidExecution)
+	}
+	if err := x.changeable(by, at); err != nil {
+		return err
+	}
+	x.state.State, x.state.CancelledBy, x.state.CancelledAt, x.state.CancelReason = ExecutionCancelled, by, at.UTC(), reason
+	x.record(eventLoadExecutionCancelled, at, "", "", x.state.LoadUnitNo, "")
 	return nil
 }
 
@@ -885,7 +950,7 @@ func (x *LoadExecution) changeable(by string, at time.Time) error {
 
 func (x *LoadExecution) lastChange() time.Time {
 	st := x.state
-	last := later(later(st.OpenedAt, st.StartedAt), st.ClosedAt)
+	last := later(later(later(st.OpenedAt, st.StartedAt), st.ClosedAt), st.CancelledAt)
 	for _, v := range st.Lines {
 		last = later(last, v.At)
 	}
@@ -921,6 +986,7 @@ func (x *LoadExecution) Stamp(entered time.Time) {
 	stamp(&st.OpenedEnteredAt, st.OpenedAt)
 	stamp(&st.StartedEnteredAt, st.StartedAt)
 	stamp(&st.ClosedEnteredAt, st.ClosedAt)
+	stamp(&st.CancelEnteredAt, st.CancelledAt)
 	for i := range st.Lines {
 		stamp(&st.Lines[i].EnteredAt, st.Lines[i].At)
 	}
@@ -959,6 +1025,10 @@ func RestoreLoadExecution(st LoadExecutionState) (*LoadExecution, error) {
 		return bad("a stuffing closed without its seal")
 	}
 	started, closed := !st.StartedAt.IsZero(), !st.ClosedAt.IsZero()
+	if cancelled := st.State == ExecutionCancelled; cancelled != !st.CancelledAt.IsZero() || cancelled != !blank(st.CancelledBy) ||
+		cancelled != (st.CancelReason != "") {
+		return bad("cancellation")
+	}
 	switch st.State {
 	case ExecutionOpen:
 		if started || closed || len(st.Lines) > 0 || len(st.Holds) > 0 {
@@ -971,6 +1041,11 @@ func RestoreLoadExecution(st LoadExecutionState) (*LoadExecution, error) {
 	case ExecutionClosed:
 		if !started || !closed || x.Placed() > 0 || blank(st.ClosedBy) {
 			return bad("closed")
+		}
+	case ExecutionCancelled:
+		if st.Kind != ExecutionStuffing || closed || len(st.CarrierEvidence) > 0 || len(st.Discrepancies) > 0 ||
+			(started && st.CancelledAt.Before(st.StartedAt)) || st.CancelledAt.Before(st.OpenedAt) {
+			return bad("cancelled")
 		}
 	default:
 		return bad("state")
@@ -993,6 +1068,9 @@ func RestoreLoadExecution(st LoadExecutionState) (*LoadExecution, error) {
 		if live, weight, volume := x.lineLive(line.No); live < 0 || weight < 0 || volume < 0 {
 			return bad(fmt.Sprintf("line %d reversed beyond its packs", line.No))
 		}
+	}
+	if st.State == ExecutionCancelled && x.Tendered() > 0 {
+		return bad("cancelled with live packs")
 	}
 	for i, v := range st.Holds {
 		if v.No != i+1 || (!v.Reason.manual() && v.Reason != HoldScreeningFailed) || (v.Reason == HoldScreeningFailed) != (v.LotID != "") || blank(v.By) {
@@ -1126,8 +1204,21 @@ func (x *LoadExecution) HousePieces(shipment ShipmentID) HousePieces {
 // themselves as measured; apportioned lines at their lot's latest measurement, less what the lot's lines measured
 // for themselves took, spread over the lot's other packs (the packs that complete the lot take the rest), so a
 // later terminal weight counts and a lot never weighs more than its measure. A volume not known for every
-// line, or in different units, is not known: the volume is then zero.
+// line, or in different units, is not known: the volume is then zero. It works out the lot's measure for this
+// execution alone, which is right when the execution holds all the lot's live packs; a lot loaded in several
+// executions is measured over all of them by HouseMeasureAllotted.
 func (x *LoadExecution) HouseMeasure(shipment ShipmentID, lots map[CargoLotID]*CargoLot) (int64, kernel.Quantity, kernel.Quantity) {
+	return x.houseMeasure(shipment, lots, nil)
+}
+
+// HouseMeasureAllotted is HouseMeasure with the apportioned part of each lot's measure taken from a, the allotment of
+// the lot over every execution that holds live packs of it (AllotLots). An execution a does not know falls back to
+// the measure of the execution alone.
+func (x *LoadExecution) HouseMeasureAllotted(shipment ShipmentID, lots map[CargoLotID]*CargoLot, a Allotment) (int64, kernel.Quantity, kernel.Quantity) {
+	return x.houseMeasure(shipment, lots, &a)
+}
+
+func (x *LoadExecution) houseMeasure(shipment ShipmentID, lots map[CargoLotID]*CargoLot, a *Allotment) (int64, kernel.Quantity, kernel.Quantity) {
 	var packs int64
 	var weight, volume kernel.Quantity
 	unknown := false
@@ -1176,10 +1267,12 @@ func (x *LoadExecution) HouseMeasure(shipment ShipmentID, lots map[CargoLotID]*C
 		}
 		lot := lots[id]
 		m, _ := lot.Measured()
-		rest := lot.Received() - s.measuredPacks
-		w, v := max(m.GrossWeight.Amount-s.measuredWeight, 0), max(m.Volume.Amount-s.measuredVolume, 0)
-		if s.apportioned < rest {
-			w, v = share(w, s.apportioned, rest), share(v, s.apportioned, rest)
+		w, v, known := int64(0), int64(0), false
+		if a != nil {
+			w, v, known = a.part(x.state.ExecutionID, id)
+		}
+		if !known {
+			w, v = apportioned(m, lot.Received(), s.measuredPacks, s.measuredWeight, s.measuredVolume, s.apportioned)
 		}
 		weight = kernel.Quantity{Unit: m.GrossWeight.Unit, Amount: weight.Amount + w}
 		addVolume(m.Volume.Unit, v)
