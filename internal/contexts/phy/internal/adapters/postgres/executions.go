@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -339,6 +341,66 @@ func (s ExecutionStore) WithLiveLot(ctx context.Context, tenant phy.TenantID, lo
 // StuffingsWithLiveLot returns the LOADING or ON_HOLD stuffings with live packs of a lot, by execution id.
 func (s ExecutionStore) StuffingsWithLiveLot(ctx context.Context, tenant phy.TenantID, lot phy.CargoLotID) ([]phy.LoadExecutionID, error) {
 	return s.withLiveLot(ctx, tenant, lot, string(phy.ExecutionStuffing))
+}
+
+// WithLiveLots returns the executions, in any state, with live packs of any of the lots, by execution id.
+func (s ExecutionStore) WithLiveLots(ctx context.Context, tenant phy.TenantID, lots []phy.CargoLotID) ([]phy.LoadExecutionID, error) {
+	q, err := s.DB.ReadExecutor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, len(lots))
+	for i, id := range lots {
+		ids[i] = string(id)
+	}
+	rows, err := q.Query(ctx, `WITH reversed AS (SELECT execution_id, line_no, sum(packs) AS packs FROM cargo_phy.reversal_line
+          WHERE tenant_id=$1 GROUP BY execution_id, line_no)
+      SELECT l.execution_id FROM cargo_phy.load_line l
+        LEFT JOIN reversed r ON r.execution_id=l.execution_id AND r.line_no=l.line_no
+      WHERE l.tenant_id=$1 AND l.lot_id = ANY($2)
+      GROUP BY l.execution_id HAVING sum(l.packs - coalesce(r.packs, 0)) > 0 ORDER BY l.execution_id`, string(tenant), ids)
+	if err != nil {
+		return nil, err
+	}
+	list, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	out := make([]phy.LoadExecutionID, len(list))
+	for i, id := range list {
+		out[i] = phy.LoadExecutionID(id)
+	}
+	return out, err
+}
+
+// LockWithoutWaiting locks the executions' rows FOR UPDATE, skipping a row another transaction holds instead of
+// waiting for it, and answers phy.ErrConflict naming the executions it could not lock. The rows it did lock stay
+// locked until the transaction ends, which the caller's error ends. A row is locked first and its state read after.
+func (s ExecutionStore) LockWithoutWaiting(ctx context.Context, tenant phy.TenantID, ids []phy.LoadExecutionID) error {
+	q, err := s.DB.RequireExecutor(ctx)
+	if err != nil {
+		return err
+	}
+	want := make([]string, len(ids))
+	for i, id := range ids {
+		want[i] = string(id)
+	}
+	rows, err := q.Query(ctx, `SELECT execution_id FROM cargo_phy.load_execution WHERE tenant_id=$1 AND execution_id = ANY($2)
+      ORDER BY execution_id FOR UPDATE SKIP LOCKED`, string(tenant), want)
+	if err != nil {
+		return err
+	}
+	got, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return err
+	}
+	var busy []string
+	for _, id := range want {
+		if !slices.Contains(got, id) {
+			busy = append(busy, id)
+		}
+	}
+	if len(busy) > 0 {
+		return fmt.Errorf("%w: load execution %s is busy with another command; try again", phy.ErrConflict, strings.Join(busy, ", "))
+	}
+	return nil
 }
 
 func (s ExecutionStore) withLiveLot(ctx context.Context, tenant phy.TenantID, lot phy.CargoLotID, kind string) ([]phy.LoadExecutionID, error) {

@@ -74,19 +74,16 @@ type PlannedLoadUnit struct {
 	Status           string // UnitStatusPlanned, UnitStatusInUse, UnitStatusClosed or UnitStatusRemoved
 	ExecutionID      string // the stuffing opened on the unit that is not cancelled; empty while none
 	// ExecutionState is the state of that stuffing (the load execution states, such as OPEN, LOADING, ON_HOLD or
-	// CLOSED),
-	// empty while none is opened (or the stuffing was cancelled). ExecutionRevision is the revision of the stuffing's
-	// own
-	// record, 0 while none is opened: it moves when the stuffing itself is written (opened, loading started, a load, an
-	// unload, a hold, its release, the seal). It does not see what changes the unit's figures from outside the
-	// stuffing:
-	// a lot measured again, more packs received of a lot, the consolidation reopened. For a version of what the unit
-	// holds, use the digest of its UnitPackingList in the cost basis. A unit has at most one stuffing that is not
-	// cancelled, and an execution id is never reused, so the pair of execution id and revision never repeats: a unit
-	// stuffed again after the first stuffing was cancelled answers another execution id. After a cancellation the unit
-	// answers no execution and revision 0 again, the pair it had before its first stuffing was opened, until a new
-	// stuffing is opened: a reader keys on the execution id, not on the unit. Status and ExecutionState are different
-	// things.
+	// CLOSED), empty while none is opened (or the stuffing was cancelled). ExecutionRevision is the revision of the
+	// stuffing's own record, 0 while none is opened: it moves when the stuffing itself is written (opened, loading
+	// started, a load, an unload, a hold, its release, the seal). It does not see what changes the unit's figures from
+	// outside the stuffing: a lot measured again, more packs received of a lot, the consolidation reopened. For a
+	// version of what the unit holds, use the digest of its UnitPackingList in the cost basis. A unit has at most one
+	// stuffing that is not cancelled, and an execution id is never reused, so the pair of execution id and revision
+	// never repeats: a unit stuffed again after the first stuffing was cancelled answers another execution id. After a
+	// cancellation the unit answers no execution and revision 0 again, the pair it had before its first stuffing was
+	// opened, until a new stuffing is opened: a reader keys on the execution id, not on the unit. Status and
+	// ExecutionState are different things.
 	ExecutionState    string
 	ExecutionRevision int64
 	PlannedAt         time.Time

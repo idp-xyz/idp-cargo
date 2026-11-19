@@ -22,7 +22,10 @@ type ReceiveCargoCommand struct {
 }
 
 // ReceiveCargo opens a cargo lot with its first receipt line, after FUL reported the shipment PLANNED (read
-// before PHY's transaction, T3), or adds a receipt line to a receiving lot.
+// before PHY's transaction, T3), or adds a receipt line to a receiving lot. The lot is locked FOR UPDATE and nothing
+// else, as before V2.83; more packs received change the lot's allotted figures, so the stuffings loading or on hold
+// with live packs of it are then locked, after the lot, without waiting, and checked (see limits.go): a busy one makes
+// the command a conflict, with nothing written.
 type ReceiveCargo struct {
 	Deps
 	Intents LoadIntents
@@ -40,16 +43,22 @@ func (h ReceiveCargo) Handle(ctx context.Context, c ReceiveCargoCommand) (Receip
 		return Receipt{}, err
 	}
 	if c.ExpectedRevision > 0 {
-		return h.changeLot(ctx, c.Scope, c.CommandID, hash, entered, c.LotID, c.ExpectedRevision, func(_ context.Context, l *phy.CargoLot) (int, error) {
-			st := l.State()
-			if st.ShipmentID != c.ShipmentID || st.Facility != c.Facility {
-				return 0, fmt.Errorf("%w: lot %s holds %s at %s %s", phy.ErrInvalidLot, c.LotID, st.ShipmentID, st.Facility.Location.Code, st.Facility.Code)
-			}
-			if err := l.Receive(c.Line, c.Scope.ActorID, c.OccurredAt); err != nil {
-				return 0, err
-			}
-			return len(l.State().Lines), nil
-		})
+		return h.changeLotAlso(ctx, c.Scope, c.CommandID, hash, entered, c.LotID, c.ExpectedRevision, nil,
+			func(txCtx context.Context, l *phy.CargoLot) (int, []ExecutionRead, error) {
+				st := l.State()
+				if st.ShipmentID != c.ShipmentID || st.Facility != c.Facility {
+					return 0, nil, fmt.Errorf("%w: lot %s holds %s at %s %s", phy.ErrInvalidLot, c.LotID, st.ShipmentID, st.Facility.Location.Code, st.Facility.Code)
+				}
+				watch, err := h.watchLimits(txCtx, c.Scope.TenantID, nil, l, nil, false)
+				if err != nil {
+					return 0, nil, err
+				}
+				if err = l.Receive(c.Line, c.Scope.ActorID, c.OccurredAt); err != nil {
+					return 0, nil, err
+				}
+				held, err := watch.hold(txCtx, c.Line.Evidence, c.Scope.ActorID, c.OccurredAt)
+				return len(l.State().Lines), held, err
+			})
 	}
 	intent, err := h.Intents.LoadIntent(ctx, c.Scope.TenantID, c.ShipmentID)
 	if err != nil {
@@ -76,10 +85,10 @@ type RecordCargoMeasurementCommand struct {
 }
 
 // RecordCargoMeasurement adds a measurement version of a lot. A stuffing loading or on hold with live packs of the
-// lot is checked again against its container's limits with the new measure (HoldIfOverLimits): their consolidations
-// are locked FOR SHARE and the stuffings FOR UPDATE, in id order, before the lot, as RecordScreeningResult does;
-// tenders are not locked. If the stuffings with live packs of the lot changed meanwhile, the command is a conflict
-// and the caller tries again.
+// lot is checked again against its container's limits with the new measure, by the allotted figure (see limits.go):
+// their consolidations are locked FOR SHARE and the stuffings FOR UPDATE, in id order, before the lot, as
+// RecordScreeningResult does; tenders are not locked. If the stuffings with live packs of the lot changed meanwhile,
+// the command is a conflict and the caller tries again.
 // A lot measured again after its container was sealed changes the measures PHY publishes; the container's verified
 // gross mass is SEA's (VGM).
 type RecordCargoMeasurement struct{ Deps }
@@ -150,21 +159,21 @@ func (h RecordCargoMeasurement) Handle(ctx context.Context, c RecordCargoMeasure
 				return Receipt{}, nil, fmt.Errorf("%w: the stuffings loading lot %s changed; try again", phy.ErrConflict, c.LotID)
 			}
 		}
-		for _, r := range executions {
-			x := r.Execution
-			if x.State().Kind != phy.ExecutionStuffing {
-				continue
+		if len(executions) > 0 {
+			all := make([]*phy.LoadExecution, len(executions))
+			for i, r := range executions {
+				all[i] = r.Execution
 			}
-			lots, err := h.stuffedLots(txCtx, tenant, x, l)
+			held, err := h.holdOverLimits(txCtx, tenant, consols, executions, all, l, c.Measurement.Evidence, c.Scope.ActorID, c.OccurredAt)
 			if err != nil {
 				return Receipt{}, nil, err
 			}
-			if x.HoldIfOverLimits(consols[x.Consolidation()], lots, c.Measurement.Evidence, c.Scope.ActorID, c.OccurredAt) {
-				x.Stamp(entered)
-				if _, err = h.Executions.Save(txCtx, x, r.Revision); err != nil {
+			for _, r := range held {
+				r.Execution.Stamp(entered)
+				if _, err = h.Executions.Save(txCtx, r.Execution, r.Revision); err != nil {
 					return Receipt{}, nil, err
 				}
-				changed = append(changed, x)
+				changed = append(changed, r.Execution)
 			}
 		}
 		l.Stamp(entered)

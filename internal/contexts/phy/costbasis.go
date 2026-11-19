@@ -20,7 +20,8 @@ import (
 // in mixed units are not added and read zero. Of every house it also says what is loaded in each load unit
 // (HouseUnitLoad, measured as the totals are, over every stuffing the lot is loaded in: a lot's measure is divided
 // over them), each load unit carries the state and revision of its stuffing's record, and each unit with a stuffing
-// has its packing list with a digest (UnitPackingList), built from the same figures.
+// has its packing list with a digest (UnitPackingList), built from the same figures, and the unit's cargo against its
+// container's default limits (UnitPackingList.Limits).
 func (m *Module) GetPhysicalCostBasis(ctx context.Context, q api.GetPhysicalCostBasis) (api.PhysicalCostBasis, error) {
 	c, revision, houses, executions, lots, err := m.reads(q.TenantID).CostBasis(ctx, domain.TenantID(q.TenantID),
 		domain.ConsolidationID(q.ConsolidationID))
@@ -89,6 +90,10 @@ func (m *Module) GetPhysicalCostBasis(ctx context.Context, q api.GetPhysicalCost
 			lines := unitLines[st.LoadUnitNo]
 			slices.SortFunc(lines, func(a, b api.UnitPackingLine) int { return strings.Compare(a.ShipmentID, b.ShipmentID) })
 			list := api.UnitPackingList{UnitNo: st.LoadUnitNo, ExecutionID: string(st.ExecutionID), ExecutionState: string(st.State), Lines: lines}
+			if check, ok := r.Execution.CheckLimits(c, byID, allotment); ok {
+				list.Limits = api.UnitLimitsCheck{Checked: check.Checked, Unchecked: string(check.Unchecked), CargoGrams: check.CargoGrams,
+					CargoCubicCm: check.CargoCubicCm, OverMaxGross: check.OverMaxGross, OverCapacity: check.OverCapacity}
+			}
 			list.Digest = packingListDigest(list)
 			out.PackingLists = append(out.PackingLists, list)
 		}
