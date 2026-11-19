@@ -80,11 +80,20 @@ type ExecutionCommand struct {
 // transaction under the consolidation's FOR SHARE and the execution's FOR UPDATE locks.
 func (d Deps) execute(ctx context.Context, e ExecutionCommand, command any, action Action,
 	apply func(context.Context, *phy.Consolidation, *phy.LoadExecution) (int, error)) (Receipt, error) {
+	return d.executeAlso(ctx, e, command, action, func(txCtx context.Context, c *phy.Consolidation, x *phy.LoadExecution) (int, []ExecutionRead, error) {
+		item, err := apply(txCtx, c, x)
+		return item, nil, err
+	})
+}
+
+// executeAlso is execute for a command that may place a hold on other executions (changeExecutionAlso).
+func (d Deps) executeAlso(ctx context.Context, e ExecutionCommand, command any, action Action,
+	apply func(context.Context, *phy.Consolidation, *phy.LoadExecution) (int, []ExecutionRead, error)) (Receipt, error) {
 	hash, entered, consolidation, stored, replayed, err := d.executionCommand(ctx, e.Scope, e.CommandID, e.OccurredAt, command, action, e.ExecutionID)
 	if err != nil || replayed {
 		return stored, err
 	}
-	return d.changeExecution(ctx, e.Scope, e.CommandID, hash, entered, consolidation, e.ExecutionID, e.ExpectedRevision, apply)
+	return d.changeExecutionAlso(ctx, e.Scope, e.CommandID, hash, entered, consolidation, e.ExecutionID, e.ExpectedRevision, apply)
 }
 
 type StartLoadingCommand struct{ ExecutionCommand }
@@ -107,29 +116,32 @@ type RecordCargoLoadedCommand struct {
 	Evidence    phy.Evidence
 }
 
-// RecordCargoLoaded records packs of a lot loaded or tendered. After the execution, the house's membership
-// ledger is locked FOR NO KEY UPDATE and the lot FOR UPDATE; the lot's and the house's live loads are read under
-// those locks, so loads of one house from two lots never pass its plan together.
+// RecordCargoLoaded records packs of a lot loaded or tendered. After the execution, the house's membership ledger is
+// locked FOR NO KEY UPDATE and the lot FOR UPDATE; the lot's and the house's live loads are read under those locks, so
+// loads of one house from two lots never pass its plan together. A load into a stuffing checks its container's limits
+// and those of the other stuffings that hold packs of the lot (see limits.go), which are locked, after the lot, without
+// waiting: a busy one makes the command a conflict, with nothing written. The caller tries again.
 type RecordCargoLoaded struct{ Deps }
 
 func (h RecordCargoLoaded) Handle(ctx context.Context, c RecordCargoLoadedCommand) (Receipt, error) {
-	return h.execute(ctx, c.ExecutionCommand, c, ActionRecordCargoLoaded, func(txCtx context.Context, consol *phy.Consolidation, x *phy.LoadExecution) (int, error) {
+	return h.executeAlso(ctx, c.ExecutionCommand, c, ActionRecordCargoLoaded, func(txCtx context.Context, consol *phy.Consolidation,
+		x *phy.LoadExecution) (int, []ExecutionRead, error) {
 		tenant := c.Scope.TenantID
 		seen, _, err := h.Lots.Read(txCtx, tenant, c.LotID)
 		if err != nil {
-			return 0, err
+			return 0, nil, err
 		}
 		m, _, err := h.Memberships.LoadForCargo(txCtx, tenant, seen.Shipment())
 		if err != nil {
-			return 0, err
+			return 0, nil, err
 		}
 		live, ok := m.Live()
 		if !ok || live.ConsolidationID != consol.ID() {
-			return 0, phy.ErrNotAttached
+			return 0, nil, phy.ErrNotAttached
 		}
 		lot, _, err := h.Lots.Load(txCtx, tenant, c.LotID)
 		if err != nil {
-			return 0, err
+			return 0, nil, err
 		}
 		var unit kernel.UnitCode
 		if m, ok := lot.Measured(); ok {
@@ -137,24 +149,27 @@ func (h RecordCargoLoaded) Handle(ctx context.Context, c RecordCargoLoadedComman
 		}
 		lotLoaded, err := h.Lots.Loaded(txCtx, tenant, c.LotID, unit)
 		if err != nil {
-			return 0, err
+			return 0, nil, err
 		}
 		houseLoaded, err := h.Executions.HouseLoaded(txCtx, tenant, consol.ID(), lot.Shipment())
 		if err != nil {
-			return 0, err
+			return 0, nil, err
 		}
 		line := phy.LoadLine{Packs: c.Packs, GrossWeight: c.GrossWeight, Volume: c.Volume, Evidence: c.Evidence}
-		if err = x.Load(line, consol, lot, live, lotLoaded, houseLoaded, c.Scope.ActorID, c.OccurredAt); err != nil {
-			return 0, err
-		}
+		var watch *limitsWatch
 		if x.State().Kind == phy.ExecutionStuffing {
-			lots, err := h.stuffedLots(txCtx, tenant, x, lot)
-			if err != nil {
-				return 0, err
+			if watch, err = h.watchLimits(txCtx, tenant, consol, lot, x, true); err != nil {
+				return 0, nil, err
 			}
-			x.HoldIfOverLimits(consol, lots, c.Evidence, c.Scope.ActorID, c.OccurredAt)
 		}
-		return len(x.Lines()), nil
+		if err = x.Load(line, consol, lot, live, lotLoaded, houseLoaded, c.Scope.ActorID, c.OccurredAt); err != nil {
+			return 0, nil, err
+		}
+		if watch == nil {
+			return len(x.Lines()), nil, nil
+		}
+		others, err := watch.hold(txCtx, c.Evidence, c.Scope.ActorID, c.OccurredAt)
+		return len(x.Lines()), others, err
 	})
 }
 
@@ -187,27 +202,40 @@ type RecordCargoUnloadedCommand struct {
 }
 
 // RecordCargoUnloaded reverses packs of a load line. After the execution, the house's membership ledger is
-// locked FOR NO KEY UPDATE and the line's lot FOR UPDATE, so that a lot does not close while its packs come out.
+// locked FOR NO KEY UPDATE and the line's lot FOR UPDATE, so that a lot does not close while its packs come out. A
+// stuffing unloaded from checks the limits of every stuffing that holds packs of the lot, the others locked, after the
+// lot, without waiting (see limits.go).
 type RecordCargoUnloaded struct{ Deps }
 
 func (h RecordCargoUnloaded) Handle(ctx context.Context, c RecordCargoUnloadedCommand) (Receipt, error) {
-	return h.execute(ctx, c.ExecutionCommand, c, ActionRecordCargoUnloaded, func(txCtx context.Context, _ *phy.Consolidation, x *phy.LoadExecution) (int, error) {
+	return h.executeAlso(ctx, c.ExecutionCommand, c, ActionRecordCargoUnloaded, func(txCtx context.Context, consol *phy.Consolidation,
+		x *phy.LoadExecution) (int, []ExecutionRead, error) {
 		lines := x.Lines()
 		if c.LineNo < 1 || c.LineNo > len(lines) {
-			return 0, phy.ErrInvalidLoad
+			return 0, nil, phy.ErrInvalidLoad
 		}
 		line := lines[c.LineNo-1]
 		if _, _, err := h.Memberships.LoadForCargo(txCtx, c.Scope.TenantID, line.ShipmentID); err != nil {
-			return 0, err
+			return 0, nil, err
 		}
 		lot, _, err := h.Lots.Load(txCtx, c.Scope.TenantID, line.LotID)
 		if err != nil {
-			return 0, err
+			return 0, nil, err
+		}
+		var watch *limitsWatch
+		if x.State().Kind == phy.ExecutionStuffing {
+			if watch, err = h.watchLimits(txCtx, c.Scope.TenantID, consol, lot, x, false); err != nil {
+				return 0, nil, err
+			}
 		}
 		if err = x.Unload(c.LineNo, c.Packs, c.Reason, c.Evidence, lot, c.Scope.ActorID, c.OccurredAt); err != nil {
-			return 0, err
+			return 0, nil, err
 		}
-		return len(x.State().Reversals), nil
+		if watch == nil {
+			return len(x.State().Reversals), nil, nil
+		}
+		others, err := watch.hold(txCtx, c.Evidence, c.Scope.ActorID, c.OccurredAt)
+		return len(x.State().Reversals), others, err
 	})
 }
 

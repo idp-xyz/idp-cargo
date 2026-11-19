@@ -224,6 +224,11 @@ type ExecutionStore interface {
 	ByShipment(context.Context, phy.TenantID, phy.ShipmentID) ([]ExecutionRead, error)
 	WithLiveLot(context.Context, phy.TenantID, phy.CargoLotID) ([]phy.LoadExecutionID, error)
 	StuffingsWithLiveLot(context.Context, phy.TenantID, phy.CargoLotID) ([]phy.LoadExecutionID, error)
+	// WithLiveLots returns the executions in any state with live packs of any of the lots, by execution id.
+	WithLiveLots(context.Context, phy.TenantID, []phy.CargoLotID) ([]phy.LoadExecutionID, error)
+	// LockWithoutWaiting locks the executions FOR UPDATE and never waits for a lock another transaction holds: if any
+	// of them is busy it answers phy.ErrConflict naming the busy ones.
+	LockWithoutWaiting(context.Context, phy.TenantID, []phy.LoadExecutionID) error
 	HouseLoaded(context.Context, phy.TenantID, phy.ConsolidationID, phy.ShipmentID) (int64, error)
 	UnitUses(context.Context, phy.TenantID, phy.ConsolidationID) (map[int]UnitUse, error)
 	// LastCancellations returns, by load unit, the business time of the latest cancellation of a stuffing of the unit.
@@ -432,6 +437,18 @@ func (d Deps) changeLot(ctx context.Context, s Scope, commandID, hash string, en
 // that comes earlier in the lock order.
 func (d Deps) changeLotAfter(ctx context.Context, s Scope, commandID, hash string, entered time.Time, id phy.CargoLotID, expected int64,
 	first func(context.Context) error, apply func(context.Context, *phy.CargoLot) (int, error)) (Receipt, error) {
+	return d.changeLotAlso(ctx, s, commandID, hash, entered, id, expected, first,
+		func(txCtx context.Context, l *phy.CargoLot) (int, []ExecutionRead, error) {
+			item, err := apply(txCtx, l)
+			return item, nil, err
+		})
+}
+
+// changeLotAlso is changeLotAfter whose apply may also change stuffings it has locked after the lot (a hold placed on
+// a stuffing the lot's packs are in): they are saved at the revision they were read at, and their events are committed
+// with the command's.
+func (d Deps) changeLotAlso(ctx context.Context, s Scope, commandID, hash string, entered time.Time, id phy.CargoLotID, expected int64,
+	first func(context.Context) error, apply func(context.Context, *phy.CargoLot) (int, []ExecutionRead, error)) (Receipt, error) {
 	return d.write(ctx, s, commandID, hash, func(txCtx context.Context) (Receipt, aggregate, error) {
 		if first != nil {
 			if err := first(txCtx); err != nil {
@@ -445,13 +462,24 @@ func (d Deps) changeLotAfter(ctx context.Context, s Scope, commandID, hash strin
 		if revision != expected {
 			return Receipt{}, nil, phy.ErrConflict
 		}
-		item, err := apply(txCtx, l)
+		item, others, err := apply(txCtx, l)
 		if err != nil {
 			return Receipt{}, nil, err
 		}
 		l.Stamp(entered)
 		revision, err = d.Lots.Save(txCtx, l, revision)
-		return Receipt{LotID: id, NewRevision: revision, ItemNo: item}, l, err
+		if err != nil {
+			return Receipt{}, nil, err
+		}
+		changed := group{l}
+		for _, o := range others {
+			o.Execution.Stamp(entered)
+			if _, err = d.Executions.Save(txCtx, o.Execution, o.Revision); err != nil {
+				return Receipt{}, nil, err
+			}
+			changed = append(changed, o.Execution)
+		}
+		return Receipt{LotID: id, NewRevision: revision, ItemNo: item}, changed, nil
 	})
 }
 
@@ -471,11 +499,13 @@ func (d Deps) executionCommand(ctx context.Context, s Scope, commandID string, o
 	return hash, entered, consolidation, Receipt{}, false, d.authorize(ctx, s, action, consolidation)
 }
 
-// changeExecution commits one change to a stored load execution at the revision the caller expects, after
-// locking its consolidation FOR SHARE and the execution FOR UPDATE; apply returns the item it wrote. A change
-// that adds nothing (a carrier message recorded already) keeps the revision.
-func (d Deps) changeExecution(ctx context.Context, s Scope, commandID, hash string, entered time.Time, consolidation phy.ConsolidationID,
-	id phy.LoadExecutionID, expected int64, apply func(context.Context, *phy.Consolidation, *phy.LoadExecution) (int, error)) (Receipt, error) {
+// changeExecutionAlso commits one change to a stored load execution at the revision the caller expects, after locking
+// its consolidation FOR SHARE and the execution FOR UPDATE; apply returns the item it wrote. A change that adds nothing
+// (a carrier message recorded already) keeps the revision. apply may also change other executions it has locked (a
+// hold placed on another stuffing of a lot): they are saved at the revision they were read at, and their events are
+// committed with the command's.
+func (d Deps) changeExecutionAlso(ctx context.Context, s Scope, commandID, hash string, entered time.Time, consolidation phy.ConsolidationID,
+	id phy.LoadExecutionID, expected int64, apply func(context.Context, *phy.Consolidation, *phy.LoadExecution) (int, []ExecutionRead, error)) (Receipt, error) {
 	return d.write(ctx, s, commandID, hash, func(txCtx context.Context) (Receipt, aggregate, error) {
 		c, _, err := d.Consolidations.LoadShared(txCtx, s.TenantID, consolidation)
 		if err != nil {
@@ -488,7 +518,7 @@ func (d Deps) changeExecution(ctx context.Context, s Scope, commandID, hash stri
 		if revision != expected {
 			return Receipt{}, nil, phy.ErrConflict
 		}
-		item, err := apply(txCtx, c, x)
+		item, others, err := apply(txCtx, c, x)
 		if err != nil {
 			return Receipt{}, nil, err
 		}
@@ -498,7 +528,18 @@ func (d Deps) changeExecution(ctx context.Context, s Scope, commandID, hash stri
 				return Receipt{}, nil, err
 			}
 		}
-		return Receipt{ExecutionID: id, ConsolidationID: consolidation, NewRevision: revision, ItemNo: item}, x, nil
+		changed := group{x}
+		for _, o := range others {
+			if len(o.Execution.Pending()) == 0 {
+				continue
+			}
+			o.Execution.Stamp(entered)
+			if _, err = d.Executions.Save(txCtx, o.Execution, o.Revision); err != nil {
+				return Receipt{}, nil, err
+			}
+			changed = append(changed, o.Execution)
+		}
+		return Receipt{ExecutionID: id, ConsolidationID: consolidation, NewRevision: revision, ItemNo: item}, changed, nil
 	})
 }
 

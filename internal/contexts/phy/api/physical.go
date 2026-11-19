@@ -771,6 +771,26 @@ type UnitPackingList struct {
 	ExecutionState string
 	Lines          []UnitPackingLine // the houses with live packs in the unit, in shipment order
 	Digest         string            // SHA-256, hexadecimal
+	// Limits is the unit's cargo by the allotted figures against the unit's default limits. It is not part of the
+	// Digest.
+	Limits UnitLimitsCheck
+}
+
+// UnitLimitsCheck is a unit's cargo, as its packing list reads it, against the default limits of its container type,
+// worked out on every read by the rule that places the OVERWEIGHT hold. The hold and this field come from one function,
+// so they agree with each other; they do not always equal the sum of the entries published for the unit's houses: a
+// house with a line or a lot measure without a volume publishes no volume where the check counts the volume that is
+// known, the check converts each line to grams and cubic centimetres and rounds it up where the published figures are
+// added unconverted, and a house with lines in different weight units is published as the amounts added under the unit
+// of its last line. A container can be over without a hold: a sealed container takes none, and a person may have
+// released the hold. This field shows the state at the time of reading; nothing in the repository reads it yet.
+type UnitLimitsCheck struct {
+	Checked      bool   // false when a measure is in a unit that cannot be converted: Unchecked names it, and the rest is not known
+	Unchecked    string // the unit code that was not converted
+	CargoGrams   int64
+	CargoCubicCm int64
+	OverMaxGross bool // the container's tare and the cargo are over its default maximum gross
+	OverCapacity bool // the cargo is over its default capacity
 }
 
 // UnitPackingLine is what of one house is loaded in a unit: the same figures as the house's HouseUnitLoad for it.

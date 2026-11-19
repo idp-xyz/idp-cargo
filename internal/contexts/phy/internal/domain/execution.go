@@ -442,29 +442,87 @@ func (x *LoadExecution) Load(in LoadLine, c *Consolidation, lot *CargoLot, entry
 	return nil
 }
 
-// HoldIfOverLimits holds a loading stuffing whose container, its tare and its live cargo, weighs more than its
-// type's default maximum gross, or whose live cargo takes more than the type's capacity. The cargo is measured as
-// PHY publishes it (HouseMeasure): lines measured for themselves as measured, apportioned lines from their lot's
-// latest measurement; volumes not known are not counted. lots holds the lots of the stuffing's lines. A weight or
-// volume in a unit PHY does not convert holds it too, as not checked. The line or measurement that crossed the
-// limits stays recorded (G06-05); an OVERWEIGHT hold already placed is not placed again. The limits are defaults:
-// the container's plate (SEA's) may allow more, which releasing the hold with its evidence records, and a later
-// line or measurement over them holds again.
+// LimitsCheck is a stuffing's cargo by the allotted figures against its unit's default limits. It is what the hold rule
+// reads and what the cost basis's packing list reports, worked out by one function (CheckLimits). When a measure is in
+// a unit PHY does not convert, Checked is false, Unchecked names the unit, and the figures and the two Over flags are
+// not to be relied on: the cargo is then not known.
+type LimitsCheck struct {
+	Checked      bool
+	Unchecked    kernel.UnitCode
+	CargoGrams   int64
+	CargoCubicCm int64
+	GrossGrams   int64 // the tare and the cargo
+	OverMaxGross bool
+	OverCapacity bool
+}
+
+// RaisedOver reports in which dimensions a command raised a stuffing's cargo into excess, after is the check after the
+// command and c the check before it: the weight when the container is over its maximum gross and its grams are greater
+// than before, the volume when it is over its capacity and its cubic centimetres are greater than before, and the check
+// itself when it could be made before and cannot be now. It is the condition under which a command that did not address
+// a stuffing may hold it: a container is not held again for a dimension that did not rise, whatever the other did.
+func (c LimitsCheck) RaisedOver(after LimitsCheck) (weight, volume, unchecked bool) {
+	return after.OverMaxGross && after.CargoGrams > c.CargoGrams, after.OverCapacity && after.CargoCubicCm > c.CargoCubicCm, c.Checked && !after.Checked
+}
+
+// CheckLimits works out the stuffing's cargo and sets it against the limits of the unit the stuffing fills in c. It
+// reports false when the stuffing is not one of c's or c has no such unit. The cargo is the sum over the stuffing's
+// live lines: lines measured for themselves as measured, apportioned lines at the part of their lot's latest measure
+// that the allotment gives this stuffing (AllotLots over every execution that holds live packs of the lots); each
+// weight and volume is converted to grams and cubic centimetres, rounded up, and added, and the sum is capped. lots
+// holds the lots of the stuffing's lines. A stuffing is checked in every state; whether a hold is placed is the
+// decision of HoldIfOverLimitsAllotted.
 //
-// The check measures this stuffing by itself (unitCargo), as HouseMeasure did before V2.82, not as the cost basis now
-// does over every container a lot is loaded in (AllotLots). For a lot split over containers it can therefore read
-// either more or less than the allotted figure, so it can hold a container the allotted figure would not, and miss one
-// it would. Reading more: a lot of 6 packs and 600 kg with 2 packs weighed for themselves at 300 kg in container 1 and
-// the other 4 apportioned in container 2. Container 2 alone reads 600 x 4/6 = 400 kg, the allotted figure is the 300 kg
-// the weighed packs leave: a container whose limit lies between 300 and 400 kg of cargo is held without need. Reading
-// less: a lot of 10 packs and 1,000 kg with 2 packs weighed at 100 kg and 4 apportioned in container 1, and 4
-// apportioned in container 2. Container 2 alone reads 1,000 x 4/10 = 400 kg, the allotted figure is (1,000 - 100) x
-// 4/8 = 450 kg: an overweight between 400 and 450 kg is not held. The rule is not changed here. It reports whether it
-// placed a hold; the hold takes the business time
-// at, or the execution's last change if that is later.
-func (x *LoadExecution) HoldIfOverLimits(c *Consolidation, lots map[CargoLotID]*CargoLot, evidence Evidence, by string, at time.Time) bool {
-	if x.state.Kind != ExecutionStuffing || (x.state.State != ExecutionLoading && x.state.State != ExecutionOnHold) || c == nil ||
-		c.ID() != x.state.ConsolidationID || x.state.LoadUnitNo > len(c.state.LoadUnits) || blank(by) || at.IsZero() {
+// The check and the packing list's Limits come from this function, so they agree with each other. They do not always
+// equal the sum of the entries the cost basis publishes for the container's houses (HouseMeasureAllotted): a house with
+// a line or a lot measure without a volume beside others with one publishes no volume ("a volume not known for every
+// line is not known") while the check counts the volume that is known, so the check can read more volume than the
+// published figure and never less; the same for a house with volumes in different units; the check converts every line
+// and rounds each up, while the published figure is added unconverted; and a house with lines in different weight
+// units is published as the amounts added under the unit of its last line, which the check does not do.
+func (x *LoadExecution) CheckLimits(c *Consolidation, lots map[CargoLotID]*CargoLot, a Allotment) (LimitsCheck, bool) {
+	if x.state.Kind != ExecutionStuffing || c == nil || c.ID() != x.state.ConsolidationID || x.state.LoadUnitNo < 1 ||
+		x.state.LoadUnitNo > len(c.state.LoadUnits) {
+		return LimitsCheck{}, false
+	}
+	l := c.state.LoadUnits[x.state.LoadUnitNo-1].Limits
+	grams, cubicCm, unchecked := x.unitCargo(lots, a)
+	r := LimitsCheck{Checked: unchecked == "", Unchecked: unchecked, CargoGrams: grams, CargoCubicCm: cubicCm,
+		GrossGrams: addCapped(grams, scaled(l.TareKg, 1000))}
+	if r.Checked {
+		r.OverMaxGross, r.OverCapacity = r.GrossGrams > scaled(l.MaxGrossKg, 1000), cubicCm > l.CapacityCM3
+	}
+	return r, true
+}
+
+// HoldIfOverLimitsAllotted holds a loading stuffing whose container, its tare and its live cargo, weighs more than its
+// type's default maximum gross, or whose live cargo takes more than the type's capacity. The cargo is that of
+// CheckLimits: the part of each lot's measure that the allotment gives this stuffing (AllotLots over every execution
+// that holds live packs of the lots). A weight or volume in a unit PHY does not convert holds it too, as not checked.
+// The line or measurement that crossed the limits stays recorded (G06-05); an OVERWEIGHT hold already placed is not
+// placed again, and a hold is never released here. The limits are defaults: the container's plate (SEA's) may allow
+// more, which releasing the hold with its evidence records, and a later line or measurement over them holds again. A
+// sealed container is not held; the packing list's Limits tell that it is over. It reports whether it placed a hold;
+// the hold takes the business time at, or the execution's last change if that is later.
+//
+// Before V2.83 the check measured each stuffing by itself, as HouseMeasure did before V2.82, so it could read more or
+// less than the allotted figure. Reading more: a lot of 6 packs and 600 kg with 2 packs weighed for themselves at
+// 300 kg in container 1 and the other 4 apportioned in container 2. Container 2 alone reads 600 x 4/6 = 400 kg, the
+// allotted figure is the 300 kg the weighed packs leave. Reading less: a lot of 10 packs and 1,000 kg with 2 packs
+// weighed at 100 kg and 4 apportioned in container 1, and 4 apportioned in container 2. Container 2 alone read
+// 1,000 x 4/10 = 400 kg, the allotted figure is (1,000 - 100) x 4/8 = 450 kg. With one stuffing per lot the allotment
+// is the stuffing's own measure and the outcome, the hold and its text are those of before.
+func (x *LoadExecution) HoldIfOverLimitsAllotted(c *Consolidation, lots map[CargoLotID]*CargoLot, a Allotment, evidence Evidence, by string,
+	at time.Time) bool {
+	return x.holdOver(c, lots, a, true, true, true, evidence, by, at)
+}
+
+// holdOver places the OVERWEIGHT hold for the dimensions wanted: the weight when the container is over its maximum
+// gross, the volume when it is over its capacity, the check when it cannot be made. The text names the first of them
+// that is wanted and true, the weight before the volume.
+func (x *LoadExecution) holdOver(c *Consolidation, lots map[CargoLotID]*CargoLot, a Allotment, weight, volume, unchecked bool, evidence Evidence,
+	by string, at time.Time) bool {
+	if (x.state.State != ExecutionLoading && x.state.State != ExecutionOnHold) || blank(by) || at.IsZero() {
 		return false
 	}
 	for _, h := range x.state.Holds {
@@ -472,19 +530,21 @@ func (x *LoadExecution) HoldIfOverLimits(c *Consolidation, lots map[CargoLotID]*
 			return false
 		}
 	}
+	check, ok := x.CheckLimits(c, lots, a)
+	if !ok {
+		return false
+	}
 	l := c.state.LoadUnits[x.state.LoadUnitNo-1].Limits
-	grams, cubicCm, unchecked := x.unitCargo(lots)
-	gross := addCapped(grams, scaled(l.TareKg, 1000))
 	var text string
 	switch {
-	case unchecked != "":
-		text = fmt.Sprintf("unit %d (%s): limits not checked, a measure in %s", x.state.LoadUnitNo, l.TypeCode, unchecked)
-	case gross > scaled(l.MaxGrossKg, 1000):
+	case !check.Checked && unchecked:
+		text = fmt.Sprintf("unit %d (%s): limits not checked, a measure in %s", x.state.LoadUnitNo, l.TypeCode, check.Unchecked)
+	case check.OverMaxGross && weight:
 		text = fmt.Sprintf("unit %d (%s): tare and cargo %s kg over the default maximum gross %d kg (edition %s)", x.state.LoadUnitNo, l.TypeCode,
-			decimal(gross, 3), l.MaxGrossKg, l.Edition)
-	case cubicCm > l.CapacityCM3:
+			decimal(check.GrossGrams, 3), l.MaxGrossKg, l.Edition)
+	case check.OverCapacity && volume:
 		text = fmt.Sprintf("unit %d (%s): cargo %s m3 over the default capacity %s m3 (edition %s)", x.state.LoadUnitNo, l.TypeCode,
-			decimal(cubicCm, 6), decimal(l.CapacityCM3, 6), l.Edition)
+			decimal(check.CargoCubicCm, 6), decimal(l.CapacityCM3, 6), l.Edition)
 	default:
 		return false
 	}
@@ -492,9 +552,35 @@ func (x *LoadExecution) HoldIfOverLimits(c *Consolidation, lots map[CargoLotID]*
 	return true
 }
 
-// unitCargo is the stuffing's live cargo in grams and cubic centimetres, by HouseMeasure's rule over every house, and
-// the first unit it could not convert.
-func (x *LoadExecution) unitCargo(lots map[CargoLotID]*CargoLot) (grams, cubicCm int64, unchecked kernel.UnitCode) {
+// HoldIfRaisedOverLimits is HoldIfOverLimitsAllotted for a stuffing a command did not address: it holds it only for a
+// dimension the command raised into excess (before is what CheckLimits said before the command's change, after it is
+// worked out here, see LimitsCheck.RaisedOver). So a hold a person released does not come back because of another
+// container's command that left its figure where it was, or lowered the figure it is over in.
+func (x *LoadExecution) HoldIfRaisedOverLimits(c *Consolidation, lots map[CargoLotID]*CargoLot, a Allotment, before LimitsCheck, evidence Evidence,
+	by string, at time.Time) bool {
+	after, ok := x.CheckLimits(c, lots, a)
+	if !ok {
+		return false
+	}
+	weight, volume, unchecked := before.RaisedOver(after)
+	if !weight && !volume && !unchecked {
+		return false
+	}
+	return x.holdOver(c, lots, a, weight, volume, unchecked, evidence, by, at)
+}
+
+// HoldIfOverLimits is HoldIfOverLimitsAllotted for a stuffing that holds all the live packs of its lots: the allotment
+// is worked out over the stuffing alone. It has no caller in the commands any more: they read the other stuffings of
+// the lots and call HoldIfOverLimitsAllotted or HoldIfRaisedOverLimits. It is kept for the tests of the single
+// stuffing.
+func (x *LoadExecution) HoldIfOverLimits(c *Consolidation, lots map[CargoLotID]*CargoLot, evidence Evidence, by string, at time.Time) bool {
+	return x.HoldIfOverLimitsAllotted(c, lots, AllotLots([]*LoadExecution{x}, lots), evidence, by, at)
+}
+
+// unitCargo is the stuffing's live cargo in grams and cubic centimetres, line by line as HouseMeasureAllotted reads
+// them: an apportioned line's lot has the part the allotment gives this stuffing, or the stuffing's own measure of it
+// when the allotment does not know it. It also returns the first unit it could not convert.
+func (x *LoadExecution) unitCargo(lots map[CargoLotID]*CargoLot, a Allotment) (grams, cubicCm int64, unchecked kernel.UnitCode) {
 	add := func(total *int64, q kernel.Quantity, convert func(kernel.Quantity) (int64, bool)) {
 		if q.Amount == 0 && q.Unit == "" {
 			return
@@ -539,10 +625,9 @@ func (x *LoadExecution) unitCargo(lots map[CargoLotID]*CargoLot) (grams, cubicCm
 			continue
 		}
 		m, _ := lots[id].Measured()
-		rest := lots[id].Received() - s.measuredPacks
-		w, v := max(m.GrossWeight.Amount-s.measuredWeight, 0), max(m.Volume.Amount-s.measuredVolume, 0)
-		if s.apportioned < rest {
-			w, v = share(w, s.apportioned, rest), share(v, s.apportioned, rest)
+		w, v, known := a.part(x.state.ExecutionID, id)
+		if !known {
+			w, v = apportioned(m, lots[id].Received(), s.measuredPacks, s.measuredWeight, s.measuredVolume, s.apportioned)
 		}
 		add(&grams, kernel.Quantity{Unit: m.GrossWeight.Unit, Amount: w}, toGrams)
 		if m.Volume != (kernel.Quantity{}) {
