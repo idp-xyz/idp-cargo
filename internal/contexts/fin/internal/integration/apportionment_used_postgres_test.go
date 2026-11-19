@@ -387,13 +387,13 @@ INSERT INTO cargo_fin.pool_apportionment_share ` + columns + ` VALUES ($1,'P-U',
 		"a share not used with a unit":         {second(`true,1,'SHP',100000,100000`, `false,0,'GRM',0,0`), "23514", "pool_apportionment_share_not_used"},
 		"a share not used with an amount":      {second(`true,1,'SHP',0,100000`, `false,0,NULL,100000,0`), "23514", "pool_apportionment_share_not_used"},
 		"a share not used with a local amount": {second(`true,1,'SHP',100000,0`, `false,0,NULL,0,100000`), "23514", "pool_apportionment_share_not_used"},
-		"a unit outside the list":              {second(`true,1,'SHP',100000,100000`, `true,1,'TEU',0,0`), "23514", "pool_apportionment_share_unit_check"},
+		"a unit outside the list":              {second(`true,1,'SHP',100000,100000`, `true,1,'NO_SUCH_UNIT',0,0`), "23514", "pool_apportionment_share_unit_check"},
 		"a share's used changed":               {`UPDATE cargo_fin.pool_apportionment_share SET used=NOT used WHERE tenant_id=$1 AND shipment_id='SH-C'`, "42501|23001", ""},
 		"a share not used deleted":             {`DELETE FROM cargo_fin.pool_apportionment_share WHERE tenant_id=$1 AND shipment_id='SH-C'`, "42501|23001", ""},
 		"a method outside the list on a line": {`INSERT INTO cargo_fin.pool_cost_line (tenant_id,pool_id,line_no,charge_code,method,recorded_by,recorded_at,entered_at)
-            VALUES ($1,'P-U',77,'X','REVENUE','x',now(),now())`, "23514", "pool_cost_line_method_check"},
+            VALUES ($1,'P-U',77,'X','NO_SUCH_METHOD','x',now(),now())`, "23514", "pool_cost_line_method_check"},
 		"a method outside the list on an apportionment line": {`INSERT INTO cargo_fin.pool_apportionment_line (tenant_id,pool_id,apportionment_no,line_no,
-            line_version,method,amount_minor,local_minor) VALUES ($1,'P-U',1,88,1,'TEU',0,0)`, "23514", "pool_apportionment_line_method_check"},
+            line_version,method,amount_minor,local_minor) VALUES ($1,'P-U',1,88,1,'NO_SUCH_METHOD',0,0)`, "23514", "pool_apportionment_line_method_check"},
 		"a line whose shares are all not used": {bump + `INSERT INTO cargo_fin.pool_apportionment (tenant_id,pool_id,apportionment_no,basis_revision,stage,made_by,made_at,entered_at)
             VALUES ($1,'P-U',2,7,'ACTUAL','x',now(),now());
 INSERT INTO cargo_fin.pool_apportionment_line (tenant_id,pool_id,apportionment_no,line_no,line_version,method,amount_minor,local_minor)

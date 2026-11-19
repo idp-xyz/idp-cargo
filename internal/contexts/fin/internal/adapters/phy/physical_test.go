@@ -70,3 +70,16 @@ func TestABasisWithoutUnitsOrEntriesMapsToNone(t *testing.T) {
 		t.Fatalf("cost basis = %+v, want %+v", got, want)
 	}
 }
+
+// A unit PHY calls CLOSED (its stuffing is sealed) arrives as the status FIN's container methods look for.
+func TestAClosedUnitArrivesAsTheDomainConstant(t *testing.T) {
+	basis := phyapi.PhysicalCostBasis{ConsolidationID: "C-1", Kind: "SEA_LCL_OWN",
+		LoadUnits: []phyapi.PlannedLoadUnit{{UnitNo: 1, TypeCode: "22G1", TEUTenths: 10, Status: phyapi.UnitStatusClosed}}}
+	got, err := Physical{PHY: basisStub{basis}}.CostBasis(context.Background(), "t", "C-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.LoadUnits) != 1 || got.LoadUnits[0].Status != fin.LoadUnitClosed {
+		t.Fatalf("load units: %+v", got.LoadUnits)
+	}
+}

@@ -39,6 +39,12 @@ const (
 	MethodGrossWeight = "GROSS_WEIGHT"
 	// MethodShipment gives each house that takes part an equal share, as CargoWise's Shipment method does.
 	MethodShipment = "SHIPMENT"
+	// MethodContainerCount divides by the number of containers each house is in, as CargoWise's Container Count method
+	// does. It exists at ACTUAL only: a house's containers are known once it is stuffed.
+	MethodContainerCount = "CONTAINER_COUNT"
+	// MethodTEU divides by the total TEU of the containers each house is in, as CargoWise's TEU method does, in tenths of
+	// a TEU (a 20-foot container is 10, a 40-foot 20). It exists at ACTUAL only.
+	MethodTEU = "TEU"
 	// MethodRetained keeps a line's cost on the consolidation, with a reason, once PHY reports it cancelled or without
 	// a house left to bear it: as CargoWise leaves a consol charge on the consol when it is not apportioned, the cost is
 	// the consolidation's own (a dead freight or cancellation charge), not a house's.
@@ -53,14 +59,16 @@ const (
 )
 
 // Basis quantity units on shares: grams (chargeable under CHARGEABLE in air, gross under GROSS_WEIGHT), cubic
-// centimetres, pieces, milli freight tonnes (W/M: one thousandth of a tonne or of a cubic metre, whichever is greater)
-// and shipments (one per house that takes part).
+// centimetres, pieces, milli freight tonnes (W/M: one thousandth of a tonne or of a cubic metre, whichever is greater),
+// shipments (one per house that takes part), containers and tenths of a TEU.
 const (
 	UnitChargeableGrams = "GRM" // chargeable or gross grams, by the line's method
 	UnitShipments       = "SHP"
 	UnitCubicCm         = "CMQ"
 	UnitPieces          = "PCS"
 	UnitMilliFreightTon = "MWM"
+	UnitContainers      = "CNT"
+	UnitTEUTenths       = "DTE"
 )
 
 // The air chargeable-weight rule recorded on apportionments: 6000 cm³ per kg, rounded up to 500 g.
@@ -72,8 +80,8 @@ const (
 var (
 	ErrCrossLegalEntity = fmt.Errorf("fin: FIN_CROSS_LEGAL_ENTITY: the consolidation is operated by another legal entity; cross-entity pools come with intercompany charges")
 	ErrPoolJobMissing   = fmt.Errorf("fin: FIN_POOL_JOB_MISSING: a house of the consolidation has no open job of the pool's legal entity; open it first")
-	ErrPoolUnit         = fmt.Errorf("fin: FIN_POOL_UNIT: a quantity of the basis is in a unit FIN cannot convert (weights GRM, KGM or TNE; volumes CMQ, DMQ or MTQ), or units differ between houses")
-	ErrPoolNoBasis      = fmt.Errorf("fin: FIN_POOL_NO_BASIS: the method's quantities are zero for every house; apportion by another method or by hand")
+	ErrPoolUnit         = fmt.Errorf("fin: FIN_POOL_UNIT: a quantity of the basis is in a unit FIN cannot convert (weights GRM, KGM or TNE; volumes CMQ, DMQ or MTQ), or units differ between houses; for TEU, a load unit a house is in that the basis lacks or gives without a TEU")
+	ErrPoolNoBasis      = fmt.Errorf("fin: FIN_POOL_NO_BASIS: the method's quantities are zero for every house, or it cannot be worked out on this basis yet; apportion by another method or by hand")
 	ErrManualShares     = fmt.Errorf("fin: FIN_MANUAL_SHARES: manual shares name every house of the consolidation exactly once and sum to the line's amount")
 	ErrCostVersion      = fmt.Errorf("fin: the cost line's version is not the one expected")
 )
@@ -90,8 +98,7 @@ type HouseFacts struct {
 	LoadedGrossWeight kernel.Quantity
 	LoadedVolume      kernel.Quantity
 	LastLoadedAt      time.Time
-	// Units is what of the house is loaded in each load unit, in unit order. It is carried for the methods and checks
-	// that come next; no rule uses it in this version.
+	// Units is what of the house is loaded in each load unit, in unit order: the container methods read its units.
 	Units []HouseUnitFacts
 }
 
@@ -104,11 +111,15 @@ type HouseUnitFacts struct {
 	LoadedVolume      kernel.Quantity
 }
 
+// LoadUnitClosed is the status PHY gives a load unit whose stuffing is sealed.
+const LoadUnitClosed = "CLOSED"
+
 // LoadUnitFacts is what PhysicalCostBasis v1 tells of one load unit (container) that is not removed: its type and TEU
 // in tenths, its status (PLANNED, IN_USE or CLOSED) and the state and revision of the record of the stuffing opened on
 // it, empty and zero while none is. The revision moves when the stuffing itself is written; it does not see a lot
-// measured again, more packs received of a lot or the consolidation reopened (the packing list's digest does). It is
-// carried for the methods and checks that come next; no rule uses it in this version.
+// measured again, more packs received of a lot or the consolidation reopened (the packing list's digest does). The
+// container methods read its TEU; the state and the revision of its stuffing are carried for the checks that come
+// next.
 type LoadUnitFacts struct {
 	UnitNo            int
 	TypeCode          string
@@ -130,7 +141,8 @@ type UnitPackingListFacts struct {
 }
 
 // CostBasis is what FIN reads of PHY's PhysicalCostBasis v1: the consolidation, its operating legal entity and its
-// live houses. LoadUnits are the load units PHY answers that are not removed, in unit order, carried and not used yet.
+// live houses. LoadUnits are the load units PHY answers that are not removed, in unit order; the container methods
+// read them.
 type CostBasis struct {
 	ConsolidationID        string
 	Revision               int64
@@ -509,7 +521,7 @@ type ApportionInput struct {
 // named by an apportionment).
 func validLineMethod(method string) bool {
 	switch method {
-	case MethodChargeable, MethodVolume, MethodPieces, MethodManual, MethodGrossWeight, MethodShipment:
+	case MethodChargeable, MethodVolume, MethodPieces, MethodManual, MethodGrossWeight, MethodShipment, MethodContainerCount, MethodTEU:
 		return true
 	}
 	return false
@@ -605,7 +617,7 @@ func (p *ConsolCostPool) Apportion(in ApportionInput, basis CostBasis, by string
 			}
 			unit = ""
 		} else {
-			if quantities, unit, err = methodQuantities(method, p.state.Mode, stage, taking); err != nil {
+			if quantities, unit, err = methodQuantities(method, p.state.Mode, stage, taking, basis.LoadUnits); err != nil {
 				return err
 			}
 		}
@@ -745,8 +757,12 @@ func manualQuantities(houses []HouseFacts, manual []ManualShare, amount int64) (
 	return out, nil
 }
 
-// methodQuantities computes each house's basis quantity for a method at a stage.
-func methodQuantities(method, mode, stage string, houses []HouseFacts) ([]int64, string, error) {
+// methodQuantities computes each house's basis quantity for a method at a stage. units are the basis's load units,
+// which the container methods look up.
+func methodQuantities(method, mode, stage string, houses []HouseFacts, units []LoadUnitFacts) ([]int64, string, error) {
+	if method == MethodContainerCount || method == MethodTEU {
+		return containerQuantities(method, stage, houses, units)
+	}
 	out := make([]int64, len(houses))
 	unit := ""
 	var sum int64
@@ -794,6 +810,67 @@ func methodQuantities(method, mode, stage string, houses []HouseFacts) ([]int64,
 		return nil, "", fmt.Errorf("%w: %s at the %s stage", ErrPoolNoBasis, method, stage)
 	}
 	return out, unit, nil
+}
+
+// containerQuantities is each house's container count (CONTAINER_COUNT, unit CNT) or the tenths of TEU of its
+// containers (TEU, unit DTE). A house's containers are the distinct load units of its Units entries that hold loaded
+// packs of it (an entry without loaded packs is not a container the house is in; PHY gives none). PHY gives the entries
+// only once the house is stuffed, so these methods exist at ACTUAL only, and no plan stands in for them at PLANNED
+// (no plan says which house goes into which container).
+//
+// At ACTUAL every load unit of the basis must also be sealed (status LoadUnitClosed): while a unit is planned or
+// loading, a house part-loaded into the sealed ones would be counted in fewer containers than it ends up in, and the
+// figure would stay wrong once the pool is closed. The houses' containers are final once every container of the
+// consolidation is sealed. A unit that was planned and never opened is removed in PHY first. A unit on which a
+// stuffing was opened and that holds nothing can be neither sealed nor removed in this version of PHY (it has no
+// command that gives up an empty stuffing); until it has one, the lines are apportioned by another method (MANUAL
+// takes any division, the count or the TEU worked out by hand). This does not require that a house is wholly loaded:
+// packs of a house left outside every sealed container count for nothing, and whether they still travel is PHY's
+// matter. The same rule holds at the close comparison, which calls this function.
+//
+// A house that takes part and is loaded but has no entry while others have has no container: its quantity is 0 and it
+// gets a zero share, as a house with no volume does under VOLUME. When no house has one (air, or a co-load loaded by
+// tender) every quantity is zero and the basis is refused as FIN_POOL_NO_BASIS. PHY's contract gives every unit of an
+// entry among its load units, with a positive TEU; a basis that does not is inconsistent and is refused for TEU as
+// FIN_POOL_UNIT, never divided on silently. CONTAINER_COUNT does not read the tenths.
+func containerQuantities(method, stage string, houses []HouseFacts, units []LoadUnitFacts) ([]int64, string, error) {
+	if stage != BasisActual {
+		return nil, "", fmt.Errorf("%w: %s needs the houses' containers, which are known once a house is stuffed", ErrPoolNoBasis, method)
+	}
+	for _, u := range units {
+		if u.Status != LoadUnitClosed {
+			return nil, "", fmt.Errorf("%w: %s needs every container sealed: load unit %d is %s; a unit never opened is removed in PHY, one opened and empty needs another method",
+				ErrPoolNoBasis, method, u.UnitNo, u.Status)
+		}
+	}
+	out := make([]int64, len(houses))
+	var sum int64
+	for i, h := range houses {
+		seen := map[int]bool{}
+		for _, u := range h.Units {
+			if seen[u.UnitNo] || u.LoadedPacks <= 0 {
+				continue
+			}
+			seen[u.UnitNo] = true
+			if method == MethodContainerCount {
+				out[i]++
+				continue
+			}
+			at := slices.IndexFunc(units, func(l LoadUnitFacts) bool { return l.UnitNo == u.UnitNo })
+			if at < 0 || units[at].TEUTenths <= 0 {
+				return nil, "", fmt.Errorf("%w: house %s is in load unit %d, which PHY's basis does not give with a TEU", ErrPoolUnit, h.ShipmentID, u.UnitNo)
+			}
+			out[i] += int64(units[at].TEUTenths)
+		}
+		sum += out[i]
+	}
+	if sum == 0 {
+		return nil, "", fmt.Errorf("%w: %s at the %s stage", ErrPoolNoBasis, method, stage)
+	}
+	if method == MethodContainerCount {
+		return out, UnitContainers, nil
+	}
+	return out, UnitTEUTenths, nil
 }
 
 // Grams converts a weight into grams and CubicCm a volume into cubic centimetres (GRM, KGM, TNE; CMQ, DMQ, MTQ).
@@ -955,7 +1032,7 @@ func (p *ConsolCostPool) Close(basis CostBasis, by string, at time.Time) error {
 		var unit string
 		if la.Method != MethodManual {
 			var err error
-			if quantities, unit, err = methodQuantities(la.Method, p.state.Mode, BasisActual, taking); err != nil {
+			if quantities, unit, err = methodQuantities(la.Method, p.state.Mode, BasisActual, taking, basis.LoadUnits); err != nil {
 				return fmt.Errorf("%w: cost line %d: %w", ErrPoolNotClosable, l.No, err)
 			}
 		}

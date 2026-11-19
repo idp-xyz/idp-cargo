@@ -3,6 +3,7 @@ package domain
 import (
 	"errors"
 	"math/rand"
+	"strings"
 	"testing"
 
 	"go.idp.xyz/idp-cargo/internal/kernel"
@@ -855,5 +856,399 @@ func TestStageOfAnApportionmentThatCarriesTheHousesLeftOut(t *testing.T) {
 	}
 	if got[0] != BasisActual || got[1] != BasisActual || got[2] != BasisPlanned {
 		t.Fatalf("stages %v", got)
+	}
+}
+
+// containerBasis is an own-container consolidation of the three houses of threeHouses in two load units, a 20-foot 22G1
+// (10 tenths of a TEU) as unit 1 and a 40-foot 42G1 (20 tenths) as unit 2: HS1 is in unit 1 only, HS2 in unit 2 only and
+// HS3 in both.
+func containerBasis() CostBasis {
+	b := threeHouses()
+	b.Kind = "SEA_LCL_OWN"
+	b.LoadUnits = []LoadUnitFacts{{UnitNo: 1, TypeCode: "22G1", TEUTenths: 10, Status: LoadUnitClosed}, {UnitNo: 2, TypeCode: "42G1", TEUTenths: 20, Status: LoadUnitClosed}}
+	b.Houses[0].Units = []HouseUnitFacts{{UnitNo: 1, LoadedPacks: 10}}
+	b.Houses[1].Units = []HouseUnitFacts{{UnitNo: 2, LoadedPacks: 5}}
+	b.Houses[2].Units = []HouseUnitFacts{{UnitNo: 1, LoadedPacks: 3}, {UnitNo: 2, LoadedPacks: 5}}
+	return b
+}
+
+// copyOf is a basis whose houses can be changed without changing the original.
+func copyOf(b CostBasis) CostBasis {
+	b.Houses = append([]HouseFacts(nil), b.Houses...)
+	return b
+}
+
+func apportionedLine(t *testing.T, b CostBasis, line Money, method string, notUsed []string) []Share {
+	t.Helper()
+	p := pool(t, b)
+	recordCost(t, p, "SEAFREIGHT", line, method)
+	if err := p.Apportion(ApportionInput{NotUsed: notUsed, Jobs: threeJobs()}, b, "ops-1", hour(4)); err != nil {
+		t.Fatalf("%s: %v", method, err)
+	}
+	a := p.State().Apportionments[0]
+	if a.Stage != BasisActual || a.Lines[0].Method != method {
+		t.Fatalf("%s: %+v", method, a)
+	}
+	return a.Lines[0].Shares
+}
+
+type Money = kernel.Money
+
+// 10,001 minor of USD (71,... local at the estimate rate) over the three houses of containerBasis.
+//
+//	CONTAINER_COUNT 1 : 1 : 2 containers           -> 2,500.25 / 2,500.25 / 5,000.50; one unit left, to HS3 (.50 is the largest) -> 2,500 / 2,500 / 5,001
+//	TEU             10 : 20 : 30 tenths (unit DTE) -> 1,666.83 / 3,333.67 / 5,000.50; two units left, to HS1 (.83) and HS2 (.67) -> 1,667 / 3,334 / 5,000
+//
+// The local amount is divided the same way by the same quantities, and each currency adds up to its line.
+func TestApportionByContainerCountAndTEU(t *testing.T) {
+	for _, tc := range []struct {
+		method, unit string
+		quantities   [3]int64
+		amounts      [3]int64
+	}{
+		{MethodContainerCount, UnitContainers, [3]int64{1, 1, 2}, [3]int64{2_500, 2_500, 5_001}},
+		{MethodTEU, UnitTEUTenths, [3]int64{10, 20, 30}, [3]int64{1_667, 3_334, 5_000}},
+	} {
+		b := containerBasis()
+		p := pool(t, b)
+		recordCost(t, p, "SEAFREIGHT", usd(10_001), tc.method)
+		cost, local := p.LineCost(1)
+		if err := p.Apportion(ApportionInput{Jobs: threeJobs()}, b, "ops-1", hour(4)); err != nil {
+			t.Fatalf("%s: %v", tc.method, err)
+		}
+		a := p.State().Apportionments[0]
+		if a.Stage != BasisActual || a.Lines[0].Method != tc.method || a.Lines[0].Amount != 10_001 {
+			t.Fatalf("%s: %+v", tc.method, a)
+		}
+		var sum, localSum int64
+		for i, s := range a.Lines[0].Shares {
+			if !s.Used || s.Quantity != tc.quantities[i] || s.Unit != tc.unit || s.Amount != tc.amounts[i] || s.JobID != threeJobs()[s.ShipmentID] {
+				t.Errorf("%s: share %d is %+v", tc.method, i+1, s)
+			}
+			sum, localSum = sum+s.Amount, localSum+s.Local
+		}
+		if sum != cost || localSum != local {
+			t.Errorf("%s: shares add up to %d (%d local), the line is %d (%d local)", tc.method, sum, localSum, cost, local)
+		}
+		// the local amount follows the same quantities: its floor shares differ from the exact ones by less than one unit
+		for i, s := range a.Lines[0].Shares {
+			exact := float64(local) * float64(tc.quantities[i]) / 4 // 4 containers, so a share is quantity/4 of the line
+			if tc.method == MethodTEU {
+				exact = float64(local) * float64(tc.quantities[i]) / 60
+			}
+			if d := float64(s.Local) - exact; d <= -1 || d >= 1 {
+				t.Errorf("%s: local share %d is %d, the exact share is %.2f", tc.method, i+1, s.Local, exact)
+			}
+		}
+	}
+}
+
+// Three houses in one container are counted alike: both methods give what SHIPMENT gives, the minor unit left over going
+// to the first house.
+func TestContainerMethodsGiveShipmentShareForOneContainer(t *testing.T) {
+	b := containerBasis()
+	b.LoadUnits = b.LoadUnits[1:] // the 40-foot container only
+	for i := range b.Houses {
+		b.Houses[i].Units = []HouseUnitFacts{{UnitNo: 2, LoadedPacks: 1}}
+	}
+	want := apportionedLine(t, b, cny(100_000), MethodShipment, nil)
+	for _, m := range []string{MethodContainerCount, MethodTEU} {
+		got := apportionedLine(t, b, cny(100_000), m, nil)
+		for i := range got {
+			if got[i].Amount != want[i].Amount || got[i].Local != want[i].Local || got[i].Amount != []int64{33_334, 33_333, 33_333}[i] {
+				t.Errorf("%s: share %d is %+v, SHIPMENT gives %+v", m, i+1, got[i], want[i])
+			}
+		}
+	}
+}
+
+// The container methods exist at ACTUAL only: with a house that takes part not loaded the stage is PLANNED and they are
+// refused, also when another line of the command uses an existing method; nothing is recorded. The same basis with that
+// house loaded is accepted, and a house left out does not hold the stage back.
+func TestContainerMethodsNeedTheActualStage(t *testing.T) {
+	for _, m := range []string{MethodContainerCount, MethodTEU} {
+		b := containerBasis()
+		unloaded(&b, 1)
+		b.Houses[1].Units = nil
+		p := pool(t, b)
+		recordCost(t, p, "SEAFREIGHT", cny(100_000), m)
+		recordCost(t, p, "HANDLING", cny(60_000), MethodShipment)
+		if err := p.Apportion(ApportionInput{LineNos: []int{1}, Jobs: threeJobs()}, b, "ops-1", hour(4)); !errors.Is(err, ErrPoolNoBasis) {
+			t.Errorf("%s at PLANNED: %v", m, err)
+		}
+		if err := p.Apportion(ApportionInput{Jobs: threeJobs()}, b, "ops-1", hour(4)); !errors.Is(err, ErrPoolNoBasis) {
+			t.Errorf("%s with another line by SHIPMENT in the command: %v", m, err)
+		}
+		if err := p.Apportion(ApportionInput{LineNos: []int{1}, Method: m, Jobs: threeJobs()}, b, "ops-1", hour(4)); !errors.Is(err, ErrPoolNoBasis) {
+			t.Errorf("%s as the command's method at PLANNED: %v", m, err)
+		}
+		if n := len(p.State().Apportionments); n != 0 {
+			t.Errorf("%s: %d apportionments recorded by refused commands", m, n)
+		}
+		if err := p.Apportion(ApportionInput{Jobs: threeJobs()}, containerBasis(), "ops-1", hour(4)); err != nil {
+			t.Errorf("%s at ACTUAL: %v", m, err)
+		}
+		if err := p.Apportion(ApportionInput{LineNos: []int{1}, NotUsed: []string{"HS2"}, Jobs: threeJobs()}, b, "ops-1", hour(5)); err != nil {
+			t.Errorf("%s with the unloaded house left out: %v", m, err)
+		}
+	}
+}
+
+// A basis without containers (an air consolidation, or a co-load loaded by tender) has every quantity zero.
+func TestContainerMethodsNeedContainers(t *testing.T) {
+	for _, m := range []string{MethodContainerCount, MethodTEU} {
+		b := threeHouses() // loaded, tendered: no Units, no LoadUnits
+		p := pool(t, b)
+		recordCost(t, p, "SEAFREIGHT", cny(100_000), m)
+		if err := p.Apportion(ApportionInput{Jobs: threeJobs()}, b, "ops-1", hour(4)); !errors.Is(err, ErrPoolNoBasis) {
+			t.Errorf("%s with no containers: %v", m, err)
+		}
+	}
+}
+
+// PHY's contract gives every unit of a house's entries among the load units with a positive TEU, so an entry that names
+// another unit, or a unit with no TEU, is an inconsistent basis: TEU refuses it, CONTAINER_COUNT never reads the tenths.
+func TestContainerMethodsInconsistentBasis(t *testing.T) {
+	for name, change := range map[string]func(*CostBasis){
+		"an entry names a unit the basis lacks": func(b *CostBasis) { b.LoadUnits = b.LoadUnits[:1] },
+		"a unit with zero tenths": func(b *CostBasis) {
+			b.LoadUnits = []LoadUnitFacts{b.LoadUnits[0], {UnitNo: 2, TypeCode: "42G1", Status: LoadUnitClosed}}
+		},
+	} {
+		b := containerBasis()
+		change(&b)
+		p := pool(t, b)
+		recordCost(t, p, "SEAFREIGHT", cny(100_000), MethodTEU)
+		if err := p.Apportion(ApportionInput{Jobs: threeJobs()}, b, "ops-1", hour(4)); !errors.Is(err, ErrPoolUnit) {
+			t.Errorf("TEU, %s: %v", name, err)
+		}
+		if got := apportionedLine(t, b, cny(100_000), MethodContainerCount, nil); got[0].Quantity != 1 || got[2].Quantity != 2 {
+			t.Errorf("CONTAINER_COUNT, %s: %+v", name, got)
+		}
+	}
+	// a unit only a house left out is in is not read
+	b := containerBasis()
+	b.LoadUnits = b.LoadUnits[:1]
+	b.Houses[0].Units = []HouseUnitFacts{{UnitNo: 1, LoadedPacks: 10}}
+	b.Houses[1].Units = []HouseUnitFacts{{UnitNo: 1, LoadedPacks: 5}}
+	b.Houses[2].Units = []HouseUnitFacts{{UnitNo: 2, LoadedPacks: 5}}
+	if got := apportionedLine(t, b, cny(100_000), MethodTEU, []string{"HS3"}); got[0].Amount != 50_000 || got[1].Amount != 50_000 {
+		t.Errorf("a house left out names a unit the basis lacks: %+v", got)
+	}
+}
+
+// A house that takes part and is loaded but has no entry while others have has no container: quantity 0 and a zero
+// share, as a house with no volume under VOLUME.
+func TestContainerMethodsHouseWithoutAnEntry(t *testing.T) {
+	b := containerBasis()
+	b.Houses[1].Units = nil
+	for m, want := range map[string][3]int64{MethodContainerCount: {1, 0, 2}, MethodTEU: {10, 0, 30}} {
+		got := apportionedLine(t, b, cny(100_000), m, nil)
+		if got[1].Quantity != 0 || !got[1].Used || got[1].Amount != 0 || got[0].Quantity != want[0] || got[2].Quantity != want[2] {
+			t.Errorf("%s: %+v", m, got)
+		}
+	}
+}
+
+// With HS2 left out, the quantities and the split are those of HS1 and HS3 (100,000 minor).
+//
+//	CONTAINER_COUNT 1 : 2   -> 33,333.33 / 66,666.67; the unit left goes to HS3 -> 33,333 / 66,667
+//	TEU             10 : 30 -> 25,000 / 75,000
+func TestContainerMethodsWithAHouseLeftOut(t *testing.T) {
+	checkShares(t, "CONTAINER_COUNT", apportionedLine(t, containerBasis(), cny(100_000), MethodContainerCount, []string{"HS2"}), 1,
+		[]wantShare{{1, 33_333, "CNT"}, {}, {2, 66_667, "CNT"}}, 100_000)
+	checkShares(t, "TEU", apportionedLine(t, containerBasis(), cny(100_000), MethodTEU, []string{"HS2"}), 1,
+		[]wantShare{{10, 25_000, "DTE"}, {}, {30, 75_000, "DTE"}}, 100_000)
+}
+
+// The close recomputes the quantities from PHY's current basis: it closes while the containers are what they were, and
+// is refused once a house's containers changed, whether the house moved into another unit or an entry appeared or went.
+func TestCloseByContainerCountAndTEU(t *testing.T) {
+	for _, m := range []string{MethodContainerCount, MethodTEU} {
+		b := containerBasis()
+		if err := closable(t, m, nil, b).Close(copyOf(b), "ops-1", hour(6)); err != nil {
+			t.Errorf("%s: a line on the current containers does not close: %v", m, err)
+		}
+		for name, change := range map[string]func(*CostBasis){
+			"the second entry of HS3 is gone": func(b *CostBasis) { b.Houses[2].Units = b.Houses[2].Units[:1] },
+			"HS1 has a new entry": func(b *CostBasis) {
+				b.Houses[0].Units = append(b.Houses[0].Units, HouseUnitFacts{UnitNo: 2, LoadedPacks: 1})
+			},
+			"HS1 moved into the other unit": func(b *CostBasis) { b.Houses[0].Units = []HouseUnitFacts{{UnitNo: 2, LoadedPacks: 10}} },
+		} {
+			if name == "HS1 moved into the other unit" && m == MethodContainerCount {
+				continue // one container before and after: a count does not change, only the TEU does
+			}
+			c := copyOf(b)
+			change(&c)
+			if err := closable(t, m, nil, b).Close(c, "ops-1", hour(6)); !errors.Is(err, ErrPoolNotClosable) {
+				t.Errorf("%s, %s: %v", m, name, err)
+			}
+		}
+		// the houses left out still apply: only the houses that take part are compared
+		left := closable(t, m, []string{"HS2"}, b)
+		c := copyOf(b)
+		c.Houses[1].Units = []HouseUnitFacts{{UnitNo: 1, LoadedPacks: 5}}
+		if err := left.Close(c, "ops-1", hour(6)); err != nil {
+			t.Errorf("%s: the house left out changed its containers: %v", m, err)
+		}
+		c = copyOf(b)
+		c.Houses[0].Units = append(c.Houses[0].Units, HouseUnitFacts{UnitNo: 2, LoadedPacks: 1})
+		left = closable(t, m, []string{"HS2"}, b)
+		if err := left.Close(c, "ops-1", hour(6)); !errors.Is(err, ErrPoolNotClosable) {
+			t.Errorf("%s: a house taking part changed its container with another left out: %v", m, err)
+		}
+	}
+	// a unit's TEU changing under a TEU line is a change of the quantity too
+	b := containerBasis()
+	c := copyOf(b)
+	c.LoadUnits = []LoadUnitFacts{{UnitNo: 1, TypeCode: "22G1", TEUTenths: 10, Status: LoadUnitClosed}, {UnitNo: 2, TypeCode: "22G1", TEUTenths: 10, Status: LoadUnitClosed}}
+	if err := closable(t, MethodTEU, nil, b).Close(c, "ops-1", hour(6)); !errors.Is(err, ErrPoolNotClosable) {
+		t.Errorf("a unit changed its TEU: %v", err)
+	}
+	if err := closable(t, MethodContainerCount, nil, b).Close(c, "ops-1", hour(6)); err != nil {
+		t.Errorf("a count does not read the TEU: %v", err)
+	}
+}
+
+// The existing methods give what they gave, on a basis that now has units (the same figures as
+// TestApportionNothingLeftOutKeepsEveryMethod, 100,000 minor over the three houses).
+func TestExistingMethodsOnABasisWithUnits(t *testing.T) {
+	for _, tc := range []struct {
+		method string
+		want   [3]int64
+	}{
+		{MethodChargeable, [3]int64{42_857, 28_572, 28_571}},
+		{MethodVolume, [3]int64{33_334, 33_333, 33_333}},
+		{MethodPieces, [3]int64{43_478, 21_739, 34_783}},
+		{MethodGrossWeight, [3]int64{54_545, 18_182, 27_273}},
+		{MethodShipment, [3]int64{33_334, 33_333, 33_333}},
+	} {
+		b := containerBasis()
+		b.Kind = "AIR_CONSOL" // the pool mode the figures of the other test are in
+		got := apportionedLine(t, b, cny(100_000), tc.method, nil)
+		for i, s := range got {
+			if s.Amount != tc.want[i] {
+				t.Errorf("%s: share %d is %d, want %d", tc.method, i+1, s.Amount, tc.want[i])
+			}
+		}
+	}
+}
+
+func TestRecordCostAcceptsTheContainerMethods(t *testing.T) {
+	p := pool(t, containerBasis())
+	recordCost(t, p, "SEAFREIGHT", cny(100), MethodContainerCount)
+	recordCost(t, p, "THC", cny(100), MethodTEU)
+	if err := p.RecordCost("X", "", "", "REVENUE", SideInput{Amount: cny(1)}, "r", policy(t), "ops-1", hour(3)); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("a method outside the list: %v", err)
+	}
+}
+
+// A house's containers are the distinct units of its entries: two entries of one unit count as one container.
+func TestContainerMethodsCountDistinctUnits(t *testing.T) {
+	b := containerBasis()
+	b.Houses[0].Units = []HouseUnitFacts{{UnitNo: 1, LoadedPacks: 6}, {UnitNo: 1, LoadedPacks: 4}}
+	for m, want := range map[string]int64{MethodContainerCount: 1, MethodTEU: 10} {
+		if got := apportionedLine(t, b, cny(100_000), m, nil); got[0].Quantity != want {
+			t.Errorf("%s: %+v", m, got)
+		}
+	}
+}
+
+// A house split over two containers of which only the first is sealed yet (the case of the review of V2.80): SH-C has
+// packs in unit 1 only, unit 1 is CLOSED and unit 2 is still IN_USE. Every house has loaded packs, so the stage is
+// ACTUAL, but a count of one container for SH-C would be wrong once its other packs go into unit 2: both methods are
+// refused until unit 2 is sealed. Then SH-C is in both: a count of 2 and 30 tenths.
+func TestContainerMethodsWithAHouseHalfStuffed(t *testing.T) {
+	for _, m := range []string{MethodContainerCount, MethodTEU} {
+		half := containerBasis()
+		half.Houses[2].Units = half.Houses[2].Units[:1]
+		half.LoadUnits[1].Status = "IN_USE"
+		p := pool(t, half)
+		recordCost(t, p, "SEAFREIGHT", cny(100_000), m)
+		if err := p.Apportion(ApportionInput{Jobs: threeJobs()}, half, "ops-1", hour(4)); !errors.Is(err, ErrPoolNoBasis) {
+			t.Fatalf("%s with unit 2 still loading: %v", m, err)
+		}
+		half.LoadUnits[1].Status = LoadUnitClosed
+		half.Houses[2].Units = containerBasis().Houses[2].Units
+		if err := p.Apportion(ApportionInput{Jobs: threeJobs()}, half, "ops-1", hour(5)); err != nil {
+			t.Fatalf("%s with both sealed: %v", m, err)
+		}
+		want := map[string]int64{MethodContainerCount: 2, MethodTEU: 30}[m]
+		if got := p.State().Apportionments[0].Lines[0].Shares[2].Quantity; got != want {
+			t.Errorf("%s: SH-C's quantity is %d, want %d", m, got, want)
+		}
+	}
+}
+
+// Every load unit of the basis must be sealed (CLOSED): one IN_USE, or a third unit PLANNED and never stuffed, refuses
+// both methods with FIN_POOL_NO_BASIS naming the unit and its status; all CLOSED is accepted. The PLANNED stage is
+// refused first, and the other methods do not mind the unit.
+func TestContainerMethodsNeedEveryContainerSealed(t *testing.T) {
+	for _, m := range []string{MethodContainerCount, MethodTEU} {
+		for name, units := range map[string][]LoadUnitFacts{
+			"unit 2 in use": {{UnitNo: 1, TypeCode: "22G1", TEUTenths: 10, Status: LoadUnitClosed}, {UnitNo: 2, TypeCode: "42G1", TEUTenths: 20, Status: "IN_USE"}},
+			"a third unit planned": {{UnitNo: 1, TypeCode: "22G1", TEUTenths: 10, Status: LoadUnitClosed}, {UnitNo: 2, TypeCode: "42G1", TEUTenths: 20, Status: LoadUnitClosed},
+				{UnitNo: 3, TypeCode: "42G1", TEUTenths: 20, Status: "PLANNED"}},
+		} {
+			b := containerBasis()
+			b.LoadUnits = units
+			p := pool(t, b)
+			recordCost(t, p, "SEAFREIGHT", cny(100_000), m)
+			err := p.Apportion(ApportionInput{Jobs: threeJobs()}, b, "ops-1", hour(4))
+			if !errors.Is(err, ErrPoolNoBasis) || !strings.Contains(err.Error(), "sealed") {
+				t.Errorf("%s, %s: %v", m, name, err)
+			}
+			if n := len(p.State().Apportionments); n != 0 {
+				t.Errorf("%s, %s: %d apportionments stored", m, name, n)
+			}
+		}
+		// the PLANNED stage is refused first, with its own message
+		b := containerBasis()
+		b.LoadUnits[1].Status = "PLANNED"
+		unloaded(&b, 1)
+		b.Houses[1].Units = nil
+		p := pool(t, b)
+		recordCost(t, p, "SEAFREIGHT", cny(100_000), m)
+		if err := p.Apportion(ApportionInput{Jobs: threeJobs()}, b, "ops-1", hour(4)); !errors.Is(err, ErrPoolNoBasis) || !strings.Contains(err.Error(), "stuffed") {
+			t.Errorf("%s at PLANNED with a unit planned: %v", m, err)
+		}
+		if got := apportionedLine(t, containerBasis(), cny(100_000), m, nil); got[2].Amount == 0 {
+			t.Errorf("%s all sealed: %+v", m, got)
+		}
+	}
+	b := containerBasis()
+	b.LoadUnits[1].Status = "IN_USE"
+	if got := apportionedLine(t, b, cny(100_000), MethodShipment, nil); got[0].Amount != 33_334 {
+		t.Errorf("SHIPMENT does not mind an unsealed unit: %+v", got)
+	}
+}
+
+// After an accepted apportionment a new unit is planned: the close compares on the current basis and is refused for each
+// method, until the unit is sealed or removed (no longer in the basis).
+func TestCloseRefusesANewUnitNotSealed(t *testing.T) {
+	for _, m := range []string{MethodContainerCount, MethodTEU} {
+		b := containerBasis()
+		c := copyOf(b)
+		c.LoadUnits = append(append([]LoadUnitFacts(nil), b.LoadUnits...), LoadUnitFacts{UnitNo: 3, TypeCode: "22G1", TEUTenths: 10, Status: "PLANNED"})
+		if err := closable(t, m, nil, b).Close(c, "ops-1", hour(6)); !errors.Is(err, ErrPoolNotClosable) {
+			t.Errorf("%s: closed with a unit planned: %v", m, err)
+		}
+		if err := closable(t, m, nil, b).Close(b, "ops-1", hour(6)); err != nil {
+			t.Errorf("%s: %v", m, err)
+		}
+	}
+}
+
+// An entry without loaded packs is not a container the house is in: FIN skips it, as PHY gives none.
+func TestContainerMethodsSkipAnEntryWithoutLoadedPacks(t *testing.T) {
+	b := containerBasis()
+	b.Houses[0].Units = []HouseUnitFacts{{UnitNo: 1, LoadedPacks: 10}, {UnitNo: 2, LoadedPacks: 0}}
+	b.Houses[1].Units = []HouseUnitFacts{{UnitNo: 2, LoadedPacks: 5}, {UnitNo: 1}}
+	for m, want := range map[string][3]int64{MethodContainerCount: {1, 1, 2}, MethodTEU: {10, 20, 30}} {
+		got := apportionedLine(t, b, cny(100_000), m, nil)
+		if got[0].Quantity != want[0] || got[1].Quantity != want[1] || got[2].Quantity != want[2] {
+			t.Errorf("%s: %+v", m, got)
+		}
 	}
 }
