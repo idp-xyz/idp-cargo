@@ -247,7 +247,7 @@ func (s ExecutionStore) UnitUses(ctx context.Context, tenant phy.TenantID, id ph
 	if err != nil {
 		return nil, err
 	}
-	rows, err := q.Query(ctx, `SELECT load_unit_no, execution_id, state FROM cargo_phy.load_execution
+	rows, err := q.Query(ctx, `SELECT load_unit_no, execution_id, state, revision FROM cargo_phy.load_execution
       WHERE tenant_id=$1 AND consolidation_id=$2 AND load_unit_no IS NOT NULL`, string(tenant), string(id))
 	if err != nil {
 		return nil, err
@@ -257,10 +257,11 @@ func (s ExecutionStore) UnitUses(ctx context.Context, tenant phy.TenantID, id ph
 	for rows.Next() {
 		var no int
 		var execution, state string
-		if err = rows.Scan(&no, &execution, &state); err != nil {
+		var revision int64
+		if err = rows.Scan(&no, &execution, &state, &revision); err != nil {
 			return nil, err
 		}
-		out[no] = app.UnitUse{ExecutionID: phy.LoadExecutionID(execution), State: phy.ExecutionState(state)}
+		out[no] = app.UnitUse{ExecutionID: phy.LoadExecutionID(execution), State: phy.ExecutionState(state), Revision: revision}
 	}
 	return out, rows.Err()
 }

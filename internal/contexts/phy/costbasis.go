@@ -2,6 +2,9 @@ package phy
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"slices"
 	"strings"
 
@@ -11,10 +14,13 @@ import (
 	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
-// GetPhysicalCostBasis answers PhysicalCostBasis v1: the consolidation and, of every live house, the scope
-// PHY froze at attach and what its tenders actually loaded, from one snapshot. Loaded measures follow
-// PhysicalLoadEvidence v1: lines measured for themselves count as measured, apportioned lines at their lot's
-// latest measurement; quantities in mixed units are not added and read zero.
+// GetPhysicalCostBasis answers PhysicalCostBasis v1: the consolidation and, of every live house, the scope PHY froze at
+// attach and what its tenders actually loaded, from one snapshot. Loaded measures follow PhysicalLoadEvidence v1: lines
+// measured for themselves count as measured, apportioned lines at their lot's latest measurement; quantities in mixed
+// units are not added and read zero. Of every house it also says what is loaded in each load unit (HouseUnitLoad,
+// measured as the totals are, for that unit's stuffing alone), each load unit carries the state and revision of its
+// stuffing's record, and each unit with a stuffing has its packing list with a digest (UnitPackingList), built from the
+// same figures.
 func (m *Module) GetPhysicalCostBasis(ctx context.Context, q api.GetPhysicalCostBasis) (api.PhysicalCostBasis, error) {
 	c, revision, houses, executions, lots, err := m.reads(q.TenantID).CostBasis(ctx, domain.TenantID(q.TenantID),
 		domain.ConsolidationID(q.ConsolidationID))
@@ -25,6 +31,7 @@ func (m *Module) GetPhysicalCostBasis(ctx context.Context, q api.GetPhysicalCost
 	out := api.PhysicalCostBasis{TenantID: string(st.TenantID), ConsolidationID: string(st.ConsolidationID), Revision: revision,
 		Mode: string(st.Mode), Kind: string(st.Kind), OperatingLegalEntityID: st.OperatingLegalEntityID, State: string(st.State),
 		Houses: []api.HouseCostBasis{}}
+	unitLines := map[int][]api.UnitPackingLine{}
 	for _, h := range houses {
 		byID := map[domain.CargoLotID]*domain.CargoLot{}
 		for _, r := range lots[h.ShipmentID] {
@@ -38,6 +45,13 @@ func (m *Module) GetPhysicalCostBasis(ctx context.Context, q api.GetPhysicalCost
 			x := r.Execution
 			packs, w, v := x.HouseMeasure(h.ShipmentID, byID)
 			house.LoadedPacks += packs
+			// A unit with a stuffing is never removed (the database refuses it), so every stuffing's unit is a live one.
+			if no := x.State().LoadUnitNo; packs > 0 && no > 0 {
+				house.Units = append(house.Units, api.HouseUnitLoad{UnitNo: no, ExecutionID: string(x.State().ExecutionID),
+					LoadedPacks: packs, LoadedGrossWeight: w, LoadedVolume: v})
+				unitLines[no] = append(unitLines[no], api.UnitPackingLine{ShipmentID: string(h.ShipmentID), LoadedPacks: packs,
+					LoadedGrossWeight: w, LoadedVolume: v})
+			}
 			weight.add(w)
 			volume.add(v)
 			for _, l := range x.State().Lines {
@@ -50,15 +64,22 @@ func (m *Module) GetPhysicalCostBasis(ctx context.Context, q api.GetPhysicalCost
 			}
 		}
 		house.LoadedGrossWeight, house.LoadedVolume = weight.quantity(), volume.quantity()
+		slices.SortFunc(house.Units, func(a, b api.HouseUnitLoad) int { return a.UnitNo - b.UnitNo })
 		out.Houses = append(out.Houses, house)
 	}
 	slices.SortFunc(out.Houses, func(a, b api.HouseCostBasis) int { return strings.Compare(a.ShipmentID, b.ShipmentID) })
 	uses := map[int]application.UnitUse{}
 	for _, r := range executions {
 		if st := r.Execution.State(); st.LoadUnitNo > 0 {
-			uses[st.LoadUnitNo] = application.UnitUse{ExecutionID: st.ExecutionID, State: st.State}
+			uses[st.LoadUnitNo] = application.UnitUse{ExecutionID: st.ExecutionID, State: st.State, Revision: r.Revision}
+			lines := unitLines[st.LoadUnitNo]
+			slices.SortFunc(lines, func(a, b api.UnitPackingLine) int { return strings.Compare(a.ShipmentID, b.ShipmentID) })
+			list := api.UnitPackingList{UnitNo: st.LoadUnitNo, ExecutionID: string(st.ExecutionID), ExecutionState: string(st.State), Lines: lines}
+			list.Digest = packingListDigest(list)
+			out.PackingLists = append(out.PackingLists, list)
 		}
 	}
+	slices.SortFunc(out.PackingLists, func(a, b api.UnitPackingList) int { return a.UnitNo - b.UnitNo })
 	for _, u := range c.LiveLoadUnits() {
 		out.LoadUnits = append(out.LoadUnits, loadUnit(u, uses))
 	}
@@ -87,4 +108,27 @@ func (s *sum) quantity() kernel.Quantity {
 		return kernel.Quantity{}
 	}
 	return kernel.Quantity{Unit: s.unit, Amount: s.amount}
+}
+
+// packingListDigest is the SHA-256, in hexadecimal, of the canonical text of a unit's packing list: the three lines
+//
+//	unit <UnitNo>\n
+//	execution <ExecutionID as a Go quoted string>\n
+//	state <ExecutionState as a Go quoted string>\n
+//
+// and then, for each line in shipment order, one line
+//
+//	line <ShipmentID quoted> <LoadedPacks> <weight unit quoted> <weight amount> <volume unit quoted> <volume amount>\n
+//
+// with numbers in decimal. Nothing else enters the text, so the digest does not depend on map order, and a later
+// version keeps it unless it changes this form.
+func packingListDigest(l api.UnitPackingList) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "unit %d\nexecution %q\nstate %q\n", l.UnitNo, l.ExecutionID, l.ExecutionState)
+	for _, x := range l.Lines {
+		fmt.Fprintf(&b, "line %q %d %q %d %q %d\n", x.ShipmentID, x.LoadedPacks, string(x.LoadedGrossWeight.Unit), x.LoadedGrossWeight.Amount,
+			string(x.LoadedVolume.Unit), x.LoadedVolume.Amount)
+	}
+	sum := sha256.Sum256([]byte(b.String()))
+	return hex.EncodeToString(sum[:])
 }
