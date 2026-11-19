@@ -41,8 +41,7 @@ func (p Physical) CostBasis(ctx context.Context, tenant fin.TenantID, consolidat
 		}
 		out.Houses = append(out.Houses, facts)
 	}
-	// The load units and the houses' unit loads are carried for the methods and checks that come next; no rule uses them
-	// yet.
+	// The load units and the houses' unit loads are what the container methods (CONTAINER_COUNT and TEU) read.
 	for _, u := range b.LoadUnits {
 		if u.Status == phyapi.UnitStatusRemoved {
 			continue

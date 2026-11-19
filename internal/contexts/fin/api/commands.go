@@ -485,6 +485,12 @@ const (
 	// MethodShipment gives each house that takes part an equal share (unit SHP), as CargoWise's Shipment method does
 	// (FIN V0.8).
 	MethodShipment = "SHIPMENT"
+	// MethodContainerCount divides by the number of containers each house is in (unit CNT) and MethodTEU by the tenths
+	// of a TEU of those containers (unit DTE; a 20-foot container is 10, a 40-foot 20), as CargoWise's Container Count
+	// and TEU methods do (FIN V0.9). They exist at ACTUAL only, with every container sealed: a house's containers are
+	// known once it is stuffed.
+	MethodContainerCount = "CONTAINER_COUNT"
+	MethodTEU            = "TEU"
 	// MethodRetained keeps lines' costs on the consolidation (FIN V0.5), with a reason, once PHY reports it cancelled
 	// or without a house left: the consolidation's own cost, such as dead freight, as CargoWise leaves a consol charge
 	// on the consol when it is not apportioned.
@@ -569,7 +575,20 @@ type ManualShare struct {
 // the lines in separate commands. A house left out of a line stays out of it: a command that names no NotUsed keeps,
 // line by line, the houses the line's latest apportionment left out (those still live), until AllHouses takes every
 // live house in again or another NotUsed replaces the list; AllHouses with NotUsed is refused, and so is a carried
-// list that leaves no house taking part.
+// list that leaves no house taking part. Since FIN V0.9 CONTAINER_COUNT weighs by the number of containers each
+// house that takes part is in and TEU by the tenths of a TEU of those containers, from the load units PHY's basis
+// tells. They need every house that takes part loaded (stage ACTUAL) and every load unit of the consolidation sealed
+// (status CLOSED in PHY): otherwise they are refused with FIN_POOL_NO_BASIS, because a house part-loaded into the
+// sealed units would be counted in fewer containers than it ends up in. A unit that was planned and never opened is
+// removed in PHY first; a unit on which a stuffing was opened and that holds nothing can be neither sealed nor
+// removed in this version of PHY (it has no command that gives up an empty stuffing), so until it has one the lines
+// are apportioned by another method (MANUAL takes any division, the count or the TEU worked out by hand). They are
+// refused too when no house that takes part is in a container. TEU is refused with FIN_POOL_UNIT when a unit a house
+// that takes part is in is missing from the basis's load units or is given without a TEU. A command that names no
+// LineNos takes every line, so on a pool with a line by one of these methods it is refused as a whole until the
+// containers are sealed: name the other lines to apportion them earlier. A cost line can carry either method as its
+// default through RecordConsolCost and through RateConsolCostPool (its Method applies to every rated line); no other
+// command names a line's method.
 type ApportionConsolCosts struct {
 	CommandID        string
 	TenantID         string
