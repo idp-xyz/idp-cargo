@@ -45,6 +45,10 @@ const (
 	// MethodTEU divides by the total TEU of the containers each house is in, as CargoWise's TEU method does, in tenths of
 	// a TEU (a 20-foot container is 10, a 40-foot 20). It exists at ACTUAL only.
 	MethodTEU = "TEU"
+	// MethodRevenue divides by the revenue of the same charge code on each house's freight job, in the functional
+	// currency at the estimate rate, as CargoWise's Revenue method does. It reads FIN's own jobs, not PHY, so it exists
+	// at both stages.
+	MethodRevenue = "REVENUE"
 	// MethodRetained keeps a line's cost on the consolidation, with a reason, once PHY reports it cancelled or without
 	// a house left to bear it: as CargoWise leaves a consol charge on the consol when it is not apportioned, the cost is
 	// the consolidation's own (a dead freight or cancellation charge), not a house's.
@@ -60,7 +64,7 @@ const (
 
 // Basis quantity units on shares: grams (chargeable under CHARGEABLE in air, gross under GROSS_WEIGHT), cubic
 // centimetres, pieces, milli freight tonnes (W/M: one thousandth of a tonne or of a cubic metre, whichever is greater),
-// shipments (one per house that takes part), containers and tenths of a TEU.
+// shipments (one per house that takes part), containers, tenths of a TEU and minor units of revenue.
 const (
 	UnitChargeableGrams = "GRM" // chargeable or gross grams, by the line's method
 	UnitShipments       = "SHP"
@@ -69,6 +73,7 @@ const (
 	UnitMilliFreightTon = "MWM"
 	UnitContainers      = "CNT"
 	UnitTEUTenths       = "DTE"
+	UnitRevenueMinor    = "REV" // minor units of a house job's revenue under the line's charge code
 )
 
 // The air chargeable-weight rule recorded on apportionments: 6000 cm³ per kg, rounded up to 500 g.
@@ -261,7 +266,8 @@ type PoolClosure struct {
 type ConsolCostPool struct {
 	state      PoolState
 	storedPool storedPool
-	consumed   map[int]Consumption // what creditor invoices consume of each line, set under the pool's lock
+	consumed   map[int]Consumption         // what creditor invoices consume of each line, set under the pool's lock
+	revenue    map[string]map[string]int64 // the houses' revenue by charge code, set under the jobs' locks for the close
 	pending    []Event
 }
 
@@ -515,13 +521,16 @@ type ApportionInput struct {
 	AllHouses bool
 	Reason    string
 	Jobs      map[string]string
+	// Revenue is each house job's revenue by charge code at the estimate rate (FreightJob.EstimatedRevenue), per house
+	// shipment as Jobs is, read by the application for a line by REVENUE.
+	Revenue map[string]map[string]int64
 }
 
 // validLineMethod is a method a cost line may carry as its default and an apportionment may name (RETAINED is only
 // named by an apportionment).
 func validLineMethod(method string) bool {
 	switch method {
-	case MethodChargeable, MethodVolume, MethodPieces, MethodManual, MethodGrossWeight, MethodShipment, MethodContainerCount, MethodTEU:
+	case MethodChargeable, MethodVolume, MethodPieces, MethodManual, MethodGrossWeight, MethodShipment, MethodContainerCount, MethodTEU, MethodRevenue:
 		return true
 	}
 	return false
@@ -616,6 +625,11 @@ func (p *ConsolCostPool) Apportion(in ApportionInput, basis CostBasis, by string
 				return err
 			}
 			unit = ""
+		} else if method == MethodRevenue {
+			if quantities, err = revenueQuantities(line.ChargeCode, taking, in.Revenue); err != nil {
+				return err
+			}
+			unit = UnitRevenueMinor
 		} else {
 			if quantities, unit, err = methodQuantities(method, p.state.Mode, stage, taking, basis.LoadUnits); err != nil {
 				return err
@@ -812,6 +826,41 @@ func methodQuantities(method, mode, stage string, houses []HouseFacts, units []L
 	return out, unit, nil
 }
 
+// revenueQuantities is each house's revenue under a charge code, in minor units of the functional currency at the
+// estimate rate, from the jobs' EstimatedRevenue by house shipment. A house without revenue under the code is zero and
+// gets a zero share; when none has any the basis is refused. A cost is never divided on a negative weight: a negative
+// revenue (a quote's discount line under the code can make the code's sum negative) refuses the apportionment, naming
+// the house.
+func revenueQuantities(code string, houses []HouseFacts, revenue map[string]map[string]int64) ([]int64, error) {
+	out := make([]int64, len(houses))
+	var sum int64
+	for i, h := range houses {
+		if out[i] = revenue[h.ShipmentID][code]; out[i] < 0 {
+			return nil, fmt.Errorf("%w: house %s has a negative revenue (%d) under charge code %s; a cost is not divided on a negative weight",
+				ErrPoolNoBasis, h.ShipmentID, out[i], code)
+		}
+		sum += out[i]
+	}
+	if sum == 0 {
+		return nil, fmt.Errorf("%w: no house that takes part has revenue under charge code %s", ErrPoolNoBasis, code)
+	}
+	return out, nil
+}
+
+// HouseRevenue sets each house job's revenue by charge code at the estimate rate (FreightJob.EstimatedRevenue), per
+// house shipment, read under the jobs' locks: Close compares the lines apportioned by REVENUE against it.
+func (p *ConsolCostPool) HouseRevenue(revenue map[string]map[string]int64) { p.revenue = revenue }
+
+// ByRevenue tells whether a line's latest apportionment is by REVENUE: the close then needs the houses' revenue.
+func (p *ConsolCostPool) ByRevenue() bool {
+	for _, l := range p.state.Lines {
+		if _, la, ok := p.SharesOfLine(l.No); ok && la.Method == MethodRevenue {
+			return true
+		}
+	}
+	return false
+}
+
 // containerQuantities is each house's container count (CONTAINER_COUNT, unit CNT) or the tenths of TEU of its
 // containers (TEU, unit DTE). A house's containers are the distinct load units of its Units entries that hold loaded
 // packs of it (an entry without loaded packs is not a container the house is in; PHY gives none). PHY gives the entries
@@ -979,10 +1028,13 @@ func split(amount int64, quantities []int64) ([]int64, error) {
 // Close closes the pool once its costs are final: every line matched with a final match or released, by creditor
 // invoices neither disputed nor awaiting a variance approval; and every line's latest apportionment divided its final
 // cost on PHY's current basis with every house it used loaded (ACTUAL), naming exactly the live houses and, for a
-// weighed method, the used houses' current quantities; a house it left out is compared for its presence only. A line
-// whose final cost is zero needs no apportionment (or one of zero). Once PHY cancelled the consolidation or no house
-// is left on it, there is no basis to compare: the latest apportionments at the final costs stand. The pool then takes
-// no change until reopened.
+// weighed method, the used houses' current quantities; a house it left out is compared for its presence only. For a
+// line by REVENUE the quantities are the used houses' revenue under the line's charge code now (HouseRevenue), and the
+// close is refused when any differs from what the apportionment recorded. The stage rule is the same for every
+// method: a line apportioned by REVENUE at the stage PLANNED must be apportioned again once every house that takes part
+// is loaded before the pool can close. A line whose final cost is zero needs no apportionment (or one of zero). Once
+// PHY cancelled the consolidation or no house is left on it, there is no basis to compare: the latest apportionments at
+// the final costs stand. The pool then takes no change until reopened.
 func (p *ConsolCostPool) Close(basis CostBasis, by string, at time.Time) error {
 	if err := p.open(by, at); err != nil {
 		return err
@@ -1030,7 +1082,18 @@ func (p *ConsolCostPool) Close(basis CostBasis, by string, at time.Time) error {
 		}
 		var quantities []int64
 		var unit string
-		if la.Method != MethodManual {
+		if la.Method == MethodRevenue {
+			// A house the jobs do not answer cannot be compared, and counts as changed. No command reaches this: a used share
+			// is on an open job, and the commit trigger check_job_pool_shares_at_commit (fin/000012) refuses cancelling a job
+			// that holds a current used share, so the open jobs of the houses that take part are always there. It is kept as
+			// a safeguard, so that a close never passes a house it could not compare.
+			for _, s := range la.Shares {
+				if now, known := p.revenue[s.ShipmentID]; s.Used && (!known || s.Quantity != now[l.ChargeCode] || s.Unit != UnitRevenueMinor) {
+					return fmt.Errorf("%w: cost line %d: the houses' revenue under charge code %s has changed since it was apportioned (house %s); "+
+						"apportion it again", ErrPoolNotClosable, l.No, l.ChargeCode, s.ShipmentID)
+				}
+			}
+		} else if la.Method != MethodManual {
 			var err error
 			if quantities, unit, err = methodQuantities(la.Method, p.state.Mode, BasisActual, taking, basis.LoadUnits); err != nil {
 				return fmt.Errorf("%w: cost line %d: %w", ErrPoolNotClosable, l.No, err)

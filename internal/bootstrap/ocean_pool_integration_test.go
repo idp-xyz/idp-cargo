@@ -1836,3 +1836,254 @@ func TestContainerMethodsNeedEverySealedContainerWithPHYAndFIN(t *testing.T) {
 		t.Fatalf("the pool: %+v", p)
 	}
 }
+
+// Costs are apportioned by revenue (V2.81), with the real ORG, RATE, COM, FUL, PHY and FIN. Three LCL houses are
+// consolidated
+// in two own containers as in TestCostsAreApportionedByContainerCountAndTEUWithPHYAndFIN, each priced by its own
+// accepted
+// quote for OCEAN_FREIGHT: USD 600.00, USD 300.00 and USD 100.00, which FIN's jobs carry at the ESTIMATE rate 7.1234 as
+// CNY 4,274.04, 2,137.02 and 712.34 (427,404 / 213,702 / 71,234 minor, that is 6 : 3 : 1).
+//
+//	before any stuffing, line 1 OCEAN_FREIGHT CNY 100.01 by REVENUE is PLANNED: 10,001 x 6/10 = 6,000.6, x 3/10 =
+//	3,000.3,
+//	  x 1/10 = 1,000.1; the floors leave one unit, to the largest remainder (.6, SH-A) -> 6,001 / 3,000 / 1,000, each
+//	  share
+//	  recording the house's revenue and the unit REV
+//	line 2 THC, a code no job sells, is refused (FIN_POOL_NO_BASIS, naming THC) and nothing is stored; it is apportioned
+//	by
+//	  SHIPMENT instead
+//	after the stuffing and the seals the same line apportioned again is ACTUAL and gives the same shares
+//
+// Then SH-C's quote is replaced by a sell of USD 400.00 (CNY 2,849.36 at the same rate, 284,936 minor) and the
+// creditor's
+// invoice is matched final: the close is refused (FIN_POOL_NOT_CLOSABLE) until the line is apportioned again on the
+// revenue now, 427,404 : 213,702 : 284,936 -> 10,001 x 427,404 / 926,042 = 4,615.85, x 213,702 = 2,307.92 and x 284,936
+// =
+// 3,077.23; the floors leave two units, to SH-B (.92) and SH-A (.85) -> 4,616 / 2,308 / 3,077; and then the pool
+// closes.
+func TestCostsAreApportionedByRevenueWithPHYAndFIN(t *testing.T) {
+	ctx := context.Background()
+	platform := openPlatform(t)
+	orgModule, err := platform.ORG(allowAll{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rateModule, err := platform.RATE(orgModule, allowAll{}, marginFloor(2000))
+	if err != nil {
+		t.Fatal(err)
+	}
+	comModule, err := platform.COM(orgModule, rateModule, allowAll{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fulModule, phyModule, err := platform.FULAndPHY(comModule, allowAll{}, allowAll{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	finModule, err := platform.FIN(orgModule, rateModule, fulModule, &DocumentSnapshots{}, phyModule, allowAll{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tenant := uniqueTenant("cargo-ocean-revenue-")
+	seedORG(t, platform, tenant, "party-a", "party-b", "party-c", "line-1")
+	at := time.Now().UTC().Add(-48 * time.Hour).Truncate(time.Microsecond)
+	departs := at.Add(72 * time.Hour)
+	hours := func(h int) time.Time { return at.Add(time.Duration(h) * time.Hour) }
+	kg := func(n int64) kernel.Quantity { return kernel.Quantity{Unit: "KGM", Amount: n} }
+	cny := func(n int64) kernel.Money { return kernel.Money{Currency: "CNY", Minor: n} }
+	cmq := func(n int64) kernel.Quantity { return kernel.Quantity{Unit: "CMQ", Amount: n} }
+	unlocode := func(code string) kernel.LocationCode { return kernel.LocationCode{Scheme: kernel.UNLOCODE, Code: code} }
+	must := func(what string, err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("%s: %v", what, err)
+		}
+	}
+	phyOK := func(_ phyapi.Receipt, err error) { t.Helper(); must("PHY", err) }
+	evidence := func(source, ref string, h int) phyapi.Evidence {
+		return phyapi.Evidence{Source: source, Reference: ref, OccurredAt: hours(h)}
+	}
+	_, err = orgModule.ApproveRole(ctx, orgapi.ApproveRole{CommandID: "role-line-1", TenantID: tenant, ActorID: "org-officer", LegalEntityID: "LE",
+		PartyID: "line-1", ExpectedRevision: 1, RoleCode: orgapi.RoleCarrier, ValidFrom: at.Add(-time.Hour), EvidenceRef: "service contract", OccurredAt: at})
+	must("role line-1", err)
+	contexts := slice{org: orgModule, rate: rateModule, com: comModule, ful: fulModule, tenant: tenant, at: at, departs: departs}
+	sells := map[string]int64{"A": 60_000, "B": 30_000, "C": 10_000}
+	for _, s := range []string{"A", "B", "C"} {
+		planSeaSellOnly(t, contexts, "party-"+strings.ToLower(s), s, sells[s])
+	}
+	phyOK(phyModule.CreateConsolidation(ctx, phyapi.CreateConsolidation{CommandID: "consol", TenantID: tenant, ActorID: "ops-1", ConsolidationID: "C-1",
+		Mode: phyapi.ModeSea, Kind: phyapi.KindSeaLCLOwn, OperatingLegalEntityID: "LE", Origin: unlocode("CNSHA"), Destination: unlocode("DEHAM"),
+		PlannedDeparture: departs.Add(6 * time.Hour), HouseCutOff: departs.Add(-6 * time.Hour), OccurredAt: hours(8)}))
+	for i, typeCode := range []string{"22G1", "42G1"} {
+		phyOK(phyModule.PlanLoadUnit(ctx, phyapi.PlanLoadUnit{CommandID: "plan-unit-" + string(rune('1'+i)), TenantID: tenant, ActorID: "ops-1", ConsolidationID: "C-1",
+			ExpectedRevision: int64(1 + i), Kind: phyapi.LoadUnitContainer, TypeCode: typeCode, OccurredAt: hours(8)}))
+	}
+	for _, s := range []string{"SH-A", "SH-B", "SH-C"} {
+		phyOK(phyModule.AttachHouse(ctx, phyapi.AttachHouse{CommandID: "attach-" + s, TenantID: tenant, ActorID: "ops-1", ConsolidationID: "C-1", ShipmentID: s,
+			OccurredAt: hours(9)}))
+		record(t, ctx, fulModule, tenant, "ful-attach-"+s, s, "C-1", 3, hours(9))
+	}
+	_, err = finModule.OpenFinancePolicy(ctx, finapi.OpenFinancePolicy{CommandID: "fin-policy", TenantID: tenant, ActorID: "acct-1", LegalEntityID: "LE",
+		FunctionalCurrency: "CNY", BookCode: "MAIN", OccurredAt: hours(10)})
+	must("finance policy", err)
+	_, err = finModule.RecordExchangeRate(ctx, finapi.RecordExchangeRate{CommandID: "fin-rate", TenantID: tenant, ActorID: "acct-1", LegalEntityID: "LE",
+		ExpectedRevision: 1, RateType: finapi.RateEstimate, From: "USD", Rate: 71_234, Scale: 4, FromDigits: 2, ToDigits: 2, ValidFrom: at,
+		ValidUntil: at.AddDate(0, 1, 0), Source: "CFETS central parity", OccurredAt: hours(10)})
+	must("estimate rate", err)
+	for _, s := range []string{"A", "B", "C"} {
+		job := "JOB-" + s
+		r, err := finModule.OpenFreightJob(ctx, finapi.OpenFreightJob{CommandID: "fin-job-" + s, TenantID: tenant, ActorID: "fin-1", JobID: job, ShipmentID: "SH-" + s,
+			OccurredAt: hours(10)})
+		must("open "+job, err)
+		_, err = finModule.ApplyPricingBasis(ctx, finapi.ApplyPricingBasis{CommandID: "fin-quote-" + s, TenantID: tenant, ActorID: "fin-1", JobID: job,
+			ExpectedRevision: r.NewRevision, QuoteID: "Q-" + s, OrderID: "O-" + s, OccurredAt: hours(11)})
+		must("the pricing basis of "+job+" from the accepted quote", err)
+	}
+	_, err = finModule.OpenConsolCostPool(ctx, finapi.OpenConsolCostPool{CommandID: "fin-pool", TenantID: tenant, ActorID: "fin-1", PoolID: "P-1", ConsolidationID: "C-1",
+		OccurredAt: hours(12)})
+	must("open the pool", err)
+	for i, line := range []struct{ code, method string }{{"OCEAN_FREIGHT", finapi.MethodRevenue}, {"THC", finapi.MethodRevenue}} {
+		_, err = finModule.RecordConsolCost(ctx, finapi.RecordConsolCost{CommandID: "fin-cost-" + line.code, TenantID: tenant, ActorID: "fin-1", PoolID: "P-1",
+			ExpectedRevision: int64(1 + i), ChargeCode: line.code, Method: line.method, Cost: finapi.ChargeSide{PartyID: "line-1", Amount: cny(10_001)},
+			Reason: "the line's charge for the two containers", OccurredAt: hours(12)})
+		must("cost line "+line.code, err)
+	}
+	pool := func() finapi.ConsolCostPool {
+		t.Helper()
+		p, err := finModule.GetConsolCostPool(ctx, finapi.GetConsolCostPool{TenantID: tenant, PoolID: "P-1"})
+		must("the pool", err)
+		return p
+	}
+	apportion := func(id string, h int, method string, lines ...int) error {
+		t.Helper()
+		_, err := finModule.ApportionConsolCosts(ctx, finapi.ApportionConsolCosts{CommandID: id, TenantID: tenant, ActorID: "fin-1", PoolID: "P-1",
+			ExpectedRevision: pool().Revision, LineNos: lines, Method: method, OccurredAt: hours(h)})
+		return err
+	}
+	revenueShare := func(no int, quantity, amount int64) finapi.PoolShare {
+		return finapi.PoolShare{ShareNo: no, ShipmentID: "SH-" + string(rune('A'+no-1)), JobID: "JOB-" + string(rune('A'+no-1)), Quantity: quantity, Unit: "REV",
+			Amount: cny(amount), Local: cny(amount)}
+	}
+	checkLine1 := func(what, stage string, want ...finapi.PoolShare) {
+		t.Helper()
+		ap := pool().Apportionments
+		latest := ap[len(ap)-1]
+		var shares []finapi.PoolShare
+		for _, la := range latest.Lines {
+			if la.LineNo == 1 {
+				if la.Method != finapi.MethodRevenue {
+					t.Fatalf("%s: line 1 is by %s", what, la.Method)
+				}
+				shares = la.Shares
+			}
+		}
+		if latest.Stage != stage || !reflect.DeepEqual(shares, want) {
+			t.Fatalf("%s: at %s the shares are %+v, want %s %+v", what, latest.Stage, shares, stage, want)
+		}
+	}
+
+	// before any stuffing, at PLANNED: REVENUE does not read PHY's measures
+	if err = apportion("fin-revenue-planned", 12, "", 1); err != nil {
+		t.Fatalf("a line by REVENUE before the stuffing: %v", err)
+	}
+	planned := []finapi.PoolShare{revenueShare(1, 427_404, 6_001), revenueShare(2, 213_702, 3_000), revenueShare(3, 71_234, 1_000)}
+	checkLine1("before the stuffing", finapi.BasisPlanned, planned...)
+	// a code no job sells has no basis: refused, naming the code, and nothing is stored
+	stored := len(pool().Apportionments)
+	err = apportion("fin-revenue-thc", 12, "", 2)
+	if err == nil || !strings.Contains(err.Error(), "FIN_POOL_NO_BASIS") || !strings.Contains(err.Error(), "THC") {
+		t.Fatalf("a line of a code no job sells: %v", err)
+	}
+	if len(pool().Apportionments) != stored {
+		t.Fatalf("a refused apportionment was stored: %+v", pool().Apportionments)
+	}
+	for _, job := range []string{"JOB-A", "JOB-B", "JOB-C"} {
+		p, err := finModule.GetJobProfit(ctx, finapi.GetJobProfit{TenantID: tenant, JobID: job})
+		must("profit of "+job, err)
+		want := map[string]int64{"JOB-A": 6_001, "JOB-B": 3_000, "JOB-C": 1_000}[job]
+		if p.PoolCost != cny(want) {
+			t.Fatalf("the pool cost of %s is %v, want %d", job, p.PoolCost, want)
+		}
+	}
+
+	// the cargo is received, stuffed and sealed as in the container tests
+	c, err := phyModule.GetConsolidation(ctx, phyapi.GetConsolidation{TenantID: tenant, ConsolidationID: "C-1"})
+	must("consolidation", err)
+	phyOK(phyModule.CloseConsolidation(ctx, phyapi.CloseConsolidation{CommandID: "close", TenantID: tenant, ActorID: "ops-1", ConsolidationID: "C-1",
+		ExpectedRevision: c.Revision, OccurredAt: hours(13)}))
+	cfs := phyapi.Facility{Location: c.Current.Origin, Code: "SHA-CFS1"}
+	weights := map[string]int64{"A": 312, "B": 288, "C": 800}
+	volumes := map[string]int64{"A": 800_000, "B": 200_000, "C": 2_000_000}
+	for _, s := range []string{"A", "B", "C"} {
+		lot := "L-" + s
+		phyOK(phyModule.ReceiveCargo(ctx, phyapi.ReceiveCargo{CommandID: "rcv-" + s, TenantID: tenant, ActorID: "cfs-1", LotID: lot, ShipmentID: "SH-" + s,
+			Facility: cfs, Packs: 6, PackageType: "CT", Condition: phyapi.ConditionGood, Evidence: evidence("CFS-WMS", "GRN-"+s, 14), OccurredAt: hours(14)}))
+		phyOK(phyModule.RecordCargoMeasurement(ctx, phyapi.RecordCargoMeasurement{CommandID: "weigh-" + s, TenantID: tenant, ActorID: "cfs-1", LotID: lot,
+			ExpectedRevision: 1, GrossWeight: kg(weights[s]), Volume: cmq(volumes[s]), Method: phyapi.MethodScale, Evidence: evidence("CFS-SCALE", "W-"+s, 14), OccurredAt: hours(14)}))
+		phyOK(phyModule.CompleteReceipt(ctx, phyapi.CompleteReceipt{CommandID: "complete-" + s, TenantID: tenant, ActorID: "cfs-1", LotID: lot,
+			ExpectedRevision: 2, OccurredAt: hours(14)}))
+	}
+	revision := map[string]int64{}
+	for i, x := range []string{"X-1", "X-2"} {
+		phyOK(phyModule.OpenLoadExecution(ctx, phyapi.OpenLoadExecution{CommandID: "stuff-" + x, TenantID: tenant, ActorID: "cfs-1", ExecutionID: x,
+			ConsolidationID: "C-1", Kind: phyapi.ExecutionStuffing, Facility: cfs, LoadUnitNo: i + 1, OccurredAt: hours(15)}))
+		phyOK(phyModule.StartLoading(ctx, phyapi.StartLoading{CommandID: "start-" + x, TenantID: tenant, ActorID: "cfs-1", ExecutionID: x, ExpectedRevision: 1, OccurredAt: hours(15)}))
+		revision[x] = 2
+	}
+	for _, l := range []struct {
+		x, shipment string
+		packs       int64
+	}{{"X-1", "A", 6}, {"X-1", "C", 4}, {"X-2", "B", 6}, {"X-2", "C", 2}} {
+		phyOK(phyModule.RecordCargoLoaded(ctx, phyapi.RecordCargoLoaded{CommandID: "load-" + l.x + "-" + l.shipment, TenantID: tenant, ActorID: "cfs-1", ExecutionID: l.x,
+			ExpectedRevision: revision[l.x], LotID: "L-" + l.shipment, Packs: l.packs, Evidence: evidence("CFS-TALLY", "T-"+l.x+l.shipment, 15), OccurredAt: hours(15)}))
+		revision[l.x]++
+	}
+	for _, x := range []string{"X-1", "X-2"} {
+		phyOK(phyModule.CloseLoadExecution(ctx, phyapi.CloseLoadExecution{CommandID: "seal-" + x, TenantID: tenant, ActorID: "cfs-1", ExecutionID: x,
+			ExpectedRevision: revision[x], Evidence: evidence(phyapi.EvidenceSeal, "SEAL-"+x, 15), OccurredAt: hours(15)}))
+	}
+
+	// at ACTUAL the same line gives the same shares: the revenue is the jobs', whatever PHY says of the cargo; line 2 goes
+	// by SHIPMENT
+	must("apportion at ACTUAL", apportion("fin-revenue-actual", 17, "", 1))
+	checkLine1("after the seals", finapi.BasisActual, planned...)
+	must("line 2 by SHIPMENT", apportion("fin-thc-shipment", 17, finapi.MethodShipment, 2))
+
+	// SH-C's sell is revised to USD 400.00 and the carrier's invoice is matched final: the close is refused until line 1
+	// is
+	// apportioned again on the revenue now
+	jobC, err := finModule.GetFreightJob(ctx, finapi.GetFreightJob{TenantID: tenant, JobID: "JOB-C"})
+	must("JOB-C", err)
+	_, err = finModule.ReviseChargeSide(ctx, finapi.ReviseChargeSide{CommandID: "fin-revise-c", TenantID: tenant, ActorID: "fin-1", JobID: "JOB-C",
+		ExpectedRevision: jobC.Revision, LineNo: 1, Side: finapi.SideSell, ExpectedSideVersion: 1,
+		Value: finapi.ChargeSide{PartyID: "party-c", Amount: kernel.Money{Currency: "USD", Minor: 40_000}}, Reason: "the customer's quote was raised", OccurredAt: hours(18)})
+	must("revise the sell of JOB-C", err)
+	_, err = finModule.RecordCreditorInvoice(ctx, finapi.RecordCreditorInvoice{CommandID: "fin-invoice", TenantID: tenant, ActorID: "ap-1", InvoiceID: "CI-LINE-1",
+		LegalEntityID: "LE", CreditorPartyID: "line-1", SupplierInvoiceNo: "LINE-INV-2611-4", InvoiceDate: hours(19).Format(time.DateOnly), Currency: "CNY",
+		Lines:      []finapi.CreditorInvoiceLine{{ChargeCode: "OCEAN_FREIGHT", Amount: 10_001}, {ChargeCode: "THC", Amount: 10_001}},
+		OccurredAt: hours(19)})
+	must("record the line's invoice", err)
+	invoice, err := finModule.GetCreditorInvoice(ctx, finapi.GetCreditorInvoice{TenantID: tenant, InvoiceID: "CI-LINE-1"})
+	must("the line's invoice", err)
+	matches := make([]finapi.CreditorMatch, 2)
+	for i := range matches {
+		matches[i] = finapi.CreditorMatch{LineNo: i + 1, Target: finapi.AccrualRef{Kind: "POOL_COST", ID: "P-1", LineNo: i + 1}, Amount: 10_001, Final: true}
+	}
+	_, err = finModule.MatchCreditorInvoice(ctx, finapi.MatchCreditorInvoice{CommandID: "fin-match", TenantID: tenant, ActorID: "ap-1", InvoiceID: "CI-LINE-1",
+		ExpectedRevision: invoice.Revision, Matches: matches, OccurredAt: hours(20)})
+	must("match the line's invoice", err)
+	closeCmd := func(id string, h int) finapi.CloseConsolCostPool {
+		return finapi.CloseConsolCostPool{CommandID: id, TenantID: tenant, ActorID: "fin-1", PoolID: "P-1", ExpectedRevision: pool().Revision, OccurredAt: hours(h)}
+	}
+	_, err = finModule.CloseConsolCostPool(ctx, closeCmd("fin-close-refused", 21))
+	if err == nil || !strings.Contains(err.Error(), "FIN_POOL_NOT_CLOSABLE") || !strings.Contains(err.Error(), "revenue") {
+		t.Fatalf("the close on the old revenue: %v", err)
+	}
+	must("apportion again on the revenue now", apportion("fin-revenue-again", 22, "", 1))
+	checkLine1("on the revised revenue", finapi.BasisActual, revenueShare(1, 427_404, 4_616), revenueShare(2, 213_702, 2_308), revenueShare(3, 284_936, 3_077))
+	_, err = finModule.CloseConsolCostPool(ctx, closeCmd("fin-close", 23))
+	must("close the pool", err)
+	if p := pool(); p.State != finapi.PoolClosed || len(p.Closures) != 1 {
+		t.Fatalf("the closed pool: %+v", p)
+	}
+}
