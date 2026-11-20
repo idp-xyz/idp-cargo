@@ -90,7 +90,8 @@ func (m *Module) GetPhysicalCostBasis(ctx context.Context, q api.GetPhysicalCost
 			uses[st.LoadUnitNo] = application.UnitUse{ExecutionID: st.ExecutionID, State: st.State, Revision: r.Revision}
 			lines := unitLines[st.LoadUnitNo]
 			slices.SortFunc(lines, func(a, b api.UnitPackingLine) int { return strings.Compare(a.ShipmentID, b.ShipmentID) })
-			list := api.UnitPackingList{UnitNo: st.LoadUnitNo, ExecutionID: string(st.ExecutionID), ExecutionState: string(st.State), Lines: lines}
+			list := api.UnitPackingList{UnitNo: st.LoadUnitNo, ExecutionID: string(st.ExecutionID), ExecutionState: string(st.State), Lines: lines,
+				Reworks: reworkViews(st.Reworks)}
 			if check, ok := r.Execution.CheckLimits(c, byID, allotment); ok {
 				list.Limits = api.UnitLimitsCheck{Checked: check.Checked, Unchecked: string(check.Unchecked), CargoGrams: check.CargoGrams,
 					CargoCubicCm: check.CargoCubicCm, OverMaxGross: check.OverMaxGross, OverCapacity: check.OverCapacity}

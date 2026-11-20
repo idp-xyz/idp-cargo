@@ -221,6 +221,22 @@ type Expected struct {
 	Scope       CargoScope
 }
 
+// LotReopen records that a closed lot was opened again by the unloading of its house from a container in rework (the
+// stuffing's execution and the number of its rework), the first reversal of the lot's packs in that unloading, and the
+// closing it undid: who closed the lot and when. A lot is reopened by nothing else.
+type LotReopen struct {
+	No                int
+	ExecutionID       LoadExecutionID
+	ReworkNo          int
+	ReversalNo        int
+	ClosedBy          string
+	ClosedAt          time.Time
+	ClosedEnteredAt   time.Time
+	ReopenedBy        string
+	ReopenedAt        time.Time
+	ReopenedEnteredAt time.Time
+}
+
 // CargoLotState is a stored cargo lot, for persistence.
 type CargoLotState struct {
 	TenantID           TenantID
@@ -240,12 +256,14 @@ type CargoLotState struct {
 	ClosedBy           string
 	ClosedAt           time.Time
 	ClosedEnteredAt    time.Time
+	Reopens            []LotReopen // each time the lot was closed and opened again, in order
 }
 
 // CargoLot is the aggregate root of a house's cargo at a facility: one lot per shipment and facility in force.
 type CargoLot struct {
 	state    CargoLotState
 	stored   [4]int // lines, measurements, screenings, discrepancies persisted
+	reopens  int    // reopens persisted
 	resolved []int  // persisted discrepancies resolved since, by index
 	pending  []Event
 }
@@ -468,6 +486,38 @@ func (l *CargoLot) Close(loaded, shipmentLoaded int64, i LoadIntent, by string, 
 	return nil
 }
 
+// reopenable reports whether the lot can be opened again by the command of an actor at a time: a lot that is not closed
+// needs nothing, and a closed one is changed by someone, at a time not before its last change.
+func (l *CargoLot) reopenable(by string, at time.Time) error {
+	if l.state.State != LotClosed {
+		return nil
+	}
+	return l.changeable(by, at)
+}
+
+// reopenForRework opens a closed lot again, back to the state it had before it was closed (RECEIVED once its receipt
+// was completed, RECEIVING otherwise), and records who and when, the execution that caused it and its rework, the first
+// reversal of the lot's packs in it, and the closing it undid. It is not exported: only the unloading of a house from a
+// container in rework (LoadExecution.UnloadHouse) reopens a lot, which a general command never does.
+func (l *CargoLot) reopenForRework(execution LoadExecutionID, reworkNo, reversalNo int, by string, at time.Time) {
+	st := &l.state
+	st.Reopens = append(st.Reopens, LotReopen{No: len(st.Reopens) + 1, ExecutionID: execution, ReworkNo: reworkNo, ReversalNo: reversalNo,
+		ClosedBy: st.ClosedBy, ClosedAt: st.ClosedAt, ClosedEnteredAt: st.ClosedEnteredAt, ReopenedBy: by, ReopenedAt: at.UTC()})
+	st.State = LotReceived
+	if !l.Completed() {
+		st.State = LotReceiving
+	}
+	st.ClosedBy, st.ClosedAt, st.ClosedEnteredAt = "", time.Time{}, time.Time{}
+	l.record(eventCargoLotReopened, at, len(st.Reopens))
+	l.pending[len(l.pending)-1].ExecutionID = execution // the event names the stuffing whose rework caused it
+}
+
+// Reopens returns the reopens of the lot, in order.
+func (l *CargoLot) Reopens() []LotReopen { return append([]LotReopen(nil), l.state.Reopens...) }
+
+// AddedReopens returns the reopens written since the lot was loaded.
+func (l *CargoLot) AddedReopens() []LotReopen { return l.state.Reopens[l.reopens:] }
+
 // Received returns the packs received.
 func (l *CargoLot) Received() int64 {
 	var n int64
@@ -502,6 +552,9 @@ func (l *CargoLot) changeable(by string, at time.Time) error {
 
 func (l *CargoLot) lastChange() time.Time {
 	last := later(l.state.CompletedAt, l.state.ClosedAt)
+	for _, x := range l.state.Reopens {
+		last = later(last, x.ReopenedAt)
+	}
 	for _, x := range l.state.Lines {
 		last = later(last, x.At)
 	}
@@ -531,6 +584,7 @@ const (
 	eventCargoDiscrepancyRecorded = "CargoDiscrepancyRecorded.v1"
 	eventCargoDiscrepancyResolved = "CargoDiscrepancyResolved.v1"
 	eventCargoLotClosed           = "CargoLotClosed.v1"
+	eventCargoLotReopened         = "CargoLotReopened.v1"
 )
 
 // Stamp records when PHY entered what was added, completed, resolved or closed since the lot was loaded (T1).
@@ -544,6 +598,9 @@ func (l *CargoLot) Stamp(entered time.Time) {
 	}
 	stamp(&st.CompletedEnteredAt, st.CompletedAt)
 	stamp(&st.ClosedEnteredAt, st.ClosedAt)
+	for i := range st.Reopens {
+		stamp(&st.Reopens[i].ReopenedEnteredAt, st.Reopens[i].ReopenedAt)
+	}
 	for i := range st.Lines {
 		stamp(&st.Lines[i].EnteredAt, st.Lines[i].At)
 	}
@@ -565,7 +622,8 @@ func RestoreCargoLot(st CargoLotState) (*CargoLot, error) {
 	st.Measurements = append([]Measurement(nil), st.Measurements...)
 	st.Screenings = append([]Screening(nil), st.Screenings...)
 	st.Discrepancies = append([]Discrepancy(nil), st.Discrepancies...)
-	l := &CargoLot{state: st, stored: [4]int{len(st.Lines), len(st.Measurements), len(st.Screenings), len(st.Discrepancies)}}
+	st.Reopens = append([]LotReopen(nil), st.Reopens...)
+	l := &CargoLot{state: st, stored: [4]int{len(st.Lines), len(st.Measurements), len(st.Screenings), len(st.Discrepancies)}, reopens: len(st.Reopens)}
 	bad := func(what string) (*CargoLot, error) { return nil, fmt.Errorf("%w: %s", ErrInvalidLot, what) }
 	if !identifier(string(st.TenantID)) || !identifier(string(st.LotID)) || !identifier(string(st.ShipmentID)) || !st.Facility.valid() ||
 		!st.Mode.Valid() || !st.Expected.Scope.valid() || len(st.Lines) == 0 {
@@ -605,6 +663,12 @@ func RestoreCargoLot(st CargoLotState) (*CargoLot, error) {
 			return bad(fmt.Sprintf("discrepancy %d", i+1))
 		}
 	}
+	for i, x := range st.Reopens {
+		if x.No != i+1 || !identifier(string(x.ExecutionID)) || x.ReworkNo < 1 || x.ReversalNo < 1 || blank(x.ClosedBy) || x.ClosedAt.IsZero() ||
+			blank(x.ReopenedBy) || x.ReopenedAt.IsZero() || x.ReopenedAt.Before(x.ClosedAt) || (i > 0 && x.ClosedAt.Before(st.Reopens[i-1].ReopenedAt)) || (i == len(st.Reopens)-1 && st.State == LotClosed && st.ClosedAt.Before(x.ReopenedAt)) {
+			return bad(fmt.Sprintf("reopen %d", i+1))
+		}
+	}
 	return l, nil
 }
 
@@ -615,6 +679,7 @@ func (l *CargoLot) State() CargoLotState {
 	st.Measurements = append([]Measurement(nil), st.Measurements...)
 	st.Screenings = append([]Screening(nil), st.Screenings...)
 	st.Discrepancies = append([]Discrepancy(nil), st.Discrepancies...)
+	st.Reopens = append([]LotReopen(nil), st.Reopens...)
 	return st
 }
 
@@ -650,4 +715,5 @@ func (l *CargoLot) Added() (lines []ReceiptLine, measurements []Measurement, scr
 func (l *CargoLot) Acknowledge() {
 	l.pending, l.resolved = nil, nil
 	l.stored = [4]int{len(l.state.Lines), len(l.state.Measurements), len(l.state.Screenings), len(l.state.Discrepancies)}
+	l.reopens = len(l.state.Reopens)
 }

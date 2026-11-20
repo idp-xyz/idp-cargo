@@ -75,6 +75,8 @@ const (
 	ActionReleaseLoadExecutionHold          Action = "ReleaseLoadExecutionHold"
 	ActionCloseLoadExecution                Action = "CloseLoadExecution"
 	ActionCancelLoadExecution               Action = "CancelLoadExecution"
+	ActionOpenStuffingForRework             Action = "OpenStuffingForRework"
+	ActionUnloadHouseForRework              Action = "UnloadHouseForRework"
 	ActionRecordCarrierLoadEvidence         Action = "RecordCarrierLoadEvidence"
 	ActionResolveLoadingDiscrepancy         Action = "ResolveLoadingDiscrepancy"
 )

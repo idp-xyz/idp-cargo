@@ -132,6 +132,20 @@ func (m *Module) CancelLoadExecution(ctx context.Context, cmd api.CancelLoadExec
 	return toReceipt(r, err)
 }
 
+func (m *Module) OpenStuffingForRework(ctx context.Context, cmd api.OpenStuffingForRework) (api.Receipt, error) {
+	r, err := application.OpenStuffingForRework{Deps: m.deps(cmd.TenantID, cmd.CommandID)}.Handle(ctx, application.OpenStuffingForReworkCommand{
+		ExecutionCommand: executionCommand(cmd.CommandID, cmd.TenantID, cmd.ActorID, cmd.ExecutionID, cmd.ExpectedRevision, cmd.OccurredAt),
+		Reason:           cmd.Reason})
+	return toReceipt(r, err)
+}
+
+func (m *Module) UnloadHouseForRework(ctx context.Context, cmd api.UnloadHouseForRework) (api.Receipt, error) {
+	r, err := application.UnloadHouseForRework{Deps: m.deps(cmd.TenantID, cmd.CommandID)}.Handle(ctx, application.UnloadHouseForReworkCommand{
+		ExecutionCommand: executionCommand(cmd.CommandID, cmd.TenantID, cmd.ActorID, cmd.ExecutionID, cmd.ExpectedRevision, cmd.OccurredAt),
+		ShipmentID:       domain.ShipmentID(cmd.ShipmentID), Evidence: evidence(cmd.Evidence)})
+	return toReceipt(r, err)
+}
+
 func (m *Module) RecordCarrierLoadEvidence(ctx context.Context, cmd api.RecordCarrierLoadEvidence) (api.Receipt, error) {
 	r, err := application.RecordCarrierLoadEvidence{Deps: m.deps(cmd.TenantID, cmd.CommandID)}.Handle(ctx, application.RecordCarrierLoadEvidenceCommand{
 		ExecutionCommand: executionCommand(cmd.CommandID, cmd.TenantID, cmd.ActorID, cmd.ExecutionID, cmd.ExpectedRevision, cmd.OccurredAt),
@@ -217,7 +231,7 @@ func (m *Module) GetPhysicalLoadEvidence(ctx context.Context, q api.GetPhysicalL
 		v := executionView(r)
 		t := api.TenderEvidence{ExecutionID: v.ExecutionID, Revision: v.Revision, ConsolidationID: v.ConsolidationID, Kind: v.Kind, State: v.State,
 			Facility: v.Facility, LoadUnitNo: v.LoadUnitNo, LoadUnitType: units[r.Execution.ID()].TypeCode, ClosedAt: v.ClosedAt,
-			CloseEvidence: v.CloseEvidence}
+			CloseEvidence: v.CloseEvidence, Reworks: v.Reworks}
 		for _, l := range v.Lines {
 			if l.ShipmentID == q.ShipmentID {
 				t.Lines = append(t.Lines, l)
@@ -270,6 +284,10 @@ func lotView(r application.LotRead) api.CargoLot {
 		out.Screenings = append(out.Screenings, api.Screening{ResultNo: x.No, Outcome: string(x.Outcome), Screener: x.Screener, Method: x.Method,
 			Reference: x.Reference, Evidence: evidenceView(x.Evidence), RecordedAt: x.At, EnteredAt: x.EnteredAt})
 	}
+	for _, x := range st.Reopens {
+		out.Reopens = append(out.Reopens, api.LotReopen{ReopenNo: x.No, ExecutionID: string(x.ExecutionID), ReworkNo: x.ReworkNo, ReversalNo: x.ReversalNo,
+			ClosedBy: x.ClosedBy, ClosedAt: x.ClosedAt, ReopenedBy: x.ReopenedBy, ReopenedAt: x.ReopenedAt, EnteredAt: x.ReopenedEnteredAt})
+	}
 	for _, x := range st.Discrepancies {
 		out.Discrepancies = append(out.Discrepancies, api.Discrepancy{DiscrepancyNo: x.No, Kind: string(x.Kind), Expected: x.Expected, Observed: x.Observed,
 			Unit: x.Unit, RaisedAt: x.RaisedAt, Resolution: string(x.Resolution), Reference: x.Reference, Reason: x.Text, ResolvedAt: x.ResolvedAt})
@@ -285,7 +303,7 @@ func executionView(r application.ExecutionRead) api.LoadExecution {
 		Facility: api.Facility{Location: st.Facility.Location, Code: st.Facility.Code}, LoadUnitNo: st.LoadUnitNo, State: string(st.State),
 		TenderedPacks: x.Tendered(),
 		OpenedAt:      st.OpenedAt, StartedAt: st.StartedAt, ClosedAt: st.ClosedAt, CancelledBy: st.CancelledBy, CancelledAt: st.CancelledAt,
-		CancelReason: st.CancelReason}
+		CancelReason: st.CancelReason, Reworks: reworkViews(st.Reworks)}
 	if !st.ClosedAt.IsZero() {
 		out.CloseEvidence = evidenceView(st.CloseEvidence)
 	}
@@ -320,6 +338,17 @@ func executionView(r application.ExecutionRead) api.LoadExecution {
 		out.Discrepancies = append(out.Discrepancies, api.LoadingDiscrepancy{DiscrepancyNo: d.No, Kind: string(d.Kind), EvidenceNo: d.EvidenceNo,
 			ShipmentID: string(d.ShipmentID), Expected: d.Expected, Observed: d.Observed, RaisedAt: d.RaisedAt, Resolution: string(d.Resolution),
 			Reference: d.Reference, Reason: d.Text, ResolvedAt: d.ResolvedAt})
+	}
+	return out
+}
+
+// reworkViews is a stuffing's reworks as the published language has them, in order.
+func reworkViews(list []domain.Rework) []api.Rework {
+	var out []api.Rework
+	for _, r := range list {
+		out = append(out, api.Rework{ReworkNo: r.No, Reason: r.Reason, AskedBy: r.AskedBy, AskedAt: r.AskedAt, AskedEnteredAt: r.AskedEnteredAt,
+			BrokenSeal: evidenceView(r.BrokenSeal), BrokenSealedBy: r.BrokenSealedBy, BrokenSealedAt: r.BrokenSealedAt, End: string(r.End),
+			EndedBy: r.EndedBy, EndedAt: r.EndedAt, NewSealReference: r.NewSeal})
 	}
 	return out
 }

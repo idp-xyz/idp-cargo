@@ -210,13 +210,14 @@ func (c *Consolidation) overEnvelope(houses []CargoScope) string {
 // Stuffed is what a consolidation's stuffings tell a reopen: how many containers are sealed, and the business
 // time of their latest change.
 type Stuffed struct {
-	Sealed int
-	Last   time.Time
+	Sealed    int // containers sealed (CLOSED)
+	Reworking int // containers opened for rework (REWORK): they are not sealed, and not open for loading either
+	Last      time.Time
 }
 
-// Reopen reopens a CLOSED consolidation with a reason (OD-5), until cargo is tendered or a container sealed:
-// tendered counts the live packs of its closed load executions, which carrier evidence follows. A reopen is dated
-// not before its stuffings' latest change: they were stuffed from the frozen house list.
+// Reopen reopens a CLOSED consolidation with a reason (OD-5), until cargo is tendered or a container sealed or opened
+// for rework: tendered counts the live packs of its closed load executions, which carrier evidence follows. A reopen is
+// dated not before its stuffings' latest change: they were stuffed from the frozen house list.
 func (c *Consolidation) Reopen(reason, by string, at time.Time, tendered int64, stuffed Stuffed) error {
 	if c.state.State != StateClosed {
 		return ErrInvalidTransition
@@ -226,6 +227,9 @@ func (c *Consolidation) Reopen(reason, by string, at time.Time, tendered int64, 
 	}
 	if stuffed.Sealed > 0 {
 		return fmt.Errorf("%w: %d containers are sealed", ErrExecutionsClosed, stuffed.Sealed)
+	}
+	if stuffed.Reworking > 0 {
+		return fmt.Errorf("%w: %d containers are opened for rework; they are sealed again or given up first", ErrExecutionsClosed, stuffed.Reworking)
 	}
 	if at.Before(stuffed.Last) {
 		return fmt.Errorf("%w: a reopen is dated not before the stuffing it pauses", ErrInvalidChange)

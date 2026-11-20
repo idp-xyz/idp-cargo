@@ -58,10 +58,10 @@ type Member struct {
 	AttachedAt         time.Time
 }
 
-// PlannedLoadUnit is a load unit planned for a consolidation, with the limits of its type frozen from the
-// equipment reference data (TEU in tenths; kilograms; cubic centimetres) and the edition. A unit is IN_USE while
-// its stuffing is open and CLOSED once it is closed (sealed); a stuffing given up (CANCELLED) leaves the unit PLANNED
-// again; removed units keep their number and say why.
+// PlannedLoadUnit is a load unit planned for a consolidation, with the limits of its type frozen from the equipment
+// reference data (TEU in tenths; kilograms; cubic centimetres) and the edition. A unit is IN_USE while its stuffing is
+// open, or opened again for rework (REWORK: its seal is broken and it is not sealed), and CLOSED once it is closed
+// (sealed); a stuffing given up (CANCELLED) leaves the unit PLANNED again; removed units keep their number and say why.
 type PlannedLoadUnit struct {
 	UnitNo           int
 	Kind             string // LoadUnitContainer
@@ -71,10 +71,10 @@ type PlannedLoadUnit struct {
 	TareKg           int64
 	CapacityCM3      int64
 	EquipmentEdition string
-	Status           string // UnitStatusPlanned, UnitStatusInUse, UnitStatusClosed or UnitStatusRemoved
+	Status           string // UnitStatusPlanned, UnitStatusInUse (also while its stuffing is in REWORK), UnitStatusClosed or UnitStatusRemoved
 	ExecutionID      string // the stuffing opened on the unit that is not cancelled; empty while none
-	// ExecutionState is the state of that stuffing (the load execution states, such as OPEN, LOADING, ON_HOLD or
-	// CLOSED), empty while none is opened (or the stuffing was cancelled). ExecutionRevision is the revision of the
+	// ExecutionState is the state of that stuffing (the load execution states, such as OPEN, LOADING, ON_HOLD or CLOSED
+	// or REWORK), empty while none is opened (or the stuffing was cancelled). ExecutionRevision is the revision of the
 	// stuffing's own record, 0 while none is opened: it moves when the stuffing itself is written (opened, loading
 	// started, a load, an unload, a hold, its release, the seal). It does not see what changes the unit's figures from
 	// outside the stuffing: a lot measured again, more packs received of a lot, the consolidation reopened. For a
