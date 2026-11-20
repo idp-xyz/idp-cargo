@@ -23,6 +23,10 @@ func (s stub) GetOceanOperationPlan(context.Context, fulapi.GetShipmentPlanSnaps
 	return s.plan, s.err
 }
 
+func (s stub) GetOceanEvidenceCurrency(context.Context, fulapi.GetShipmentPlanSnapshot) (fulapi.OceanEvidenceCurrency, error) {
+	return fulapi.OceanEvidenceCurrency{}, nil
+}
+
 func unlocode(code string) kernel.LocationCode {
 	return kernel.LocationCode{Scheme: kernel.UNLOCODE, Code: code}
 }

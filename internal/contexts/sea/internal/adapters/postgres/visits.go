@@ -92,18 +92,19 @@ func readVisit(ctx context.Context, q queryRower, tenant sea.TenantID, id sea.Vi
 	st := sea.VisitState{TenantID: tenant, VisitID: id}
 	var tare, maxGross *int64
 	var plate, execution, difference, stuffedBy, releaseReason, releasedBy *string
-	var stuffedAt, releasedAt *time.Time
+	var stuffedAt, releasedAt, phySealedAt *time.Time
+	var phySeal *string
 	var revision int64
 	var seals, assertions, events []byte
 	err := q.QueryRow(ctx, `SELECT v.movement_id,v.consolidation_id,v.load_unit_no,v.container_number,v.size_type,v.tare_kg,v.max_gross_kg,v.plate_source,
-      v.status,v.execution_id,v.difference_reason,v.stuffed_by,v.stuffed_at,v.release_reason,v.released_by,v.released_at,v.assigned_by,v.assigned_at,
+      v.status,v.execution_id,v.difference_reason,v.stuffed_by,v.stuffed_at,v.stuffed_phy_seal,v.stuffed_phy_sealed_at,v.release_reason,v.released_by,v.released_at,v.assigned_by,v.assigned_at,
       v.entered_at,v.revision,
       (SELECT coalesce(json_agg(s ORDER BY s.seal_no), '[]') FROM cargo_sea.container_seal s WHERE s.tenant_id=v.tenant_id AND s.visit_id=v.visit_id),
       (SELECT coalesce(json_agg(a ORDER BY a.version), '[]') FROM cargo_sea.vgm_assertion a WHERE a.tenant_id=v.tenant_id AND a.visit_id=v.visit_id),
       (SELECT coalesce(json_agg(e ORDER BY e.event_no), '[]') FROM cargo_sea.container_event e WHERE e.tenant_id=v.tenant_id AND e.visit_id=v.visit_id)
       FROM cargo_sea.container_visit v WHERE v.tenant_id=$1 AND v.visit_id=$2`, string(tenant), string(id)).Scan(
 		&st.MovementID, &st.ConsolidationID, &st.LoadUnitNo, &st.Number, &st.SizeType, &tare, &maxGross, &plate, &st.Status,
-		&execution, &difference, &stuffedBy, &stuffedAt, &releaseReason, &releasedBy, &releasedAt, &st.AssignedBy, &st.AssignedAt, &st.EnteredAt,
+		&execution, &difference, &stuffedBy, &stuffedAt, &phySeal, &phySealedAt, &releaseReason, &releasedBy, &releasedAt, &st.AssignedBy, &st.AssignedAt, &st.EnteredAt,
 		&revision, &seals, &assertions, &events)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, 0, fmt.Errorf("%w: visit %s", bentorepo.ErrNotFound, id)
@@ -121,6 +122,7 @@ func readVisit(ctx context.Context, q queryRower, tenant sea.TenantID, id sea.Vi
 	st.ExecutionID, st.DifferenceReason, st.StuffedBy = deref(execution), deref(difference), deref(stuffedBy)
 	st.ReleaseReason, st.ReleasedBy = deref(releaseReason), deref(releasedBy)
 	st.StuffedAt, st.ReleasedAt = utcTime(stuffedAt), utcTime(releasedAt)
+	st.StuffedPhySeal, st.StuffedPhySealedAt = deref(phySeal), utcTime(phySealedAt)
 	st.AssignedAt, st.EnteredAt = st.AssignedAt.UTC(), st.EnteredAt.UTC()
 	for _, r := range rows {
 		st.Seals = append(st.Seals, sea.VisitSeal{No: r.SealNo, Number: r.Number, Party: r.Party, AppliedAt: utc(r.AppliedAt), Source: r.Source,
@@ -184,10 +186,11 @@ func (s VisitStore) Save(ctx context.Context, v *sea.Visit, expected int64) (int
 	st := v.State()
 	var revision int64
 	err = q.QueryRow(ctx, `UPDATE cargo_sea.container_visit SET status=$3, execution_id=$4, difference_reason=$5, stuffed_by=$6, stuffed_at=$7,
-      release_reason=$8, released_by=$9, released_at=$10, revision=revision+1, updated_at=now()
+      release_reason=$8, released_by=$9, released_at=$10, stuffed_phy_seal=$12, stuffed_phy_sealed_at=$13, revision=revision+1, updated_at=now()
       WHERE tenant_id=$1 AND visit_id=$2 AND revision=$11 RETURNING revision`,
 		string(st.TenantID), string(st.VisitID), string(st.Status), orNull(st.ExecutionID), orNull(st.DifferenceReason), orNull(st.StuffedBy),
-		orNull(st.StuffedAt), orNull(st.ReleaseReason), orNull(st.ReleasedBy), orNull(st.ReleasedAt), expected).Scan(&revision)
+		orNull(st.StuffedAt), orNull(st.ReleaseReason), orNull(st.ReleasedBy), orNull(st.ReleasedAt), expected,
+		orNull(st.StuffedPhySeal), orNull(st.StuffedPhySealedAt)).Scan(&revision)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, fmt.Errorf("%w: visit %s", bentorepo.ErrConflict, st.VisitID)
 	}

@@ -93,12 +93,41 @@ func (d Deps) AssignContainer(ctx context.Context, c Command, movement sea.Movem
 // OPEN in the same transaction: each changes what the published facts say. Stuffing, a release and anything else
 // are still refused while the movement is FINAL.
 func (d Deps) ChangeVisit(ctx context.Context, c Command, apply func(context.Context, *sea.Visit) (seal int, err error)) (Receipt, error) {
+	return d.ChangeVisitReading(ctx, c, nil, apply)
+}
+
+// ChangeVisitReading is ChangeVisit with a read that asks FUL first, outside SEA's transaction, with the visit and its
+// movement as they stood (as Change does for a movement): a command that finds the visit's revision moved meanwhile
+// is a conflict.
+func (d Deps) ChangeVisitReading(ctx context.Context, c Command, read func(context.Context, *sea.Visit, *sea.Movement) error,
+	apply func(context.Context, *sea.Visit) (seal int, err error)) (Receipt, error) {
 	if d.Visits == nil || d.Movements == nil {
 		return Receipt{}, ErrMissingDependency
 	}
 	hash, entered, stored, replayed, err := d.begin(ctx, c)
 	if err != nil || replayed {
 		return stored, err
+	}
+	if read != nil {
+		var current *sea.Visit
+		var movement *sea.Movement
+		if err = d.Tx.WithinTransaction(ctx, func(txCtx context.Context) error {
+			v, revision, err := d.Visits.Read(txCtx, c.Scope.TenantID, sea.VisitID(c.Subject))
+			if err != nil {
+				return err
+			}
+			if revision != c.ExpectedRevision {
+				return sea.ErrConflict
+			}
+			current = v
+			movement, _, err = d.Movements.Read(txCtx, v.State().TenantID, v.State().MovementID)
+			return err
+		}); err != nil {
+			return d.committedMeanwhile(ctx, c, hash, err)
+		}
+		if err = read(ctx, current, movement); err != nil {
+			return d.committedMeanwhile(ctx, c, hash, err)
+		}
 	}
 	return d.write(ctx, c, hash, "ContainerVisit", func(txCtx context.Context) (Receipt, []aggregate, error) {
 		v, revision, err := d.Visits.Load(txCtx, c.Scope.TenantID, sea.VisitID(c.Subject))

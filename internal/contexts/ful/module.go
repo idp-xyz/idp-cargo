@@ -83,6 +83,8 @@ var (
 	_ api.LoadIntentQueries         = (*Module)(nil)
 	_ api.AirOperationPlanQueries   = (*Module)(nil)
 	_ api.OceanOperationPlanQueries = (*Module)(nil)
+	_ api.OceanEvidenceQueries      = (*Module)(nil)
+	_ api.OceanOperationQueries     = (*Module)(nil)
 )
 
 // New assembles FUL. com answers which obligation versions a shipment may plan; the composition root
@@ -297,6 +299,19 @@ func (m *Module) GetOceanOperationPlan(ctx context.Context, q api.GetShipmentPla
 		}
 	}
 	return plan, nil
+}
+
+// GetOceanEvidenceCurrency answers OceanEvidenceCurrency v1 for SEA: whether RecordVerifiedLoadEvidence would record
+// a new evidence version of the shipment now. It reads PHY as that command does and writes nothing. Without PHY's
+// evidence wired it is refused, as the command is.
+func (m *Module) GetOceanEvidenceCurrency(ctx context.Context, q api.GetShipmentPlanSnapshot) (api.OceanEvidenceCurrency, error) {
+	got, err := application.GetEvidenceCurrency{Tx: bento.TenantTransactor{DB: m.db, Tenant: q.TenantID}, Shipments: postgres.ShipmentStore{DB: m.db},
+		Evidence: m.evidence}.Handle(ctx, domain.TenantID(q.TenantID), domain.ShipmentID(q.ShipmentID))
+	if err != nil {
+		return api.OceanEvidenceCurrency{}, classify(err)
+	}
+	return api.OceanEvidenceCurrency{TenantID: q.TenantID, ShipmentID: q.ShipmentID, Revision: got.Revision, Status: string(got.Status),
+		EvidenceVersion: got.EvidenceVersion, NewVersionDue: got.NewVersionDue}, nil
 }
 
 func (m *Module) GetShipmentPlanSnapshot(ctx context.Context, q api.GetShipmentPlanSnapshot) (api.ShipmentPlanSnapshot, error) {

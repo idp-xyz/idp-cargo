@@ -126,7 +126,7 @@ jobs:
           GRANT UPDATE (state,cancel_reason,cancelled_by,cancelled_at,revision,updated_at) ON cargo_sea.ocean_movement TO cargo_app;
           GRANT UPDATE (status) ON cargo_sea.master_bill TO cargo_app;
           GRANT UPDATE (end_kind,ended_by,ended_at,end_entered_at,successor_no) ON cargo_sea.house_bill TO cargo_app;
-          GRANT UPDATE (status,execution_id,difference_reason,stuffed_by,stuffed_at,release_reason,released_by,released_at,revision,updated_at) ON cargo_sea.container_visit TO cargo_app;
+          GRANT UPDATE (status,execution_id,difference_reason,stuffed_by,stuffed_at,stuffed_phy_seal,stuffed_phy_sealed_at,release_reason,released_by,released_at,revision,updated_at) ON cargo_sea.container_visit TO cargo_app;
           GRANT UPDATE (response,response_source,responded_at,response_by,response_entered_at) ON cargo_sea.vgm_assertion TO cargo_app;
           REVOKE SELECT ON cargo_sea.vgm_signatory FROM cargo_app;
           REVOKE INSERT ON cargo_sea.vgm_signatory_access FROM cargo_app;

@@ -126,9 +126,12 @@ type Bookings interface {
 	Booking(ctx context.Context, tenant sea.TenantID, booking string) (sea.Booking, error)
 }
 
-// Plans reads FUL's OceanOperationPlan v1 (relationship 10) outside SEA's transactions.
+// Plans reads FUL's OceanOperationPlan v1 and OceanEvidenceCurrency v1 (relationship 10) outside SEA's transactions.
 type Plans interface {
 	Plan(ctx context.Context, tenant sea.TenantID, shipment string) (sea.Plan, error)
+	// EvidenceBehind asks FUL whether PHY's facts of the shipment are newer than the evidence FUL recorded: whether
+	// RecordVerifiedLoadEvidence would record a new version now.
+	EvidenceBehind(ctx context.Context, tenant sea.TenantID, shipment string) (bool, error)
 }
 
 // Clock tells the time SEA records a command (T1).
@@ -337,11 +340,24 @@ type Result struct {
 	HBL          string
 	BillNo       int
 	FactsVersion int
+	// FollowOnly says the command wrote no entry: the house's facts are as SEA froze them, and what is left is to
+	// follow the seals of the entry it has, if the visits take them; else there is nothing to refresh.
+	FollowOnly bool
 }
 
 // Change runs a command on a stored movement locked at the expected revision. read asks BOOK or FUL first,
 // outside SEA's transaction, with the movement as it stood; apply may draw from the series in the transaction.
 func (d Deps) Change(ctx context.Context, c Command, read func(context.Context, *sea.Movement) error,
+	apply func(context.Context, *sea.Movement) (Result, error)) (Receipt, error) {
+	return d.change(ctx, c, read, nil, apply)
+}
+
+// change is Change; with follow, which answers whether the command writes a house entry that carries stuffings, the
+// transaction also takes the movement's live visits and records, on those SEA took as stuffed, the seal PHY sealed the
+// stuffing with again (Visit.FollowSeal). The locks are taken in the order ChangeVisit takes them: the command id, the
+// visits (in the order they were assigned), then the movement. A visit assigned after the visits were listed makes the
+// command a conflict, to be tried again: its lock was not taken.
+func (d Deps) change(ctx context.Context, c Command, read func(context.Context, *sea.Movement) error, follow func() bool,
 	apply func(context.Context, *sea.Movement) (Result, error)) (Receipt, error) {
 	hash, entered, stored, replayed, err := d.begin(ctx, c)
 	if err != nil || replayed {
@@ -364,6 +380,28 @@ func (d Deps) Change(ctx context.Context, c Command, read func(context.Context, 
 		}
 	}
 	return d.write(ctx, c, hash, "OceanMovement", func(txCtx context.Context) (Receipt, []aggregate, error) {
+		var visits []*sea.Visit
+		var revisions []int64
+		var listed []sea.VisitID
+		locking := follow != nil && d.Visits != nil && follow()
+		if locking {
+			var err error
+			if listed, err = d.Visits.OfMovement(txCtx, c.Scope.TenantID, sea.MovementID(c.Subject)); err != nil {
+				return Receipt{}, nil, err
+			}
+			for _, id := range listed {
+				if seen, _, err := d.Visits.Read(txCtx, c.Scope.TenantID, id); err != nil {
+					return Receipt{}, nil, err
+				} else if !seen.Live() {
+					continue // a released visit never changes again
+				}
+				v, rev, err := d.Visits.Load(txCtx, c.Scope.TenantID, id)
+				if err != nil {
+					return Receipt{}, nil, err
+				}
+				visits, revisions = append(visits, v), append(revisions, rev)
+			}
+		}
 		m, revision, err := d.Movements.Load(txCtx, c.Scope.TenantID, sea.MovementID(c.Subject))
 		if err != nil {
 			return Receipt{}, nil, err
@@ -371,16 +409,64 @@ func (d Deps) Change(ctx context.Context, c Command, read func(context.Context, 
 		if revision != c.ExpectedRevision {
 			return Receipt{}, nil, sea.ErrConflict
 		}
+		if locking {
+			// assigning a container locks the movement, which this transaction now holds: the list cannot grow
+			if now, err := d.Visits.OfMovement(txCtx, c.Scope.TenantID, m.ID()); err != nil {
+				return Receipt{}, nil, err
+			} else if len(now) != len(listed) {
+				return Receipt{}, nil, fmt.Errorf("%w: a container was assigned while the command was taking the movement's visits; try again", sea.ErrConflict)
+			}
+		}
 		result, err := apply(txCtx, m)
 		if err != nil {
 			return Receipt{}, nil, err
 		}
-		m.Stamp(entered)
-		if revision, err = d.Movements.Save(txCtx, m, revision); err != nil {
-			return Receipt{}, nil, err
+		if len(visits) > 0 && result.EntryNo > 0 {
+			if err = m.FollowSeals(m.State().Entries[result.EntryNo-1], visits, c.Scope.ActorID, c.OccurredAt); err != nil {
+				return Receipt{}, nil, err
+			}
 		}
-		return Receipt{SubjectID: c.Subject, NewRevision: revision, EntryNo: result.EntryNo, HBL: result.HBL, BillNo: result.BillNo, FactsVersion: result.FactsVersion}, []aggregate{m}, nil
+		if result.FollowOnly {
+			followed := false
+			for _, v := range visits {
+				followed = followed || len(v.Pending()) > 0
+			}
+			if !followed {
+				return Receipt{}, nil, sea.ErrNothingToRefresh
+			}
+			// a seal recorded on a FINAL movement returns it to OPEN, as RecordContainerSeal does
+			if err = m.Supersede(c.Scope.ActorID, c.OccurredAt); err != nil {
+				return Receipt{}, nil, err
+			}
+		}
+		aggs := []aggregate{}
+		if !result.FollowOnly || len(m.Pending()) > 0 {
+			m.Stamp(entered)
+			if revision, err = d.Movements.Save(txCtx, m, revision); err != nil {
+				return Receipt{}, nil, err
+			}
+			aggs = append(aggs, m)
+		}
+		for i, v := range visits {
+			if len(v.Pending()) == 0 {
+				continue
+			}
+			v.Stamp(entered)
+			if _, err = d.Visits.Save(txCtx, v, revisions[i]); err != nil {
+				return Receipt{}, nil, err
+			}
+			aggs = append(aggs, v)
+		}
+		return Receipt{SubjectID: c.Subject, NewRevision: revision, EntryNo: result.EntryNo, HBL: result.HBL, BillNo: result.BillNo, FactsVersion: result.FactsVersion}, aggs, nil
 	})
+}
+
+// ChangeHouse is Change for a command that writes a house's entry (Associate, Refresh): when PHY sealed a stuffing the
+// entry carries again, the seal is recorded on the movement's container taken as stuffed with it, in the same
+// transaction. It takes the command id, then the visits, then the movement, as ChangeVisit does.
+func (d Deps) ChangeHouse(ctx context.Context, c Command, read func(context.Context, *sea.Movement) error, stuffings func() bool,
+	apply func(context.Context, *sea.Movement) (Result, error)) (Receipt, error) {
+	return d.change(ctx, c, read, stuffings, apply)
 }
 
 // RecordCarrierFact records a carrier report on a movement that is OPEN or FINAL. The movement's revision does not

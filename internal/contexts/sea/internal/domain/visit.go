@@ -70,6 +70,8 @@ const (
 var (
 	containerForm = regexp.MustCompile(`^[A-Z]{3}[UJZ][0-9]{7}$`)
 	sealForm      = regexp.MustCompile(`^[0-9A-Z]+([ /-][0-9A-Z]+)*$`)
+	otherRuns     = regexp.MustCompile(`[^0-9A-Z]+`)
+	asciiKey      = regexp.MustCompile(`^[0-9A-Z]+$`)
 )
 
 // ValidContainerNumber reports whether a container number is of ISO 6346: an owner code of three letters, the
@@ -142,14 +144,18 @@ type VisitState struct {
 	DifferenceReason string
 	StuffedBy        string
 	StuffedAt        time.Time
-	ReleaseReason    string
-	ReleasedBy       string
-	ReleasedAt       time.Time
-	Assertions       []VgmAssertion
-	Events           []VisitEvent
-	AssignedBy       string
-	AssignedAt       time.Time
-	EnteredAt        time.Time
+	// StuffedPhySeal and StuffedPhySealedAt are PHY's seal of the stuffing as FUL relayed it when SEA took the
+	// container as stuffed (V2.88): resealed is a difference from them. Empty on a visit stuffed before this version.
+	StuffedPhySeal     string
+	StuffedPhySealedAt time.Time
+	ReleaseReason      string
+	ReleasedBy         string
+	ReleasedAt         time.Time
+	Assertions         []VgmAssertion
+	Events             []VisitEvent
+	AssignedBy         string
+	AssignedAt         time.Time
+	EnteredAt          time.Time
 }
 
 // VgmAssertion is one immutable statement of the container's verified gross mass. Signatory is the authorised
@@ -310,6 +316,7 @@ func (v *Visit) StuffingDone(m *Movement, reason, by string, at time.Time) error
 		return err
 	}
 	v.state.Status, v.state.ExecutionID, v.state.DifferenceReason, v.state.StuffedBy, v.state.StuffedAt = VisitStuffed, s.ExecutionID, reason, by, at.UTC()
+	v.state.StuffedPhySeal, v.state.StuffedPhySealedAt = s.Seal, s.SealedAt.UTC()
 	v.record(eventContainerEvent, at, 0, 0, 0, ContainerStuffedEvent)
 	return nil
 }
@@ -341,17 +348,111 @@ func (v *Visit) stuffing(m *Movement) (Stuffing, error) {
 // unit's size-type is not the visit's.
 func (v *Visit) differences(s Stuffing) []string {
 	var out []string
-	key, held := sealKey(s.Seal), false
-	for _, seal := range v.state.Seals {
-		held = held || (key != "" && sealKey(seal.Number) == key)
-	}
-	if !held {
+	if !v.holds(sealKey(s.Seal)) {
 		out = append(out, fmt.Sprintf("PHY closed the stuffing of unit %d with seal %q, which is none of the container's seals", s.LoadUnitNo, s.Seal))
 	}
 	if s.TypeCode != v.state.SizeType {
 		out = append(out, fmt.Sprintf("unit %d is a %s in PHY, the container a %s", s.LoadUnitNo, s.TypeCode, v.state.SizeType))
 	}
 	return out
+}
+
+// holds reports whether one of the visit's seals, current or replaced, has the key; an empty key is no seal's.
+func (v *Visit) holds(key string) bool {
+	for _, seal := range v.state.Seals {
+		if key != "" && sealKey(seal.Number) == key {
+			return true
+		}
+	}
+	return false
+}
+
+// FollowSeal takes PHY's new seal of the stuffing the container was taken as stuffed with: when its seal is none of the
+// visit's seals and either PHY sealed the stuffing after StuffedAt or the visit has no difference reason, the seal is
+// recorded as a SHIPPER seal applied at PHY's sealed-at, with a source that says it was followed from PHY's stuffing
+// (and keeps PHY's text as it was). Without a difference reason StuffingDone required PHY's seal of that time to be one
+// of the visit's seals, and a visit's seals are never removed, so a PHY seal the visit does not hold is one PHY applied
+// since, whatever business time it was recorded with; with a difference reason a reseal dated before StuffedAt cannot
+// be told from the difference the reason was stated for, and is not followed. PHY keeps free text: it is recorded
+// upper-cased and trimmed when that fits SEA's seal form, else with each run of other characters replaced by one space
+// when that fits and has the same sealKey. A seal that cannot be taken (its form, or a business time before PHY sealed
+// it or before the container's last change) is not recorded and is not an error: the house's entry is written all the
+// same, and the seal is a pending item of the movement (PendSealNotOnContainer) until it is recorded by hand or a later
+// refresh finds the time allows it. A visit with no execution (ASSIGNED, RELEASED), another execution's stuffing and a
+// seal the visit holds are not followed. It reports whether a seal was recorded.
+func (v *Visit) FollowSeal(s Stuffing, by string, at time.Time) (bool, error) {
+	return v.followSeal(s, nil, by, at)
+}
+
+// followSeal is FollowSeal with the history of the movement's entries: every stuffing of the execution any entry of the
+// movement, live or ended, carried. When one of them has a seal (by sealKey) or a sealed-at other than s's, PHY sealed
+// the stuffing again, whatever the business times and the difference reason say, and the seal is followed.
+func (v *Visit) followSeal(s Stuffing, history []Stuffing, by string, at time.Time) (bool, error) {
+	if v.state.ExecutionID != s.ExecutionID || v.holds(sealKey(s.Seal)) || !v.state.followable(s, history) {
+		return false, nil
+	}
+	number, class := sealForSEA(s.Seal)
+	if class != sealFits {
+		return false, nil
+	}
+	source := fmt.Sprintf("followed from PHY's stuffing %s, sealed %s, as FUL relays it (PHY's text %q)", s.ExecutionID, s.SealedAt.UTC().Format(time.RFC3339), s.Seal)
+	return v.RecordSeal(number, SealShipper, s.SealedAt, source, by, at) == nil, nil
+}
+
+// sealClass says what SEA's seal form makes of PHY's free text.
+type sealClass int
+
+const (
+	sealFits       sealClass = iota // recorded as the number returned
+	sealByHand                      // no cleaned form has the same key, but the key itself fits: an operator records it
+	sealImpossible                  // no form has the same key: a letter outside A-Z, or too many letters and digits
+)
+
+// sealForSEA is the number SEA records for PHY's text: the text upper-cased and trimmed when that fits SEA's form, else
+// with each run of characters other than A-Z and 0-9 replaced by one space when that fits and has the same sealKey.
+func sealForSEA(text string) (string, sealClass) {
+	number := strings.ToUpper(strings.TrimSpace(text))
+	if sealNumberForm(number) {
+		return number, sealFits
+	}
+	key := sealKey(text)
+	if cleaned := strings.TrimSpace(otherRuns.ReplaceAllString(number, " ")); sealNumberForm(cleaned) && sealKey(cleaned) == key {
+		return cleaned, sealFits
+	}
+	if key == "" || len(key) > 35 || !asciiKey.MatchString(key) {
+		return "", sealImpossible
+	}
+	return "", sealByHand
+}
+
+func sealNumberForm(n string) bool { return len(n) <= 35 && sealForm.MatchString(n) }
+
+// FollowSeals offers each stuffing of a house's entry to each of the movement's visits (FollowSeal), without the
+// movement's history of entries. It stops at the first refusal.
+func FollowSeals(e Entry, visits []*Visit, by string, at time.Time) error {
+	return followSeals(e, nil, visits, by, at)
+}
+
+// FollowSeals offers each stuffing of a house's entry (the house's newest, as written by Associate or Refresh) to each
+// of the movement's visits: when SEA writes a house's entry, PHY's new seal of a container SEA has taken as stuffed is
+// recorded on it. The movement's history of entries, live and ended, tells a reseal the business times cannot show.
+func (m *Movement) FollowSeals(e Entry, visits []*Visit, by string, at time.Time) error {
+	return followSeals(e, m, visits, by, at)
+}
+
+func followSeals(e Entry, m *Movement, visits []*Visit, by string, at time.Time) error {
+	for _, s := range e.Facts.Stuffings {
+		var history []Stuffing
+		if m != nil {
+			history = m.sealHistory(s.ExecutionID)
+		}
+		for _, v := range visits {
+			if _, err := v.followSeal(s, history, by, at); err != nil {
+				return fmt.Errorf("house %s: %w", e.HBL, err)
+			}
+		}
+	}
+	return nil
 }
 
 // sealKey is a seal number by its letters and digits alone, in capitals: the same seal however it was keyed.
@@ -391,19 +492,7 @@ func (v *Visit) changeable(by string, at time.Time) error {
 }
 
 // LastChange is the latest business time recorded on the visit.
-func (v *Visit) LastChange() time.Time {
-	last := later(later(v.state.AssignedAt, v.state.StuffedAt), v.state.ReleasedAt)
-	for _, s := range v.state.Seals {
-		last = later(last, s.At)
-	}
-	for _, a := range v.state.Assertions {
-		last = later(later(last, a.At), a.RespondedAt)
-	}
-	for _, e := range v.state.Events {
-		last = later(last, e.At)
-	}
-	return last
-}
+func (v *Visit) LastChange() time.Time { return v.state.lastChange() }
 
 func (v *Visit) record(kind string, at time.Time, seal, assertion, event int, reason string) {
 	v.pending = append(v.pending, Event{Type: kind, At: at.UTC(), TenantID: v.state.TenantID, SubjectID: string(v.state.VisitID),
@@ -592,6 +681,8 @@ func (v *Visit) validate() error {
 		return fmt.Errorf("stuffing")
 	case st.DifferenceReason != "" && (!packed || !text(st.DifferenceReason)):
 		return fmt.Errorf("difference reason")
+	case (st.StuffedPhySeal == "") != st.StuffedPhySealedAt.IsZero() || (st.StuffedPhySeal != "" && (!packed || !text(st.StuffedPhySeal) || st.StuffedPhySealedAt.After(st.StuffedAt))):
+		return fmt.Errorf("stuffed seal")
 	case onward != (len(st.Assertions) > 0):
 		return fmt.Errorf("vgm")
 	case released != text(st.ReleaseReason) || released == blank(st.ReleasedBy) || released == st.ReleasedAt.IsZero() ||

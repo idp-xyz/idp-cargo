@@ -117,6 +117,11 @@ func (w *world) GetOceanOperationPlan(_ context.Context, q fulapi.GetShipmentPla
 	return p, nil
 }
 
+// GetOceanEvidenceCurrency answers that FUL's evidence is current: no version is due.
+func (w *world) GetOceanEvidenceCurrency(_ context.Context, q fulapi.GetShipmentPlanSnapshot) (fulapi.OceanEvidenceCurrency, error) {
+	return fulapi.OceanEvidenceCurrency{TenantID: q.TenantID, ShipmentID: q.ShipmentID}, nil
+}
+
 // booking is a confirmed container booking of shipping line line-1 for a consolidation, Shanghai to Hamburg on one
 // vessel, with the VGM and shipping instruction cut-offs.
 func (w *world) booking(id, consolidation, vessel, imo, voyage string, capacity int, etd time.Time) {

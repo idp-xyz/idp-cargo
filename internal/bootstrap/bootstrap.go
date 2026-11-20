@@ -216,8 +216,8 @@ func (p *Platform) AIR(book bookapi.Queries, ful fulapi.AirOperationPlanQueries,
 }
 
 // SEA assembles the SEA bounded context. book answers CarrierBooking v1 (relationship 6) and ful OceanOperationPlan
-// v1 (relationship 10), each through its query side.
-func (p *Platform) SEA(book bookapi.Queries, ful fulapi.OceanOperationPlanQueries, auth seaapi.Authorizer, opts ...sea.Option) (*sea.Module, error) {
+// v1 and OceanEvidenceCurrency v1 (relationship 10), each through its query side.
+func (p *Platform) SEA(book bookapi.Queries, ful fulapi.OceanOperationQueries, auth seaapi.Authorizer, opts ...sea.Option) (*sea.Module, error) {
 	db, err := p.newDB()
 	if err != nil {
 		return nil, err
