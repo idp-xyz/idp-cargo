@@ -31,7 +31,7 @@ import (
 )
 
 // Module wires SEA's use cases to PostgreSQL through IDP-Bento-Go, to BOOK's CarrierBooking v1 and to FUL's
-// OceanOperationPlan v1.
+// OceanOperationPlan v1 and OceanEvidenceCurrency v1.
 type Module struct {
 	db       *bentopg.DB
 	outbox   *bentooutbox.Store
@@ -50,17 +50,18 @@ type Option func(*Module)
 func WithRecordWindow(w kernel.RecordWindow) Option { return func(m *Module) { m.window = w } }
 
 var (
-	_ api.Commands   = (*Module)(nil)
-	_ api.Queries    = (*Module)(nil)
-	_ api.VgmQueries = (*Module)(nil)
+	_ api.Commands       = (*Module)(nil)
+	_ api.Queries        = (*Module)(nil)
+	_ api.VgmQueries     = (*Module)(nil)
+	_ api.PendingQueries = (*Module)(nil)
 )
 
 // RegisterHTTP registers SEA's inbound HTTP routes; the composition root calls it.
 func (m *Module) RegisterHTTP(mux *http.ServeMux) { seahttp.Register(mux, m) }
 
-// New assembles SEA. book answers CarrierBooking v1 (relationship 6) and ful OceanOperationPlan v1 (relationship
-// 10); SEA writes to neither.
-func New(db *bentopg.DB, book bookapi.Queries, ful fulapi.OceanOperationPlanQueries, auth api.Authorizer, opts ...Option) (*Module, error) {
+// New assembles SEA. book answers CarrierBooking v1 (relationship 6) and ful OceanOperationPlan v1 and
+// OceanEvidenceCurrency v1 (relationship 10); SEA writes to neither.
+func New(db *bentopg.DB, book bookapi.Queries, ful fulapi.OceanOperationQueries, auth api.Authorizer, opts ...Option) (*Module, error) {
 	if db == nil || book == nil || ful == nil || auth == nil {
 		return nil, errors.New("sea: module needs a database, BOOK's bookings, FUL's plans and an authorizer")
 	}
@@ -131,8 +132,8 @@ func (m *Module) RegisterHblSeries(ctx context.Context, cmd api.RegisterHblSerie
 func (m *Module) AssociateHouseBill(ctx context.Context, cmd api.AssociateHouseBill) (api.Receipt, error) {
 	d := m.deps(cmd.TenantID, cmd.CommandID)
 	var p domain.Plan
-	r, err := d.Change(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, api.ActionAssociateHouseBill, cmd.MovementID, cmd.ExpectedRevision, cmd.OccurredAt, cmd),
-		m.plan(d, cmd.TenantID, cmd.ShipmentID, &p),
+	r, err := d.ChangeHouse(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, api.ActionAssociateHouseBill, cmd.MovementID, cmd.ExpectedRevision, cmd.OccurredAt, cmd),
+		m.plan(d, cmd.TenantID, cmd.ShipmentID, &p), func() bool { return len(p.Stuffings) > 0 },
 		func(txCtx context.Context, mv *domain.Movement) (application.Result, error) {
 			at := stored(cmd.OccurredAt)
 			hbl, err := d.HBL(txCtx, domain.TenantID(cmd.TenantID), mv.State().LegalEntityID, cmd.ShipmentID, cmd.HBL, at)
@@ -150,10 +151,18 @@ func (m *Module) AssociateHouseBill(ctx context.Context, cmd api.AssociateHouseB
 func (m *Module) RefreshHouseBillFacts(ctx context.Context, cmd api.RefreshHouseBillFacts) (api.Receipt, error) {
 	d := m.deps(cmd.TenantID, cmd.CommandID)
 	var p domain.Plan
-	r, err := d.Change(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, api.ActionRefreshHouseBillFacts, cmd.MovementID, cmd.ExpectedRevision, cmd.OccurredAt, cmd),
-		m.plan(d, cmd.TenantID, cmd.ShipmentID, &p),
+	r, err := d.ChangeHouse(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, api.ActionRefreshHouseBillFacts, cmd.MovementID, cmd.ExpectedRevision, cmd.OccurredAt, cmd),
+		m.plan(d, cmd.TenantID, cmd.ShipmentID, &p), func() bool { return len(p.Stuffings) > 0 },
 		func(_ context.Context, mv *domain.Movement) (application.Result, error) {
 			if err := mv.Refresh(p, cmd.ActorID, stored(cmd.OccurredAt)); err != nil {
+				if errors.Is(err, domain.ErrNothingToRefresh) {
+					// the house's facts are as SEA froze them, but a seal of its stuffing may be waiting to be followed
+					for _, h := range mv.Houses() {
+						if h.ShipmentID == cmd.ShipmentID {
+							return application.Result{EntryNo: h.No, HBL: h.HBL, FollowOnly: true}, nil
+						}
+					}
+				}
 				return application.Result{}, err
 			}
 			e := mv.State().Entries[latest(mv)-1]
@@ -185,15 +194,9 @@ func (m *Module) FinalizeOceanDocFacts(ctx context.Context, cmd api.FinalizeOcea
 	var plans []domain.Plan
 	r, err := d.Change(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, api.ActionFinalizeOceanDocFacts, cmd.MovementID,
 		cmd.ExpectedRevision, cmd.OccurredAt, cmd), func(ctx context.Context, mv *domain.Movement) error {
-		plans = nil
-		for _, h := range mv.Houses() {
-			p, err := d.Plans.Plan(ctx, domain.TenantID(cmd.TenantID), h.ShipmentID)
-			if err != nil {
-				return err
-			}
-			plans = append(plans, p)
-		}
-		return nil
+		var err error
+		plans, err = m.housePlans(ctx, d, cmd.TenantID, mv)
+		return err
 	}, func(txCtx context.Context, mv *domain.Movement) (application.Result, error) {
 		if d.Visits == nil {
 			return application.Result{}, application.ErrMissingDependency
@@ -291,12 +294,22 @@ func (m *Module) RecordContainerSeal(ctx context.Context, cmd api.RecordContaine
 	return receipt(r, err)
 }
 
+// RecordStuffingDone reads FUL's plans of the movement's live houses, and whether FUL's evidence of each is PHY's
+// current one, before SEA's transaction, so that a container is not taken as stuffed on facts FUL or SEA has not read
+// since PHY reworked it. The houses the transaction then reads must be the ones read.
 func (m *Module) RecordStuffingDone(ctx context.Context, cmd api.RecordStuffingDone) (api.Receipt, error) {
 	d := m.deps(cmd.TenantID, cmd.CommandID)
-	r, err := d.ChangeVisit(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, api.ActionRecordStuffingDone, cmd.VisitID,
-		cmd.ExpectedRevision, cmd.OccurredAt, cmd), func(txCtx context.Context, v *domain.Visit) (int, error) {
+	var plans []domain.Plan
+	r, err := d.ChangeVisitReading(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, api.ActionRecordStuffingDone, cmd.VisitID,
+		cmd.ExpectedRevision, cmd.OccurredAt, cmd), func(ctx context.Context, v *domain.Visit, mv *domain.Movement) (err error) {
+		plans, err = m.housePlans(ctx, d, cmd.TenantID, mv)
+		return err
+	}, func(txCtx context.Context, v *domain.Visit) (int, error) {
 		mv, err := d.Movement(txCtx, domain.TenantID(cmd.TenantID), v.State().MovementID)
 		if err != nil {
+			return 0, err
+		}
+		if err = mv.CheckHouses(plans, domain.ErrNotStuffed); err != nil {
 			return 0, err
 		}
 		return 0, v.StuffingDone(mv, cmd.DifferenceReason, cmd.ActorID, stored(cmd.OccurredAt))
@@ -368,6 +381,25 @@ func (m *Module) plan(d application.Deps, tenant, shipment string, into *domain.
 	}
 }
 
+// housePlans reads FUL's plan of each of the movement's live houses, and on an own-container movement whether FUL's
+// evidence of it is PHY's current one (EvidenceBehind), outside SEA's transaction.
+func (m *Module) housePlans(ctx context.Context, d application.Deps, tenant string, mv *domain.Movement) ([]domain.Plan, error) {
+	var plans []domain.Plan
+	for _, h := range mv.Houses() {
+		p, err := d.Plans.Plan(ctx, domain.TenantID(tenant), h.ShipmentID)
+		if err != nil {
+			return nil, err
+		}
+		if mv.State().Kind == domain.KindOwn {
+			if p.EvidenceBehind, err = d.Plans.EvidenceBehind(ctx, domain.TenantID(tenant), h.ShipmentID); err != nil {
+				return nil, err
+			}
+		}
+		plans = append(plans, p)
+	}
+	return plans, nil
+}
+
 func latest(mv *domain.Movement) int { return len(mv.State().Entries) }
 
 func (m *Module) GetOceanMovement(ctx context.Context, q api.GetOceanMovement) (api.OceanMovement, error) {
@@ -376,6 +408,28 @@ func (m *Module) GetOceanMovement(ctx context.Context, q api.GetOceanMovement) (
 		return api.OceanMovement{}, classify(err)
 	}
 	return attachVisits(view(read.Movement, read.Revision), read.Visits), nil
+}
+
+// GetPendingItems lists what is pending on the movement (domain.PendingItems), reading FUL's plans and evidence
+// currency of the live houses outside any transaction, as FinalizeOceanDocFacts does.
+func (m *Module) GetPendingItems(ctx context.Context, q api.GetPendingItems) ([]api.PendingItem, error) {
+	read, err := m.reads(q.TenantID).Movement(ctx, domain.TenantID(q.TenantID), domain.MovementID(q.MovementID))
+	if err != nil {
+		return nil, classify(err)
+	}
+	plans, err := m.housePlans(ctx, m.deps(q.TenantID, ""), q.TenantID, read.Movement)
+	if err != nil {
+		return nil, classify(err)
+	}
+	var visits []domain.VisitState
+	for _, v := range read.Visits {
+		visits = append(visits, v.Visit.State())
+	}
+	out := []api.PendingItem{}
+	for _, it := range read.Movement.PendingItems(plans, visits) {
+		out = append(out, api.PendingItem{Kind: it.Kind, Scope: it.Scope, SubjectID: it.SubjectID, Message: it.Message, Blocking: it.Blocking})
+	}
+	return out, nil
 }
 
 func (m *Module) FindOceanMovementByMasterBill(ctx context.Context, q api.FindOceanMovementByMasterBill) (api.OceanMovement, error) {

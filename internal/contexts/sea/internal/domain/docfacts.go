@@ -118,33 +118,37 @@ func (m *Movement) Finalize(plans []Plan, visits []VisitState, by string, at tim
 	if !ok {
 		return fmt.Errorf("%w: the master bill reference", ErrNotFinalizable)
 	}
-	known := map[string]Plan{}
-	for _, p := range plans {
-		known[p.ShipmentID] = p
-	}
-	for _, h := range houses {
-		p, found := known[h.ShipmentID]
-		if !found {
-			return fmt.Errorf("%w: FUL's plan of %s was not read", ErrNotFinalizable, h.ShipmentID)
-		}
-		if err := m.admits(p); err != nil {
-			return fmt.Errorf("%w: STALE_HOUSE: FUL no longer reports %s %s as SEA froze it (%v); refresh the house, or end its association",
-				ErrNotFinalizable, h.HBL, h.ShipmentID, err)
-		}
-		if f, err := facts(p); err != nil || p.PlanVersion != h.PlanVersion || !sameMeasures(f, h.Facts) {
-			return fmt.Errorf("%w: STALE_HOUSE: FUL reports newer facts of %s %s; refresh it first", ErrNotFinalizable, h.HBL, h.ShipmentID)
-		}
-	}
 	live := liveVisits(visits)
+	items := m.PendingItems(plans, live)
+	blocking := 0
+	var first *PendingItem
+	for i, it := range items {
+		if it.Blocking {
+			blocking++
+			if first == nil {
+				first = &items[i]
+			}
+		}
+	}
+	refuse := func() error {
+		more := ""
+		if blocking > 1 {
+			more = fmt.Sprintf(" (and %d more pending items; SEA's pending items of the movement list them)", blocking-1)
+		}
+		return fmt.Errorf("%w: %s%s", ErrNotFinalizable, first.Message, more)
+	}
+	if first != nil && houseStage(first.Kind) {
+		return refuse()
+	}
 	if m.state.Kind == KindOwn {
 		if bill.Kind != BillCarrierMBL && bill.Kind != BillCarrierSeaWaybill {
 			return fmt.Errorf("%w: the carrier's master bill reference", ErrNotFinalizable)
 		}
-		if err := ownContainersReady(m, houses, live); err != nil {
-			return err
-		}
 	} else if bill.Kind != BillCoLoad {
 		return fmt.Errorf("%w: the co-load bill reference", ErrNotFinalizable)
+	}
+	if first != nil {
+		return refuse()
 	}
 	if err := m.changeable(by, at); err != nil {
 		return err
@@ -173,37 +177,6 @@ func liveVisits(visits []VisitState) []VisitState {
 	}
 	slices.SortFunc(out, func(a, b VisitState) int { return a.LoadUnitNo - b.LoadUnitNo })
 	return out
-}
-
-func ownContainersReady(m *Movement, houses []Entry, visits []VisitState) error {
-	cut, hasCut := m.VGMCutOff()
-	byUnit := map[int]VisitState{}
-	for _, v := range visits {
-		switch {
-		case v.Status == VisitAssigned || len(v.Seals) == 0:
-			return fmt.Errorf("%w: container %s has no seal", ErrNotFinalizable, v.Number)
-		case !vgmReady(v, cut, hasCut):
-			return fmt.Errorf("%w: container %s has no VGM submitted by the cut-off or accepted by the carrier", ErrNotFinalizable, v.Number)
-		}
-		byUnit[v.LoadUnitNo] = v
-	}
-	for _, h := range houses {
-		var packs int64
-		if len(h.Facts.Stuffings) == 0 {
-			return fmt.Errorf("%w: %s %s is not stuffed in a container", ErrNotFinalizable, h.HBL, h.ShipmentID)
-		}
-		for _, s := range h.Facts.Stuffings {
-			v, ok := byUnit[s.LoadUnitNo]
-			if !ok || v.ExecutionID != s.ExecutionID {
-				return fmt.Errorf("%w: %s %s names a stuffing of unit %d that is not one of the movement's containers", ErrNotFinalizable, h.HBL, h.ShipmentID, s.LoadUnitNo)
-			}
-			packs += s.Packs
-		}
-		if packs != h.Facts.Packs {
-			return fmt.Errorf("%w: %s %s has %d packs and %d stuffed", ErrNotFinalizable, h.HBL, h.ShipmentID, h.Facts.Packs, packs)
-		}
-	}
-	return nil
 }
 
 func vgmReady(v VisitState, cut time.Time, hasCut bool) bool {

@@ -359,6 +359,14 @@ func TestSEAFinalizesAfterAHouseLeftOnceItsAssociationIsEnded(t *testing.T) {
 	r, err = seaModule.RecordContainerSeal(ctx, seaapi.RecordContainerSeal{CommandID: "sea-seal", TenantID: d.tenant, ActorID: "cfs-1", VisitID: "CV-1", ExpectedRevision: visit, Number: "seal-x-1-new", Party: seaapi.SealShipper, AppliedAt: d.hours(25), Source: "CFS", OccurredAt: d.hours(25)})
 	d.must("SEA's seal", err)
 	visit = r.NewRevision
+	// V2.87: a stuffing is not taken while a house FUL no longer reports in the consolidation is still associated
+	_, err = seaModule.RecordStuffingDone(ctx, seaapi.RecordStuffingDone{CommandID: "stuffed-early", TenantID: d.tenant, ActorID: "cfs-1", VisitID: "CV-1", ExpectedRevision: visit, OccurredAt: d.hours(26)})
+	if err == nil || !strings.Contains(err.Error(), "STALE_HOUSE") || !strings.Contains(err.Error(), "SH-H03") {
+		t.Fatalf("SEA takes the stuffing with the house that left still associated: %v", err)
+	}
+	_, err = seaModule.EndHouseBillAssociation(ctx, seaapi.EndHouseBillAssociation{CommandID: "end-h03", TenantID: d.tenant, ActorID: "ops-1", MovementID: "OM-1",
+		ExpectedRevision: movement().Revision, ShipmentID: "SH-H03", OccurredAt: d.hours(29)})
+	d.must("end the association of H03", err)
 	r, err = seaModule.RecordStuffingDone(ctx, seaapi.RecordStuffingDone{CommandID: "stuffed", TenantID: d.tenant, ActorID: "cfs-1", VisitID: "CV-1", ExpectedRevision: visit, OccurredAt: d.hours(26)})
 	d.must("stuffing done", err)
 	visit = r.NewRevision
@@ -381,15 +389,6 @@ func TestSEAFinalizesAfterAHouseLeftOnceItsAssociationIsEnded(t *testing.T) {
 			ExpectedRevision: movement().Revision, OccurredAt: d.hours(32)})
 		return err
 	}
-	if err = finalize("finalize-1"); err == nil || !strings.Contains(err.Error(), "STALE_HOUSE") || !strings.Contains(err.Error(), "SH-H03") {
-		t.Fatalf("SEA finalizes with the house that left still associated: %v", err)
-	}
-	if m := movement(); m.State != seaapi.StateOpen || m.DocFactsVersion != 0 {
-		t.Fatalf("the movement stays OPEN: %+v", m)
-	}
-	_, err = seaModule.EndHouseBillAssociation(ctx, seaapi.EndHouseBillAssociation{CommandID: "end-h03", TenantID: d.tenant, ActorID: "ops-1", MovementID: "OM-1",
-		ExpectedRevision: movement().Revision, ShipmentID: "SH-H03", OccurredAt: d.hours(32)})
-	d.must("end the association of H03", err)
 	d.must("finalize", finalize("finalize-2"))
 	facts, err := seaModule.GetOceanDocFacts(ctx, seaapi.GetOceanDocFacts{TenantID: d.tenant, MovementID: "OM-1"})
 	if err != nil || facts.Status != seaapi.DocFactsFinal || facts.Version != 1 || len(facts.Houses) != 2 || len(facts.Containers) != 1 {

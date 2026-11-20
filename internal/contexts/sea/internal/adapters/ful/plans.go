@@ -14,9 +14,9 @@ import (
 	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
-// Plans reads OceanOperationPlan v1. Call it outside SEA's transactions.
+// Plans reads OceanOperationPlan v1 and OceanEvidenceCurrency v1. Call it outside SEA's transactions.
 type Plans struct {
-	FUL fulapi.OceanOperationPlanQueries
+	FUL fulapi.OceanOperationQueries
 }
 
 var _ app.Plans = Plans{}
@@ -46,6 +46,18 @@ func (p Plans) Plan(ctx context.Context, tenant sea.TenantID, shipment string) (
 			SealedAt: micro(s.SealedAt)})
 	}
 	return out, nil
+}
+
+// EvidenceBehind answers whether FUL would record a new evidence version of the shipment now.
+func (p Plans) EvidenceBehind(ctx context.Context, tenant sea.TenantID, shipment string) (bool, error) {
+	got, err := p.FUL.GetOceanEvidenceCurrency(ctx, fulapi.GetShipmentPlanSnapshot{TenantID: string(tenant), ShipmentID: shipment})
+	if err != nil {
+		return false, foreign(err, shipment)
+	}
+	if got.TenantID != string(tenant) || got.ShipmentID != shipment {
+		return false, fmt.Errorf("%w: FUL answered for another shipment", app.ErrUnknownShipment)
+	}
+	return got.NewVersionDue, nil
 }
 
 // foreign turns an error of FUL into SEA's: a shipment FUL does not know, or a question FUL rejects, is an unknown

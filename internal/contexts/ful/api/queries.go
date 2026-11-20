@@ -250,6 +250,34 @@ type OceanOperationPlanQueries interface {
 	GetOceanOperationPlan(ctx context.Context, q GetShipmentPlanSnapshot) (OceanOperationPlan, error)
 }
 
+// OceanEvidenceCurrency is OceanEvidenceCurrency v1 (relationship 10, FUL -> SEA): whether the load evidence FUL
+// recorded of a shipment is PHY's current one. NewVersionDue is true when RecordVerifiedLoadEvidence would record a
+// new evidence version now: PHY's evidence differs from FUL's latest recorded one by the comparison that command
+// makes (the digest, the execution status and the packs final for planning), read for the consolidation FUL records
+// the shipment attached to. It is false when FUL is current, and for a cancelled shipment, which that command refuses
+// and records nothing for (Status says CANCELLED). A shipment with no evidence recorded yet has a version due, even
+// where PHY's evidence is empty: the command records an empty first version. Revision and EvidenceVersion are what
+// FUL held when it answered. The answer carries no names and is read without a lock.
+type OceanEvidenceCurrency struct {
+	TenantID        string
+	ShipmentID      string
+	Revision        int64
+	Status          string
+	EvidenceVersion int
+	NewVersionDue   bool
+}
+
+// OceanEvidenceQueries is FUL's OceanEvidenceCurrency v1 for SEA. An unknown shipment yields ErrNotFound.
+type OceanEvidenceQueries interface {
+	GetOceanEvidenceCurrency(ctx context.Context, q GetShipmentPlanSnapshot) (OceanEvidenceCurrency, error)
+}
+
+// OceanOperationQueries is what SEA reads of FUL: the plan of a shipment and whether FUL's evidence of it is current.
+type OceanOperationQueries interface {
+	OceanOperationPlanQueries
+	OceanEvidenceQueries
+}
+
 // SecurityScreening is a lot's latest screening result as PHY recorded it: external evidence of the screening
 // party (the airport security station), its method code, reference and time.
 type SecurityScreening struct {

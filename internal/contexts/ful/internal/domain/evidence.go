@@ -173,21 +173,9 @@ type EvidenceVersion struct {
 // plan change the same facts are derived again. The tendered pieces must belong to the consolidation FUL
 // records the shipment attached to. It reports whether a version was added.
 func (s *Shipment) RecordEvidence(e LoadEvidence, by string, at time.Time) (bool, error) {
-	if s.state.Status == ShipmentCancelled {
-		return false, ErrShipmentCancelled
-	}
-	if !e.valid() {
-		return false, ErrInvalidEvidence
-	}
-	if e.ConsolidationID != "" {
-		if a, ok := s.Attachment(StageMain); !ok || a.ConsolidationID != e.ConsolidationID {
-			return false, fmt.Errorf("%w: %s", ErrNotAttached, e.ConsolidationID)
-		}
-	}
-	digest, planned := e.Digest(), s.Latest().Scope.Packs
-	execution, final := derive(planned, e), min(e.Departed, planned)
-	if v, ok := s.LatestEvidence(); ok && v.Digest == digest && v.Execution == execution && v.Final == final {
-		return false, nil
+	digest, execution, final, changed, err := s.evidenceChange(e)
+	if err != nil || !changed {
+		return false, err
 	}
 	if err := s.changeable(by, at); err != nil {
 		return false, err
@@ -200,6 +188,36 @@ func (s *Shipment) RecordEvidence(e LoadEvidence, by string, at time.Time) (bool
 		s.recordEvidence(eventExecutionStatusChanged, at, e.ConsolidationID)
 	}
 	return true, nil
+}
+
+// WouldRecordEvidence reports whether RecordEvidence would add a version for e now, by the very comparison it makes,
+// and changes nothing. A shipment with no evidence yet takes any valid evidence as its first version, an empty one
+// too. A cancelled shipment takes none: it reports false with ErrShipmentCancelled.
+func (s *Shipment) WouldRecordEvidence(e LoadEvidence) (bool, error) {
+	_, _, _, changed, err := s.evidenceChange(e)
+	return changed, err
+}
+
+// evidenceChange is the comparison of RecordEvidence: the evidence's digest, the execution status and the packs
+// final for planning it derives, and whether they differ from the latest version's.
+func (s *Shipment) evidenceChange(e LoadEvidence) (digest string, execution ExecutionStatus, final int64, changed bool, err error) {
+	if s.state.Status == ShipmentCancelled {
+		return "", "", 0, false, ErrShipmentCancelled
+	}
+	if !e.valid() {
+		return "", "", 0, false, ErrInvalidEvidence
+	}
+	if e.ConsolidationID != "" {
+		if a, ok := s.Attachment(StageMain); !ok || a.ConsolidationID != e.ConsolidationID {
+			return "", "", 0, false, fmt.Errorf("%w: %s", ErrNotAttached, e.ConsolidationID)
+		}
+	}
+	digest, planned := e.Digest(), s.Latest().Scope.Packs
+	execution, final = derive(planned, e), min(e.Departed, planned)
+	if v, ok := s.LatestEvidence(); ok && v.Digest == digest && v.Execution == execution && v.Final == final {
+		return digest, execution, final, false, nil
+	}
+	return digest, execution, final, true, nil
 }
 
 // derive is the execution status of planned packs with the evidence's departed and arrived pieces, each

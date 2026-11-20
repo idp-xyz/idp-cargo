@@ -115,6 +115,10 @@ type Plan struct {
 	MeasuredWeight  kernel.Quantity
 	MeasuredVolume  kernel.Quantity
 	Stuffings       []Stuffing
+	// EvidenceBehind is FUL's own answer, read with the plan, that RecordVerifiedLoadEvidence would record a new
+	// evidence version now: PHY's facts of the house are newer than the ones the plan carries. It is not part of
+	// what SEA freezes.
+	EvidenceBehind bool
 }
 
 // Facts are a house's frozen quantities, parts and per-container breakdown.
