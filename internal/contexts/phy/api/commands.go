@@ -138,8 +138,11 @@ type AttachHouse struct {
 	OccurredAt                 time.Time
 }
 
-// DetachHouse takes a house out of an OPEN consolidation with a reason; the history stays. Afterwards the
-// caller records the detachment in FUL (RecordConsolDetachment).
+// DetachHouse takes a house out of a consolidation with a reason; the history stays. The consolidation is OPEN, or
+// CLOSED of a sea kind and the house has no live packs in it: it was unloaded in a rework (V2.86), or it was never
+// loaded or taken out by ordinary reversals (V2.87), and the leaving is not dated before its latest reversal there. A
+// house of a CLOSED air consolidation stays frozen. Afterwards the caller records the detachment in FUL
+// (RecordConsolDetachment).
 type DetachHouse struct {
 	CommandID                  string
 	TenantID                   string
@@ -152,9 +155,10 @@ type DetachHouse struct {
 	OccurredAt                 time.Time
 }
 
-// TransferHouse moves a house from one OPEN consolidation to another of the same mode in one step (a
-// rollover, a flight or vessel change), with the attach checks on the target. COM is not touched and FUL's
-// parts stay as they are (F1); the caller then records the new attachment in FUL.
+// TransferHouse moves a house from one consolidation to another of the same mode in one step (a rollover, a flight or
+// vessel change), with the attach checks on the target, which is OPEN. The consolidation the house leaves is OPEN, or
+// CLOSED on the terms of DetachHouse. COM is not touched and FUL's parts stay as they are (F1); the caller then records
+// the new attachment in FUL.
 type TransferHouse struct {
 	CommandID                  string
 	TenantID                   string

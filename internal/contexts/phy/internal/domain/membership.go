@@ -86,8 +86,8 @@ type Entry struct {
 
 // ReworkRef is the rework of a sealed container in which a house was unloaded whole: the execution, the rework's number
 // and the business time of the house's latest reversal in it. A house that was unloaded in a rework of the
-// consolidation may leave it though it is CLOSED; a house that was never loaded has no such rework and stays (that is a
-// shut-out before stuffing, which is decided while the consolidation is open).
+// consolidation may leave it though it is CLOSED; a house that was never loaded has no such rework, and leaves a CLOSED
+// sea consolidation with no link since V2.87.
 type ReworkRef struct {
 	ExecutionID LoadExecutionID
 	No          int
@@ -155,24 +155,33 @@ func (m *Membership) Attach(c *Consolidation, i LoadIntent, by string, at time.T
 	return nil
 }
 
-// Detach takes the house out of an OPEN consolidation with a reason.
+// Detach takes the house out of a consolidation with a reason: an OPEN one, or a CLOSED sea one when the caller found
+// no rework that unloaded the house (it is then a house with no live packs, shut out before stuffing or taken out by
+// ordinary reversals; the caller has checked that nothing of the house is loaded). The entry records no rework.
 func (m *Membership) Detach(c *Consolidation, reason Reason, text, by string, at time.Time) error {
-	return m.detach(c, nil, reason, text, by, at)
+	return m.detach(c, nil, time.Time{}, reason, text, by, at)
+}
+
+// DetachAfterReversals is Detach for a house of a CLOSED sea consolidation that no rework unloaded, when the caller has
+// found the business time of the house's latest reversal in the consolidation (the zero time when it was never loaded):
+// the leaving is not dated before it. The caller has checked that nothing of the house is loaded.
+func (m *Membership) DetachAfterReversals(c *Consolidation, lastReversed time.Time, reason Reason, text, by string, at time.Time) error {
+	return m.detach(c, nil, lastReversed, reason, text, by, at)
 }
 
 // DetachAfterRework takes the house out of a CLOSED consolidation (or an OPEN one) with a reason, when it was unloaded
 // whole in the rework of a sealed container of it; the entry that ends records the rework. Whether the container is
 // still in rework or sealed again does not matter. The caller has checked that nothing of the house is loaded.
 func (m *Membership) DetachAfterRework(c *Consolidation, rework ReworkRef, reason Reason, text, by string, at time.Time) error {
-	return m.detach(c, &rework, reason, text, by, at)
+	return m.detach(c, &rework, time.Time{}, reason, text, by, at)
 }
 
-func (m *Membership) detach(c *Consolidation, rework *ReworkRef, reason Reason, text, by string, at time.Time) error {
+func (m *Membership) detach(c *Consolidation, rework *ReworkRef, lastReversed time.Time, reason Reason, text, by string, at time.Time) error {
 	i, err := m.liveIn(c)
 	if err != nil {
 		return err
 	}
-	link, err := leaving(c, rework, at)
+	link, err := leaving(c, rework, lastReversed, at)
 	if err != nil {
 		return err
 	}
@@ -190,16 +199,26 @@ func (m *Membership) detach(c *Consolidation, rework *ReworkRef, reason Reason, 
 
 // leaving says whether a house may leave the consolidation and which rework the ended entry records. An OPEN
 // consolidation lets it go and records none (a rework is only ever opened on a CLOSED consolidation). A CLOSED one lets
-// it go only with the rework that unloaded it, and the leaving is not dated before that rework's own unloading (its
-// latest reversal in it; a later ordinary reversal of the house, in another container, is not looked at); every other
-// state refuses, and so does a CLOSED one with no rework.
-func leaving(c *Consolidation, rework *ReworkRef, at time.Time) (ReworkRef, error) {
+// it go with the rework that unloaded it, and the leaving is not dated before that rework's own unloading (its latest
+// reversal in it; a later ordinary reversal of the house, in another container, is not looked at). With no rework a
+// CLOSED consolidation of a sea kind lets it go too and records none (V2.87: the house was shut out before stuffing,
+// or taken out by ordinary reversals only), and a CLOSED air consolidation does not (AIR's documents were not
+// analysed for it, so a house of one stays frozen). A leaving with no rework is not dated before the house's latest
+// reversal in the consolidation, which the caller hands over (the zero time when the house was never loaded; V2.87).
+// Every other state refuses.
+func leaving(c *Consolidation, rework *ReworkRef, lastReversed, at time.Time) (ReworkRef, error) {
 	switch c.Current().State {
 	case StateOpen:
 		return ReworkRef{}, nil
 	case StateClosed:
 		if rework == nil {
-			return ReworkRef{}, ErrNotOpen
+			if k := c.state.Kind; k != KindSeaLCLOwn && k != KindSeaLCLCoload {
+				return ReworkRef{}, ErrNotOpen
+			}
+			if at.IsZero() || at.Before(lastReversed) {
+				return ReworkRef{}, ErrInvalidChange
+			}
+			return ReworkRef{}, nil
 		}
 		if !identifier(string(rework.ExecutionID)) || rework.No < 1 || at.IsZero() || at.Before(rework.UnloadedAt) {
 			return ReworkRef{}, ErrInvalidChange
@@ -212,16 +231,22 @@ func leaving(c *Consolidation, rework *ReworkRef, at time.Time) (ReworkRef, erro
 // Transfer moves the house from one OPEN consolidation to another of the same mode that admits it, in one
 // step: the live entry ends as TRANSFERRED and the new entry continues it.
 func (m *Membership) Transfer(from, to *Consolidation, intent LoadIntent, reason Reason, text, by string, at time.Time) error {
-	return m.transfer(from, to, intent, nil, reason, text, by, at)
+	return m.transfer(from, to, intent, nil, time.Time{}, reason, text, by, at)
 }
 
 // TransferAfterRework is Transfer for a house that was unloaded whole in the rework of a sealed container of a CLOSED
 // consolidation (see DetachAfterRework); the target must be OPEN and admit the house, as for any transfer.
 func (m *Membership) TransferAfterRework(from, to *Consolidation, intent LoadIntent, rework ReworkRef, reason Reason, text, by string, at time.Time) error {
-	return m.transfer(from, to, intent, &rework, reason, text, by, at)
+	return m.transfer(from, to, intent, &rework, time.Time{}, reason, text, by, at)
 }
 
-func (m *Membership) transfer(from, to *Consolidation, intent LoadIntent, rework *ReworkRef, reason Reason, text, by string, at time.Time) error {
+// TransferAfterReversals is Transfer for a house leaving a CLOSED sea consolidation that no rework unloaded (see
+// DetachAfterReversals).
+func (m *Membership) TransferAfterReversals(from, to *Consolidation, intent LoadIntent, lastReversed time.Time, reason Reason, text, by string, at time.Time) error {
+	return m.transfer(from, to, intent, nil, lastReversed, reason, text, by, at)
+}
+
+func (m *Membership) transfer(from, to *Consolidation, intent LoadIntent, rework *ReworkRef, lastReversed time.Time, reason Reason, text, by string, at time.Time) error {
 	i, err := m.liveIn(from)
 	if err != nil {
 		return err
@@ -232,7 +257,7 @@ func (m *Membership) transfer(from, to *Consolidation, intent LoadIntent, rework
 	if from.ID() == to.ID() {
 		return ErrSameConsolidation
 	}
-	link, err := leaving(from, rework, at)
+	link, err := leaving(from, rework, lastReversed, at)
 	if err != nil {
 		return err
 	}
