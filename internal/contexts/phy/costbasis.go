@@ -11,17 +11,17 @@ import (
 	"go.idp.xyz/idp-cargo/internal/contexts/phy/api"
 	"go.idp.xyz/idp-cargo/internal/contexts/phy/internal/application"
 	"go.idp.xyz/idp-cargo/internal/contexts/phy/internal/domain"
-	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
-// GetPhysicalCostBasis answers PhysicalCostBasis v1: the consolidation and, of every live house, the scope PHY froze
-// at attach and what its tenders actually loaded, from one snapshot. Loaded measures follow PhysicalLoadEvidence v1:
-// lines measured for themselves count as measured, apportioned lines at their lot's latest measurement; quantities
-// in mixed units are not added and read zero. Of every house it also says what is loaded in each load unit
-// (HouseUnitLoad, measured as the totals are, over every stuffing the lot is loaded in: a lot's measure is divided
-// over them), each load unit carries the state and revision of its stuffing's record, and each unit with a stuffing
-// has its packing list with a digest (UnitPackingList), built from the same figures, and the unit's cargo against its
-// container's default limits (UnitPackingList.Limits).
+// GetPhysicalCostBasis answers PhysicalCostBasis v1: the consolidation and, of every live house, the scope PHY froze at
+// attach and what its tenders actually loaded, from one snapshot. Loaded measures follow PhysicalLoadEvidence v1: lines
+// measured for themselves count as measured, apportioned lines at their lot's latest measurement; weights and volumes
+// in mixed units are converted to grams and cubic centimetres and added (V2.84), and a volume not known for a line
+// makes the house's volume read zero. Of every house it also says what is loaded in each load unit (HouseUnitLoad,
+// measured as the totals are, over every stuffing the lot is loaded in: a lot's measure is divided over them), each
+// load unit carries the state and revision of its stuffing's record, and each unit with a stuffing has its packing list
+// with a digest (UnitPackingList), built from the same figures, and the unit's cargo against its container's default
+// limits (UnitPackingList.Limits).
 func (m *Module) GetPhysicalCostBasis(ctx context.Context, q api.GetPhysicalCostBasis) (api.PhysicalCostBasis, error) {
 	c, revision, houses, executions, lots, err := m.reads(q.TenantID).CostBasis(ctx, domain.TenantID(q.TenantID),
 		domain.ConsolidationID(q.ConsolidationID))
@@ -52,7 +52,8 @@ func (m *Module) GetPhysicalCostBasis(ctx context.Context, q api.GetPhysicalCost
 		e := h.Entry
 		house := api.HouseCostBasis{ShipmentID: string(h.ShipmentID), MembershipRevision: h.MembershipRevision,
 			Packs: e.Scope.Packs, GrossWeight: e.Scope.GrossWeight, Volume: e.Scope.Volume}
-		weight, volume := sum{}, sum{}
+		var weight domain.WeightSum
+		var volume domain.VolumeSum
 		for _, r := range executions {
 			x := r.Execution
 			packs, w, v := x.HouseMeasureAllotted(h.ShipmentID, byID, allotment)
@@ -66,8 +67,8 @@ func (m *Module) GetPhysicalCostBasis(ctx context.Context, q api.GetPhysicalCost
 				unitLines[no] = append(unitLines[no], api.UnitPackingLine{ShipmentID: string(h.ShipmentID), LoadedPacks: packs,
 					LoadedGrossWeight: w, LoadedVolume: v})
 			}
-			weight.add(w)
-			volume.add(v)
+			weight.Add(w)
+			volume.Add(v)
 			for _, l := range x.State().Lines {
 				if l.ShipmentID != h.ShipmentID {
 					continue
@@ -77,7 +78,7 @@ func (m *Module) GetPhysicalCostBasis(ctx context.Context, q api.GetPhysicalCost
 				}
 			}
 		}
-		house.LoadedGrossWeight, house.LoadedVolume = weight.quantity(), volume.quantity()
+		house.LoadedGrossWeight, house.LoadedVolume = weight.Quantity(), volume.Quantity()
 		slices.SortFunc(house.Units, func(a, b api.HouseUnitLoad) int { return a.UnitNo - b.UnitNo })
 		out.Houses = append(out.Houses, house)
 	}
@@ -103,30 +104,6 @@ func (m *Module) GetPhysicalCostBasis(ctx context.Context, q api.GetPhysicalCost
 		out.LoadUnits = append(out.LoadUnits, loadUnit(u, uses))
 	}
 	return out, nil
-}
-
-// sum adds quantities of one unit; mixed units make the sum unknown, which reads as a zero quantity.
-type sum struct {
-	unit    kernel.UnitCode
-	amount  int64
-	unknown bool
-}
-
-func (s *sum) add(q kernel.Quantity) {
-	switch {
-	case q.Unit == "" && q.Amount == 0:
-	case s.unit == "" || s.unit == q.Unit:
-		s.unit, s.amount = q.Unit, s.amount+q.Amount
-	default:
-		s.unknown = true
-	}
-}
-
-func (s *sum) quantity() kernel.Quantity {
-	if s.unknown {
-		return kernel.Quantity{}
-	}
-	return kernel.Quantity{Unit: s.unit, Amount: s.amount}
 }
 
 // packingListDigest is the SHA-256, in hexadecimal, of the canonical text of a unit's packing list: the three lines

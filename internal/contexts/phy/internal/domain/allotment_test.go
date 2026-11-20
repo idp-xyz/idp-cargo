@@ -239,14 +239,17 @@ func TestVolumeUnknownInOneContainerOnly(t *testing.T) {
 	if gb := measureAllotted(b, all, lots(l)); gb.packs != 2 || gb.weight != kg(150) || gb.volume != cm3(300) {
 		t.Errorf("container B = %v, want 2 packs 150 kg 300 CMQ", gb)
 	}
-	// mixed units: a line weighed for itself with its volume in cubic metres beside the lot's cubic centimetres
+	// mixed units: a line weighed for itself with its volume in cubic metres beside the lot's cubic centimetres. Since
+	// V2.84 the volumes are converted and added: the line's 1 MTQ is 1,000,000 cm3, more than the lot's 600 cm3, so
+	// nothing of the lot's volume is left for its other packs, and container A reads 1,000,000 + 0 cm3 (it read no
+	// volume, and container B 300 cm3 less 1, before).
 	m := stuffedWith(t, "X-M", 1, []LoadLine{ownLine("L-1", 2, 300, kernel.Quantity{Unit: "MTQ", Amount: 1}), apportionedLine("L-1", 2)})
 	all = []*LoadExecution{m, b}
-	if gm := measureAllotted(m, all, lots(l)); gm.weight != kg(450) || gm.volume != (kernel.Quantity{}) {
-		t.Errorf("mixed container = %v, want 450 kg and no volume", gm)
+	if gm := measureAllotted(m, all, lots(l)); gm.weight != kg(450) || gm.volume != cm3(1000000) {
+		t.Errorf("mixed container = %v, want 450 kg and 1,000,000 CMQ", gm)
 	}
-	if gb := measureAllotted(b, all, lots(l)); gb.volume.Unit != "CMQ" || gb.volume.Amount <= 0 {
-		t.Errorf("container B = %v beside a mixed one still has its volume", gb)
+	if gb := measureAllotted(b, all, lots(l)); gb.volume != cm3(0) {
+		t.Errorf("container B = %v beside a mixed one, want a volume of 0 CMQ: the line's 1 MTQ takes the lot's 600 cm3", gb)
 	}
 }
 
@@ -288,7 +291,8 @@ func TestAllotmentOfOneExecutionIsTodaysMeasure(t *testing.T) {
 		"measured over the measure":  {ownLine("L-7", 3, 500, cm3(1)), apportionedLine("L-7", 2)},
 		"two lots, one unknown":      {apportionedLine("L-10", 5), apportionedLine("L-7", 7), ownLine("L-0", 2, 9, kernel.Quantity{})},
 		"volume missing and present": {ownLine("L-10", 1, 50, kernel.Quantity{}), apportionedLine("L-10", 5)},
-		"mixed volume units":         {ownLine("L-10", 1, 50, kernel.Quantity{Unit: "MTQ", Amount: 2}), apportionedLine("L-10", 5)},
+		// "mixed volume units" was a case here until V2.84, which converts the volumes
+		// (TestAHouseMeasureConvertsVolumesOfDifferentUnits)
 	} {
 		check(t, name, stuffedWith(t, "X-A", 1, lines), all)
 	}

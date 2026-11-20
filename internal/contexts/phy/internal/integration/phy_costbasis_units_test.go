@@ -448,9 +448,10 @@ func TestAPackingListChangesWithoutTheStuffingRevisionMoving(t *testing.T) {
 	}
 }
 
-// TestMixedVolumeUnitsInOneUnitReadZero: two lots of one house in one unit, weighed in the same weight unit but with
-// volumes in CMQ and MTQ, make the entry's volume read zero, as the house's total does; the weights add (200 + 100 kg).
-func TestMixedVolumeUnitsInOneUnitReadZero(t *testing.T) {
+// TestMixedVolumeUnitsInOneUnitAreAddedInCubicCentimetres: two lots of one house in one unit, weighed in the same
+// weight unit but with volumes in CMQ and MTQ. Before V2.84 the entry's volume and the house's total read zero; they
+// are now 500,000 cm3 + 1 m3 = 500,000 + 1,000,000 = 1,500,000 CMQ; the weights add as ever (200 + 100 kg).
+func TestMixedVolumeUnitsInOneUnitAreAddedInCubicCentimetres(t *testing.T) {
 	ctx := context.Background()
 	f := newFixture(t)
 	f.ful.sea["SH-S1"] = true
@@ -478,8 +479,8 @@ func TestMixedVolumeUnitsInOneUnitReadZero(t *testing.T) {
 	ok(t, 3)(f.module.RecordCargoLoaded(ctx, f.load("load-1", "X-1", 2, "L-1", 2, at)))
 	ok(t, 4)(f.module.RecordCargoLoaded(ctx, f.load("load-2", "X-1", 3, "L-2", 2, at)))
 	h := f.basis(t).Houses[0]
-	if len(h.Units) != 1 || h.Units[0].LoadedPacks != 4 || h.Units[0].LoadedGrossWeight != kgm(300) || h.Units[0].LoadedVolume != (kernel.Quantity{}) ||
-		h.LoadedVolume != (kernel.Quantity{}) || h.LoadedGrossWeight != kgm(300) {
+	if len(h.Units) != 1 || h.Units[0].LoadedPacks != 4 || h.Units[0].LoadedGrossWeight != kgm(300) || h.Units[0].LoadedVolume != cmq(1_500_000) ||
+		h.LoadedVolume != cmq(1_500_000) || h.LoadedGrossWeight != kgm(300) {
 		t.Fatalf("house = %+v", h)
 	}
 }

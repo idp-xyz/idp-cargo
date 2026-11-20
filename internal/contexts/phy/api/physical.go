@@ -621,22 +621,21 @@ type LotEvidence struct {
 	OpenDiscrepancies []Discrepancy
 }
 
-// TenderEvidence is what PhysicalLoadEvidence v1 tells of a load execution with lines of the shipment: the
-// shipment's lines (with their reversals applied); its live packs with their gross weight and volume, lines
-// measured for themselves as measured and apportioned lines at their lot's latest measurement (so a terminal
-// weight taken after the tender counts; volumes in different units are not added; since V2.82 a lot loaded in more than
-// one execution is measured over all of them, so the figures of a lot's executions add up to its measure, see below);
-// the pieces of the shipment
-// the carrier's evidence shows departed, arrived and offloaded (its own reports, or the master's when they
-// cover the tender); the tender receipt, the carrier's evidence of the master and of the shipment, and their
-// open discrepancies.
-// A container's figure for a lot is its part of the lot's measure as the lot is loaded now: it can change after the
-// container is sealed, when another container loads or unloads packs of the lot, when packs of the lot are measured
-// for themselves elsewhere, or when the lot is measured again (a lot of 6 packs at 301 kg with 5 packs in a sealed
-// container reads 250 kg there, and 251 kg once a second container takes the sixth pack). The digest of the packing
-// list changes with it. The digest is there for a reader that keeps it (none does yet: the step that holds an
-// apportionment back while a container is reworked will). FIN's close comparison today notices a moved figure because
-// the house's recorded quantity differs from the one PHY's basis gives now, and asks for a new apportionment.
+// TenderEvidence is what PhysicalLoadEvidence v1 tells of a load execution with lines of the shipment: the shipment's
+// lines (with their reversals applied); its live packs with their gross weight and volume, lines measured for
+// themselves as measured and apportioned lines at their lot's latest measurement (so a terminal weight taken after the
+// tender counts; weights and volumes in different units are converted to grams and cubic centimetres before they are
+// added, since V2.84; since V2.82 a lot loaded in more than one execution is measured over all of them, so the figures
+// of a lot's executions add up to its measure, see below); the pieces of the shipment the carrier's evidence shows
+// departed, arrived and offloaded (its own reports, or the master's when they cover the tender); the tender receipt,
+// the carrier's evidence of the master and of the shipment, and their open discrepancies. A container's figure for a
+// lot is its part of the lot's measure as the lot is loaded now: it can change after the container is sealed, when
+// another container loads or unloads packs of the lot, when packs of the lot are measured for themselves elsewhere, or
+// when the lot is measured again (a lot of 6 packs at 301 kg with 5 packs in a sealed container reads 250 kg there, and
+// 251 kg once a second container takes the sixth pack). The digest of the packing list changes with it. The digest is
+// there for a reader that keeps it (none does yet: the step that holds an apportionment back while a container is
+// reworked will). FIN's close comparison today notices a moved figure because the house's recorded quantity differs
+// from the one PHY's basis gives now, and asks for a new apportionment.
 type TenderEvidence struct {
 	ExecutionID       string
 	Revision          int64
@@ -691,13 +690,14 @@ type GetPhysicalCostBasis struct {
 	ConsolidationID string
 }
 
-// HouseCostBasis is one live house of PhysicalCostBasis v1: the scope PHY froze when it attached the house
-// (Packs, GrossWeight, Volume) and what its tenders actually loaded (lines measured for themselves as
-// measured, apportioned lines at their lot's latest measurement; packs, weight or volume in mixed units are
-// not added and read zero). A lot loaded in more than one load execution is measured over all of them (since V2.82):
-// its apportioned packs share what the lot's measure leaves after the lines measured for themselves, so a house whose
-// packs are all loaded and whose own measurements do not exceed its lots' reads the lots' measure. A house nothing was
-// loaded of has zero LoadedPacks and a zero LastLoadedAt.
+// HouseCostBasis is one live house of PhysicalCostBasis v1: the scope PHY froze when it attached the house (Packs,
+// GrossWeight, Volume) and what its tenders actually loaded (lines measured for themselves as measured, apportioned
+// lines at their lot's latest measurement; weights and volumes in mixed units are converted to grams and cubic
+// centimetres and added, since V2.84, and a volume not known for a line makes the house's volume read zero). A lot
+// loaded in more than one load execution is measured over all of them (since V2.82): its apportioned packs share what
+// the lot's measure leaves after the lines measured for themselves, so a house whose packs are all loaded and whose own
+// measurements do not exceed its lots' reads the lots' measure. A house nothing was loaded of has zero LoadedPacks and
+// a zero LastLoadedAt.
 type HouseCostBasis struct {
 	ShipmentID         string
 	MembershipRevision int64
@@ -713,17 +713,20 @@ type HouseCostBasis struct {
 	Units []HouseUnitLoad
 }
 
-// HouseUnitLoad is what of a house is loaded in one load unit: the live packs of its lines in the unit's stuffing,
-// with their weight and volume measured as the house's totals are. Where the units of measure allow the house's
-// totals to be added, the entries of a house loaded only by stuffings sum to its LoadedPacks, LoadedGrossWeight and
-// LoadedVolume. Where they do not (mixed units) the totals read zero, and an entry keeps the measure of its own
-// stuffing; two lots of one house in one unit with different volume units make the entry's volume read zero too, as
-// HouseMeasure reads a stuffing's mixed units. A zero volume cannot tell a lot with no volume from mixed units. The
-// entries of a house add up to the measure of its lot when all the lot's packs are loaded, however they are split over
-// the stuffings (since V2.82): the lot's measure less what its lines measured for themselves took is shared over its
-// apportioned packs, and divided over the stuffings by the largest remainder, equal remainders going to the lower unit
-// number. Lines measured for themselves are believed: when they exceed the lot's measure nothing is left for the other
-// packs and the entries add up to more than the lot. A lot part loaded takes a share of its measure rounded down.
+// HouseUnitLoad is what of a house is loaded in one load unit: the live packs of its lines in the unit's stuffing, with
+// their weight and volume measured as the house's totals are. Where the units of measure allow the house's totals to be
+// added, the entries of a house loaded only by stuffings sum to its LoadedPacks, LoadedGrossWeight and LoadedVolume.
+// Weights and volumes in different units are converted to grams (GRM) and cubic centimetres (CMQ) and added, in an
+// entry and in the total, since V2.84: before it the total read zero where the entries' units differed and an entry
+// added amounts in different units under one of them (weights) or read zero (volumes). A volume not known for a line
+// (no volume measured, or an apportioned line of a lot measured without one) still makes the entry's volume read zero;
+// a zero volume cannot tell a lot with no volume from that. A quantity in a unit PHY cannot convert makes the sum a
+// quantity in that unit, which a reader that converts refuses. The entries of a house add up to the measure of its lot
+// when all the lot's packs are loaded, however they are split over the stuffings (since V2.82): the lot's measure less
+// what its lines measured for themselves took is shared over its apportioned packs, and divided over the stuffings by
+// the largest remainder, equal remainders going to the lower unit number. Lines measured for themselves are believed:
+// when they exceed the lot's measure nothing is left for the other packs and the entries add up to more than the lot. A
+// lot part loaded takes a share of its measure rounded down.
 type HouseUnitLoad struct {
 	UnitNo            int
 	ExecutionID       string
@@ -780,10 +783,11 @@ type UnitPackingList struct {
 // worked out on every read by the rule that places the OVERWEIGHT hold. The hold and this field come from one function,
 // so they agree with each other; they do not always equal the sum of the entries published for the unit's houses: a
 // house with a line or a lot measure without a volume publishes no volume where the check counts the volume that is
-// known, the check converts each line to grams and cubic centimetres and rounds it up where the published figures are
-// added unconverted, and a house with lines in different weight units is published as the amounts added under the unit
-// of its last line. A container can be over without a hold: a sealed container takes none, and a person may have
-// released the hold. This field shows the state at the time of reading; nothing in the repository reads it yet.
+// known, the check converts each line to grams and cubic centimetres and rounds it up where the published figure of a
+// house whose lines share one unit is added as it is (a house with lines in different units is converted line by line
+// since V2.84, as the check does). A container can be over without a hold: a sealed container takes none, and a person
+// may have released the hold. This field shows the state at the time of reading; nothing in the repository reads it
+// yet.
 type UnitLimitsCheck struct {
 	Checked      bool   // false when a measure is in a unit that cannot be converted: Unchecked names it, and the rest is not known
 	Unchecked    string // the unit code that was not converted

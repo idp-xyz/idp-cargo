@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"strings"
 	"time"
 
@@ -287,6 +288,17 @@ type Deps struct {
 	Auth           Authorization
 	Clock          Clock
 	Window         kernel.RecordWindow
+	// Attempts is how many times a command that fails with phy.ErrRetryable is run in all; 0 is the default of 6, 1
+	// runs it once, with no retry, and a negative number is read as 1. Backoff is the first wait between attempts,
+	// doubled for each next one (no wait is longer than a second) with up to its own length added at random; 0 or less
+	// is the default of 5 ms.
+	Attempts int
+	Backoff  time.Duration
+
+	// sleep and jitter are read by the tests: the wait, and the random part of it in [0, n). Nil: the context-aware
+	// timer and math/rand.
+	sleep  func(context.Context, time.Duration) error
+	jitter func(time.Duration) time.Duration
 }
 
 func (d Deps) check(ctx context.Context, s Scope, commandID string, occurredAt time.Time) error {
@@ -384,9 +396,73 @@ func (g group) Acknowledge() {
 	}
 }
 
-// write commits mutate's aggregate, its Outbox events and the command receipt in one transaction. A receipt
-// stored meanwhile by a concurrent replay wins.
+// write commits mutate's aggregate, its Outbox events and the command receipt in one transaction, and runs the
+// transaction again when it fails with phy.ErrRetryable (see retrying). A receipt stored meanwhile by a concurrent
+// replay wins.
 func (d Deps) write(ctx context.Context, s Scope, commandID, hash string, mutate func(context.Context) (Receipt, aggregate, error)) (Receipt, error) {
+	return d.retrying(ctx, func() (Receipt, error) { return d.writeOnce(ctx, s, commandID, hash, mutate) })
+}
+
+// Defaults of Deps.Attempts and Deps.Backoff: six attempts in all, the first wait 5 ms and every next one twice as
+// long, each with up to its own length added at random. The five waits then add up to between 155 ms (5 + 10 + 20 + 40
+// + 80) and just under 310 ms (twice that); this is arithmetic, not a measurement. No wait is longer than maxBackoff
+// before the random part is added, whatever Backoff and Attempts say, so the doubling cannot overflow.
+const (
+	defaultAttempts = 6
+	defaultBackoff  = 5 * time.Millisecond
+	maxBackoff      = time.Second
+)
+
+// retrying runs attempt, which runs one whole command in a transaction of its own, again when it fails with
+// phy.ErrRetryable: another command was busy with a stuffing, or the stuffings loading a lot changed. The failed
+// transaction has rolled back before attempt returns, and Tx.WithinTransaction has returned its connection, so nothing
+// is held while it waits, and nothing it wrote is left behind, for it wrote nothing that a rollback keeps. It makes at
+// most Deps.Attempts attempts, waits between them as Deps.Backoff says, ends the wait when ctx ends (with ctx's error)
+// and answers the conflict of the last attempt as before. Any other error, a stale revision (a plain phy.ErrConflict)
+// included, ends it at once: the caller's data is stale and a retry would apply the command to a state it did not see.
+func (d Deps) retrying(ctx context.Context, attempt func() (Receipt, error)) (Receipt, error) {
+	attempts, wait := d.Attempts, d.Backoff
+	if attempts == 0 {
+		attempts = defaultAttempts
+	}
+	if wait <= 0 {
+		wait = defaultBackoff
+	}
+	sleep, jitter := d.sleep, d.jitter
+	if sleep == nil {
+		sleep = pause
+	}
+	if jitter == nil {
+		jitter = func(n time.Duration) time.Duration { return rand.N(n) }
+	}
+	for n := 1; ; n++ {
+		receipt, err := attempt()
+		if err == nil || !errors.Is(err, phy.ErrRetryable) || n >= attempts {
+			return receipt, err
+		}
+		wait = min(wait, maxBackoff)
+		if err := sleep(ctx, wait+jitter(wait)); err != nil {
+			return Receipt{}, err
+		}
+		wait *= 2
+	}
+}
+
+// pause waits for d or until ctx ends, in which case it answers ctx's error.
+func pause(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+// writeOnce is one attempt of write. What it commits and reads back it keeps in variables of its own, so nothing a
+// failed attempt did reaches the next one.
+func (d Deps) writeOnce(ctx context.Context, s Scope, commandID, hash string, mutate func(context.Context) (Receipt, aggregate, error)) (Receipt, error) {
 	var result Receipt
 	var changed aggregate
 	err := d.Tx.WithinTransaction(ctx, func(txCtx context.Context) error {

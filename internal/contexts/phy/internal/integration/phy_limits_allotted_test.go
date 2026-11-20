@@ -427,6 +427,7 @@ func quickly[T any](t *testing.T, call func(context.Context) (T, error)) (T, err
 // from container 2.
 func TestALoadOrAnUnloadDoesNotWaitForAnotherStuffingsLock(t *testing.T) {
 	s := newSplitRun(t, 301, 600)
+	s.f.withoutRetry(t) // V2.84 retries a busy stuffing; this test is of the answer when no retry is allowed
 	s.open("X-1", 1)
 	s.open("X-2", 2)
 	s.load("X-1", 4, 0, 0)
@@ -487,6 +488,7 @@ func TestTwoLoadsOfOneLotQueuedBehindItsLock(t *testing.T) {
 		for _, order := range [][2]string{{"X-1", "X-2"}, {"X-2", "X-1"}} {
 			t.Run(fmt.Sprint("prior ", prior, ", ", order[0], " first"), func(t *testing.T) {
 				s := newSplitRun(t, 301, 600)
+				s.f.withoutRetry(t) // V2.84 retries the conflict itself (TestTwoLoadsOfOneLotRetryTheConflictThemselves)
 				s.open("X-1", 1)
 				s.open("X-2", 2)
 				packs := map[string]int64{"X-1": 5, "X-2": 1}

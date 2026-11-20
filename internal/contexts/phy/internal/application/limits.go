@@ -36,19 +36,25 @@ import (
 // Locks. The other stuffings are locked, after the lot and without waiting, because they are written: a command that
 // holds a stuffing may wait for the lot, so waiting for it while holding the lot could be a deadlock. Reading them
 // without locking them would let two commands on two lots of one container each conclude that the container is not
-// over. A busy stuffing makes the command answer phy.ErrConflict, nothing written, even if no hold would have been
+// over. A busy stuffing makes the attempt answer phy.ErrRetryable, nothing written, even if no hold would have been
 // placed. This is so for a receipt as well as for a load and an unload: a receipt of a lot conflicts whenever another
 // command holds one of the open stuffings that hold the lot, and under a steady stress of loaders, unloaders and a
 // measurement on those stuffings the reviewer's receipt loop got 969 conflicts and no success in ten seconds, without a
-// deadlock or a database error. No caller in the repository retries. A conflict also comes before a business rejection,
-// because the stuffings are locked before the change is applied, so that the figures of before can be read: a load of
-// more packs than were received answers the conflict while another stuffing of the lot is busy, and the rejection only
-// when none is. Only the stuffings that are LOADING or ON_HOLD are locked; a stuffing that is CLOSED is never written,
-// so it is read for the allotment and not locked (one that is sealed between the reading of the set and the lock is
-// locked for nothing, which does no harm). The stuffings are read only for the allotment of the lot's other stuffings;
-// for the lot that is changed, whose lock the command holds, every load, unload, receipt and measurement of it waits
-// for the command, so the packs of the lot in them are as the command reads them. The figures of the container's other
-// lots are as committed, and a command on those lots runs its own check, which needs the container's lock as well.
+// deadlock or a database error. Since V2.84 the command path retries it (Deps.retrying): the whole transaction is run
+// again after a short wait, holding nothing while it waits, six attempts in all by default, the waits starting at 5 ms
+// and doubling with up to their own length added at random (155 to 310 ms in all). What reaches the caller is the
+// conflict of the last attempt, as before, when the stuffing stayed busy through all of them, and it is a plain
+// phy.ErrConflict, never retried, when the caller's expected revision is stale. A retry makes starvation under a
+// sustained stream of commands on the same stuffings rarer and bounded (a caller waits at most six attempts and about a
+// third of a second), not impossible. A conflict also comes before a business rejection, because the stuffings are
+// locked before the change is applied, so that the figures of before can be read: a load of more packs than were
+// received answers the conflict while another stuffing of the lot is busy, and the rejection only when none is. Only
+// the stuffings that are LOADING or ON_HOLD are locked; a stuffing that is CLOSED is never written, so it is read for
+// the allotment and not locked (one that is sealed between the reading of the set and the lock is locked for nothing,
+// which does no harm). The stuffings are read only for the allotment of the lot's other stuffings; for the lot that is
+// changed, whose lock the command holds, every load, unload, receipt and measurement of it waits for the command, so
+// the packs of the lot in them are as the command reads them. The figures of the container's other lots are as
+// committed, and a command on those lots runs its own check, which needs the container's lock as well.
 
 // limitsWatch is the check of the limits that follows a command on a lot: it locks, reads and measures what the
 // command will move, before the command changes anything, and holds afterwards.

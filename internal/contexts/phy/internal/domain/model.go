@@ -61,6 +61,19 @@ const (
 	StateCancelled  State = "CANCELLED"
 )
 
+// ErrRetryable is a conflict that comes of a race with another command, not of the caller's stale revision: a stuffing
+// is busy with another command, or the stuffings loading a lot changed between the reading of them and their lock. The
+// command's transaction has rolled back and written nothing, so the command path runs it again
+// (application.Deps.write). It is an ErrConflict for every reader (errors.Is) and says the same words, so a caller that
+// does not retry sees the conflict it always saw. A stale revision stays a plain ErrConflict and is never retried: the
+// caller holds data it has not seen the change of.
+var ErrRetryable error = retryableConflict{}
+
+type retryableConflict struct{}
+
+func (retryableConflict) Error() string        { return ErrConflict.Error() }
+func (retryableConflict) Is(target error) bool { return target == ErrConflict }
+
 // StageMain is the main carriage, the only membership stage in N1.
 const StageMain = "MAIN"
 
