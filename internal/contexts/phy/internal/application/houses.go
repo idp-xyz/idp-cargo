@@ -55,7 +55,8 @@ type DetachHouseCommand struct {
 	OccurredAt         time.Time
 }
 
-// DetachHouse takes a house out of an open consolidation.
+// DetachHouse takes a house out of an open consolidation, or out of a closed one when the house was unloaded whole in
+// the rework of one of its sealed containers (V2.86).
 type DetachHouse struct{ Deps }
 
 func (h DetachHouse) Handle(ctx context.Context, c DetachHouseCommand) (Receipt, error) {
@@ -70,6 +71,13 @@ func (h DetachHouse) Handle(ctx context.Context, c DetachHouseCommand) (Receipt,
 		func(txCtx context.Context, m *phy.Membership, consols []*phy.Consolidation) error {
 			if err := h.unloaded(txCtx, c.Scope.TenantID, consols[0].ID(), c.ShipmentID); err != nil {
 				return err
+			}
+			rework, err := h.unloadedInRework(txCtx, c.Scope.TenantID, consols[0], c.ShipmentID)
+			if err != nil {
+				return err
+			}
+			if rework != nil {
+				return m.DetachAfterRework(consols[0], *rework, c.Reason, c.ReasonText, c.Scope.ActorID, c.OccurredAt)
 			}
 			return m.Detach(consols[0], c.Reason, c.ReasonText, c.Scope.ActorID, c.OccurredAt)
 		})
@@ -87,8 +95,9 @@ type TransferHouseCommand struct {
 	OccurredAt         time.Time
 }
 
-// TransferHouse moves a house between two open consolidations in one transaction; FUL's plan is read first
-// for the attach checks on the target.
+// TransferHouse moves a house between two open consolidations in one transaction, or from a closed one when the house
+// was unloaded whole in a rework of one of its sealed containers (V2.86); FUL's plan is read first for the attach
+// checks on the target.
 type TransferHouse struct {
 	Deps
 	Intents LoadIntents
@@ -117,6 +126,13 @@ func (h TransferHouse) Handle(ctx context.Context, c TransferHouseCommand) (Rece
 		func(txCtx context.Context, m *phy.Membership, consols []*phy.Consolidation) error {
 			if err := h.unloaded(txCtx, c.Scope.TenantID, consols[0].ID(), c.ShipmentID); err != nil {
 				return err
+			}
+			rework, err := h.unloadedInRework(txCtx, c.Scope.TenantID, consols[0], c.ShipmentID)
+			if err != nil {
+				return err
+			}
+			if rework != nil {
+				return m.TransferAfterRework(consols[0], consols[len(consols)-1], intent, *rework, c.Reason, c.ReasonText, c.Scope.ActorID, c.OccurredAt)
 			}
 			return m.Transfer(consols[0], consols[len(consols)-1], intent, c.Reason, c.ReasonText, c.Scope.ActorID, c.OccurredAt)
 		})
@@ -212,4 +228,21 @@ func (d Deps) unloaded(ctx context.Context, tenant phy.TenantID, consolidation p
 		return err
 	}
 	return phy.Leavable(loaded)
+}
+
+// unloadedInRework finds, under the house's ledger lock and inside the command's transaction, the rework that
+// unloaded the house when its consolidation is CLOSED, the only state in which a house leaves for a rework. A rework
+// also exists in the history of a consolidation that was emptied, its container given up and the consolidation reopened
+// (OPEN again), and of a RECONCILED one; neither lets a house go for it. It returns nil for any other state, and for a
+// CLOSED consolidation in which the house was unloaded in no rework (a house that was never loaded stays), which the
+// domain then refuses as before.
+func (d Deps) unloadedInRework(ctx context.Context, tenant phy.TenantID, c *phy.Consolidation, shipment phy.ShipmentID) (*phy.ReworkRef, error) {
+	if c.Current().State != phy.StateClosed {
+		return nil, nil
+	}
+	rework, found, err := d.Executions.HouseRework(ctx, tenant, c.ID(), shipment)
+	if err != nil || !found {
+		return nil, err
+	}
+	return &rework, nil
 }

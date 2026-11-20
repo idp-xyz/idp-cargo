@@ -303,7 +303,8 @@ func version(v domain.Version) api.ConsolidationVersion {
 func entry(e domain.Entry) api.MembershipEntry {
 	out := api.MembershipEntry{EntryNo: e.No, ConsolidationID: string(e.ConsolidationID), Start: string(e.Start), PredecessorNo: e.Predecessor,
 		FULRevision: e.FULRevision, PlanVersion: e.PlanVersion, Packs: e.Scope.Packs, GrossWeight: e.Scope.GrossWeight, Volume: e.Scope.Volume,
-		AttachedAt: e.At, EnteredAt: e.EnteredAt, End: string(e.End), Reason: string(e.Reason), EndedAt: e.EndedAt, SuccessorNo: e.Successor}
+		AttachedAt: e.At, EnteredAt: e.EnteredAt, End: string(e.End), Reason: string(e.Reason), EndedAt: e.EndedAt, SuccessorNo: e.Successor,
+		ReworkExecutionID: string(e.ReworkExecutionID), ReworkNo: e.ReworkNo}
 	for _, p := range e.Parts {
 		out.Parts = append(out.Parts, api.EntryPart{ObligationID: p.ObligationID, ObligationVersion: p.ObligationVersion, OrderID: p.OrderID,
 			Packs: p.Packs, PackageType: p.PackageType, GrossWeight: p.GrossWeight, Volume: p.Volume})

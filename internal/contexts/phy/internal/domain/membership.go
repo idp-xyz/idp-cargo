@@ -78,6 +78,20 @@ type Entry struct {
 	EndedAt         time.Time
 	EndEnteredAt    time.Time
 	Successor       int // TRANSFERRED and REFRESHED
+	// ReworkExecutionID and ReworkNo name the rework of a sealed container in which the house was unloaded, when the
+	// entry ended in a CLOSED consolidation as DETACHED or TRANSFERRED (V2.86); empty and 0 otherwise.
+	ReworkExecutionID LoadExecutionID
+	ReworkNo          int
+}
+
+// ReworkRef is the rework of a sealed container in which a house was unloaded whole: the execution, the rework's number
+// and the business time of the house's latest reversal in it. A house that was unloaded in a rework of the
+// consolidation may leave it though it is CLOSED; a house that was never loaded has no such rework and stays (that is a
+// shut-out before stuffing, which is decided while the consolidation is open).
+type ReworkRef struct {
+	ExecutionID LoadExecutionID
+	No          int
+	UnloadedAt  time.Time
 }
 
 // Live reports whether the entry has not ended.
@@ -143,12 +157,24 @@ func (m *Membership) Attach(c *Consolidation, i LoadIntent, by string, at time.T
 
 // Detach takes the house out of an OPEN consolidation with a reason.
 func (m *Membership) Detach(c *Consolidation, reason Reason, text, by string, at time.Time) error {
+	return m.detach(c, nil, reason, text, by, at)
+}
+
+// DetachAfterRework takes the house out of a CLOSED consolidation (or an OPEN one) with a reason, when it was unloaded
+// whole in the rework of a sealed container of it; the entry that ends records the rework. Whether the container is
+// still in rework or sealed again does not matter. The caller has checked that nothing of the house is loaded.
+func (m *Membership) DetachAfterRework(c *Consolidation, rework ReworkRef, reason Reason, text, by string, at time.Time) error {
+	return m.detach(c, &rework, reason, text, by, at)
+}
+
+func (m *Membership) detach(c *Consolidation, rework *ReworkRef, reason Reason, text, by string, at time.Time) error {
 	i, err := m.liveIn(c)
 	if err != nil {
 		return err
 	}
-	if c.Current().State != StateOpen {
-		return ErrNotOpen
+	link, err := leaving(c, rework, at)
+	if err != nil {
+		return err
 	}
 	if err = reason.check(text); err != nil {
 		return err
@@ -157,13 +183,45 @@ func (m *Membership) Detach(c *Consolidation, reason Reason, text, by string, at
 		return err
 	}
 	m.end(i, EndDetached, reason, text, 0, by, at)
+	m.linkRework(i, link)
 	m.record(eventHouseDetached, at, c.ID(), m.state.Entries[i].No, "", reason)
 	return nil
+}
+
+// leaving says whether a house may leave the consolidation and which rework the ended entry records. An OPEN
+// consolidation lets it go and records none (a rework is only ever opened on a CLOSED consolidation). A CLOSED one lets
+// it go only with the rework that unloaded it, and the leaving is not dated before that rework's own unloading (its
+// latest reversal in it; a later ordinary reversal of the house, in another container, is not looked at); every other
+// state refuses, and so does a CLOSED one with no rework.
+func leaving(c *Consolidation, rework *ReworkRef, at time.Time) (ReworkRef, error) {
+	switch c.Current().State {
+	case StateOpen:
+		return ReworkRef{}, nil
+	case StateClosed:
+		if rework == nil {
+			return ReworkRef{}, ErrNotOpen
+		}
+		if !identifier(string(rework.ExecutionID)) || rework.No < 1 || at.IsZero() || at.Before(rework.UnloadedAt) {
+			return ReworkRef{}, ErrInvalidChange
+		}
+		return *rework, nil
+	}
+	return ReworkRef{}, ErrNotOpen
 }
 
 // Transfer moves the house from one OPEN consolidation to another of the same mode that admits it, in one
 // step: the live entry ends as TRANSFERRED and the new entry continues it.
 func (m *Membership) Transfer(from, to *Consolidation, intent LoadIntent, reason Reason, text, by string, at time.Time) error {
+	return m.transfer(from, to, intent, nil, reason, text, by, at)
+}
+
+// TransferAfterRework is Transfer for a house that was unloaded whole in the rework of a sealed container of a CLOSED
+// consolidation (see DetachAfterRework); the target must be OPEN and admit the house, as for any transfer.
+func (m *Membership) TransferAfterRework(from, to *Consolidation, intent LoadIntent, rework ReworkRef, reason Reason, text, by string, at time.Time) error {
+	return m.transfer(from, to, intent, &rework, reason, text, by, at)
+}
+
+func (m *Membership) transfer(from, to *Consolidation, intent LoadIntent, rework *ReworkRef, reason Reason, text, by string, at time.Time) error {
 	i, err := m.liveIn(from)
 	if err != nil {
 		return err
@@ -171,12 +229,14 @@ func (m *Membership) Transfer(from, to *Consolidation, intent LoadIntent, reason
 	if err = m.belongs(to, intent.ShipmentID); err != nil {
 		return err
 	}
-	switch {
-	case from.ID() == to.ID():
+	if from.ID() == to.ID() {
 		return ErrSameConsolidation
-	case from.Current().State != StateOpen:
-		return ErrNotOpen
-	case from.Mode() != to.Mode():
+	}
+	link, err := leaving(from, rework, at)
+	if err != nil {
+		return err
+	}
+	if from.Mode() != to.Mode() {
 		return fmt.Errorf("%w: %s is %s, %s is %s", ErrModeMismatch, from.ID(), from.Mode(), to.ID(), to.Mode())
 	}
 	if err = reason.check(text); err != nil {
@@ -190,6 +250,7 @@ func (m *Membership) Transfer(from, to *Consolidation, intent LoadIntent, reason
 	}
 	previous := m.state.Entries[i].No
 	m.end(i, EndTransferred, reason, text, previous+1, by, at)
+	m.linkRework(i, link)
 	no := m.add(to, intent, StartTransferred, previous, by, at)
 	m.record(eventHouseTransferred, at, to.ID(), no, from.ID(), reason)
 	return nil
@@ -299,6 +360,12 @@ func (m *Membership) end(i int, kind EndKind, reason Reason, text string, succes
 	}
 }
 
+// linkRework records on the entry just ended the rework that unloaded its house; no rework records nothing.
+func (m *Membership) linkRework(i int, rework ReworkRef) {
+	e := &m.state.Entries[i]
+	e.ReworkExecutionID, e.ReworkNo = rework.ExecutionID, rework.No
+}
+
 func (m *Membership) record(kind string, at time.Time, consolidation ConsolidationID, entry int, from ConsolidationID, reason Reason) {
 	m.pending = append(m.pending, Event{Type: kind, At: at.UTC(), TenantID: m.state.TenantID, SubjectID: string(m.state.ShipmentID),
 		ConsolidationID: consolidation, ShipmentID: m.state.ShipmentID, EntryNo: entry, FromConsolidationID: from, Reason: string(reason)})
@@ -349,6 +416,8 @@ func RestoreMembership(st MembershipState) (*Membership, error) {
 	return m, nil
 }
 
+func (e Entry) noRework() bool { return e.ReworkExecutionID == "" && e.ReworkNo == 0 }
+
 func (e Entry) valid(i int, all []Entry) bool {
 	if e.No != i+1 || !identifier(string(e.ConsolidationID)) || e.FULRevision < 1 || e.PlanVersion < 1 || !e.Scope.valid() ||
 		len(e.Parts) == 0 || blank(e.By) || e.At.IsZero() || (i > 0 && e.At.Before(all[i-1].At)) {
@@ -376,9 +445,14 @@ func (e Entry) valid(i int, all []Entry) bool {
 		return false
 	}
 	if e.Live() {
-		return e.Reason == "" && e.ReasonText == "" && e.EndedBy == "" && e.EndedAt.IsZero() && e.Successor == 0
+		return e.Reason == "" && e.ReasonText == "" && e.EndedBy == "" && e.EndedAt.IsZero() && e.Successor == 0 && e.noRework()
 	}
 	if blank(e.EndedBy) || e.EndedAt.Before(e.At) {
+		return false
+	}
+	// Only a detach or a transfer names a rework, and a name is an execution and a number together.
+	if (e.End != EndDetached && e.End != EndTransferred && !e.noRework()) || (e.ReworkExecutionID == "") != (e.ReworkNo == 0) || e.ReworkNo < 0 ||
+		(e.ReworkExecutionID != "" && !identifier(string(e.ReworkExecutionID))) {
 		return false
 	}
 	switch e.End {

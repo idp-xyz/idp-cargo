@@ -47,6 +47,8 @@ type entryRow struct {
 	EndedAt         time.Time `json:"ended_at"`
 	EndEnteredAt    time.Time `json:"end_entered_at"`
 	SuccessorNo     int       `json:"successor_no"`
+	ReworkExecution string    `json:"end_rework_execution_id"`
+	ReworkNo        int       `json:"end_rework_no"`
 }
 
 type partRow struct {
@@ -77,7 +79,8 @@ func (e entryRow) entry(parts []partRow) phy.Entry {
 		Predecessor: e.PredecessorNo, FULRevision: e.FULRevision, PlanVersion: e.PlanVersion,
 		Scope: phy.CargoScope{Packs: e.Packs, GrossWeight: quantity(e.GrossWeightUnit, e.GrossWeight), Volume: quantity(e.VolumeUnit, e.Volume)},
 		By:    e.AttachedBy, At: utc(e.AttachedAt), EnteredAt: utc(e.EnteredAt), End: phy.EndKind(e.EndKind), Reason: phy.Reason(e.EndReason),
-		ReasonText: e.EndText, EndedBy: e.EndedBy, EndedAt: utc(e.EndedAt), EndEnteredAt: utc(e.EndEnteredAt), Successor: e.SuccessorNo}
+		ReasonText: e.EndText, EndedBy: e.EndedBy, EndedAt: utc(e.EndedAt), EndEnteredAt: utc(e.EndEnteredAt), Successor: e.SuccessorNo,
+		ReworkExecutionID: phy.LoadExecutionID(e.ReworkExecution), ReworkNo: e.ReworkNo}
 	for _, p := range parts {
 		out.Parts = append(out.Parts, phy.Part{ObligationID: p.ObligationID, ObligationVersion: p.ObligationVersion, OrderID: p.OrderID,
 			Packs: p.Packs, PackageType: p.PackageType, GrossWeight: quantity(e.GrossWeightUnit, p.GrossWeight), Volume: quantity(e.VolumeUnit, p.Volume)})
@@ -194,9 +197,10 @@ func (s MembershipStore) Save(ctx context.Context, m *phy.Membership, expected i
 	}
 	for no, e := range m.EndedEntries() {
 		tag, err := q.Exec(ctx, `UPDATE cargo_phy.membership_entry SET end_kind=$5,end_reason=$6,end_text=$7,ended_by=$8,ended_at=$9,
-            end_entered_at=$10,successor_no=$11 WHERE tenant_id=$1 AND shipment_id=$2 AND stage=$3 AND entry_no=$4 AND ended_at IS NULL`,
+            end_entered_at=$10,successor_no=$11,end_rework_execution_id=$12,end_rework_no=$13
+            WHERE tenant_id=$1 AND shipment_id=$2 AND stage=$3 AND entry_no=$4 AND ended_at IS NULL`,
 			string(st.TenantID), string(st.ShipmentID), st.Stage, no, string(e.End), orNull(string(e.Reason)), orNull(e.ReasonText),
-			e.EndedBy, e.EndedAt, e.EndEnteredAt, orNull(e.Successor))
+			e.EndedBy, e.EndedAt, e.EndEnteredAt, orNull(e.Successor), orNull(string(e.ReworkExecutionID)), orNull(e.ReworkNo))
 		if err != nil {
 			return 0, entryError(err)
 		}
@@ -207,12 +211,13 @@ func (s MembershipStore) Save(ctx context.Context, m *phy.Membership, expected i
 	for _, e := range m.AddedEntries() {
 		if _, err = q.Exec(ctx, `INSERT INTO cargo_phy.membership_entry (tenant_id,shipment_id,stage,entry_no,consolidation_id,start_kind,
             predecessor_no,ful_revision,plan_version,packs,gross_weight_unit,gross_weight,volume_unit,volume,attached_by,attached_at,entered_at,
-            end_kind,end_reason,end_text,ended_by,ended_at,end_entered_at,successor_no)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)`,
+            end_kind,end_reason,end_text,ended_by,ended_at,end_entered_at,successor_no,end_rework_execution_id,end_rework_no)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)`,
 			string(st.TenantID), string(st.ShipmentID), st.Stage, e.No, string(e.ConsolidationID), string(e.Start), orNull(e.Predecessor),
 			e.FULRevision, e.PlanVersion, e.Scope.Packs, string(e.Scope.GrossWeight.Unit), e.Scope.GrossWeight.Amount,
 			orNull(string(e.Scope.Volume.Unit)), orNull(e.Scope.Volume.Amount), e.By, e.At, e.EnteredAt, orNull(string(e.End)),
-			orNull(string(e.Reason)), orNull(e.ReasonText), orNull(e.EndedBy), orNull(e.EndedAt), orNull(e.EndEnteredAt), orNull(e.Successor)); err != nil {
+			orNull(string(e.Reason)), orNull(e.ReasonText), orNull(e.EndedBy), orNull(e.EndedAt), orNull(e.EndEnteredAt), orNull(e.Successor),
+			orNull(string(e.ReworkExecutionID)), orNull(e.ReworkNo)); err != nil {
 			return 0, entryError(err)
 		}
 		for i, p := range e.Parts {
