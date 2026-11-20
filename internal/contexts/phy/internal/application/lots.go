@@ -88,7 +88,8 @@ type RecordCargoMeasurementCommand struct {
 // lot is checked again against its container's limits with the new measure, by the allotted figure (see limits.go):
 // their consolidations are locked FOR SHARE and the stuffings FOR UPDATE, in id order, before the lot, as
 // RecordScreeningResult does; tenders are not locked. If the stuffings with live packs of the lot changed meanwhile,
-// the command is a conflict and the caller tries again.
+// the command's attempt is a retryable conflict: the command path runs it again (Deps.retrying), reading the stuffings
+// again, and only a conflict that outlasts every attempt reaches the caller, who tries again.
 // A lot measured again after its container was sealed changes the measures PHY publishes; the container's verified
 // gross mass is SEA's (VGM).
 type RecordCargoMeasurement struct{ Deps }
@@ -101,84 +102,88 @@ func (h RecordCargoMeasurement) Handle(ctx context.Context, c RecordCargoMeasure
 	if err = h.authorizeLot(ctx, c.Scope, ActionRecordCargoMeasurement, c.LotID); err != nil {
 		return Receipt{}, err
 	}
-	var live []phy.LoadExecutionID
-	consolidations := map[phy.LoadExecutionID]phy.ConsolidationID{}
-	if err = h.Tx.WithinTransaction(ctx, func(txCtx context.Context) error {
-		if live, err = h.Executions.StuffingsWithLiveLot(txCtx, c.Scope.TenantID, c.LotID); err != nil {
-			return err
-		}
-		for _, id := range live {
-			if consolidations[id], err = h.Executions.Consolidation(txCtx, c.Scope.TenantID, id); err != nil {
+	// The stuffings are read again with every attempt: a retry is for the stuffings having changed, so the set of the
+	// attempt before would conflict again.
+	return h.retrying(ctx, func() (Receipt, error) {
+		var live []phy.LoadExecutionID
+		consolidations := map[phy.LoadExecutionID]phy.ConsolidationID{}
+		if err := h.Tx.WithinTransaction(ctx, func(txCtx context.Context) (err error) {
+			if live, err = h.Executions.StuffingsWithLiveLot(txCtx, c.Scope.TenantID, c.LotID); err != nil {
 				return err
 			}
-		}
-		return nil
-	}); err != nil {
-		return Receipt{}, err
-	}
-	return h.write(ctx, c.Scope, c.CommandID, hash, func(txCtx context.Context) (Receipt, aggregate, error) {
-		tenant := c.Scope.TenantID
-		var ids []phy.ConsolidationID
-		for _, id := range live {
-			ids = append(ids, consolidations[id])
-		}
-		slices.Sort(ids)
-		consols := map[phy.ConsolidationID]*phy.Consolidation{}
-		for _, id := range slices.Compact(ids) {
-			consol, _, err := h.Consolidations.LoadShared(txCtx, tenant, id)
-			if err != nil {
-				return Receipt{}, nil, err
+			for _, id := range live {
+				if consolidations[id], err = h.Executions.Consolidation(txCtx, c.Scope.TenantID, id); err != nil {
+					return err
+				}
 			}
-			consols[id] = consol
+			return nil
+		}); err != nil {
+			return Receipt{}, err
 		}
-		var executions []ExecutionRead
-		for _, id := range live {
-			x, revision, err := h.Executions.Load(txCtx, tenant, id)
-			if err != nil {
-				return Receipt{}, nil, err
+		return h.writeOnce(ctx, c.Scope, c.CommandID, hash, func(txCtx context.Context) (Receipt, aggregate, error) {
+			tenant := c.Scope.TenantID
+			var ids []phy.ConsolidationID
+			for _, id := range live {
+				ids = append(ids, consolidations[id])
 			}
-			executions = append(executions, ExecutionRead{Execution: x, Revision: revision})
-		}
-		l, revision, err := h.Lots.Load(txCtx, tenant, c.LotID)
-		if err != nil {
-			return Receipt{}, nil, err
-		}
-		if revision != c.ExpectedRevision {
-			return Receipt{}, nil, phy.ErrConflict
-		}
-		if err = l.Measure(c.Measurement, c.Scope.ActorID, c.OccurredAt); err != nil {
-			return Receipt{}, nil, err
-		}
-		changed := group{l}
-		if len(live) > 0 {
-			now, err := h.Executions.StuffingsWithLiveLot(txCtx, tenant, c.LotID)
-			if err != nil {
-				return Receipt{}, nil, err
-			}
-			if !slices.Equal(now, live) {
-				return Receipt{}, nil, fmt.Errorf("%w: the stuffings loading lot %s changed; try again", phy.ErrConflict, c.LotID)
-			}
-		}
-		if len(executions) > 0 {
-			all := make([]*phy.LoadExecution, len(executions))
-			for i, r := range executions {
-				all[i] = r.Execution
-			}
-			held, err := h.holdOverLimits(txCtx, tenant, consols, executions, all, l, c.Measurement.Evidence, c.Scope.ActorID, c.OccurredAt)
-			if err != nil {
-				return Receipt{}, nil, err
-			}
-			for _, r := range held {
-				r.Execution.Stamp(entered)
-				if _, err = h.Executions.Save(txCtx, r.Execution, r.Revision); err != nil {
+			slices.Sort(ids)
+			consols := map[phy.ConsolidationID]*phy.Consolidation{}
+			for _, id := range slices.Compact(ids) {
+				consol, _, err := h.Consolidations.LoadShared(txCtx, tenant, id)
+				if err != nil {
 					return Receipt{}, nil, err
 				}
-				changed = append(changed, r.Execution)
+				consols[id] = consol
 			}
-		}
-		l.Stamp(entered)
-		revision, err = h.Lots.Save(txCtx, l, revision)
-		return Receipt{LotID: c.LotID, NewRevision: revision, ItemNo: len(l.State().Measurements)}, changed, err
+			var executions []ExecutionRead
+			for _, id := range live {
+				x, revision, err := h.Executions.Load(txCtx, tenant, id)
+				if err != nil {
+					return Receipt{}, nil, err
+				}
+				executions = append(executions, ExecutionRead{Execution: x, Revision: revision})
+			}
+			l, revision, err := h.Lots.Load(txCtx, tenant, c.LotID)
+			if err != nil {
+				return Receipt{}, nil, err
+			}
+			if revision != c.ExpectedRevision {
+				return Receipt{}, nil, phy.ErrConflict
+			}
+			if err = l.Measure(c.Measurement, c.Scope.ActorID, c.OccurredAt); err != nil {
+				return Receipt{}, nil, err
+			}
+			changed := group{l}
+			if len(live) > 0 {
+				now, err := h.Executions.StuffingsWithLiveLot(txCtx, tenant, c.LotID)
+				if err != nil {
+					return Receipt{}, nil, err
+				}
+				if !slices.Equal(now, live) {
+					return Receipt{}, nil, fmt.Errorf("%w: the stuffings loading lot %s changed; try again", phy.ErrRetryable, c.LotID)
+				}
+			}
+			if len(executions) > 0 {
+				all := make([]*phy.LoadExecution, len(executions))
+				for i, r := range executions {
+					all[i] = r.Execution
+				}
+				held, err := h.holdOverLimits(txCtx, tenant, consols, executions, all, l, c.Measurement.Evidence, c.Scope.ActorID, c.OccurredAt)
+				if err != nil {
+					return Receipt{}, nil, err
+				}
+				for _, r := range held {
+					r.Execution.Stamp(entered)
+					if _, err = h.Executions.Save(txCtx, r.Execution, r.Revision); err != nil {
+						return Receipt{}, nil, err
+					}
+					changed = append(changed, r.Execution)
+				}
+			}
+			l.Stamp(entered)
+			revision, err = h.Lots.Save(txCtx, l, revision)
+			return Receipt{LotID: c.LotID, NewRevision: revision, ItemNo: len(l.State().Measurements)}, changed, err
+		})
 	})
 }
 
@@ -191,10 +196,11 @@ type RecordScreeningResultCommand struct {
 	OccurredAt       time.Time
 }
 
-// RecordScreeningResult records a screening result of an AIR lot. A FAILED result holds every loading
-// execution with live packs of the lot: their consolidation is locked FOR SHARE and the executions FOR UPDATE,
-// in id order, before the lot; if the executions with live packs of the lot changed meanwhile, the command is a
-// conflict and the caller tries again.
+// RecordScreeningResult records a screening result of an AIR lot. A FAILED result holds every loading execution with
+// live packs of the lot: their consolidation is locked FOR SHARE and the executions FOR UPDATE, in id order, before the
+// lot; if the executions with live packs of the lot changed meanwhile, the attempt is a retryable conflict and the
+// command path runs the command again (Deps.retrying); only a conflict that outlasts every attempt reaches the caller,
+// who tries again.
 type RecordScreeningResult struct{ Deps }
 
 func (h RecordScreeningResult) Handle(ctx context.Context, c RecordScreeningResultCommand) (Receipt, error) {
@@ -205,75 +211,78 @@ func (h RecordScreeningResult) Handle(ctx context.Context, c RecordScreeningResu
 	if err = h.authorizeLot(ctx, c.Scope, ActionRecordScreeningResult, c.LotID); err != nil {
 		return Receipt{}, err
 	}
-	var held []phy.LoadExecutionID
-	consolidations := map[phy.LoadExecutionID]phy.ConsolidationID{}
-	if c.Screening.Outcome == phy.ScreeningFailed {
-		if err = h.Tx.WithinTransaction(ctx, func(txCtx context.Context) error {
-			if held, err = h.Executions.WithLiveLot(txCtx, c.Scope.TenantID, c.LotID); err != nil {
-				return err
-			}
-			for _, id := range held {
-				if consolidations[id], err = h.Executions.Consolidation(txCtx, c.Scope.TenantID, id); err != nil {
+	// The executions are read again with every attempt, as RecordCargoMeasurement reads its stuffings.
+	return h.retrying(ctx, func() (Receipt, error) {
+		var held []phy.LoadExecutionID
+		consolidations := map[phy.LoadExecutionID]phy.ConsolidationID{}
+		if c.Screening.Outcome == phy.ScreeningFailed {
+			if err := h.Tx.WithinTransaction(ctx, func(txCtx context.Context) (err error) {
+				if held, err = h.Executions.WithLiveLot(txCtx, c.Scope.TenantID, c.LotID); err != nil {
 					return err
 				}
-			}
-			return nil
-		}); err != nil {
-			return Receipt{}, err
-		}
-	}
-	return h.write(ctx, c.Scope, c.CommandID, hash, func(txCtx context.Context) (Receipt, aggregate, error) {
-		var locked []phy.ConsolidationID
-		for _, id := range held {
-			locked = append(locked, consolidations[id])
-		}
-		slices.Sort(locked)
-		for _, id := range slices.Compact(locked) {
-			if _, _, err := h.Consolidations.LoadShared(txCtx, c.Scope.TenantID, id); err != nil {
-				return Receipt{}, nil, err
-			}
-		}
-		var executions []ExecutionRead
-		for _, id := range held {
-			x, revision, err := h.Executions.Load(txCtx, c.Scope.TenantID, id)
-			if err != nil {
-				return Receipt{}, nil, err
-			}
-			executions = append(executions, ExecutionRead{Execution: x, Revision: revision})
-		}
-		l, revision, err := h.Lots.Load(txCtx, c.Scope.TenantID, c.LotID)
-		if err != nil {
-			return Receipt{}, nil, err
-		}
-		if revision != c.ExpectedRevision {
-			return Receipt{}, nil, phy.ErrConflict
-		}
-		if err = l.Screen(c.Screening, c.Scope.ActorID, c.OccurredAt); err != nil {
-			return Receipt{}, nil, err
-		}
-		changed := group{l}
-		if c.Screening.Outcome == phy.ScreeningFailed {
-			now, err := h.Executions.WithLiveLot(txCtx, c.Scope.TenantID, c.LotID)
-			if err != nil {
-				return Receipt{}, nil, err
-			}
-			if !slices.Equal(now, held) {
-				return Receipt{}, nil, fmt.Errorf("%w: the executions loading lot %s changed; try again", phy.ErrConflict, c.LotID)
-			}
-			s := l.State().Screenings
-			for _, x := range executions {
-				if x.Execution.HoldForScreening(c.LotID, s[len(s)-1].Evidence, c.Scope.ActorID, c.OccurredAt) {
-					x.Execution.Stamp(entered)
-					if _, err = h.Executions.Save(txCtx, x.Execution, x.Revision); err != nil {
-						return Receipt{}, nil, err
+				for _, id := range held {
+					if consolidations[id], err = h.Executions.Consolidation(txCtx, c.Scope.TenantID, id); err != nil {
+						return err
 					}
-					changed = append(changed, x.Execution)
+				}
+				return nil
+			}); err != nil {
+				return Receipt{}, err
+			}
+		}
+		return h.writeOnce(ctx, c.Scope, c.CommandID, hash, func(txCtx context.Context) (Receipt, aggregate, error) {
+			var locked []phy.ConsolidationID
+			for _, id := range held {
+				locked = append(locked, consolidations[id])
+			}
+			slices.Sort(locked)
+			for _, id := range slices.Compact(locked) {
+				if _, _, err := h.Consolidations.LoadShared(txCtx, c.Scope.TenantID, id); err != nil {
+					return Receipt{}, nil, err
 				}
 			}
-		}
-		l.Stamp(entered)
-		revision, err = h.Lots.Save(txCtx, l, revision)
-		return Receipt{LotID: c.LotID, NewRevision: revision, ItemNo: len(l.State().Screenings)}, changed, err
+			var executions []ExecutionRead
+			for _, id := range held {
+				x, revision, err := h.Executions.Load(txCtx, c.Scope.TenantID, id)
+				if err != nil {
+					return Receipt{}, nil, err
+				}
+				executions = append(executions, ExecutionRead{Execution: x, Revision: revision})
+			}
+			l, revision, err := h.Lots.Load(txCtx, c.Scope.TenantID, c.LotID)
+			if err != nil {
+				return Receipt{}, nil, err
+			}
+			if revision != c.ExpectedRevision {
+				return Receipt{}, nil, phy.ErrConflict
+			}
+			if err = l.Screen(c.Screening, c.Scope.ActorID, c.OccurredAt); err != nil {
+				return Receipt{}, nil, err
+			}
+			changed := group{l}
+			if c.Screening.Outcome == phy.ScreeningFailed {
+				now, err := h.Executions.WithLiveLot(txCtx, c.Scope.TenantID, c.LotID)
+				if err != nil {
+					return Receipt{}, nil, err
+				}
+				if !slices.Equal(now, held) {
+					return Receipt{}, nil, fmt.Errorf("%w: the executions loading lot %s changed; try again", phy.ErrRetryable, c.LotID)
+				}
+				s := l.State().Screenings
+				for _, x := range executions {
+					if x.Execution.HoldForScreening(c.LotID, s[len(s)-1].Evidence, c.Scope.ActorID, c.OccurredAt) {
+						x.Execution.Stamp(entered)
+						if _, err = h.Executions.Save(txCtx, x.Execution, x.Revision); err != nil {
+							return Receipt{}, nil, err
+						}
+						changed = append(changed, x.Execution)
+					}
+				}
+			}
+			l.Stamp(entered)
+			revision, err = h.Lots.Save(txCtx, l, revision)
+			return Receipt{LotID: c.LotID, NewRevision: revision, ItemNo: len(l.State().Screenings)}, changed, err
+		})
 	})
 }
 

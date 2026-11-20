@@ -35,6 +35,9 @@ type Module struct {
 	window    kernel.RecordWindow
 	locations application.Locations // nil until wired
 	equipment application.Equipment // nil until wired
+	attempts  int                   // 0: the default of the command path
+	backoff   time.Duration         // 0: the default of the command path
+	retrySet  bool                  // WithConflictRetry was given
 }
 
 // Option configures a Module.
@@ -43,6 +46,15 @@ type Option func(*Module)
 // WithRecordWindow sets how far a command's business time may lie before the time PHY records it (T1). The
 // default is kernel.DefaultRecordWindow.
 func WithRecordWindow(w kernel.RecordWindow) Option { return func(m *Module) { m.window = w } }
+
+// WithConflictRetry sets how a command that finds a stuffing busy, or the stuffings loading a lot changed, is run
+// again: attempts is the number of runs in all, at least 1 (1: no retry), and backoff the first wait between them, not
+// negative (0: the default of 5 ms), doubled for each next one, to at most a second, with up to its own length added at
+// random. The defaults, without this option, are 6 attempts and 5 ms. New refuses an attempts below 1, 0 included, so
+// that 0 cannot silently mean six, and a negative backoff. A stale revision is never retried.
+func WithConflictRetry(attempts int, backoff time.Duration) Option {
+	return func(m *Module) { m.attempts, m.backoff, m.retrySet = attempts, backoff, true }
+}
 
 // WithLocations gives PHY the location reference data that consolidation routes are resolved against (F2).
 // Without it no consolidation can be created.
@@ -76,17 +88,21 @@ func New(db *bentopg.DB, ful fulapi.LoadIntentQueries, auth api.Authorizer, opts
 	if db == nil || ful == nil || auth == nil {
 		return nil, errors.New("phy: module needs a database, FUL's load intents and an authorizer")
 	}
-	outbox, err := bentooutbox.NewStore(db)
-	if err != nil {
-		return nil, err
-	}
-	m := &Module{db: db, outbox: outbox, intents: fulacl.LoadIntents{FUL: ful}, auth: auth, window: kernel.DefaultRecordWindow}
+	m := &Module{db: db, intents: fulacl.LoadIntents{FUL: ful}, auth: auth, window: kernel.DefaultRecordWindow}
 	for _, opt := range opts {
 		opt(m)
 	}
 	if !m.window.Valid() {
 		return nil, errors.New("phy: the record window must not be negative")
 	}
+	if m.retrySet && (m.attempts < 1 || m.backoff < 0) {
+		return nil, fmt.Errorf("phy: WithConflictRetry takes at least 1 attempt and a backoff that is not negative, not %d and %v", m.attempts, m.backoff)
+	}
+	outbox, err := bentooutbox.NewStore(db)
+	if err != nil {
+		return nil, err
+	}
+	m.outbox = outbox
 	return m, nil
 }
 
@@ -313,6 +329,8 @@ func (m *Module) deps(tenant, commandID string) application.Deps {
 		Auth:           authorizer{m.auth},
 		Clock:          m.clock,
 		Window:         m.window,
+		Attempts:       m.attempts,
+		Backoff:        m.backoff,
 	}
 }
 

@@ -120,7 +120,9 @@ type RecordCargoLoadedCommand struct {
 // locked FOR NO KEY UPDATE and the lot FOR UPDATE; the lot's and the house's live loads are read under those locks, so
 // loads of one house from two lots never pass its plan together. A load into a stuffing checks its container's limits
 // and those of the other stuffings that hold packs of the lot (see limits.go), which are locked, after the lot, without
-// waiting: a busy one makes the command a conflict, with nothing written. The caller tries again.
+// waiting: a busy one makes the attempt a retryable conflict, with nothing written, and the command path runs the
+// command again (Deps.retrying); the conflict reaches the caller only when the stuffing stayed busy through every
+// attempt, and the caller then tries again.
 type RecordCargoLoaded struct{ Deps }
 
 func (h RecordCargoLoaded) Handle(ctx context.Context, c RecordCargoLoadedCommand) (Receipt, error) {

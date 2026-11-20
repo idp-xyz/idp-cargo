@@ -398,7 +398,7 @@ func (s ExecutionStore) LockWithoutWaiting(ctx context.Context, tenant phy.Tenan
 		}
 	}
 	if len(busy) > 0 {
-		return fmt.Errorf("%w: load execution %s is busy with another command; try again", phy.ErrConflict, strings.Join(busy, ", "))
+		return fmt.Errorf("%w: load execution %s is busy with another command; try again", phy.ErrRetryable, strings.Join(busy, ", "))
 	}
 	return nil
 }

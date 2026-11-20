@@ -319,6 +319,7 @@ func TestASealedStuffingIsReadAndNeverLocked(t *testing.T) {
 // locked whole or not at all. Released, the same command holds container 1 and not container 2.
 func TestAPartlyBusySetOfStuffingsMakesTheLoadConflict(t *testing.T) {
 	s := newRunOf(t, 3, 6, 6, 50000, kernel.Quantity{Unit: "CMQ", Amount: 600}, true)
+	s.f.withoutRetry(t) // V2.84 retries a busy stuffing; this test is of the answer when no retry is allowed
 	s.open("X-1", 1)
 	s.open("X-2", 2)
 	s.open("X-3", 3)
@@ -395,22 +396,22 @@ func (u *unitFUL) GetLoadIntent(ctx context.Context, q fulapi.GetShipmentPlanSna
 	return i, err
 }
 
-// TestLatentDefectPHYAcceptsTwoWeightUnitsInOneHousesLinesAndPublishesTheirAmountsAdded documents a latent defect
-// outside V2.83, found by its review (F1 d): HouseMeasure adds the amounts of a house's lines under the unit of the
-// last one, without converting them, and PHY has no guard that a lot's measurement unit equals the unit of the house's
-// other lots (a lot's measurement must be in the unit of the plan the lot was opened under, CargoLot.Measure,
-// domain/lot.go; an apportioned line takes its lot's measurement unit; a line weighed for itself must be in the unit of
-// the house's live entry). The case here is built with a stand-in for FUL (unitFUL), which changes the plan's weight
-// unit between two lots' receipts: FUL as built refuses the change of unit that would be needed (an obligation in
-// another unit is refused by CargoScope.add, ful/internal/domain/plan.go:138-157; the last obligation cannot be
-// released, ErrLastObligation, shipment.go:38 and 378; a part must be in its obligation's units, ObligationRef.fits,
-// shipment.go:129; and LoadIntent v1 takes the unit from the plan's scope, ful/module.go:213), so this repository's FUL
-// does not send PHY such a plan. The test documents what PHY does if it were sent: lot L-A (3 packs, 3,000 KGM) is
-// opened under a plan in KGM and L-B (3 packs, 3 TNE) under a plan in TNE, both loaded apportioned into container 1.
-// The cost basis publishes the house in container 1 as 3,003 TNE (3,000 + 3, under the last lot's unit), though the
-// cargo is 3,000 kg + 3 t = 6,000,000 g, which the limits check and the packing list's Limits read. The figure is NOT
-// fixed here; if it is, this test is to be changed with it.
-func TestLatentDefectPHYAcceptsTwoWeightUnitsInOneHousesLinesAndPublishesTheirAmountsAdded(t *testing.T) {
+// TestAHouseWithLinesInTwoWeightUnitsIsPublishedInGrams is the latent defect found by the review of V2.83 (F1 d) and
+// closed by V2.84. HouseMeasure added the amounts of a house's lines under the unit of the last one, without converting
+// them, and PHY has no guard that a lot's measurement unit equals the unit of the house's other lots (a lot's
+// measurement must be in the unit of the plan the lot was opened under, CargoLot.Measure, domain/lot.go; an apportioned
+// line takes its lot's measurement unit; a line weighed for itself must be in the unit of the house's live entry). The
+// case here is built with a stand-in for FUL (unitFUL), which changes the plan's weight unit between two lots'
+// receipts: FUL as built refuses the change of unit that would be needed, so this repository's FUL does not send PHY
+// such a plan (run against the real FUL and COM in V2.84: an obligation in another unit is refused by
+// AddObligationToShipment, a part in another unit than its obligation too, and the last obligation cannot be released).
+// Lot L-A (3 packs, 3,000 KGM) is opened under a plan in KGM and L-B (3 packs, 3 TNE) under a plan in TNE, both loaded
+// apportioned into container 1. By hand: 3,000 KGM = 3,000 x 1,000 = 3,000,000 g and 3 TNE = 3 x 1,000,000 = 3,000,000
+// g, 6,000,000 g in all. V2.83 published 3,003 TNE (3,000 + 3 under the last lot's unit); the house is now published as
+// 6,000,000 GRM in container 1's entry, in the house's total, in the unit's packing-list line (and so in its digest)
+// and in the shipment's physical facts, and the limits check, which always converted, still reads 6,000,000 g. What FIN
+// makes of the figure is the same conversion it applies to a weight (GRM, KGM and TNE): 6,000,000 g.
+func TestAHouseWithLinesInTwoWeightUnitsIsPublishedInGrams(t *testing.T) {
 	ctx := context.Background()
 	f := newFixture(t)
 	u := &unitFUL{fulStub: f.ful}
@@ -447,16 +448,29 @@ func TestLatentDefectPHYAcceptsTwoWeightUnitsInOneHousesLinesAndPublishesTheirAm
 	s.loadAs("ops-1", "X-1", "L-B", 3, 0, 0, 4)
 	b := f.basis(t)
 	var unit api.HouseUnitLoad
+	var house api.HouseCostBasis
 	for _, h := range b.Houses {
 		if h.ShipmentID == "SH-M" && len(h.Units) == 1 {
-			unit = h.Units[0]
+			house, unit = h, h.Units[0]
 		}
 	}
-	if unit.LoadedGrossWeight != (kernel.Quantity{Unit: "TNE", Amount: 3003}) {
-		t.Errorf("the house in container 1 is published as %+v; the latent defect is 3,003 TNE", unit.LoadedGrossWeight)
+	grams := kernel.Quantity{Unit: "GRM", Amount: 6000000}
+	if unit.LoadedGrossWeight != grams || house.LoadedGrossWeight != grams {
+		t.Errorf("the house in container 1 is published as %+v and its total as %+v; want 6,000,000 GRM", unit.LoadedGrossWeight, house.LoadedGrossWeight)
 	}
-	if l := b.PackingLists[0].Limits; !l.Checked || l.CargoGrams != 6000000 {
+	list := b.PackingLists[0]
+	if len(list.Lines) != 1 || list.Lines[0].LoadedGrossWeight != grams || list.Digest != digestOf(list) {
+		t.Errorf("the packing list's line is %+v (digest %s, worked out here %s); want 6,000,000 GRM", list.Lines, list.Digest, digestOf(list))
+	}
+	evidenceOf, err := f.module.GetPhysicalLoadEvidence(ctx, api.GetPhysicalLoadEvidence{TenantID: f.tenant, ShipmentID: "SH-M"})
+	if err != nil || len(evidenceOf.Tenders) != 1 || evidenceOf.Tenders[0].GrossWeight != grams {
+		t.Errorf("the physical facts read %+v: %v; want 6,000,000 GRM", evidenceOf.Tenders, err)
+	}
+	if l := list.Limits; !l.Checked || l.CargoGrams != 6000000 {
 		t.Errorf("the packing list's Limits read %+v; the cargo is 6,000,000 g", l)
+	}
+	if g, err := finGrams(unit.LoadedGrossWeight); err != nil || g != 6000000 {
+		t.Errorf("FIN's conversion of the entry gives %d g: %v; want 6,000,000", g, err)
 	}
 	s.holds("X-1", api.ExecutionLoading, 0)
 }

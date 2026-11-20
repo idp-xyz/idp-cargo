@@ -4,6 +4,8 @@ import (
 	"math/big"
 	"slices"
 	"strings"
+
+	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
 // A lot whose packs are loaded in more than one load execution (a house split over two containers) has one measure
@@ -16,12 +18,12 @@ type allotKey struct {
 	lot       CargoLotID
 }
 
-type allotPart struct{ weight, volume int64 }
+type allotPart struct{ weight, volume kernel.Quantity }
 
 // Allotment is the part of each lot's measure that the apportioned live packs of each execution take.
 type Allotment struct{ parts map[allotKey]allotPart }
 
-func (a Allotment) part(execution LoadExecutionID, lot CargoLotID) (weight, volume int64, ok bool) {
+func (a Allotment) part(execution LoadExecutionID, lot CargoLotID) (weight, volume kernel.Quantity, ok bool) {
 	p, ok := a.parts[allotKey{execution, lot}]
 	return p.weight, p.volume, ok
 }
@@ -40,10 +42,59 @@ func apportioned(m Measurement, received, measuredPacks, measuredWeight, measure
 	return weight, volume
 }
 
+// taken is what lines measured for themselves took of a lot's measure m, in a unit the two can be compared in. When
+// every line that took anything is in the unit of m (or m is empty) it is the lot's measure as it is and the amounts
+// added as they are, exactly as before V2.84, so with one unit throughout no figure moves. When a line is in another
+// unit, everything is converted first, to grams or cubic centimetres (convert, rounding up, as the limits check does)
+// and the subtraction is made there, and the measure comes back in that base unit: converting back to the unit of m
+// would have to round a figure that the base unit holds exactly. When m or a line is in a unit that cannot be
+// converted, the two cannot be compared and the amounts are taken off as they are, as before V2.84: the figure that
+// comes of it is not taken for a good one, because the quantity in the unit that cannot be converted (the lot's
+// measure, or the line, which the sums add in its own unit) makes the house's sum, and the container's check, say so
+// (WeightSum, VolumeSum, unitCargo). A line that took nothing counts for nothing.
+func taken(m kernel.Quantity, lines []kernel.Quantity, convert func(kernel.Quantity) (int64, bool), base kernel.UnitCode) (kernel.Quantity, int64) {
+	var sum int64
+	same := true
+	for _, q := range lines {
+		sum += q.Amount
+		if q.Amount != 0 && q.Unit != m.Unit {
+			same = false
+		}
+	}
+	if same || m == (kernel.Quantity{}) {
+		return m, sum
+	}
+	measure, ok := convert(m)
+	var total int64
+	for _, q := range lines {
+		if q.Amount == 0 {
+			continue
+		}
+		v, convertible := convert(q)
+		ok = ok && convertible
+		total = addCapped(total, v)
+	}
+	if !ok {
+		return m, sum
+	}
+	return kernel.Quantity{Unit: base, Amount: measure}, total
+}
+
+// lotPart is what the apportioned live packs of a lot take of its latest measure m: apportioned, with what the lines
+// measured for themselves took of the weight and of the volume (lines) taken off in a unit they can be compared in.
+// Each figure is in the unit of the lot's measure, or in grams or cubic centimetres where a line was in another unit.
+func lotPart(m Measurement, received, measuredPacks int64, weights, volumes []kernel.Quantity, packs int64) (weight, volume kernel.Quantity) {
+	mw, tw := taken(m.GrossWeight, weights, toGrams, "GRM")
+	mv, tv := taken(m.Volume, volumes, toCubicCm, "CMQ")
+	w, v := apportioned(Measurement{GrossWeight: mw, Volume: mv}, received, measuredPacks, tw, tv, packs)
+	return kernel.Quantity{Unit: mw.Unit, Amount: w}, kernel.Quantity{Unit: mv.Unit, Amount: v}
+}
+
 // AllotLots divides each measured lot's measure over the executions of xs that hold live packs of it:
 //  1. lines measured for themselves count as measured, in whichever execution they are;
-//  2. the lot's remaining measure is its latest measurement less what all those lines took, never below zero, and its
-//     remaining packs are its packs received less the packs of those lines;
+//  2. the lot's remaining measure is its latest measurement less what all those lines took, never below zero (a line in
+//     another unit than the lot's measure is converted first, see taken), and its remaining packs are its packs
+//     received less the packs of those lines;
 //  3. the apportioned live packs of all the executions together take of the remaining measure their share of the
 //     remaining packs, all of it when they complete the lot (one execution alone: exactly HouseMeasure's rule);
 //  4. that amount is divided over the executions by their apportioned live packs by the largest remainder, so that
@@ -65,8 +116,9 @@ func AllotLots(xs []*LoadExecution, lots map[CargoLotID]*CargoLot) Allotment {
 		packs int64
 	}
 	type lotTotals struct {
-		measuredPacks, measuredWeight, measuredVolume int64
-		takes                                         []take
+		measuredPacks    int64
+		weights, volumes []kernel.Quantity // what the lines measured for themselves took, each in its own unit
+		takes            []take
 	}
 	byLot := map[CargoLotID]*lotTotals{}
 	var order []CargoLotID
@@ -91,7 +143,9 @@ func AllotLots(xs []*LoadExecution, lots map[CargoLotID]*CargoLot) Allotment {
 				byLot[line.LotID], order = t, append(order, line.LotID)
 			}
 			if line.Basis != BasisApportioned {
-				t.measuredPacks, t.measuredWeight, t.measuredVolume = t.measuredPacks+live, t.measuredWeight+w, t.measuredVolume+v
+				t.measuredPacks = t.measuredPacks + live
+				t.weights = append(t.weights, kernel.Quantity{Unit: line.GrossWeight.Unit, Amount: w})
+				t.volumes = append(t.volumes, kernel.Quantity{Unit: line.Volume.Unit, Amount: v})
 				continue
 			}
 			if i := slices.IndexFunc(t.takes, func(k take) bool { return k.x.state.ExecutionID == x.state.ExecutionID }); i >= 0 {
@@ -113,7 +167,7 @@ func AllotLots(xs []*LoadExecution, lots map[CargoLotID]*CargoLot) Allotment {
 		}
 		lot := lots[id]
 		m, _ := lot.Measured()
-		weight, volume := apportioned(m, lot.Received(), t.measuredPacks, t.measuredWeight, t.measuredVolume, packs)
+		weight, volume := lotPart(m, lot.Received(), t.measuredPacks, t.weights, t.volumes, packs)
 		slices.SortFunc(t.takes, func(a, b take) int {
 			if a.x.state.LoadUnitNo != b.x.state.LoadUnitNo {
 				return a.x.state.LoadUnitNo - b.x.state.LoadUnitNo
@@ -124,9 +178,10 @@ func AllotLots(xs []*LoadExecution, lots map[CargoLotID]*CargoLot) Allotment {
 		for i, k := range t.takes {
 			weights[i], volumes[i] = k.packs, k.packs
 		}
-		weights, volumes = divide(weight, weights), divide(volume, volumes)
+		weights, volumes = divide(weight.Amount, weights), divide(volume.Amount, volumes)
 		for i, k := range t.takes {
-			out.parts[allotKey{k.x.state.ExecutionID, id}] = allotPart{weights[i], volumes[i]}
+			out.parts[allotKey{k.x.state.ExecutionID, id}] = allotPart{kernel.Quantity{Unit: weight.Unit, Amount: weights[i]},
+				kernel.Quantity{Unit: volume.Unit, Amount: volumes[i]}}
 		}
 	}
 	return out

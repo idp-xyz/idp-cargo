@@ -477,9 +477,12 @@ func (c LimitsCheck) RaisedOver(after LimitsCheck) (weight, volume, unchecked bo
 // equal the sum of the entries the cost basis publishes for the container's houses (HouseMeasureAllotted): a house with
 // a line or a lot measure without a volume beside others with one publishes no volume ("a volume not known for every
 // line is not known") while the check counts the volume that is known, so the check can read more volume than the
-// published figure and never less; the same for a house with volumes in different units; the check converts every line
-// and rounds each up, while the published figure is added unconverted; and a house with lines in different weight
-// units is published as the amounts added under the unit of its last line, which the check does not do.
+// published figure and never less; and the check converts every line and rounds each up, while the published figure of
+// a house whose lines share one unit is added as it is. A house with lines in different units is published, since
+// V2.84, by converting each line to grams or cubic centimetres and rounding it up as the check does (WeightSum,
+// VolumeSum), so the two read the same there, as they do for a lot measured in a unit and a line measured for itself in
+// another (the allotment converts before it subtracts). A unit that cannot be converted is "limits not checked" here
+// and a figure in that unit in the cost basis.
 func (x *LoadExecution) CheckLimits(c *Consolidation, lots map[CargoLotID]*CargoLot, a Allotment) (LimitsCheck, bool) {
 	if x.state.Kind != ExecutionStuffing || c == nil || c.ID() != x.state.ConsolidationID || x.state.LoadUnitNo < 1 ||
 		x.state.LoadUnitNo > len(c.state.LoadUnits) {
@@ -591,7 +594,10 @@ func (x *LoadExecution) unitCargo(lots map[CargoLotID]*CargoLot, a Allotment) (g
 		}
 		*total = addCapped(*total, v)
 	}
-	type lotShare struct{ apportioned, measuredPacks, measuredWeight, measuredVolume int64 }
+	type lotShare struct {
+		apportioned, measuredPacks int64
+		weights, volumes           []kernel.Quantity
+	}
 	byLot := map[CargoLotID]*lotShare{}
 	var order []CargoLotID
 	for _, line := range x.state.Lines {
@@ -611,7 +617,9 @@ func (x *LoadExecution) unitCargo(lots map[CargoLotID]*CargoLot, a Allotment) (g
 					s.apportioned += live
 					continue
 				}
-				s.measuredPacks, s.measuredWeight, s.measuredVolume = s.measuredPacks+live, s.measuredWeight+w, s.measuredVolume+v
+				s.measuredPacks += live
+				s.weights = append(s.weights, kernel.Quantity{Unit: line.GrossWeight.Unit, Amount: w})
+				s.volumes = append(s.volumes, kernel.Quantity{Unit: line.Volume.Unit, Amount: v})
 			}
 		}
 		add(&grams, kernel.Quantity{Unit: line.GrossWeight.Unit, Amount: w}, toGrams)
@@ -627,11 +635,11 @@ func (x *LoadExecution) unitCargo(lots map[CargoLotID]*CargoLot, a Allotment) (g
 		m, _ := lots[id].Measured()
 		w, v, known := a.part(x.state.ExecutionID, id)
 		if !known {
-			w, v = apportioned(m, lots[id].Received(), s.measuredPacks, s.measuredWeight, s.measuredVolume, s.apportioned)
+			w, v = lotPart(m, lots[id].Received(), s.measuredPacks, s.weights, s.volumes, s.apportioned)
 		}
-		add(&grams, kernel.Quantity{Unit: m.GrossWeight.Unit, Amount: w}, toGrams)
+		add(&grams, w, toGrams)
 		if m.Volume != (kernel.Quantity{}) {
-			add(&cubicCm, kernel.Quantity{Unit: m.Volume.Unit, Amount: v}, toCubicCm)
+			add(&cubicCm, v, toCubicCm)
 		}
 	}
 	return grams, cubicCm, unchecked
@@ -1286,11 +1294,15 @@ func (x *LoadExecution) HousePieces(shipment ShipmentID) HousePieces {
 }
 
 // HouseMeasure returns a house's live packs in the tender with their gross weight and volume: lines measured for
-// themselves as measured; apportioned lines at their lot's latest measurement, less what the lot's lines measured
-// for themselves took, spread over the lot's other packs (the packs that complete the lot take the rest), so a
-// later terminal weight counts and a lot never weighs more than its measure. A volume not known for every
-// line, or in different units, is not known: the volume is then zero. It works out the lot's measure for this
-// execution alone, which is right when the execution holds all the lot's live packs; a lot loaded in several
+// themselves as measured; apportioned lines at their lot's latest measurement, less what the lot's lines measured for
+// themselves took, spread over the lot's other packs (the packs that complete the lot take the rest), so a later
+// terminal weight counts and a lot never weighs more than its measure. Quantities in different units are converted
+// before they are added (WeightSum, VolumeSum: to grams and to cubic centimetres) and before a line measured for itself
+// is taken off its lot's measure (lotPart), so with one unit throughout every figure is what it was. A volume that is
+// not known for a line (a line with none, an apportioned line of a lot measured without one) makes the house's volume
+// not known: it is then zero. A weight is never zero for want of a figure: a zero volume is read as a house with no
+// volume, which a house with none has, whereas a zero weight would be read as a weight. It works out the lot's measure
+// for this execution alone, which is right when the execution holds all the lot's live packs; a lot loaded in several
 // executions is measured over all of them by HouseMeasureAllotted.
 func (x *LoadExecution) HouseMeasure(shipment ShipmentID, lots map[CargoLotID]*CargoLot) (int64, kernel.Quantity, kernel.Quantity) {
 	return x.houseMeasure(shipment, lots, nil)
@@ -1305,19 +1317,20 @@ func (x *LoadExecution) HouseMeasureAllotted(shipment ShipmentID, lots map[Cargo
 
 func (x *LoadExecution) houseMeasure(shipment ShipmentID, lots map[CargoLotID]*CargoLot, a *Allotment) (int64, kernel.Quantity, kernel.Quantity) {
 	var packs int64
-	var weight, volume kernel.Quantity
+	var weight WeightSum
+	var volume VolumeSum
 	unknown := false
-	addVolume := func(unit kernel.UnitCode, amount int64) {
-		switch {
-		case unit == "":
+	addVolume := func(q kernel.Quantity) {
+		if q.Unit == "" {
 			unknown = true
-		case volume.Unit == "" || volume.Unit == unit:
-			volume = kernel.Quantity{Unit: unit, Amount: volume.Amount + amount}
-		default:
-			unknown = true
+			return
 		}
+		volume.Add(q)
 	}
-	type lotShare struct{ apportioned, measuredPacks, measuredWeight, measuredVolume int64 }
+	type lotShare struct {
+		apportioned, measuredPacks int64
+		weights, volumes           []kernel.Quantity
+	}
 	byLot := map[CargoLotID]*lotShare{}
 	var order []CargoLotID // lots in the order their lines were loaded, so that the result never depends on map order
 	for _, line := range x.state.Lines {
@@ -1340,10 +1353,12 @@ func (x *LoadExecution) houseMeasure(shipment ShipmentID, lots map[CargoLotID]*C
 				s.apportioned += live
 				continue
 			}
-			s.measuredPacks, s.measuredWeight, s.measuredVolume = s.measuredPacks+live, s.measuredWeight+w, s.measuredVolume+v
+			s.measuredPacks += live
+			s.weights = append(s.weights, kernel.Quantity{Unit: line.GrossWeight.Unit, Amount: w})
+			s.volumes = append(s.volumes, kernel.Quantity{Unit: line.Volume.Unit, Amount: v})
 		}
-		weight = kernel.Quantity{Unit: line.GrossWeight.Unit, Amount: weight.Amount + w}
-		addVolume(line.Volume.Unit, v)
+		weight.Add(kernel.Quantity{Unit: line.GrossWeight.Unit, Amount: w})
+		addVolume(kernel.Quantity{Unit: line.Volume.Unit, Amount: v})
 	}
 	for _, id := range order {
 		s := byLot[id]
@@ -1352,18 +1367,18 @@ func (x *LoadExecution) houseMeasure(shipment ShipmentID, lots map[CargoLotID]*C
 		}
 		lot := lots[id]
 		m, _ := lot.Measured()
-		w, v, known := int64(0), int64(0), false
+		w, v, known := kernel.Quantity{}, kernel.Quantity{}, false
 		if a != nil {
 			w, v, known = a.part(x.state.ExecutionID, id)
 		}
 		if !known {
-			w, v = apportioned(m, lot.Received(), s.measuredPacks, s.measuredWeight, s.measuredVolume, s.apportioned)
+			w, v = lotPart(m, lot.Received(), s.measuredPacks, s.weights, s.volumes, s.apportioned)
 		}
-		weight = kernel.Quantity{Unit: m.GrossWeight.Unit, Amount: weight.Amount + w}
-		addVolume(m.Volume.Unit, v)
+		weight.Add(w)
+		addVolume(v)
 	}
 	if unknown {
-		volume = kernel.Quantity{}
+		return packs, weight.Quantity(), kernel.Quantity{}
 	}
-	return packs, weight, volume
+	return packs, weight.Quantity(), volume.Quantity()
 }
