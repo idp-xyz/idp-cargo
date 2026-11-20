@@ -236,6 +236,9 @@ type ExecutionStore interface {
 	// HouseRework returns the latest rework of a sealed container of the consolidation in which the house was unloaded,
 	// by the time PHY entered its reversals (V2.86); false when it was unloaded in none.
 	HouseRework(context.Context, phy.TenantID, phy.ConsolidationID, phy.ShipmentID) (phy.ReworkRef, bool, error)
+	// HouseLastReversal returns the business time of the house's latest reversal, of any kind, in any execution of the
+	// consolidation (V2.87); false when it has none, that is when it was never loaded.
+	HouseLastReversal(context.Context, phy.TenantID, phy.ConsolidationID, phy.ShipmentID) (time.Time, bool, error)
 	UnitUses(context.Context, phy.TenantID, phy.ConsolidationID) (map[int]UnitUse, error)
 	// LastCancellations returns, by load unit, the business time of the latest cancellation of a stuffing of the unit.
 	LastCancellations(context.Context, phy.TenantID, phy.ConsolidationID) (map[int]time.Time, error)

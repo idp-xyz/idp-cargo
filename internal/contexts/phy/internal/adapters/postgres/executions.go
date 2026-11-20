@@ -491,6 +491,22 @@ func (s ExecutionStore) HouseRework(ctx context.Context, tenant phy.TenantID, c 
 	return phy.ReworkRef{ExecutionID: phy.LoadExecutionID(execution), No: no, UnloadedAt: at.UTC()}, true, nil
 }
 
+// HouseLastReversal returns the business time of the latest reversal of any of the house's lines in the consolidation.
+func (s ExecutionStore) HouseLastReversal(ctx context.Context, tenant phy.TenantID, c phy.ConsolidationID, shipment phy.ShipmentID) (time.Time, bool, error) {
+	q, err := s.DB.ReadExecutor(ctx)
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	var at *time.Time
+	err = q.QueryRow(ctx, `SELECT max(r.reversed_at)
+      FROM cargo_phy.reversal_line r JOIN cargo_phy.load_line l ON l.tenant_id=r.tenant_id AND l.execution_id=r.execution_id AND l.line_no=r.line_no
+      WHERE l.tenant_id=$1 AND l.consolidation_id=$2 AND l.shipment_id=$3`, string(tenant), string(c), string(shipment)).Scan(&at)
+	if err != nil || at == nil {
+		return time.Time{}, false, err
+	}
+	return at.UTC(), true, nil
+}
+
 // Insert writes a new execution at revision 1.
 func (s ExecutionStore) Insert(ctx context.Context, x *phy.LoadExecution) (int64, error) {
 	q, err := s.DB.RequireExecutor(ctx)

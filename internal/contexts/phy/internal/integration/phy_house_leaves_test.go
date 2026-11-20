@@ -276,8 +276,9 @@ func TestAHouseUnloadedInAReworkIsTransferredStuffedAgainAndSealed(t *testing.T)
 	f.refused(t, "the rework is a rework of the consolidation the entry is in, not another", "23514", "membership_entry_rework_link",
 		`UPDATE cargo_phy.membership_entry SET end_kind='DETACHED', end_reason='ROLLOVER', ended_by='raw', ended_at=attached_at + interval '10 hours', end_entered_at=now(),
           end_rework_execution_id='X-1', end_rework_no=1 WHERE tenant_id=$1 AND shipment_id='H03' AND entry_no=2`)
-	_, err = f.module.DetachHouse(ctx, f.detach("detach-from-c-t", "C-T", "H03", 2, api.ReasonRollover, "", f.hoursIn(10)))
-	f.refusedCommand(t, "H03 was never unloaded in a rework of C-T", err, api.ErrRejected, "")
+	// H03 was never loaded in C-T, which is CLOSED and of a sea kind: it may leave it, with no rework (V2.87; V2.86
+	// refused it). Run as a raw write here, rolled back, since the test goes on to stuff it there.
+	f.accepted(t, "H03, never loaded in C-T, ends there with no rework", endEntry("H03", 2, "DETACHED", "", 0, "attached_at + interval '10 hours'"))
 
 	// stuffed in C-T from the lot that was opened again, and sealed
 	open := f.stuff("open-xt", "X-T", 1, f.hoursIn(11))
@@ -296,6 +297,10 @@ func TestAHouseUnloadedInAReworkIsTransferredStuffedAgainAndSealed(t *testing.T)
 		t.Fatalf("C-T's cost basis: H03 at 5 W/M: %+v", tb.Houses)
 	}
 	packing(t, "C-T", tb.PackingLists[0], "X-T", api.ExecutionClosed, "H03")
+	// with live packs in C-T and no rework of C-T the house stays frozen, by the command (V2.86 refused it before the
+	// stuffing too; since V2.87 a house of C-T with nothing loaded there may leave)
+	_, err = f.module.DetachHouse(ctx, f.detach("detach-from-c-t", "C-T", "H03", 2, api.ReasonRollover, "", f.hoursIn(14)))
+	f.refusedCommand(t, "H03, loaded in C-T, which no rework of C-T unloaded", err, api.ErrRejected, "packs")
 
 	// C-S has two houses left, each loaded as planned, X-1 sealed: it reconciles
 	ok(t, 5)(f.module.ReconcileConsolidation(ctx, api.ReconcileConsolidation{CommandID: "reconcile", TenantID: f.tenant, ActorID: "ops-1", ConsolidationID: "C-S",
@@ -352,10 +357,11 @@ func endEntry(house string, entry int, kind, execution string, no int, at string
         end_rework_execution_id=%s WHERE tenant_id=$1 AND shipment_id='%s' AND entry_no=%d`, kind, at, succ, strings.Replace(link, ", ", ", end_rework_no=", 1), house, entry)
 }
 
-// TestOnlyAHouseUnloadedInAReworkLeavesAClosedConsolidation: a house that was never loaded stays, though a rework of
-// the consolidation unloaded another; the one that was unloaded leaves, the one still loaded stays; and the database
-// says the same to raw writes.
-func TestOnlyAHouseUnloadedInAReworkLeavesAClosedConsolidation(t *testing.T) {
+// TestAHouseNeverLoadedLeavesAClosedConsolidationAndOnlyTheUnloadedOneNamesARework (V2.86 called it
+// TestOnlyAHouseUnloadedInAReworkLeavesAClosedConsolidation): a house that was never loaded leaves a CLOSED sea
+// consolidation with no rework recorded though a rework of the consolidation unloaded another (the database says the
+// same to raw writes), the one that was unloaded leaves naming its rework, and the one still loaded stays.
+func TestAHouseNeverLoadedLeavesAClosedConsolidationAndOnlyTheUnloadedOneNamesARework(t *testing.T) {
 	ctx := context.Background()
 	f := reworkDay(t)
 	f.begin(t, "X-1", 1)
@@ -363,20 +369,17 @@ func TestOnlyAHouseUnloadedInAReworkLeavesAClosedConsolidation(t *testing.T) {
 	ok(t, 3)(f.module.RecordCargoLoaded(ctx, f.load("load-H01", "X-1", 2, "L-H01", 4, at)))
 	ok(t, 4)(f.module.RecordCargoLoaded(ctx, f.load("load-H02", "X-1", 3, "L-H02", 6, at)))
 	ok(t, 5)(f.module.CloseLoadExecution(ctx, f.sealOf("X-1", 4, "SEAL-1")))
-	// H03 is attached and was never loaded: a shut-out before stuffing, and the consolidation is CLOSED
-	_, err := f.module.DetachHouse(ctx, f.detach("detach-h03", "C-S", "H03", 1, api.ReasonShutOut, "", f.hoursIn(6)))
-	f.refusedCommand(t, "a house never loaded", err, api.ErrRejected, "not open")
-	_, err = f.module.TransferHouse(ctx, f.transfer("transfer-h03", "C-S", "C-S", "H03", 1, api.ReasonShutOut, "", f.hoursIn(6)))
-	f.refusedCommand(t, "a house never loaded, transferred", err, api.ErrRejected, "")
-	f.refused(t, "a raw end of a house never loaded, with no rework", "23514", "membership_entry_rework_link", endEntry("H03", 1, "DETACHED", "", 0, "attached_at + interval '10 hours'"))
+	// H03 is attached and was never loaded: a shut-out before stuffing, and the consolidation is CLOSED. V2.86 refused
+	// its leaving; since V2.87 the database accepts the end with no rework (the command, below, is run at the end).
+	_, err := f.module.TransferHouse(ctx, f.transfer("transfer-h03", "C-S", "C-S", "H03", 1, api.ReasonShutOut, "", f.hoursIn(6)))
+	f.refusedCommand(t, "a house never loaded, transferred to the consolidation it is in", err, api.ErrRejected, "")
+	f.accepted(t, "a raw end of a house never loaded, with no rework", endEntry("H03", 1, "DETACHED", "", 0, "attached_at + interval '10 hours'"))
 	f.refused(t, "a raw end of a house never loaded, naming a rework that does not exist", "23514", "membership_entry_rework_link",
 		endEntry("H03", 1, "DETACHED", "X-1", 1, "attached_at + interval '10 hours'"))
 
 	// a rework unloads H01: H01 leaves; H03, never loaded, stays though the consolidation has a rework now; H02 stays
 	ok(t, 6)(f.module.OpenStuffingForRework(ctx, f.openRework("rework-1", "X-1", 5, "H01 is rolled", "ops-asker", f.hoursIn(6))))
 	ok(t, 7)(f.module.UnloadHouseForRework(ctx, f.unloadHouse("unload-h01", "X-1", 6, "H01", f.hoursIn(7))))
-	_, err = f.module.DetachHouse(ctx, f.detach("detach-h03-after", "C-S", "H03", 1, api.ReasonShutOut, "", f.hoursIn(8)))
-	f.refusedCommand(t, "a house never loaded, in a consolidation with a rework", err, api.ErrRejected, "not open")
 	_, err = f.module.DetachHouse(ctx, f.detach("detach-h02", "C-S", "H02", 1, api.ReasonShutOut, "", f.hoursIn(8)))
 	f.refusedCommand(t, "a house still loaded", err, api.ErrRejected, "")
 	f.refused(t, "a raw end of a house never loaded, naming the rework that unloaded another", "23514", "membership_entry_rework_link",
@@ -392,15 +395,19 @@ func TestOnlyAHouseUnloadedInAReworkLeavesAClosedConsolidation(t *testing.T) {
 	if m := f.membership(t, "H01"); r.EntryNo != 1 || m.Live || m.History[0].ReworkExecutionID != "X-1" || m.History[0].ReworkNo != 1 {
 		t.Fatalf("H01: %+v", m)
 	}
-	if m := f.membership(t, "H03"); !m.Live || m.Revision != 1 {
-		t.Fatalf("H03 stays: %+v", m)
+	// H03, never loaded, leaves the consolidation that has a rework of another house, and records none
+	ok(t, 2)(f.module.DetachHouse(ctx, f.detach("detach-h03-after", "C-S", "H03", 1, api.ReasonShutOut, "", f.hoursIn(8))))
+	if m := f.membership(t, "H03"); m.Live || m.Revision != 2 || m.History[0].End != api.EntryDetached || m.History[0].ReworkNo != 0 || m.History[0].ReworkExecutionID != "" {
+		t.Fatalf("H03 left with no rework: %+v", m)
 	}
 }
 
-// TestAHouseUnloadedForAnotherReasonStays: H03 was loaded and taken out again before the container was sealed
-// (MISLOADED, an ordinary reversal), so it has no live packs and a reversal, but none that a rework wrote: it stays,
-// though a rework of the consolidation unloaded H01.
-func TestAHouseUnloadedForAnotherReasonStays(t *testing.T) {
+// TestAHouseTakenOutByOrdinaryReversalsLeavesWithNoLinkWhileAnotherHousesReworkExists (V2.86 called it
+// TestAHouseUnloadedForAnotherReasonStays): H03 was loaded and taken out again before the container was sealed
+// (MISLOADED, an ordinary reversal), so it has no live packs and a reversal, but none that a rework wrote. It leaves
+// with no rework recorded though a rework of the consolidation unloaded H01, and a raw end that names H01's rework is
+// refused.
+func TestAHouseTakenOutByOrdinaryReversalsLeavesWithNoLinkWhileAnotherHousesReworkExists(t *testing.T) {
 	ctx := context.Background()
 	f := reworkDay(t)
 	f.begin(t, "X-1", 1)
@@ -410,15 +417,21 @@ func TestAHouseUnloadedForAnotherReasonStays(t *testing.T) {
 	ok(t, 5)(f.module.RecordCargoUnloaded(ctx, api.RecordCargoUnloaded{CommandID: "unload-H03", TenantID: f.tenant, ActorID: "ops-1", ExecutionID: "X-1", ExpectedRevision: 4,
 		LineNo: loaded.ItemNo, Packs: 2, Reason: api.ReversalMisloaded, Evidence: evidence("unload-H03", at), OccurredAt: at}))
 	ok(t, 6)(f.module.CloseLoadExecution(ctx, f.sealOf("X-1", 5, "SEAL-1")))
-	_, err := f.module.DetachHouse(ctx, f.detach("detach-h03", "C-S", "H03", 1, api.ReasonShutOut, "", f.hoursIn(6)))
-	f.refusedCommand(t, "a house taken out for another reason, before any rework", err, api.ErrRejected, "not open")
+	f.accepted(t, "a raw end of a house taken out for another reason, before any rework, with no rework", endEntry("H03", 1, "DETACHED", "", 0, "attached_at + interval '10 hours'"))
+	f.refused(t, "a raw end of that house naming a rework, before any", "23514", "membership_entry_rework_link", endEntry("H03", 1, "DETACHED", "X-1", 1, "attached_at + interval '10 hours'"))
 	ok(t, 7)(f.module.OpenStuffingForRework(ctx, f.openRework("rework-1", "X-1", 6, "H01 is rolled", "ops-asker", f.hoursIn(6))))
 	ok(t, 8)(f.module.UnloadHouseForRework(ctx, f.unloadHouse("unload-h01", "X-1", 7, "H01", f.hoursIn(7))))
-	_, err = f.module.DetachHouse(ctx, f.detach("detach-h03-after", "C-S", "H03", 1, api.ReasonShutOut, "", f.hoursIn(8)))
-	f.refusedCommand(t, "the same, with a rework of the consolidation in being", err, api.ErrRejected, "not open")
 	f.refused(t, "a raw end of that house naming the rework that unloaded another", "23514", "membership_entry_rework_link",
 		endEntry("H03", 1, "DETACHED", "X-1", 1, "attached_at + interval '10 hours'"))
+	f.accepted(t, "a raw end of that house with no rework, a rework of the consolidation being in rework of another house", endEntry("H03", 1, "DETACHED", "", 0, "attached_at + interval '10 hours'"))
+	ok(t, 2)(f.module.DetachHouse(ctx, f.detach("detach-h03", "C-S", "H03", 1, api.ReasonShutOut, "", f.hoursIn(8))))
+	if e := f.membership(t, "H03").History[0]; e.End != api.EntryDetached || e.ReworkNo != 0 || e.ReworkExecutionID != "" {
+		t.Fatalf("H03 left with no rework, though the consolidation has one of H01: %+v", e)
+	}
 	ok(t, 2)(f.module.DetachHouse(ctx, f.detach("detach-h01", "C-S", "H01", 1, api.ReasonRollover, "", f.hoursIn(8))))
+	if e := f.membership(t, "H01").History[0]; e.ReworkExecutionID != "X-1" || e.ReworkNo != 1 {
+		t.Fatalf("H01 left naming its rework: %+v", e)
+	}
 }
 
 // TestAHouseLoadedAgainAfterTheReworkStaysUntilItIsUnloaded: after its unloading in the rework H03 is loaded into the
