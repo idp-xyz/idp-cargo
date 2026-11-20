@@ -233,6 +233,9 @@ type ExecutionStore interface {
 	// of them is busy it answers phy.ErrConflict naming the busy ones.
 	LockWithoutWaiting(context.Context, phy.TenantID, []phy.LoadExecutionID) error
 	HouseLoaded(context.Context, phy.TenantID, phy.ConsolidationID, phy.ShipmentID) (int64, error)
+	// HouseRework returns the latest rework of a sealed container of the consolidation in which the house was unloaded,
+	// by the time PHY entered its reversals (V2.86); false when it was unloaded in none.
+	HouseRework(context.Context, phy.TenantID, phy.ConsolidationID, phy.ShipmentID) (phy.ReworkRef, bool, error)
 	UnitUses(context.Context, phy.TenantID, phy.ConsolidationID) (map[int]UnitUse, error)
 	// LastCancellations returns, by load unit, the business time of the latest cancellation of a stuffing of the unit.
 	LastCancellations(context.Context, phy.TenantID, phy.ConsolidationID) (map[int]time.Time, error)

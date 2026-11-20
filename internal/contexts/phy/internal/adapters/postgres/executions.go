@@ -466,6 +466,31 @@ func (s ExecutionStore) HouseLoaded(ctx context.Context, tenant phy.TenantID, c 
 	return n, err
 }
 
+// HouseRework returns the latest rework in which the house was unloaded from a container of the consolidation: the
+// latest by the time PHY entered the reversals, then their business time, then the rework's number and the execution.
+func (s ExecutionStore) HouseRework(ctx context.Context, tenant phy.TenantID, c phy.ConsolidationID, shipment phy.ShipmentID) (phy.ReworkRef, bool, error) {
+	q, err := s.DB.ReadExecutor(ctx)
+	if err != nil {
+		return phy.ReworkRef{}, false, err
+	}
+	var execution string
+	var no int
+	var at time.Time
+	err = q.QueryRow(ctx, `SELECT r.execution_id, r.rework_no, max(r.reversed_at)
+      FROM cargo_phy.reversal_line r JOIN cargo_phy.load_line l ON l.tenant_id=r.tenant_id AND l.execution_id=r.execution_id AND l.line_no=r.line_no
+      WHERE l.tenant_id=$1 AND l.consolidation_id=$2 AND l.shipment_id=$3 AND r.rework_no IS NOT NULL
+      GROUP BY r.execution_id, r.rework_no
+      ORDER BY max(r.entered_at) DESC, max(r.reversed_at) DESC, r.rework_no DESC, r.execution_id DESC LIMIT 1`,
+		string(tenant), string(c), string(shipment)).Scan(&execution, &no, &at)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return phy.ReworkRef{}, false, nil
+	}
+	if err != nil {
+		return phy.ReworkRef{}, false, err
+	}
+	return phy.ReworkRef{ExecutionID: phy.LoadExecutionID(execution), No: no, UnloadedAt: at.UTC()}, true, nil
+}
+
 // Insert writes a new execution at revision 1.
 func (s ExecutionStore) Insert(ctx context.Context, x *phy.LoadExecution) (int64, error) {
 	q, err := s.DB.RequireExecutor(ctx)

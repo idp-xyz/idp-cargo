@@ -154,6 +154,10 @@ type MembershipEntry struct {
 	Reason          string
 	EndedAt         time.Time
 	SuccessorNo     int
+	// ReworkExecutionID and ReworkNo name the rework of a sealed container in which the house was unloaded, when it
+	// left a CLOSED consolidation by a detach or a transfer (V2.86); empty and 0 otherwise.
+	ReworkExecutionID string
+	ReworkNo          int
 }
 
 // ConsolMembership is ConsolMembership v1 (relationship 8, PHY -> FUL): a shipment's membership on its main
