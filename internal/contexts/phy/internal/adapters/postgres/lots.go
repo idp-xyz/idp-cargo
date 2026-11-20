@@ -101,6 +101,19 @@ type screeningRow struct {
 	EnteredAt          time.Time `json:"entered_at"`
 }
 
+type lotReopenRow struct {
+	ReopenNo          int       `json:"reopen_no"`
+	ExecutionID       string    `json:"execution_id"`
+	ReworkNo          int       `json:"rework_no"`
+	ReversalNo        int       `json:"reversal_no"`
+	ClosedBy          string    `json:"closed_by"`
+	ClosedAt          time.Time `json:"closed_at"`
+	ClosedEnteredAt   time.Time `json:"closed_entered_at"`
+	ReopenedBy        string    `json:"reopened_by"`
+	ReopenedAt        time.Time `json:"reopened_at"`
+	ReopenedEnteredAt time.Time `json:"reopened_entered_at"`
+}
+
 type cargoDiscrepancyRow struct {
 	DiscrepancyNo       int       `json:"discrepancy_no"`
 	Kind                string    `json:"kind"`
@@ -124,14 +137,15 @@ const lotSelect = `SELECT row_to_json(l),
       WHERE x.tenant_id=l.tenant_id AND x.lot_id=l.lot_id),
     (SELECT coalesce(json_agg(x ORDER BY x.result_no), '[]') FROM cargo_phy.screening_result x WHERE x.tenant_id=l.tenant_id AND x.lot_id=l.lot_id),
     (SELECT coalesce(json_agg(x ORDER BY x.discrepancy_no), '[]') FROM cargo_phy.cargo_discrepancy x WHERE x.tenant_id=l.tenant_id AND x.lot_id=l.lot_id),
+    (SELECT coalesce(json_agg(x ORDER BY x.reopen_no), '[]') FROM cargo_phy.cargo_lot_reopen x WHERE x.tenant_id=l.tenant_id AND x.lot_id=l.lot_id),
     cargo_phy.live_packs_of_lot(l.tenant_id, l.lot_id)
   FROM cargo_phy.cargo_lot l`
 
 // scanLot rebuilds a lot from a lotSelect row.
 func scanLot(row pgx.Row, tenant phy.TenantID, id phy.CargoLotID) (app.LotRead, error) {
-	var rootJSON, lineJSON, measureJSON, groupJSON, screenJSON, discrepancyJSON []byte
+	var rootJSON, lineJSON, measureJSON, groupJSON, screenJSON, discrepancyJSON, reopenJSON []byte
 	var loaded int64
-	if err := row.Scan(&rootJSON, &lineJSON, &measureJSON, &groupJSON, &screenJSON, &discrepancyJSON, &loaded); err != nil {
+	if err := row.Scan(&rootJSON, &lineJSON, &measureJSON, &groupJSON, &screenJSON, &discrepancyJSON, &reopenJSON, &loaded); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return app.LotRead{}, fmt.Errorf("%w: cargo lot %s", bentorepo.ErrNotFound, id)
 		}
@@ -143,8 +157,10 @@ func scanLot(row pgx.Row, tenant phy.TenantID, id phy.CargoLotID) (app.LotRead, 
 	var groups []groupRow
 	var screens []screeningRow
 	var discrepancies []cargoDiscrepancyRow
+	var reopens []lotReopenRow
 	if err := errors.Join(json.Unmarshal(rootJSON, &root), json.Unmarshal(lineJSON, &lines), json.Unmarshal(measureJSON, &measures),
-		json.Unmarshal(groupJSON, &groups), json.Unmarshal(screenJSON, &screens), json.Unmarshal(discrepancyJSON, &discrepancies)); err != nil {
+		json.Unmarshal(groupJSON, &groups), json.Unmarshal(screenJSON, &screens), json.Unmarshal(discrepancyJSON, &discrepancies),
+		json.Unmarshal(reopenJSON, &reopens)); err != nil {
 		return app.LotRead{}, err
 	}
 	st := phy.CargoLotState{TenantID: tenant, LotID: id, ShipmentID: phy.ShipmentID(root.ShipmentID),
@@ -178,6 +194,11 @@ func scanLot(row pgx.Row, tenant phy.TenantID, id phy.CargoLotID) (app.LotRead, 
 			Observed: x.ObservedAmount, Unit: x.Unit, RaisedAt: utc(x.RaisedAt), EnteredAt: utc(x.EnteredAt), Resolution: phy.Resolution(x.Resolution),
 			Reference: x.ResolutionReference, Text: x.ResolutionText, ResolvedBy: x.ResolvedBy, ResolvedAt: utc(x.ResolvedAt),
 			ResolutionEnteredAt: utc(x.ResolutionEnteredAt)})
+	}
+	for _, x := range reopens {
+		st.Reopens = append(st.Reopens, phy.LotReopen{No: x.ReopenNo, ExecutionID: phy.LoadExecutionID(x.ExecutionID), ReworkNo: x.ReworkNo,
+			ReversalNo: x.ReversalNo, ClosedBy: x.ClosedBy, ClosedAt: utc(x.ClosedAt), ClosedEnteredAt: utc(x.ClosedEnteredAt), ReopenedBy: x.ReopenedBy,
+			ReopenedAt: utc(x.ReopenedAt), ReopenedEnteredAt: utc(x.ReopenedEnteredAt)})
 	}
 	l, err := phy.RestoreCargoLot(st)
 	return app.LotRead{Lot: l, Revision: root.Revision, Loaded: loaded}, err
@@ -320,6 +341,15 @@ func (s LotStore) Save(ctx context.Context, l *phy.CargoLot, expected int64) (in
 	}
 	st := l.State()
 	e := st.Expected.Scope
+	// A reopen is written before the change of the lot it records, which the database checks against it.
+	for _, x := range l.AddedReopens() {
+		if _, err = q.Exec(ctx, `INSERT INTO cargo_phy.cargo_lot_reopen (tenant_id,lot_id,reopen_no,execution_id,rework_no,reversal_no,closed_by,closed_at,
+            closed_entered_at,reopened_by,reopened_at,reopened_entered_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+			string(st.TenantID), string(st.LotID), x.No, string(x.ExecutionID), x.ReworkNo, x.ReversalNo, x.ClosedBy, x.ClosedAt, x.ClosedEnteredAt,
+			x.ReopenedBy, x.ReopenedAt, x.ReopenedEnteredAt); err != nil {
+			return 0, err
+		}
+	}
 	var revision int64
 	err = q.QueryRow(ctx, `UPDATE cargo_phy.cargo_lot SET state=$3,expected_ful_revision=$4,expected_plan_version=$5,expected_packs=$6,
         expected_weight_unit=$7,expected_gross_weight=$8,expected_volume_unit=$9,expected_volume=$10,completed_by=$11,completed_at=$12,
@@ -330,6 +360,11 @@ func (s LotStore) Save(ctx context.Context, l *phy.CargoLot, expected int64) (in
 		orNull(st.CompletedEnteredAt), orNull(st.ClosedBy), orNull(st.ClosedAt), orNull(st.ClosedEnteredAt), expected).Scan(&revision)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, fmt.Errorf("%w: cargo lot %s", bentorepo.ErrConflict, st.LotID)
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "cargo_lot_one_live" {
+		// a closed lot opened again meets the lot the shipment has in force at the facility, received since
+		return 0, fmt.Errorf("%w: %s at %s %s", phy.ErrLotInForce, st.ShipmentID, st.Facility.Location.Code, st.Facility.Code)
 	}
 	if err != nil {
 		return 0, err

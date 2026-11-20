@@ -259,9 +259,10 @@ func (h CancelConsolidation) Handle(ctx context.Context, c CancelConsolidationCo
 		})
 }
 
-// executions counts a consolidation's load executions that are not closed (a cancelled one is ended, not open) and the
-// live packs its closed ones tendered. Under the consolidation's FOR UPDATE lock they do not change, since every
-// execution command locks it FOR SHARE first.
+// executions counts a consolidation's load executions that are not closed (a cancelled one is ended, not open, and one
+// in rework is open: it is neither sealed nor ended), the live packs its closed ones tendered, and the sealed stuffings
+// and those in rework, which a reopen waits for. Under the consolidation's FOR UPDATE lock they do not change, since
+// every execution command locks it FOR SHARE first.
 func (d Deps) executions(ctx context.Context, tenant phy.TenantID, id phy.ConsolidationID) (open int, tendered int64, stuffed phy.Stuffed, err error) {
 	list, err := d.Executions.ByConsolidation(ctx, tenant, id)
 	if err != nil {
@@ -276,8 +277,11 @@ func (d Deps) executions(ctx context.Context, tenant phy.TenantID, id phy.Consol
 			open++
 		}
 		if x.Execution.State().Kind == phy.ExecutionStuffing {
-			if x.Execution.Current() == phy.ExecutionClosed {
+			switch x.Execution.Current() {
+			case phy.ExecutionClosed:
 				stuffed.Sealed++
+			case phy.ExecutionRework:
+				stuffed.Reworking++
 			}
 			if last := x.Execution.LastChange(); last.After(stuffed.Last) {
 				stuffed.Last = last

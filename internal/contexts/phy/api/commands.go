@@ -297,6 +297,8 @@ const (
 	ActionReleaseLoadExecutionHold          = "ReleaseLoadExecutionHold"
 	ActionCloseLoadExecution                = "CloseLoadExecution"
 	ActionCancelLoadExecution               = "CancelLoadExecution"
+	ActionOpenStuffingForRework             = "OpenStuffingForRework"
+	ActionUnloadHouseForRework              = "UnloadHouseForRework"
 	ActionRecordCarrierLoadEvidence         = "RecordCarrierLoadEvidence"
 	ActionResolveLoadingDiscrepancy         = "ResolveLoadingDiscrepancy"
 )

@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"math/big"
 	"regexp"
+	"strings"
 	"time"
+	"unicode"
 
 	"go.idp.xyz/idp-cargo/internal/kernel"
 )
@@ -39,6 +41,10 @@ const (
 	ExecutionLoading ExecutionState = "LOADING"
 	ExecutionOnHold  ExecutionState = "ON_HOLD"
 	ExecutionClosed  ExecutionState = "CLOSED"
+	// ExecutionRework is a sealed stuffing opened again (OpenStuffingForRework): its seal is broken and kept in the
+	// execution's reworks, it has no close facts, and it is unloaded by whole houses until it is sealed again (CLOSED,
+	// a new seal) or given up with no live packs (CANCELLED). It is the same execution throughout, never a new one.
+	ExecutionRework ExecutionState = "REWORK"
 	// ExecutionCancelled is a stuffing given up with no live packs (CancelLoadExecution): terminal, kept as history.
 	ExecutionCancelled ExecutionState = "CANCELLED"
 )
@@ -55,6 +61,38 @@ var (
 	ErrInvalidCarrier    = errors.New("phy: invalid carrier evidence")
 	ErrEvidenceReused    = errors.New("phy: the source reference is recorded already with other content")
 )
+
+// ReworkEnd is how a rework ended.
+type ReworkEnd string
+
+const (
+	ReworkSealed  ReworkEnd = "SEALED"   // the container was sealed again, with a new seal
+	ReworkGivenUp ReworkEnd = "GIVEN_UP" // the container was emptied and the stuffing given up
+)
+
+// Rework is one rework of a sealed stuffing, and with the broken seals of all the reworks the history of the seals the
+// execution carried. The opening is who asked for the rework, when and why, and the seal that was broken (the whole
+// close evidence, who had sealed it and when); the ending is written once: sealed again (who, when, the new seal's
+// reference) or given up (who, when). A rework is never changed or removed.
+type Rework struct {
+	No                    int
+	Reason                string
+	AskedBy               string
+	AskedAt               time.Time
+	AskedEnteredAt        time.Time
+	BrokenSeal            Evidence
+	BrokenSealedBy        string
+	BrokenSealedAt        time.Time
+	BrokenSealedEnteredAt time.Time
+	End                   ReworkEnd // empty while the rework is open
+	EndedBy               string
+	EndedAt               time.Time
+	EndedEnteredAt        time.Time
+	NewSeal               string // the new seal's reference, for SEALED
+}
+
+// Open reports whether the rework has not ended.
+func (r Rework) Open() bool { return r.End == "" }
 
 // Basis of a load line's weight and volume.
 type Basis string
@@ -235,6 +273,7 @@ type LoadExecutionState struct {
 	CancelledAt      time.Time
 	CancelEnteredAt  time.Time
 	CancelReason     string
+	Reworks          []Rework // the reworks of a stuffing, numbered from 1; the last is open exactly when the state is REWORK
 	Lines            []LoadLine
 	Reversals        []Reversal
 	Holds            []Hold
@@ -246,8 +285,10 @@ type LoadExecutionState struct {
 type LoadExecution struct {
 	state    LoadExecutionState
 	stored   [5]int // lines, reversals, holds, carrier evidence, discrepancies persisted
+	reworks  int    // reworks persisted
 	released []int  // persisted holds released since, by index
 	resolved []int  // persisted discrepancies resolved since, by index
+	ended    []int  // persisted reworks ended since, by index
 	pending  []Event
 }
 
@@ -262,6 +303,7 @@ const (
 	eventLoadExecutionResumed        = "LoadExecutionResumed.v1"
 	eventLoadExecutionClosed         = "LoadExecutionClosed.v1"
 	eventLoadExecutionCancelled      = "LoadExecutionCancelled.v1"
+	eventLoadExecutionReworkOpened   = "LoadExecutionReworkOpened.v1"
 	eventCarrierLoadEvidenceRecorded = "CarrierLoadEvidenceRecorded.v1"
 	eventLoadingDiscrepancyRecorded  = "LoadingDiscrepancyRecorded.v1"
 	eventLoadingDiscrepancyResolved  = "LoadingDiscrepancyResolved.v1"
@@ -346,6 +388,9 @@ func OpenStuffingAfter(tenant TenantID, id LoadExecutionID, c *Consolidation, un
 
 // Start starts loading.
 func (x *LoadExecution) Start(by string, at time.Time) error {
+	if x.state.State == ExecutionRework {
+		return fmt.Errorf("%w: a container in rework is not started; it is unloaded by whole houses and sealed again", ErrInvalidTransition)
+	}
 	if x.state.State != ExecutionOpen {
 		return ErrInvalidTransition
 	}
@@ -373,6 +418,9 @@ type LotLoad struct {
 // packs that complete the lot take what the live lines leave of the measure. Cargo whose lot failed screening is
 // recorded and holds the execution (G06-05).
 func (x *LoadExecution) Load(in LoadLine, c *Consolidation, lot *CargoLot, entry Entry, lotLoaded LotLoad, shipmentLoaded int64, by string, at time.Time) error {
+	if x.state.State == ExecutionRework {
+		return fmt.Errorf("%w: a container in rework takes no load; it is unloaded by whole houses and sealed again", ErrNotLoading)
+	}
 	if x.state.State != ExecutionLoading {
 		return ErrNotLoading
 	}
@@ -670,9 +718,11 @@ func share(total, packs, all int64) int64 {
 func (x *LoadExecution) Unload(lineNo int, packs int64, reason ReversalReason, evidence Evidence, lot *CargoLot, by string, at time.Time) error {
 	switch x.state.State {
 	case ExecutionLoading, ExecutionOnHold:
+	case ExecutionRework:
+		return fmt.Errorf("%w: a container in rework is unloaded by whole houses (UnloadHouseForRework), not by line", ErrNotLoading)
 	case ExecutionClosed:
 		if x.state.Kind == ExecutionStuffing {
-			return fmt.Errorf("%w: a sealed container is unstuffed once it can be sealed again", ErrNotLoading)
+			return fmt.Errorf("%w: a sealed container is opened for rework first (OpenStuffingForRework) and then unloaded by whole houses", ErrNotLoading)
 		}
 		if reason != ReversalOffloadedByForwarder {
 			return fmt.Errorf("%w: after the tender only packs taken back from the carrier (%s)", ErrNotLoading, ReversalOffloadedByForwarder)
@@ -689,7 +739,7 @@ func (x *LoadExecution) Unload(lineNo int, packs int64, reason ReversalReason, e
 	if lot.state.State == LotClosed {
 		return fmt.Errorf("%w: %s", ErrLotClosed, lot.ID())
 	}
-	live, weight, volume := x.lineLive(lineNo)
+	live, _, _ := x.lineLive(lineNo)
 	if packs < 1 || packs > live {
 		return fmt.Errorf("%w: %d packs of line %d, %d live", ErrInvalidLoad, packs, lineNo, live)
 	}
@@ -699,6 +749,14 @@ func (x *LoadExecution) Unload(lineNo int, packs int64, reason ReversalReason, e
 	if err := x.changeable(by, at); err != nil {
 		return err
 	}
+	x.reverse(lineNo, packs, reason, evidence, by, at)
+	return nil
+}
+
+// reverse reverses packs of a live line, which the caller has checked: the packs and the evidence, the reason and the
+// time. Reversing every live pack of the line takes its live weight and volume; fewer take their share, rounded down.
+func (x *LoadExecution) reverse(lineNo int, packs int64, reason ReversalReason, evidence Evidence, by string, at time.Time) {
+	live, weight, volume := x.lineLive(lineNo)
 	line := x.state.Lines[lineNo-1]
 	r := Reversal{No: len(x.state.Reversals) + 1, LineNo: lineNo, Packs: packs, Reason: reason, Evidence: evidence, By: by, At: at.UTC(),
 		GrossWeight: kernel.Quantity{Unit: line.GrossWeight.Unit, Amount: weight}}
@@ -714,7 +772,6 @@ func (x *LoadExecution) Unload(lineNo int, packs int64, reason ReversalReason, e
 	}
 	x.state.Reversals = append(x.state.Reversals, r)
 	x.record(eventCargoUnloaded, at, line.ShipmentID, line.LotID, r.No, string(reason))
-	return nil
 }
 
 // lineLive returns a line's live packs, gross weight and volume after its reversals.
@@ -731,6 +788,9 @@ func (x *LoadExecution) lineLive(lineNo int) (packs, weight, volume int64) {
 
 // PlaceHold holds the execution for a reason an operator gives, with evidence.
 func (x *LoadExecution) PlaceHold(reason HoldReason, text string, evidence Evidence, by string, at time.Time) error {
+	if x.state.State == ExecutionRework {
+		return fmt.Errorf("%w: a container in rework takes no hold", ErrNotLoading)
+	}
 	if x.state.State != ExecutionLoading && x.state.State != ExecutionOnHold {
 		return ErrNotLoading
 	}
@@ -780,6 +840,9 @@ func (x *LoadExecution) ReleaseHold(no int, evidence Evidence, lotOutcome Outcom
 	if x.state.State == ExecutionCancelled {
 		return fmt.Errorf("%w: a cancelled execution takes no further command", ErrInvalidTransition)
 	}
+	if x.state.State == ExecutionRework {
+		return fmt.Errorf("%w: a container in rework has no hold to release", ErrHoldNotReleasable)
+	}
 	if no < 1 || no > len(x.state.Holds) || !x.state.Holds[no-1].Placed() {
 		return fmt.Errorf("%w: hold %d", ErrHoldNotReleasable, no)
 	}
@@ -816,7 +879,9 @@ func (x *LoadExecution) Close(evidence Evidence, by string, at time.Time) error 
 }
 
 // Seal closes a loading stuffing with the container's seal as evidence (source SEAL, the seal number as reference),
-// with cargo in the container, while its consolidation c is CLOSED: a container is sealed on a frozen house list.
+// with cargo in the container, while its consolidation c is CLOSED: a container is sealed on a frozen house list. A
+// container in rework is sealed again the same way, with a seal that differs from every seal the execution carried
+// before: a broken seal is not put back. The rework ends, sealed again by this actor at this time with the new seal.
 func (x *LoadExecution) Seal(c *Consolidation, evidence Evidence, by string, at time.Time) error {
 	if x.state.Kind != ExecutionStuffing || c == nil || c.ID() != x.state.ConsolidationID {
 		return fmt.Errorf("%w: only a stuffing is sealed, with its consolidation", ErrInvalidExecution)
@@ -827,20 +892,52 @@ func (x *LoadExecution) Seal(c *Consolidation, evidence Evidence, by string, at 
 	if at.Before(c.lastChange()) {
 		return fmt.Errorf("%w: a seal is dated not before the consolidation's latest change", ErrInvalidChange)
 	}
-	if x.state.State == ExecutionLoading && evidence.valid(at) && evidence.Source != EvidenceSeal {
+	sealing := x.state.State == ExecutionLoading || x.state.State == ExecutionRework
+	if sealing && evidence.valid(at) && evidence.Source != EvidenceSeal {
 		return fmt.Errorf("%w: a stuffing closes with the container's seal (source %s)", ErrInvalidEvidence, EvidenceSeal)
 	}
-	if x.state.State == ExecutionLoading && x.Tendered() == 0 {
+	if sealing && evidence.valid(at) && evidence.Reference != strings.TrimSpace(evidence.Reference) {
+		return fmt.Errorf("%w: the seal's reference %q has a blank at an end; it is the number on the seal, as written", ErrInvalidEvidence, evidence.Reference)
+	}
+	if sealing && x.Tendered() == 0 {
 		return fmt.Errorf("%w: nothing is stuffed in the container", ErrInvalidLoad)
 	}
+	if x.state.State == ExecutionRework && evidence.valid(at) {
+		for _, r := range x.state.Reworks {
+			if sealKey(r.BrokenSeal.Reference) == sealKey(evidence.Reference) {
+				return fmt.Errorf("%w: seal %s was on this container before and was broken in rework %d; a new seal is applied", ErrInvalidEvidence,
+					evidence.Reference, r.No)
+			}
+		}
+	}
 	return x.close(evidence, by, at)
+}
+
+// sealKey is a seal's reference by its letters and digits, each in capitals, keeping what is ASCII: seal-1, SEAL 1 and
+// SEAL1 are one seal, so a seal that was broken is not put back by keying it another way. Upper-case comes first, then
+// the ASCII test, so U+0131 (dotless i) and U+017F (long s), letters whose capitals are I and S, count as I and S. That
+// makes this key exactly the ASCII part of SEA's sealKey (sea/internal/domain/visit.go: every Unicode letter and digit,
+// in capitals): two references SEA keys alike always key alike here, and references that differ only in non-ASCII
+// letters, which SEA keeps apart, are one seal here. Being the stricter rule, it is applied before the database sees a
+// seal; the database's cargo_phy.seal_key is the same function.
+func sealKey(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			if u := unicode.ToUpper(r); u < unicode.MaxASCII {
+				b.WriteRune(u)
+			}
+		}
+	}
+	return b.String()
 }
 
 func (x *LoadExecution) close(evidence Evidence, by string, at time.Time) error {
 	if x.state.State == ExecutionOnHold {
 		return ErrOnHold
 	}
-	if x.state.State != ExecutionLoading {
+	reseal := x.state.State == ExecutionRework && x.state.Kind == ExecutionStuffing
+	if x.state.State != ExecutionLoading && !reseal {
 		return ErrInvalidTransition
 	}
 	if !evidence.valid(at) {
@@ -850,29 +947,38 @@ func (x *LoadExecution) close(evidence Evidence, by string, at time.Time) error 
 		return err
 	}
 	evidence.OccurredAt = evidence.OccurredAt.UTC()
+	if reseal {
+		i := len(x.state.Reworks) - 1
+		r := &x.state.Reworks[i]
+		r.End, r.EndedBy, r.EndedAt, r.NewSeal = ReworkSealed, by, at.UTC(), evidence.Reference
+		if i < x.reworks {
+			x.ended = append(x.ended, i)
+		}
+	}
 	x.state.State, x.state.ClosedBy, x.state.ClosedAt, x.state.CloseEvidence = ExecutionClosed, by, at.UTC(), evidence
 	x.record(eventLoadExecutionClosed, at, "", "", 0, "")
 	return nil
 }
 
 // Cancel gives up a stuffing that holds no live packs: OPEN, LOADING or ON_HOLD, with nothing loaded or every loaded
-// pack unloaded again (a sealed container is closed for good, and a tender is closed with its receipt). The reason is
-// required text of at most 500 characters, and the business time is not before the execution's last change. The
-// execution becomes CANCELLED, terminal: it keeps its lines, reversals and holds as history and takes no further
-// command, and its container is planned again (the unit's status is derived from a stuffing that is not cancelled).
-// A hold still placed ends with the execution and stays recorded as placed: nothing is released, since nothing is
-// loaded to release. Carrier evidence and discrepancies follow a closed tender, so a stuffing that can be given up has
-// none open. Like Start and the hold commands, a cancellation is dated against the execution's own last change and
-// not against the consolidation's versions: one dated before a later reopen of the consolidation is accepted. The
-// event carries the load unit as its item, as the opening's does.
+// pack unloaded again, or in REWORK once the rework has unloaded every house (the rework ends, given up; a sealed
+// container is opened for rework first, and a tender is closed with its receipt). The reason is required text of at
+// most 500 characters, and the business time is not before the execution's last change. The execution becomes
+// CANCELLED, terminal: it keeps its lines, reversals and holds as history and takes no further command, and its
+// container is planned again (the unit's status is derived from a stuffing that is not cancelled). A hold still placed
+// ends with the execution and stays recorded as placed: nothing is released, since nothing is loaded to release.
+// Carrier evidence and discrepancies follow a closed tender, so a stuffing that can be given up has none open. Like
+// Start and the hold commands, a cancellation is dated against the execution's own last change and not against the
+// consolidation's versions: one dated before a later reopen of the consolidation is accepted. The event carries the
+// load unit as its item, as the opening's does.
 func (x *LoadExecution) Cancel(reason, by string, at time.Time) error {
 	if x.state.Kind != ExecutionStuffing {
 		return fmt.Errorf("%w: only a stuffing is given up; a tender is closed with its receipt", ErrInvalidExecution)
 	}
 	switch x.state.State {
-	case ExecutionOpen, ExecutionLoading, ExecutionOnHold:
+	case ExecutionOpen, ExecutionLoading, ExecutionOnHold, ExecutionRework:
 	default:
-		return fmt.Errorf("%w: a stuffing is given up while OPEN, LOADING or ON_HOLD, this one is %s", ErrInvalidTransition, x.state.State)
+		return fmt.Errorf("%w: a stuffing is given up while OPEN, LOADING, ON_HOLD or in REWORK, this one is %s", ErrInvalidTransition, x.state.State)
 	}
 	if live := x.Tendered(); live > 0 {
 		return fmt.Errorf("%w: %d packs are still loaded; unload them before the stuffing is given up", ErrInvalidExecution, live)
@@ -883,9 +989,118 @@ func (x *LoadExecution) Cancel(reason, by string, at time.Time) error {
 	if err := x.changeable(by, at); err != nil {
 		return err
 	}
+	if x.state.State == ExecutionRework {
+		i := len(x.state.Reworks) - 1
+		r := &x.state.Reworks[i]
+		r.End, r.EndedBy, r.EndedAt = ReworkGivenUp, by, at.UTC()
+		if i < x.reworks {
+			x.ended = append(x.ended, i)
+		}
+	}
 	x.state.State, x.state.CancelledBy, x.state.CancelledAt, x.state.CancelReason = ExecutionCancelled, by, at.UTC(), reason
 	x.record(eventLoadExecutionCancelled, at, "", "", x.state.LoadUnitNo, "")
 	return nil
+}
+
+// OpenForRework opens a sealed stuffing (CLOSED) for rework: its seal is broken and the execution is in REWORK, the
+// same execution and not a new one on the unit (SEA keeps its id). The consolidation c must be CLOSED (not RECONCILED
+// or CANCELLED, and it cannot be OPEN again with a sealed container); no carrier evidence has been recorded on the
+// execution, since the cargo then left the forwarder's hands, and no loading discrepancy is open on it; the reason is
+// required text of at most 500 characters; and the time is not before the execution's last change. The broken seal, the
+// whole close evidence with who sealed the container and when, moves into the rework's record with who asked for the
+// rework, when and why, and the execution carries no close facts while it is in REWORK. The event carries the load unit
+// as its item, as the opening's and the cancellation's do; its reason, free text, stays out of it.
+func (x *LoadExecution) OpenForRework(c *Consolidation, reason, by string, at time.Time) error {
+	if x.state.Kind != ExecutionStuffing || c == nil || c.ID() != x.state.ConsolidationID {
+		return fmt.Errorf("%w: only a stuffing is opened for rework, with its consolidation", ErrInvalidExecution)
+	}
+	if x.state.State != ExecutionClosed {
+		return fmt.Errorf("%w: only a sealed container (CLOSED) is opened for rework, this one is %s", ErrInvalidTransition, x.state.State)
+	}
+	switch s := c.Current().State; s {
+	case StateClosed:
+	case StateOpen:
+		return fmt.Errorf("%w: it is OPEN", ErrNotFrozen)
+	default:
+		return fmt.Errorf("%w: the consolidation is %s; only a CLOSED one has a container opened for rework", ErrInvalidTransition, s)
+	}
+	if x.OpenDiscrepancies() > 0 {
+		return fmt.Errorf("%w: a loading discrepancy is open on the container; its cargo has left the forwarder's hands", ErrInvalidTransition)
+	}
+	if len(x.state.CarrierEvidence) > 0 {
+		return fmt.Errorf("%w: carrier evidence is recorded on the container; its cargo has left the forwarder's hands", ErrInvalidTransition)
+	}
+	if !text(reason) {
+		return fmt.Errorf("%w: opening a container for rework needs a reason (500 characters)", ErrInvalidExecution)
+	}
+	if err := x.changeable(by, at); err != nil {
+		return err
+	}
+	st := &x.state
+	st.Reworks = append(st.Reworks, Rework{No: len(st.Reworks) + 1, Reason: reason, AskedBy: by, AskedAt: at.UTC(), BrokenSeal: st.CloseEvidence,
+		BrokenSealedBy: st.ClosedBy, BrokenSealedAt: st.ClosedAt, BrokenSealedEnteredAt: st.ClosedEnteredAt})
+	st.State, st.ClosedBy, st.ClosedAt, st.ClosedEnteredAt, st.CloseEvidence = ExecutionRework, "", time.Time{}, time.Time{}, Evidence{}
+	x.record(eventLoadExecutionReworkOpened, at, "", "", st.LoadUnitNo, "")
+	return nil
+}
+
+// UnloadHouse unloads one whole house from a container in rework: every live line of the house in this execution is
+// reversed completely, each as a reversal with the reason UNSTUFFED and the evidence of the warehouse's confirmation,
+// in one command; nothing of the house stays in the container. elsewhere is the house's live packs in the
+// consolidation's other executions: a house loaded in more than one container is partial unloading, which is refused.
+// lots holds the lots of the house's live lines, read under their locks: one that is CLOSED is opened again first, by
+// this command and no other (CargoLot.ReopenForRework), and records the rework and the first reversal of its packs. It
+// returns how many lines it reversed. The house stays attached to its consolidation with nothing loaded in it; it
+// leaves the closed consolidation in a later step. Until then the consolidation cannot be reconciled, since the house's
+// loaded packs are fewer than its plan, and the cost basis reads the house with no unit entry. A refused command
+// changes neither the execution nor a lot.
+func (x *LoadExecution) UnloadHouse(shipment ShipmentID, lots map[CargoLotID]*CargoLot, elsewhere int64, evidence Evidence, by string, at time.Time) (int, error) {
+	if x.state.State != ExecutionRework {
+		return 0, fmt.Errorf("%w: a house is unloaded for rework from a container in REWORK, this one is %s", ErrNotLoading, x.state.State)
+	}
+	if !identifier(string(shipment)) {
+		return 0, fmt.Errorf("%w: a house to unload", ErrInvalidLoad)
+	}
+	if x.LiveFor(shipment) == 0 {
+		return 0, fmt.Errorf("%w: house %s has no live packs in this container", ErrInvalidLoad, shipment)
+	}
+	if elsewhere > 0 {
+		return 0, fmt.Errorf("%w: house %s has %d packs in another container of the consolidation; unloading part of a house is not built", ErrInvalidLoad,
+			shipment, elsewhere)
+	}
+	if !evidence.valid(at) {
+		return 0, ErrInvalidEvidence
+	}
+	if err := x.changeable(by, at); err != nil {
+		return 0, err
+	}
+	var live []int
+	for _, line := range x.state.Lines {
+		if line.ShipmentID != shipment {
+			continue
+		}
+		if n, _, _ := x.lineLive(line.No); n == 0 {
+			continue
+		}
+		lot := lots[line.LotID]
+		if lot == nil || lot.ID() != line.LotID {
+			return 0, fmt.Errorf("%w: line %d is of lot %s, which was not read", ErrInvalidLoad, line.No, line.LotID)
+		}
+		if err := lot.reopenable(by, at); err != nil {
+			return 0, err
+		}
+		live = append(live, line.No)
+	}
+	rework := x.state.Reworks[len(x.state.Reworks)-1]
+	for _, no := range live {
+		line := x.state.Lines[no-1]
+		if lot := lots[line.LotID]; lot.state.State == LotClosed {
+			lot.reopenForRework(x.state.ExecutionID, rework.No, len(x.state.Reversals)+1, by, at)
+		}
+		n, _, _ := x.lineLive(no)
+		x.reverse(no, n, ReversalUnstuffed, evidence, by, at)
+	}
+	return len(live), nil
 }
 
 // RecordCarrierEvidence records the carrier's status of the tendered pieces, of the master or of a house with
@@ -895,6 +1110,9 @@ func (x *LoadExecution) Cancel(reason, by string, at time.Time) error {
 // are an OFFLOADED discrepancy. The evidence is recorded either way (G06-05). It reports the evidence's number
 // and whether it was added.
 func (x *LoadExecution) RecordCarrierEvidence(e CarrierEvidence, by string, at time.Time) (int, bool, error) {
+	if x.state.State == ExecutionRework {
+		return 0, false, fmt.Errorf("%w: a container in rework takes no carrier evidence; it is sealed again first", ErrInvalidTransition)
+	}
 	if x.state.State != ExecutionClosed {
 		return 0, false, fmt.Errorf("%w: carrier evidence follows the tender", ErrInvalidTransition)
 	}
@@ -1059,6 +1277,9 @@ func (x *LoadExecution) lastChange() time.Time {
 	for _, v := range st.Discrepancies {
 		last = later(later(last, v.RaisedAt), v.ResolvedAt)
 	}
+	for _, v := range st.Reworks {
+		last = later(later(last, v.AskedAt), v.EndedAt)
+	}
 	return last
 }
 
@@ -1080,6 +1301,10 @@ func (x *LoadExecution) Stamp(entered time.Time) {
 	stamp(&st.StartedEnteredAt, st.StartedAt)
 	stamp(&st.ClosedEnteredAt, st.ClosedAt)
 	stamp(&st.CancelEnteredAt, st.CancelledAt)
+	for i := range st.Reworks {
+		stamp(&st.Reworks[i].AskedEnteredAt, st.Reworks[i].AskedAt)
+		stamp(&st.Reworks[i].EndedEnteredAt, st.Reworks[i].EndedAt)
+	}
 	for i := range st.Lines {
 		stamp(&st.Lines[i].EnteredAt, st.Lines[i].At)
 	}
@@ -1106,7 +1331,9 @@ func RestoreLoadExecution(st LoadExecutionState) (*LoadExecution, error) {
 	st.Holds = append([]Hold(nil), st.Holds...)
 	st.CarrierEvidence = append([]CarrierEvidence(nil), st.CarrierEvidence...)
 	st.Discrepancies = append([]LoadingDiscrepancy(nil), st.Discrepancies...)
-	x := &LoadExecution{state: st, stored: [5]int{len(st.Lines), len(st.Reversals), len(st.Holds), len(st.CarrierEvidence), len(st.Discrepancies)}}
+	st.Reworks = append([]Rework(nil), st.Reworks...)
+	x := &LoadExecution{state: st, stored: [5]int{len(st.Lines), len(st.Reversals), len(st.Holds), len(st.CarrierEvidence), len(st.Discrepancies)},
+		reworks: len(st.Reworks)}
 	bad := func(what string) (*LoadExecution, error) { return nil, fmt.Errorf("%w: %s", ErrInvalidExecution, what) }
 	if !identifier(string(st.TenantID)) || !identifier(string(st.ExecutionID)) || !identifier(string(st.ConsolidationID)) ||
 		(st.Kind != ExecutionTender && st.Kind != ExecutionStuffing) || (st.Kind == ExecutionStuffing) != (st.LoadUnitNo > 0) ||
@@ -1135,6 +1362,10 @@ func RestoreLoadExecution(st LoadExecutionState) (*LoadExecution, error) {
 		if !started || !closed || x.Placed() > 0 || blank(st.ClosedBy) {
 			return bad("closed")
 		}
+	case ExecutionRework:
+		if st.Kind != ExecutionStuffing || !started || closed || x.Placed() > 0 || !blank(st.ClosedBy) || st.CloseEvidence != (Evidence{}) {
+			return bad("rework")
+		}
 	case ExecutionCancelled:
 		if st.Kind != ExecutionStuffing || closed || len(st.CarrierEvidence) > 0 || len(st.Discrepancies) > 0 ||
 			(started && st.CancelledAt.Before(st.StartedAt)) || st.CancelledAt.Before(st.OpenedAt) {
@@ -1145,6 +1376,9 @@ func RestoreLoadExecution(st LoadExecutionState) (*LoadExecution, error) {
 	}
 	if len(st.CarrierEvidence) > 0 && st.State != ExecutionClosed {
 		return bad("carrier evidence before the tender closed")
+	}
+	if err := restoreReworks(st); err != nil {
+		return bad(err.Error())
 	}
 	for i, v := range st.Lines {
 		if v.No != i+1 || v.Packs < 1 || !identifier(string(v.ShipmentID)) || !identifier(string(v.LotID)) || v.EntryNo < 1 || blank(v.By) ||
@@ -1183,6 +1417,74 @@ func RestoreLoadExecution(st LoadExecutionState) (*LoadExecution, error) {
 	return x, nil
 }
 
+// restoreReworks checks a stored execution's reworks against its state: they are numbered from 1; each is asked by
+// someone for a reason, after the seal it broke, which is a seal; only the last is open, and exactly when the execution
+// is in REWORK; each that ended was sealed again with a new seal, which the next rework broke, or the last was given up
+// with the stuffing; and no seal is carried twice. A stuffing that was never reworked has none, and one that was is
+// CLOSED only after a rework that sealed it again, and CANCELLED only after one that was given up.
+func restoreReworks(st LoadExecutionState) error {
+	last := len(st.Reworks) - 1
+	if last >= 0 && st.Kind != ExecutionStuffing {
+		return fmt.Errorf("a tender has no rework")
+	}
+	switch {
+	case last >= 0 && (st.State == ExecutionOpen || st.State == ExecutionLoading || st.State == ExecutionOnHold):
+		return fmt.Errorf("a rework of a container that is %s", st.State)
+	case last < 0 && st.State == ExecutionRework:
+		return fmt.Errorf("a container in rework with no rework")
+	}
+	seen := map[string]int{}
+	for i, r := range st.Reworks {
+		switch {
+		case r.No != i+1:
+			return fmt.Errorf("rework %d is numbered %d", i+1, r.No)
+		case !text(r.Reason) || blank(r.AskedBy) || r.AskedAt.IsZero():
+			return fmt.Errorf("rework %d: who asked, when and why", r.No)
+		case r.BrokenSeal.Source != EvidenceSeal || blank(r.BrokenSeal.Reference) || r.BrokenSeal.OccurredAt.IsZero() || blank(r.BrokenSealedBy) ||
+			r.BrokenSealedAt.IsZero() || r.AskedAt.Before(r.BrokenSealedAt):
+			return fmt.Errorf("rework %d: the seal it broke", r.No)
+		case seen[sealKey(r.BrokenSeal.Reference)] > 0:
+			return fmt.Errorf("rework %d: seal %s was carried before", r.No, r.BrokenSeal.Reference)
+		}
+		seen[sealKey(r.BrokenSeal.Reference)] = r.No
+		if i > 0 && st.Reworks[i-1].NewSeal != r.BrokenSeal.Reference {
+			return fmt.Errorf("rework %d breaks a seal other than the one that sealed the container again", r.No)
+		}
+		ended := r.End != ""
+		if ended != (i < last || st.State != ExecutionRework) || (ended && (blank(r.EndedBy) || r.EndedAt.IsZero() || r.EndedAt.Before(r.AskedAt))) ||
+			(!ended && (!blank(r.EndedBy) || !r.EndedAt.IsZero() || r.NewSeal != "")) {
+			return fmt.Errorf("rework %d: its ending", r.No)
+		}
+		switch r.End {
+		case "":
+		case ReworkSealed:
+			if blank(r.NewSeal) || seen[sealKey(r.NewSeal)] > 0 {
+				return fmt.Errorf("rework %d: its new seal", r.No)
+			}
+		case ReworkGivenUp:
+			if i != last || st.State != ExecutionCancelled || r.NewSeal != "" || r.EndedBy != st.CancelledBy || !r.EndedAt.Equal(st.CancelledAt) {
+				return fmt.Errorf("rework %d: it was given up", r.No)
+			}
+		default:
+			return fmt.Errorf("rework %d: how it ended", r.No)
+		}
+	}
+	if last < 0 {
+		return nil
+	}
+	switch l := st.Reworks[last]; st.State {
+	case ExecutionClosed:
+		if l.End != ReworkSealed || l.NewSeal != st.CloseEvidence.Reference || l.EndedBy != st.ClosedBy || !l.EndedAt.Equal(st.ClosedAt) {
+			return fmt.Errorf("a container sealed again whose last rework did not end with that seal")
+		}
+	case ExecutionCancelled:
+		if l.End != ReworkGivenUp {
+			return fmt.Errorf("a given up container whose last rework was not given up")
+		}
+	}
+	return nil
+}
+
 // State returns a copy of the execution for persistence and read models.
 func (x *LoadExecution) State() LoadExecutionState {
 	st := x.state
@@ -1191,6 +1493,7 @@ func (x *LoadExecution) State() LoadExecutionState {
 	st.Holds = append([]Hold(nil), st.Holds...)
 	st.CarrierEvidence = append([]CarrierEvidence(nil), st.CarrierEvidence...)
 	st.Discrepancies = append([]LoadingDiscrepancy(nil), st.Discrepancies...)
+	st.Reworks = append([]Rework(nil), st.Reworks...)
 	return st
 }
 
@@ -1210,6 +1513,8 @@ type ExecutionChanges struct {
 	Evidence      []CarrierEvidence
 	Discrepancies []LoadingDiscrepancy
 	Resolved      []LoadingDiscrepancy
+	Reworks       []Rework // opened since the execution was loaded
+	EndedReworks  []Rework // stored reworks that ended since
 }
 
 // Added returns what was written since the execution was loaded.
@@ -1223,14 +1528,19 @@ func (x *LoadExecution) Added() ExecutionChanges {
 	for _, i := range x.resolved {
 		c.Resolved = append(c.Resolved, st.Discrepancies[i])
 	}
+	c.Reworks = st.Reworks[x.reworks:]
+	for _, i := range x.ended {
+		c.EndedReworks = append(c.EndedReworks, st.Reworks[i])
+	}
 	return c
 }
 
 // Acknowledge is permitted only after the transaction holding the execution and its Outbox events commits.
 func (x *LoadExecution) Acknowledge() {
 	st := x.state
-	x.pending, x.released, x.resolved = nil, nil, nil
+	x.pending, x.released, x.resolved, x.ended = nil, nil, nil, nil
 	x.stored = [5]int{len(st.Lines), len(st.Reversals), len(st.Holds), len(st.CarrierEvidence), len(st.Discrepancies)}
+	x.reworks = len(st.Reworks)
 }
 
 // HousePieces are a house's pieces in a tender as the carrier's evidence shows them.

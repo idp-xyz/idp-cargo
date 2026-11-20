@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	phy "go.idp.xyz/idp-cargo/internal/contexts/phy/internal/domain"
@@ -317,6 +318,133 @@ func (h CancelLoadExecution) Handle(ctx context.Context, c CancelLoadExecutionCo
 	return h.execute(ctx, c.ExecutionCommand, c, ActionCancelLoadExecution, func(_ context.Context, _ *phy.Consolidation, x *phy.LoadExecution) (int, error) {
 		return 0, x.Cancel(c.Reason, c.Scope.ActorID, c.OccurredAt)
 	})
+}
+
+type OpenStuffingForReworkCommand struct {
+	ExecutionCommand
+	Reason string
+}
+
+// OpenStuffingForRework opens a sealed stuffing for rework, under the consolidation's FOR SHARE lock and the
+// execution's FOR UPDATE lock, so that it and a carrier evidence recorded on the same execution wait for each other:
+// whichever comes second reads what the first committed (a container with carrier evidence is not opened, and one in
+// rework takes none). The execution, its carrier evidence and its consolidation are read inside the transaction. The
+// receipt's item is the number of the rework.
+type OpenStuffingForRework struct{ Deps }
+
+func (h OpenStuffingForRework) Handle(ctx context.Context, c OpenStuffingForReworkCommand) (Receipt, error) {
+	return h.execute(ctx, c.ExecutionCommand, c, ActionOpenStuffingForRework, func(_ context.Context, consol *phy.Consolidation, x *phy.LoadExecution) (int, error) {
+		if err := x.OpenForRework(consol, c.Reason, c.Scope.ActorID, c.OccurredAt); err != nil {
+			return 0, err
+		}
+		return len(x.State().Reworks), nil
+	})
+}
+
+type UnloadHouseForReworkCommand struct {
+	ExecutionCommand
+	ShipmentID phy.ShipmentID
+	Evidence   phy.Evidence
+}
+
+// UnloadHouseForRework unloads one whole house from a container in rework. It locks, in the order of the package, the
+// consolidation FOR SHARE, the execution FOR UPDATE, the house's membership ledger FOR NO KEY UPDATE and the house's
+// lots FOR UPDATE in lot id order, and reads inside the transaction, under those locks, which lines of the house are
+// live in the execution, the house's live packs in the consolidation (a house with packs in another container is
+// refused) and the lots. A load of the house in another container, which takes the same ledger lock, and this command
+// wait for each other: the one that gets the locks first is seen by the other. A lot of the house that is CLOSED is
+// opened again first, saved before the execution's reversals, and its events come before the execution's; a lot is
+// refused its reopening while the shipment has another lot in force at its facility (one lot in force per shipment and
+// facility). The container's other stuffings are not locked or held: the house's lots hold packs in this container
+// only, so no other stuffing's allotment moves. The receipt's item is the number of lines it reversed.
+type UnloadHouseForRework struct{ Deps }
+
+func (h UnloadHouseForRework) Handle(ctx context.Context, c UnloadHouseForReworkCommand) (Receipt, error) {
+	hash, entered, consolidation, stored, replayed, err := h.executionCommand(ctx, c.Scope, c.CommandID, c.OccurredAt, c, ActionUnloadHouseForRework, c.ExecutionID)
+	if err != nil || replayed {
+		return stored, err
+	}
+	tenant := c.Scope.TenantID
+	return h.write(ctx, c.Scope, c.CommandID, hash, func(txCtx context.Context) (Receipt, aggregate, error) {
+		consol, _, err := h.Consolidations.LoadShared(txCtx, tenant, consolidation)
+		if err != nil {
+			return Receipt{}, nil, err
+		}
+		x, revision, err := h.Executions.Load(txCtx, tenant, c.ExecutionID)
+		if err != nil {
+			return Receipt{}, nil, err
+		}
+		if revision != c.ExpectedRevision {
+			return Receipt{}, nil, phy.ErrConflict
+		}
+		if _, _, err = h.Memberships.LoadForCargo(txCtx, tenant, c.ShipmentID); err != nil {
+			return Receipt{}, nil, err
+		}
+		var ids []phy.CargoLotID
+		for _, line := range x.Lines() {
+			if live, _, _ := x.LineLive(line.No); live > 0 && line.ShipmentID == c.ShipmentID && !slices.Contains(ids, line.LotID) {
+				ids = append(ids, line.LotID)
+			}
+		}
+		slices.Sort(ids)
+		lots := map[phy.CargoLotID]*phy.CargoLot{}
+		revisions := map[phy.CargoLotID]int64{}
+		for _, id := range ids {
+			if lots[id], revisions[id], err = h.Lots.Load(txCtx, tenant, id); err != nil {
+				return Receipt{}, nil, err
+			}
+		}
+		houseLoaded, err := h.Executions.HouseLoaded(txCtx, tenant, consol.ID(), c.ShipmentID)
+		if err != nil {
+			return Receipt{}, nil, err
+		}
+		for _, id := range ids {
+			if err = h.lotCanOpen(txCtx, tenant, lots[id]); err != nil {
+				return Receipt{}, nil, err
+			}
+		}
+		n, err := x.UnloadHouse(c.ShipmentID, lots, houseLoaded-x.LiveFor(c.ShipmentID), c.Evidence, c.Scope.ActorID, c.OccurredAt)
+		if err != nil {
+			return Receipt{}, nil, err
+		}
+		changed := group{}
+		for _, id := range ids {
+			if len(lots[id].AddedReopens()) == 0 {
+				continue
+			}
+			lots[id].Stamp(entered)
+			if _, err = h.Lots.Save(txCtx, lots[id], revisions[id]); err != nil {
+				return Receipt{}, nil, err
+			}
+			changed = append(changed, lots[id])
+		}
+		x.Stamp(entered)
+		if revision, err = h.Executions.Save(txCtx, x, revision); err != nil {
+			return Receipt{}, nil, err
+		}
+		changed = append(changed, x)
+		return Receipt{ExecutionID: c.ExecutionID, ConsolidationID: consolidation, NewRevision: revision, ItemNo: n}, changed, nil
+	})
+}
+
+// lotCanOpen refuses the reopening of a closed lot while the shipment has another lot in force at the lot's facility: a
+// shipment has one lot in force per facility (the database's cargo_lot_one_live). The other lots are read as committed;
+// a lot received after this read meets the database's index, which refuses the later of the two.
+func (d Deps) lotCanOpen(ctx context.Context, tenant phy.TenantID, lot *phy.CargoLot) error {
+	if lot.Current() != phy.LotClosed {
+		return nil
+	}
+	others, err := d.Lots.ByShipment(ctx, tenant, lot.Shipment())
+	if err != nil {
+		return err
+	}
+	for _, o := range others {
+		if o.Lot.ID() != lot.ID() && o.Lot.Current() != phy.LotClosed && o.Lot.State().Facility == lot.State().Facility {
+			return fmt.Errorf("%w: lot %s of %s is in force at %s %s, so lot %s is not opened again", phy.ErrLotInForce, o.Lot.ID(), lot.Shipment(),
+				lot.State().Facility.Location.Code, lot.State().Facility.Code, lot.ID())
+		}
+	}
+	return nil
 }
 
 type RecordCarrierLoadEvidenceCommand struct {

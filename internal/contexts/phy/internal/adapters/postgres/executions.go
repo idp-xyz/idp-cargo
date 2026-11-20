@@ -113,6 +113,26 @@ type carrierRow struct {
 	EnteredAt       time.Time `json:"entered_at"`
 }
 
+type reworkRow struct {
+	ReworkNo         int       `json:"rework_no"`
+	Reason           string    `json:"reason"`
+	AskedBy          string    `json:"asked_by"`
+	AskedAt          time.Time `json:"asked_at"`
+	AskedEnteredAt   time.Time `json:"asked_entered_at"`
+	SealSource       string    `json:"broken_seal_source"`
+	SealReference    string    `json:"broken_seal_reference"`
+	SealSHA256       string    `json:"broken_seal_sha256"`
+	SealOccurredAt   time.Time `json:"broken_seal_occurred_at"`
+	SealedBy         string    `json:"broken_sealed_by"`
+	SealedAt         time.Time `json:"broken_sealed_at"`
+	SealedEnteredAt  time.Time `json:"broken_sealed_entered_at"`
+	EndedKind        string    `json:"ended_kind"`
+	EndedBy          string    `json:"ended_by"`
+	EndedAt          time.Time `json:"ended_at"`
+	EndedEnteredAt   time.Time `json:"ended_entered_at"`
+	NewSealReference string    `json:"new_seal_reference"`
+}
+
 type loadingDiscrepancyRow struct {
 	DiscrepancyNo       int       `json:"discrepancy_no"`
 	Kind                string    `json:"kind"`
@@ -137,12 +157,14 @@ const executionSelect = `SELECT row_to_json(x),
     (SELECT coalesce(json_agg(c ORDER BY c.evidence_no), '[]') FROM cargo_phy.carrier_load_evidence c
       WHERE c.tenant_id=x.tenant_id AND c.execution_id=x.execution_id),
     (SELECT coalesce(json_agg(c ORDER BY c.discrepancy_no), '[]') FROM cargo_phy.loading_discrepancy c
-      WHERE c.tenant_id=x.tenant_id AND c.execution_id=x.execution_id)
+      WHERE c.tenant_id=x.tenant_id AND c.execution_id=x.execution_id),
+    (SELECT coalesce(json_agg(c ORDER BY c.rework_no), '[]') FROM cargo_phy.stuffing_rework c WHERE c.tenant_id=x.tenant_id AND c.execution_id=x.execution_id)
   FROM cargo_phy.load_execution x WHERE x.tenant_id=$1 AND x.execution_id=$2`
 
 func readExecution(ctx context.Context, q queryRower, tenant phy.TenantID, id phy.LoadExecutionID) (*phy.LoadExecution, int64, error) {
-	var rootJSON, lineJSON, reversalJSON, holdJSON, carrierJSON, discrepancyJSON []byte
-	err := q.QueryRow(ctx, executionSelect, string(tenant), string(id)).Scan(&rootJSON, &lineJSON, &reversalJSON, &holdJSON, &carrierJSON, &discrepancyJSON)
+	var rootJSON, lineJSON, reversalJSON, holdJSON, carrierJSON, discrepancyJSON, reworkJSON []byte
+	err := q.QueryRow(ctx, executionSelect, string(tenant), string(id)).Scan(&rootJSON, &lineJSON, &reversalJSON, &holdJSON, &carrierJSON, &discrepancyJSON,
+		&reworkJSON)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, 0, fmt.Errorf("%w: load execution %s", bentorepo.ErrNotFound, id)
 	}
@@ -155,8 +177,10 @@ func readExecution(ctx context.Context, q queryRower, tenant phy.TenantID, id ph
 	var holds []holdRow
 	var carrier []carrierRow
 	var discrepancies []loadingDiscrepancyRow
+	var reworks []reworkRow
 	if err = errors.Join(json.Unmarshal(rootJSON, &root), json.Unmarshal(lineJSON, &lines), json.Unmarshal(reversalJSON, &reversals),
-		json.Unmarshal(holdJSON, &holds), json.Unmarshal(carrierJSON, &carrier), json.Unmarshal(discrepancyJSON, &discrepancies)); err != nil {
+		json.Unmarshal(holdJSON, &holds), json.Unmarshal(carrierJSON, &carrier), json.Unmarshal(discrepancyJSON, &discrepancies),
+		json.Unmarshal(reworkJSON, &reworks)); err != nil {
 		return nil, 0, err
 	}
 	st := phy.LoadExecutionState{TenantID: tenant, ExecutionID: id, ConsolidationID: phy.ConsolidationID(root.ConsolidationID),
@@ -169,6 +193,12 @@ func readExecution(ctx context.Context, q queryRower, tenant phy.TenantID, id ph
 		ClosedBy: root.ClosedBy, ClosedAt: utc(root.ClosedAt), ClosedEnteredAt: utc(root.ClosedEnteredAt),
 		CloseEvidence: phy.Evidence{Source: root.CloseEvidenceSource, Reference: root.CloseEvidenceReference, SHA256: root.CloseEvidenceSHA256,
 			OccurredAt: utc(root.CloseEvidenceOccurredAt)}}
+	for _, x := range reworks {
+		st.Reworks = append(st.Reworks, phy.Rework{No: x.ReworkNo, Reason: x.Reason, AskedBy: x.AskedBy, AskedAt: utc(x.AskedAt),
+			AskedEnteredAt: utc(x.AskedEnteredAt), BrokenSeal: phy.Evidence{Source: x.SealSource, Reference: x.SealReference, SHA256: x.SealSHA256,
+				OccurredAt: utc(x.SealOccurredAt)}, BrokenSealedBy: x.SealedBy, BrokenSealedAt: utc(x.SealedAt), BrokenSealedEnteredAt: utc(x.SealedEnteredAt),
+			End: phy.ReworkEnd(x.EndedKind), EndedBy: x.EndedBy, EndedAt: utc(x.EndedAt), EndedEnteredAt: utc(x.EndedEnteredAt), NewSeal: x.NewSealReference})
+	}
 	volumes := map[int]string{}
 	for _, x := range lines {
 		volumes[x.LineNo] = x.VolumeUnit
@@ -470,6 +500,12 @@ func (s ExecutionStore) Save(ctx context.Context, x *phy.LoadExecution, expected
 	}
 	st := x.State()
 	ev := st.CloseEvidence
+	// A rework is opened before the execution's change that opens it, which the database checks against it
+	// (check_load_execution_change); its ending is written after the change that ends it, which it is checked against
+	// at commit (check_stuffing_rework_agrees).
+	if err = insertReworks(ctx, q, x); err != nil {
+		return 0, err
+	}
 	var revision int64
 	err = q.QueryRow(ctx, `UPDATE cargo_phy.load_execution SET state=$3,started_by=$4,started_at=$5,started_entered_at=$6,closed_by=$7,closed_at=$8,
         closed_entered_at=$9,close_evidence_source=$10,close_evidence_reference=$11,close_evidence_sha256=$12,close_evidence_occurred_at=$13,
@@ -484,7 +520,44 @@ func (s ExecutionStore) Save(ctx context.Context, x *phy.LoadExecution, expected
 	if err != nil {
 		return 0, err
 	}
+	if err = endReworks(ctx, q, x); err != nil {
+		return 0, err
+	}
 	return revision, insertExecutionFacts(ctx, q, x)
+}
+
+// insertReworks writes the reworks opened since the execution was loaded.
+func insertReworks(ctx context.Context, q bentopg.Executor, x *phy.LoadExecution) error {
+	st := x.State()
+	for _, r := range x.Added().Reworks {
+		ev := r.BrokenSeal
+		if _, err := q.Exec(ctx, `INSERT INTO cargo_phy.stuffing_rework (tenant_id,execution_id,rework_no,reason,asked_by,asked_at,asked_entered_at,
+            broken_seal_source,broken_seal_reference,broken_seal_sha256,broken_seal_occurred_at,broken_sealed_by,broken_sealed_at,broken_sealed_entered_at,
+            ended_kind,ended_by,ended_at,ended_entered_at,new_seal_reference) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
+			string(st.TenantID), string(st.ExecutionID), r.No, r.Reason, r.AskedBy, r.AskedAt, r.AskedEnteredAt, ev.Source, ev.Reference, orNull(ev.SHA256),
+			ev.OccurredAt, r.BrokenSealedBy, r.BrokenSealedAt, r.BrokenSealedEnteredAt, orNull(string(r.End)), orNull(r.EndedBy), orNull(r.EndedAt),
+			orNull(r.EndedEnteredAt), orNull(r.NewSeal)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// endReworks writes the ending of a stored rework that ended since the execution was loaded, once.
+func endReworks(ctx context.Context, q bentopg.Executor, x *phy.LoadExecution) error {
+	st := x.State()
+	for _, r := range x.Added().EndedReworks {
+		tag, err := q.Exec(ctx, `UPDATE cargo_phy.stuffing_rework SET ended_kind=$4,ended_by=$5,ended_at=$6,ended_entered_at=$7,new_seal_reference=$8
+            WHERE tenant_id=$1 AND execution_id=$2 AND rework_no=$3 AND ended_kind IS NULL`,
+			string(st.TenantID), string(st.ExecutionID), r.No, string(r.End), r.EndedBy, r.EndedAt, r.EndedEnteredAt, orNull(r.NewSeal))
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() != 1 {
+			return fmt.Errorf("%w: rework %d of %s", bentorepo.ErrConflict, r.No, st.ExecutionID)
+		}
+	}
+	return nil
 }
 
 func insertExecutionFacts(ctx context.Context, q bentopg.Executor, x *phy.LoadExecution) error {

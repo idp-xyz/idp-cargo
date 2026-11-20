@@ -113,6 +113,8 @@ jobs:
           GRANT UPDATE (resolution,resolution_reference,resolution_text,resolved_by,resolved_at,resolution_entered_at) ON cargo_phy.cargo_discrepancy,cargo_phy.loading_discrepancy TO cargo_app;
           GRANT UPDATE (state,started_by,started_at,started_entered_at,closed_by,closed_at,closed_entered_at,close_evidence_source,close_evidence_reference,close_evidence_sha256,close_evidence_occurred_at,cancelled_by,cancelled_at,cancelled_entered_at,cancel_reason,revision,updated_at) ON cargo_phy.load_execution TO cargo_app;
           GRANT UPDATE (release_evidence_source,release_evidence_reference,release_evidence_sha256,release_evidence_occurred_at,released_by,released_at,release_entered_at) ON cargo_phy.hold_entry TO cargo_app;
+          GRANT SELECT,INSERT ON cargo_phy.stuffing_rework,cargo_phy.cargo_lot_reopen TO cargo_app;
+          GRANT UPDATE (ended_kind,ended_by,ended_at,ended_entered_at,new_seal_reference) ON cargo_phy.stuffing_rework TO cargo_app;
           GRANT SELECT,INSERT ON ALL TABLES IN SCHEMA cargo_book TO cargo_app;
           GRANT UPDATE (status,current_request_version,current_capacity_version,consumer_id,withdraw_reason,withdrawn_by,withdrawn_at,revision,updated_at) ON cargo_book.carrier_booking TO cargo_app;
           GRANT UPDATE (live) ON cargo_book.carrier_reference TO cargo_app;

@@ -167,6 +167,11 @@ const (
 	ExecutionLoading = "LOADING"
 	ExecutionOnHold  = "ON_HOLD"
 	ExecutionClosed  = "CLOSED"
+	// ExecutionRework is a sealed STUFFING opened for rework (OpenStuffingForRework): the same execution, its seal
+	// broken and kept in its reworks, unloaded by whole houses (UnloadHouseForRework) until it is sealed again with a
+	// new seal (CloseLoadExecution: CLOSED) or, with no live packs, given up (CancelLoadExecution: CANCELLED). The unit
+	// is IN_USE while its stuffing is in REWORK.
+	ExecutionRework = "REWORK"
 	// ExecutionCancelled is a stuffing given up with no live packs (CancelLoadExecution), terminal and kept as history.
 	ExecutionCancelled = "CANCELLED"
 )
@@ -315,6 +320,51 @@ type CancelLoadExecution struct {
 	OccurredAt       time.Time
 }
 
+// OpenStuffingForRework opens a sealed container for rework, before the consolidation departs (V2.85, the first step of
+// "a house leaves a sealed container"). The execution is a STUFFING in state CLOSED of a CLOSED consolidation (not
+// RECONCILED or CANCELLED), no carrier evidence has been recorded on it (the cargo has then left the forwarder's hands)
+// and no loading discrepancy is open on it. The reason is required (500 characters) and the business time is not before
+// the execution's last change. The execution becomes REWORK, the same execution and never a new one on the unit: its
+// seal is broken and kept as history in the execution's Reworks with who asked for the rework (the actor of this
+// command), when and why; the execution carries no close facts while it is in REWORK. In REWORK nothing is accepted but
+// UnloadHouseForRework, CloseLoadExecution with a new seal, and CancelLoadExecution once no packs are left: no load,
+// start, hold, carrier evidence or discrepancy, and no RecordCargoUnloaded. The consolidation is not reopened,
+// reconciled or cancelled meanwhile. The event is LoadExecutionReworkOpened.v1, which carries the load unit as its
+// item; the reason, free text, stays out of it. The receipt's ItemNo is the number of the rework. Authorised as the
+// other load execution commands are, on the execution's consolidation (ActionOpenStuffingForRework). Nothing reads the
+// rework yet but PHY's own views: FUL, SEA, DOC and FIN do not know the state, which the README says of each.
+type OpenStuffingForRework struct {
+	CommandID        string
+	TenantID         string
+	ActorID          string
+	ExecutionID      string
+	ExpectedRevision int64
+	Reason           string
+	OccurredAt       time.Time
+}
+
+// UnloadHouseForRework unloads one whole house from a container in REWORK, in one command: every live line of the house
+// in this execution is reversed completely, each as a reversal with the reason UNSTUFFED and the evidence of the
+// warehouse's confirmation (Evidence), dated OccurredAt, the business date of the unloading. The house must have live
+// packs in this execution and in no other execution of the consolidation: a house loaded in more than one container is
+// partial unloading, which is refused. A lot of the house that is CLOSED is opened again first (back to RECEIVED, and
+// the lot records who, when and the execution and rework that caused it; no other command reopens a lot), which refuses
+// a lot while the shipment has another lot in force at its facility. The events are CargoLotReopened.v1 for each lot
+// opened again and CargoUnloaded.v1 for each reversal. The house stays attached to the consolidation with nothing
+// loaded: it leaves in a later step. Until then the consolidation cannot reconcile (the house's loaded packs are fewer
+// than its plan) and FIN reads the house at the stage PLANNED, with no unit entry. The receipt's ItemNo is the number
+// of lines reversed.
+type UnloadHouseForRework struct {
+	CommandID        string
+	TenantID         string
+	ActorID          string
+	ExecutionID      string
+	ExpectedRevision int64
+	ShipmentID       string
+	Evidence         Evidence
+	OccurredAt       time.Time
+}
+
 // RecordCarrierLoadEvidence records the carrier's status of a closed tender's pieces (OD-4: entered by hand in
 // N1), of the master or of one house (ShipmentID), on a flight or voyage. A source reference recorded already
 // with the same content is accepted again without change; with other content it is rejected. More pieces than
@@ -379,6 +429,8 @@ type PhysicalCommands interface {
 	ReleaseLoadExecutionHold(ctx context.Context, cmd ReleaseLoadExecutionHold) (Receipt, error)
 	CloseLoadExecution(ctx context.Context, cmd CloseLoadExecution) (Receipt, error)
 	CancelLoadExecution(ctx context.Context, cmd CancelLoadExecution) (Receipt, error)
+	OpenStuffingForRework(ctx context.Context, cmd OpenStuffingForRework) (Receipt, error)
+	UnloadHouseForRework(ctx context.Context, cmd UnloadHouseForRework) (Receipt, error)
 	RecordCarrierLoadEvidence(ctx context.Context, cmd RecordCarrierLoadEvidence) (Receipt, error)
 	ResolveLoadingDiscrepancy(ctx context.Context, cmd ResolveLoadingDiscrepancy) (Receipt, error)
 }
@@ -416,6 +468,22 @@ type Screening struct {
 	Evidence   Evidence
 	RecordedAt time.Time
 	EnteredAt  time.Time
+}
+
+// LotReopen records that a closed lot was opened again by the unloading of its house from a container in rework
+// (UnloadHouseForRework): the stuffing's execution and the number of its rework, the first reversal of the lot's packs
+// in that unloading, the closing it undid (who closed the lot and when) and who reopened it and when (ReopenedAt is the
+// business time of the unloading). A lot is reopened by nothing else; CargoLotReopened.v1 is its event.
+type LotReopen struct {
+	ReopenNo    int
+	ExecutionID string
+	ReworkNo    int
+	ReversalNo  int
+	ClosedBy    string
+	ClosedAt    time.Time
+	ReopenedBy  string
+	ReopenedAt  time.Time
+	EnteredAt   time.Time
 }
 
 // Discrepancy is a difference against the plan found at receipt: SHORT, OVER, DAMAGED (packs, unit PCS),
@@ -457,6 +525,7 @@ type CargoLot struct {
 	Discrepancies       []Discrepancy
 	CompletedAt         time.Time
 	ClosedAt            time.Time
+	Reopens             []LotReopen // each time the lot was closed and opened again, in order
 }
 
 // LoadLine is one immutable line of a lot's packs tendered under a house's membership entry; LivePacks,
@@ -534,6 +603,33 @@ type LoadingDiscrepancy struct {
 	ResolvedAt    time.Time
 }
 
+// Rework is one rework of a sealed stuffing, and with the broken seals of all of them the history of the seals the
+// execution carried: who asked for it, when (AskedAt is the business time) and why, the seal that was broken (the whole
+// close evidence, with who sealed the container and when), and how it ended: End is empty while the rework is open,
+// SEALED when the container was sealed again (EndedBy, EndedAt, NewSealReference) or GIVEN_UP when the stuffing was
+// given up with no packs left (EndedBy, EndedAt). FIN will require that whoever confirms an apportionment held back for
+// a rework is not AskedBy.
+type Rework struct {
+	ReworkNo         int
+	Reason           string
+	AskedBy          string
+	AskedAt          time.Time
+	AskedEnteredAt   time.Time
+	BrokenSeal       Evidence
+	BrokenSealedBy   string
+	BrokenSealedAt   time.Time
+	End              string // empty, ReworkSealed or ReworkGivenUp
+	EndedBy          string
+	EndedAt          time.Time
+	NewSealReference string
+}
+
+// How a rework ended.
+const (
+	ReworkSealed  = "SEALED"
+	ReworkGivenUp = "GIVEN_UP"
+)
+
 // LoadExecution is a tender of a consolidation's houses with its lines, reversals, holds, the carrier's
 // evidence and the discrepancies it raised. TenderedPacks are its live packs.
 type LoadExecution struct {
@@ -552,9 +648,11 @@ type LoadExecution struct {
 	ClosedAt        time.Time
 	CloseEvidence   Evidence
 	// CancelledBy, CancelledAt and CancelReason say who gave up a CANCELLED stuffing, when and why; empty otherwise.
-	CancelledBy     string
-	CancelledAt     time.Time
-	CancelReason    string
+	CancelledBy  string
+	CancelledAt  time.Time
+	CancelReason string
+	// Reworks are the reworks of a stuffing, in order; a stuffing in REWORK has its last one open and no close facts.
+	Reworks         []Rework
 	Lines           []LoadLine
 	Reversals       []Reversal
 	Holds           []Hold
@@ -654,6 +752,7 @@ type TenderEvidence struct {
 	Lines             []LoadLine
 	ClosedAt          time.Time
 	CloseEvidence     Evidence
+	Reworks           []Rework // of a stuffing, with the broken seals; a stuffing in REWORK has no close evidence
 	CarrierEvidence   []CarrierEvidence
 	OpenDiscrepancies []LoadingDiscrepancy
 }
@@ -774,6 +873,12 @@ type UnitPackingList struct {
 	ExecutionState string
 	Lines          []UnitPackingLine // the houses with live packs in the unit, in shipment order
 	Digest         string            // SHA-256, hexadecimal
+	// Reworks are the unit's stuffing's reworks, in order: who asked for each, when and why, the seal it broke and how
+	// it ended. FIN reads who asked from here. They are not part of the Digest, whose text is unchanged: the digest
+	// moves with the state, REWORK while the container is open for rework, and with the lines. It is not a witness of a
+	// rework: a rework with nothing unloaded and a reseal leaves the state and the lines as they were, so the digest is
+	// the same, and a reader that must know of a rework reads Reworks.
+	Reworks []Rework
 	// Limits is the unit's cargo by the allotted figures against the unit's default limits. It is not part of the
 	// Digest.
 	Limits UnitLimitsCheck
