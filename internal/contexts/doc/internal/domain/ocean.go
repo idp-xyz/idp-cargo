@@ -37,9 +37,12 @@ type OceanFacts struct {
 	PortOfLoading   string
 	PortOfDischarge string
 	Edition         string
-	OnBoardAt       time.Time
-	Containers      []OceanContainer
-	Houses          []OceanHouse
+	OnBoardAt       time.Time // the movement's: the earliest loading of any container or carrier report
+	// ContainerDates says that the containers below state their own on-board date (OceanDocFacts published from V2.90).
+	// Facts published before state none for any container, and a house is then dated by the movement's date.
+	ContainerDates bool
+	Containers     []OceanContainer
+	Houses         []OceanHouse
 
 	// What the carrier's own document reads (carrier.go): the carrier's party revision, its role (CARRIER, or CO_LOADER
 	// on a co-load movement) and the kind of the master bill reference. A house document does not carry them.
@@ -53,6 +56,7 @@ type OceanContainer struct {
 	Number     string
 	SizeType   string
 	SealNumber string
+	OnBoardAt  time.Time // this container's own loading; zero when it is not loaded (read only with ContainerDates)
 }
 
 type OceanHouse struct {
@@ -94,6 +98,140 @@ func (f OceanFacts) house(shipment string) (OceanHouse, bool) {
 	return OceanHouse{}, false
 }
 
+// HouseOnBoard is when all of a house's cargo is on board: the latest on-board date among the containers its breakdown
+// names. It is zero, with the numbers of the containers that have no date, when any of them is not loaded. Two readings
+// stay the movement's date, so that nothing becomes impossible to issue: facts published before the containers carried
+// a date (ContainerDates false; they are replaced by SEA's next finalization), and a house whose breakdown names no
+// container (a co-load movement has none of its own, and its loading is the carrier's report).
+func (f OceanFacts) HouseOnBoard(h OceanHouse) (at time.Time, notLoaded []string) {
+	if !f.ContainerDates || len(h.Containers) == 0 {
+		return f.OnBoardAt.UTC(), nil
+	}
+	own := map[string]OceanContainer{}
+	for _, box := range f.Containers {
+		own[box.VisitID] = box
+	}
+	for _, held := range h.Containers {
+		box, known := own[held.VisitID]
+		number := held.Number
+		if number == "" {
+			number = box.Number
+		}
+		switch {
+		case !known || box.OnBoardAt.IsZero():
+			if !slices.Contains(notLoaded, number) {
+				notLoaded = append(notLoaded, number)
+			}
+		case box.OnBoardAt.After(at):
+			at = box.OnBoardAt.UTC()
+		}
+	}
+	if len(notLoaded) > 0 {
+		return time.Time{}, notLoaded
+	}
+	return at, nil
+}
+
+// shippedContainers is the containers of a house bill: one for each entry of the house's breakdown, with the size type
+// and seal of the facts' container of the same visit.
+func (f OceanFacts) shippedContainers(h OceanHouse) []ShippedContainer {
+	sealOf := map[string]OceanContainer{}
+	for _, box := range f.Containers {
+		sealOf[box.VisitID] = box
+	}
+	var out []ShippedContainer
+	for _, held := range h.Containers {
+		box := sealOf[held.VisitID]
+		number := held.Number
+		if number == "" {
+			number = box.Number
+		}
+		out = append(out, ShippedContainer{Number: number, SizeType: box.SizeType, SealNumber: box.SealNumber, Packs: held.Packs,
+			GrossGrams: held.GrossGrams, VolumeCm3: held.VolumeCm3})
+	}
+	return out
+}
+
+// HouseChanges lists what the facts f now say of a house that the content c of its bill does not: the on-board date,
+// the containers and seals, the packs, weights and volume, the voyage, ports and master bill. It compares only what
+// comes from SEA, as OceanHouseContent takes it; parties, release and the other entered fields are not compared. A
+// house the facts do not name has no changes to list.
+func (f OceanFacts) HouseChanges(c Content, shipment string) []string {
+	h, ok := f.house(shipment)
+	if !ok {
+		return nil
+	}
+	receipt := f.PlaceOfReceipt
+	if receipt == "" {
+		receipt = f.PortOfLoading
+	}
+	var out []string
+	if at, _ := f.HouseOnBoard(h); !at.Equal(c.OnBoardAt) {
+		out = append(out, "the on-board date")
+	}
+	now, was := f.shippedContainers(h), c.Containers
+	if len(now) != len(was) {
+		out = append(out, "the containers")
+	} else {
+		for i := range now {
+			if now[i].Number != was[i].Number || now[i].SizeType != was[i].SizeType {
+				out = append(out, "the containers")
+				break
+			}
+		}
+		for i := range now {
+			if now[i].SealNumber != was[i].SealNumber {
+				out = append(out, "the seal")
+				break
+			}
+		}
+		for i := range now {
+			if now[i].Packs != was[i].Packs || now[i].GrossGrams != was[i].GrossGrams || now[i].VolumeCm3 != was[i].VolumeCm3 {
+				out = append(out, "the packs, weights or volume")
+				break
+			}
+		}
+	}
+	if (h.Packs != c.Cargo.Pieces || h.GrossGrams != c.Cargo.GrossGrams || h.VolumeCm3 != c.Cargo.VolumeCm3) && !slices.Contains(out, "the packs, weights or volume") {
+		out = append(out, "the packs, weights or volume")
+	}
+	for _, line := range c.Cargo.Lines {
+		if line.GoodsDescription != h.Goods {
+			out = append(out, "the goods description")
+			break
+		}
+	}
+	for _, line := range c.Cargo.Lines {
+		if line.PackageType != h.Package {
+			out = append(out, "the package type")
+			break
+		}
+	}
+	if f.MovementID != c.Source.MovementID || f.ConsolidationID != c.ConsolidationID {
+		out = append(out, "the movement or consolidation")
+	}
+	if f.MasterBill != c.MasterBill || f.Vessel != c.Vessel || f.Voyage != c.Voyage || f.PortOfLoading != c.PortOfLoading || f.PortOfDischarge != c.PortOfDischarge ||
+		receipt != c.PlaceOfReceipt || f.Edition != c.LocationEdition {
+		out = append(out, "the voyage, ports or master bill")
+	}
+	return out
+}
+
+// houseNotLoaded is the refusal to issue a house's bill while a container carrying the house has no loading, with the
+// ways out; nil when the house is on board. A house the facts do not name is read by the movement's date.
+func (f OceanFacts) houseNotLoaded(shipment string) error {
+	h, _ := f.house(shipment)
+	at, notLoaded := f.HouseOnBoard(h)
+	if at.IsZero() && len(notLoaded) == 0 {
+		return fmt.Errorf("%w: SEA's facts of version %d state no loading and so no on-board date for house %s: record the loading in SEA, "+
+			"by the container's event or the carrier's report, and finalize the movement again, then refresh the draft (or the amendment's draft)", ErrIncomplete, f.Version, h.HBL)
+	}
+	if at.IsZero() {
+		return fmt.Errorf("%w: house %s is not all on board: container %s carrying it has no loading in SEA's facts of version %d; wait for its loading to be recorded and SEA to finalize again, then refresh the draft (or the amendment's draft)", ErrIncomplete, h.HBL, strings.Join(notLoaded, ", "), f.Version)
+	}
+	return nil
+}
+
 // hblNumber is the form SEA gives an HBL and that this version keeps until the pilot: one to sixteen capital
 // letters and digits.
 func hblNumber(s string) bool {
@@ -108,11 +246,11 @@ func hblNumber(s string) bool {
 	return true
 }
 
-// OceanHouseContent builds an HBL or a house sea waybill of one shipment. The number is the one SEA drew. An HBL
-// is EXPRESS, or ORIGINALS with one to nine bills. The consignee is the orders': a named party, or the text to
-// order COM holds (TO ORDER, or TO ORDER OF a holder), which only an HBL issued as originals carries, with a named
-// notify party (C11). A house sea waybill names its consignee and issues no originals. The on-board date is stated
-// when the facts state it, and issuing requires it.
+// OceanHouseContent builds an HBL or a house sea waybill of one shipment. The number is the one SEA drew. An HBL is
+// EXPRESS, or ORIGINALS with one to nine bills. The consignee is the orders': a named party, or the text to order COM
+// holds (TO ORDER, or TO ORDER OF a holder), which only an HBL issued as originals carries, with a named notify party
+// (C11). A house sea waybill names its consignee and issues no originals. The on-board date is the house's own
+// (HouseOnBoard: all of its containers are loaded), stated when the facts state it, and issuing requires it.
 func OceanHouseContent(kind Kind, id DocumentID, shipment string, f OceanFacts, issuer Issuer, orders []OrderParties, entered Entered) (Content, error) {
 	switch {
 	case !f.Final:
@@ -148,25 +286,11 @@ func OceanHouseContent(kind Kind, id DocumentID, shipment string, f OceanFacts, 
 		PaymentIndicator: entered.PaymentIndicator,
 		Source:           SourceRef{Contract: "OceanDocFacts v1", MovementID: f.MovementID, Version: f.Version, SHA256: f.SHA256}, ConsolidationID: f.ConsolidationID,
 		ShipmentID: shipment, Origin: Airport{Code: receipt}, Destination: Airport{Code: f.PortOfDischarge}, MasterBill: f.MasterBill, Vessel: f.Vessel,
-		Voyage: f.Voyage, PlaceOfReceipt: receipt, PortOfLoading: f.PortOfLoading, PortOfDischarge: f.PortOfDischarge, OnBoardAt: f.OnBoardAt.UTC(),
+		Voyage: f.Voyage, PlaceOfReceipt: receipt, PortOfLoading: f.PortOfLoading, PortOfDischarge: f.PortOfDischarge,
 		HandlingInformation: strings.TrimSpace(entered.HandlingInformation),
 		Cargo:               Cargo{Pieces: h.Packs, GrossGrams: h.GrossGrams, VolumeCm3: h.VolumeCm3}}
-	if f.OnBoardAt.IsZero() {
-		c.OnBoardAt = time.Time{}
-	}
-	sealOf := map[string]OceanContainer{}
-	for _, box := range f.Containers {
-		sealOf[box.VisitID] = box
-	}
-	for _, held := range h.Containers {
-		box := sealOf[held.VisitID]
-		number := held.Number
-		if number == "" {
-			number = box.Number
-		}
-		c.Containers = append(c.Containers, ShippedContainer{Number: number, SizeType: box.SizeType, SealNumber: box.SealNumber, Packs: held.Packs,
-			GrossGrams: held.GrossGrams, VolumeCm3: held.VolumeCm3})
-	}
+	c.OnBoardAt, _ = f.HouseOnBoard(h)
+	c.Containers = f.shippedContainers(h)
 	orderIDs := append([]string(nil), h.OrderIDs...)
 	if len(orderIDs) == 0 {
 		return Content{}, fmt.Errorf("%w: the house names no order", ErrInvalidDocument)

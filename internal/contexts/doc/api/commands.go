@@ -63,8 +63,11 @@ type DraftTransportDocument struct {
 
 // RefreshDocumentDraft writes the next draft version from AIR's latest facts and COM's or ORG's current parties,
 // with a reason; empty entered fields keep those of the latest version. An approved draft needs approval again;
-// during an amendment the amendment's draft is replaced and needs approval again. MovementID, for a HAWB, names
-// the movement AIR now associates the shipment with (a rollover); empty keeps the document's. An HBL's release and
+// during an amendment the amendment's draft is replaced and needs approval again. MovementID names the movement
+// the shipment is now associated with: for a HAWB, AIR's (a rollover); for an HBL or a house sea waybill, SEA's, when
+// the house was transferred to another movement (V2.90: the bill keeps its number and follows the house, its issue
+// place is the new movement's port of loading, and it is dated by the loading of the house's containers there); empty
+// keeps the document's. An HBL's release and
 // number of originals may change: a non-empty Release sets both Release and Originals (EXPRESS with 0 makes an
 // ORIGINALS bill EXPRESS, ORIGINALS needs its count); an empty Release with a non-zero Originals changes only the
 // number; both empty keep the latest version's. An air waybill has neither.
@@ -115,8 +118,9 @@ type IssueTransportDocument struct {
 // OpenDocumentAmendment drafts the next version of an issued document from AIR's latest facts and the current
 // parties, with a reason. The issued version stays valid until the amendment is issued. To change parties, the
 // API client releases the document's lock in COM after this command commits, sets the party, then refreshes the
-// draft. A HAWB whose shipment was rolled to another movement names it in MovementID: the amendment names the new
-// master under the same number. A document issued as originals is amended once every original of the issued
+// draft. A HAWB whose shipment was rolled to another movement, or an HBL or house sea waybill whose house was
+// transferred to another SEA movement, names it in MovementID: the amendment names the new master under the same
+// number. A document issued as originals is amended once every original of the issued
 // version is returned (ReturnOriginal); a surrendered document is not amended. Release and Originals change an
 // HBL's release and number of originals as RefreshDocumentDraft's do; an amendment to EXPRESS issues no originals.
 type OpenDocumentAmendment struct {

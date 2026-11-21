@@ -335,6 +335,10 @@ func (d *Document) AbandonAmendment(orders []OrderParties, reason, by string, at
 		return err
 	}
 	d.latest().Discard = &Discard{By: by, At: at.UTC(), Reason: reason}
+	// the row follows the valid version again: the discarded draft may have moved it to another movement
+	if issued, ok := d.Current(); ok {
+		d.state.MovementID, d.state.ConsolidationID = issued.Doc.Source.MovementID, issued.Doc.ConsolidationID
+	}
 	// the originals returned for the amendment are handed back: the issued version is the document again
 	if issued, ok := d.Current(); ok && issued.Doc.ReleaseType == ReleaseOriginals {
 		for serial := 1; serial <= issued.Doc.OriginalCount; serial++ {
@@ -392,13 +396,17 @@ func (d *Document) issue(g IssueGate, by string, at time.Time) error {
 	if err := v.Doc.complete(); err != nil {
 		return err
 	}
+	var notLoaded error
+	if d.state.Kind.SeaHouse() {
+		notLoaded = g.Ocean.houseNotLoaded(d.state.ShipmentID)
+	}
 	switch {
 	case !g.IssuerVerified:
 		return ErrIssuerNotVerified
 	case d.state.Kind.SeaHouse() && (g.Ocean.MovementID != src.MovementID || !g.Ocean.Final || g.Ocean.Version != src.Version || g.Ocean.SHA256 != src.SHA256):
 		return fmt.Errorf("%w: built on OceanDocFacts version %d, SEA's latest is %d (final %v)", ErrSourceStale, src.Version, g.Ocean.Version, g.Ocean.Final)
-	case d.state.Kind.SeaHouse() && g.Ocean.OnBoardAt.IsZero():
-		return fmt.Errorf("%w: a house sea document is issued from facts that state the on-board date", ErrIncomplete)
+	case d.state.Kind.SeaHouse() && notLoaded != nil:
+		return notLoaded
 	case !d.state.Kind.SeaHouse() && (!g.Facts.Final || g.Facts.MovementID != src.MovementID || g.Facts.Version != src.Version || g.Facts.SHA256 != src.SHA256):
 		return fmt.Errorf("%w: built on AirDocFacts version %d, AIR's latest is %d (final %v)", ErrSourceStale, src.Version, g.Facts.Version, g.Facts.Final)
 	case !identifier(g.AuthorityID) || g.AuthorityVersion < 1:
@@ -721,7 +729,7 @@ func (d *Document) validate() error {
 	for i, v := range st.Versions {
 		c := v.Doc
 		if c.DocumentID != string(st.DocumentID) || c.Kind != string(st.Kind) || c.Number != st.Number || c.ShipmentID != st.ShipmentID ||
-			c.Issuer.LegalEntityID != st.LegalEntityID || (i == n-1 && (c.Source.MovementID != st.MovementID || c.ConsolidationID != st.ConsolidationID)) ||
+			c.Issuer.LegalEntityID != st.LegalEntityID || (i == n-1 && !d.rowFollows(v)) ||
 			(st.Kind == KindMAWB && c.Source.MovementID != st.MovementID) || blank(v.DraftedBy) || v.DraftedAt.IsZero() || (i > 0 && blank(v.Reason)) ||
 			(v.Issue != nil && v.Discard != nil) || (v.Approval != nil && v.Approval.At.Before(v.DraftedAt)) ||
 			(v.Issue != nil && v.Issue.At.Before(v.DraftedAt)) {
@@ -760,6 +768,25 @@ func (d *Document) validate() error {
 		return fmt.Errorf("state %s", st.State)
 	}
 	return nil
+}
+
+// rowFollows reports whether the document row's movement and consolidation are those of v, the latest version, or of
+// the latest version that was not discarded: since V2.90 an abandoned amendment puts the row back on the valid
+// version's movement, and a row written before that names the discarded draft's, so both are the row of a sound
+// document.
+func (d *Document) rowFollows(latest Version) bool {
+	names := func(v Version) bool {
+		return v.Doc.Source.MovementID == d.state.MovementID && v.Doc.ConsolidationID == d.state.ConsolidationID
+	}
+	if names(latest) {
+		return true
+	}
+	for i := len(d.state.Versions) - 1; i >= 0; i-- {
+		if v := d.state.Versions[i]; v.Discard == nil {
+			return names(v)
+		}
+	}
+	return false
 }
 
 // State returns a copy of the document for persistence and read models.

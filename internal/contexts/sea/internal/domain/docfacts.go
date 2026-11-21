@@ -17,7 +17,10 @@ import (
 var ErrNotFinalizable = errors.New("sea: the movement's facts are not ready for DOC")
 
 // OceanDocFacts is one published OceanDocFacts v1 (relationship 12, SEA -> DOC). It carries a VGM assertion's
-// identity, mass, method and responsible party, and never the signatory's name.
+// identity, mass, method and responsible party, and never the signatory's name. Since V2.90 it also carries each
+// container's own on-board date and ContainerDates, which says that it does: a compatible addition (a reader that
+// does not know the two fields reads what it read, and the movement's OnBoardAt is as it was). A version published
+// before V2.90 is stored as it was and reads with ContainerDates false and no container date.
 type OceanDocFacts struct {
 	Version                int            `json:"version"`
 	MovementID             string         `json:"movement_id"`
@@ -42,9 +45,14 @@ type OceanDocFacts struct {
 	OnBoardAt              time.Time      `json:"on_board_at,omitzero"` // omitempty does not omit a zero time
 	Containers             []DocContainer `json:"containers"`
 	Houses                 []DocHouse     `json:"houses"`
+
+	// ContainerDates says that each container states its own on-board date, as every version from V2.90 does.
+	ContainerDates bool `json:"container_dates,omitempty"`
 }
 
-// DocContainer is one live container of the movement as the facts name it.
+// DocContainer is one live container of the movement as the facts name it. OnBoardAt is its own earliest loading: its
+// own LOADED_ON_BOARD event, or the carrier's earliest LOADED_ON_BOARD report that names it or, with exactly one live
+// container, one that names none; zero when it is not loaded.
 type DocContainer struct {
 	VisitID                  string `json:"visit_id"`
 	Number                   string `json:"number"`
@@ -59,6 +67,8 @@ type DocContainer struct {
 	Packs                    int64  `json:"packs"`
 	GrossWeightGrams         int64  `json:"gross_weight_grams"`
 	VolumeCubicCentimetres   int64  `json:"volume_cubic_centimetres"`
+
+	OnBoardAt time.Time `json:"on_board_at,omitzero"` // this container's own loading; none when it is not loaded
 }
 
 // DocHouse is one live house.
@@ -200,7 +210,7 @@ func (m *Movement) oceanDocFacts(version int, houses []Entry, visits []VisitStat
 		OperatingLegalEntityID: st.LegalEntityID, CarrierPartyID: st.Carrier.PartyID, CarrierPartyRevision: st.Carrier.PartyRevision, CarrierRole: st.Carrier.Role,
 		MasterBillNumber: bill.Number, MasterBillKind: bill.Kind, BookingID: link.BookingID, CapacityVersion: link.CapacityVersion,
 		Vessel: leg.Vessel, VesselIMO: leg.VesselIMO, Voyage: leg.Voyage, PlaceOfReceipt: st.Origin.Code, PortOfLoading: leg.From.Code,
-		PortOfDischarge: leg.To.Code, LocationEdition: st.Edition, ETD: leg.ETD.UTC(), Containers: []DocContainer{}, Houses: []DocHouse{}}
+		PortOfDischarge: leg.To.Code, LocationEdition: st.Edition, ETD: leg.ETD.UTC(), ContainerDates: true, Containers: []DocContainer{}, Houses: []DocHouse{}}
 	byUnit := map[int]VisitState{}
 	for _, v := range visits {
 		byUnit[v.LoadUnitNo] = v
@@ -216,6 +226,17 @@ func (m *Movement) oceanDocFacts(version int, houses []Entry, visits []VisitStat
 		for _, e := range v.Events {
 			if e.Kind == EventLoaded && (f.OnBoardAt.IsZero() || e.OccurredAt.Before(f.OnBoardAt)) {
 				f.OnBoardAt = e.OccurredAt.UTC()
+			}
+			if e.Kind == EventLoaded && (c.OnBoardAt.IsZero() || e.OccurredAt.Before(c.OnBoardAt)) {
+				c.OnBoardAt = e.OccurredAt.UTC()
+			}
+		}
+		// The carrier's report of a loading counts for the container it names and, with exactly one live container,
+		// for a report that names none (as carrierLoadingFacts reads it).
+		for _, r := range st.CarrierFacts {
+			if r.Kind == CarrierLoaded && (r.ContainerNumber == v.Number || len(visits) == 1 && r.ContainerNumber == "") &&
+				(c.OnBoardAt.IsZero() || r.OccurredAt.Before(c.OnBoardAt)) {
+				c.OnBoardAt = r.OccurredAt.UTC()
 			}
 		}
 		f.Containers = append(f.Containers, c)

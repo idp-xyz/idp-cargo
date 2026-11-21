@@ -98,9 +98,10 @@ type DocumentVersion struct {
 }
 
 // TransportDocumentContent v1. Weights are in grams and volumes in cubic centimetres. An air waybill's airports carry
-// their UN/LOCODE and the IATA code frozen in AIR's facts; an HBL and a house sea waybill carry the ports, the
-// vessel, the master bill and the on-board date from OceanDocFacts, and an HBL issued as originals their number.
-// Parties carry no contacts; the consignee of a bill to order is the order's text (Party.ToOrder).
+// their UN/LOCODE and the IATA code frozen in AIR's facts; an HBL and a house sea waybill carry the ports, the vessel,
+// the master bill and the house's own on-board date from OceanDocFacts (the latest of its containers' loadings), and an
+// HBL issued as originals their number. Parties carry no contacts; the consignee of a bill to order is the order's text
+// (Party.ToOrder).
 type DocumentContent struct {
 	Kind                string             `json:"kind"`
 	DocumentID          string             `json:"document_id"`

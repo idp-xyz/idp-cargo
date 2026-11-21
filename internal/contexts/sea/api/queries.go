@@ -290,6 +290,10 @@ type OceanDocFacts struct {
 	SHA256                 string         `json:"-"`
 	FinalizedBy            string         `json:"-"`
 	FinalizedAt            time.Time      `json:"-"`
+
+	// ContainerDates says that each container states its own on-board date: true of every version published from V2.90,
+	// false of a version published before, which states none for any container.
+	ContainerDates bool `json:"container_dates,omitempty"`
 }
 
 // DocContainer is a container named in OceanDocFacts v1.
@@ -307,6 +311,11 @@ type DocContainer struct {
 	Packs                    int64  `json:"packs"`
 	GrossWeightGrams         int64  `json:"gross_weight_grams"`
 	VolumeCubicCentimetres   int64  `json:"volume_cubic_centimetres"`
+
+	// OnBoardAt is this container's own earliest loading: its own LOADED_ON_BOARD event, or the carrier's report that
+	// names it, or a report that names no container when the movement has exactly one live container. Zero when it is
+	// not loaded. The movement's OnBoardAt above is still the earliest of any loading recorded.
+	OnBoardAt time.Time `json:"on_board_at,omitzero"`
 }
 
 // DocHouse is a live house named in OceanDocFacts v1.

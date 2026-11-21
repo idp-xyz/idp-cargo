@@ -359,6 +359,33 @@ func (s DocumentStore) List(ctx context.Context, tenant doc.TenantID, shipment, 
 	return out, rows.Err()
 }
 
+// ListOfMovement finds the house bills of a sea movement that are not cancelled (a surrendered one is found: only the
+// domain drops it) by the table's index on the consolidation, the
+// movement being the filter. There is no index on the movement itself and none is needed: a consolidation has one
+// movement and a few houses.
+func (s DocumentStore) ListOfMovement(ctx context.Context, tenant doc.TenantID, movement, consolidation string) ([]doc.DocumentID, error) {
+	q, err := s.DB.ReadExecutor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := q.Query(ctx, `SELECT d.document_id FROM cargo_doc.transport_document d
+      WHERE d.tenant_id=$1 AND d.consolidation_id=$3 AND d.movement_id=$2 AND d.kind IN ('HBL','HOUSE_SEA_WAYBILL') AND d.state <> 'CANCELLED'
+      ORDER BY d.document_id`, string(tenant), movement, consolidation)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []doc.DocumentID
+	for rows.Next() {
+		var id string
+		if err = rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, doc.DocumentID(id))
+	}
+	return out, rows.Err()
+}
+
 // AuthorityStore loads and writes issuance authorities.
 type AuthorityStore struct{ DB *bentopg.DB }
 
