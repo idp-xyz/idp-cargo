@@ -58,15 +58,15 @@ func (u usedWorld) record(id, code, method string, amount int64) {
 		Reason: "entered for the consolidation", OccurredAt: u.hours(3)}))
 }
 
-func (u usedWorld) apportionCmd(id string, hour int, lines []int, notUsed ...string) api.ApportionConsolCosts {
-	return api.ApportionConsolCosts{CommandID: id, TenantID: u.tenant, ActorID: "fin-1", PoolID: u.pool, ExpectedRevision: u.revision(), LineNos: lines,
+func (u usedWorld) apportionCmd(id string, hour int, lines []int, notUsed ...string) api.PreviewConsolCostApportionment {
+	return api.PreviewConsolCostApportionment{CommandID: id, TenantID: u.tenant, ActorID: "fin-1", PoolID: u.pool, ExpectedRevision: u.revision(), LineNos: lines,
 		NotUsed: notUsed, OccurredAt: u.hours(hour)}
 }
 
 // apportion makes an apportionment and returns it as the pool shows it.
 func (u usedWorld) apportion(id string, hour int, lines []int, notUsed ...string) api.PoolApportionment {
 	u.t.Helper()
-	u.must(u.module.ApportionConsolCosts(u.ctx, u.apportionCmd(id, hour, lines, notUsed...)))
+	u.must(previewAndSubmit(u.ctx, u.module, u.apportionCmd(id, hour, lines, notUsed...)))
 	p := u.ap.pool(u.pool)
 	return p.Apportionments[len(p.Apportionments)-1]
 }
@@ -76,7 +76,7 @@ func (u usedWorld) apportionAll(id string, hour int, lines []int) api.PoolApport
 	u.t.Helper()
 	cmd := u.apportionCmd(id, hour, lines)
 	cmd.AllHouses = true
-	u.must(u.module.ApportionConsolCosts(u.ctx, cmd))
+	u.must(previewAndSubmit(u.ctx, u.module, cmd))
 	p := u.ap.pool(u.pool)
 	return p.Apportionments[len(p.Apportionments)-1]
 }
@@ -181,19 +181,19 @@ func TestHousesLeftOutOfAnApportionmentOnPostgres(t *testing.T) {
 	// the refusals leave the pool as it was
 	before := u.revision()
 	for name, tc := range map[string]struct {
-		in   api.ApportionConsolCosts
+		in   api.PreviewConsolCostApportionment
 		text string
 	}{
 		"a house named twice":  {u.apportionCmd("twice", 4, []int{1}, "SH-C", "SH-C"), "left out twice"},
 		"a house not live":     {u.apportionCmd("stranger", 4, []int{1}, "SH-Z"), "not a live house"},
 		"every house left out": {u.apportionCmd("all", 4, []int{1}, "SH-A", "SH-B", "SH-C"), "every house is left out"},
-		"a house left out of a retained cost": {func() api.ApportionConsolCosts {
+		"a house left out of a retained cost": {func() api.PreviewConsolCostApportionment {
 			in := u.apportionCmd("retained", 4, []int{1}, "SH-C")
 			in.Method, in.Reason = api.MethodRetained, "dead freight"
 			return in
 		}(), "no houses to leave out"},
 	} {
-		if _, err := f.module.ApportionConsolCosts(ctx, tc.in); !errors.Is(err, api.ErrRejected) || !strings.Contains(err.Error(), tc.text) {
+		if _, err := previewAndSubmit(ctx, f.module, tc.in); !errors.Is(err, api.ErrRejected) || !strings.Contains(err.Error(), tc.text) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
@@ -203,7 +203,7 @@ func TestHousesLeftOutOfAnApportionmentOnPostgres(t *testing.T) {
 
 	// line 1 by CHARGEABLE leaving SH-C out
 	cmd := u.apportionCmd("apportion-1", 4, []int{1}, "SH-C")
-	r := u.must(f.module.ApportionConsolCosts(ctx, cmd))
+	r := u.must(previewAndSubmit(ctx, f.module, cmd))
 	p := u.ap.pool(u.pool)
 	one := p.Apportionments[0]
 	if len(p.Apportionments) != 1 || one.Stage != api.BasisActual || one.BasisRevision != 7 || len(one.Lines) != 1 {
@@ -212,22 +212,22 @@ func TestHousesLeftOutOfAnApportionmentOnPostgres(t *testing.T) {
 	u.checkLine("apportionment 1", one, 1, api.MethodChargeable, share(1, "A", 300_000, "GRM", 60_000), share(2, "B", 200_000, "GRM", 40_000), left(3, "C"))
 
 	// the same command replayed answers the same receipt; the same command id with another NotUsed is the conflict
-	if again, err := f.module.ApportionConsolCosts(ctx, cmd); err != nil || again != r {
+	if again, err := previewAndSubmit(ctx, f.module, cmd); err != nil || again != r {
 		t.Fatalf("replay: %+v %v, want %+v", again, err, r)
 	}
 	other := cmd
 	other.NotUsed = []string{"SH-B"}
-	if _, err := f.module.ApportionConsolCosts(ctx, other); !errors.Is(err, api.ErrIdempotencyConflict) {
+	if _, err := previewAndSubmit(ctx, f.module, other); !errors.Is(err, api.ErrIdempotencyConflict) {
 		t.Fatalf("the same command id with another NotUsed: %v", err)
 	}
 	none := cmd
 	none.NotUsed = nil
-	if _, err := f.module.ApportionConsolCosts(ctx, none); !errors.Is(err, api.ErrIdempotencyConflict) {
+	if _, err := previewAndSubmit(ctx, f.module, none); !errors.Is(err, api.ErrIdempotencyConflict) {
 		t.Fatalf("the same command id with nothing left out: %v", err)
 	}
 	everyone := none
 	everyone.AllHouses = true
-	if _, err := f.module.ApportionConsolCosts(ctx, everyone); !errors.Is(err, api.ErrIdempotencyConflict) {
+	if _, err := previewAndSubmit(ctx, f.module, everyone); !errors.Is(err, api.ErrIdempotencyConflict) {
 		t.Fatalf("the same command id with AllHouses: %v", err)
 	}
 
@@ -445,22 +445,22 @@ func TestHousesLeftOutStayOutOnPostgres(t *testing.T) {
 	u.checkLine("line 1 again", again, 1, api.MethodShipment, share(1, "A", 1, "SHP", 50_000), share(2, "B", 1, "SHP", 50_000), left(3, "C"))
 	u.checkLine("line 2 again", again, 2, api.MethodShipment, share(1, "A", 1, "SHP", 30_000), left(2, "B"), share(3, "C", 1, "SHP", 30_000))
 	// MANUAL takes the carried list: its shares name the houses that take part
-	manual := func(id string, notUsed []string, shares ...api.ManualShare) api.ApportionConsolCosts {
+	manual := func(id string, notUsed []string, shares ...api.ManualShare) api.PreviewConsolCostApportionment {
 		in := u.apportionCmd(id, 5, []int{3}, notUsed...)
 		in.Method, in.Manual, in.Reason = api.MethodManual, shares, "agreed"
 		return in
 	}
 	ab := []api.ManualShare{{ShipmentID: "SH-A", Amount: 10_000}, {ShipmentID: "SH-B", Amount: 80_000}}
-	if _, err := f.module.ApportionConsolCosts(u.ctx, manual("manual-0", []string{"SH-C"}, ab...)); err != nil {
+	if _, err := previewAndSubmit(u.ctx, f.module, manual("manual-0", []string{"SH-C"}, ab...)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.module.ApportionConsolCosts(u.ctx, manual("manual-2", nil, ab...)); err != nil {
+	if _, err := previewAndSubmit(u.ctx, f.module, manual("manual-2", nil, ab...)); err != nil {
 		t.Fatalf("manual with the carried list: %v", err)
 	}
 	if p := u.ap.pool(u.pool); !p.Apportionments[len(p.Apportionments)-1].Lines[0].Shares[2].NotUsed {
 		t.Fatalf("manual did not carry the list: %+v", p.Apportionments[len(p.Apportionments)-1])
 	}
-	if _, err := f.module.ApportionConsolCosts(u.ctx, manual("manual-1", nil, api.ManualShare{ShipmentID: "SH-A", Amount: 10_000}, api.ManualShare{ShipmentID: "SH-B", Amount: 50_000},
+	if _, err := previewAndSubmit(u.ctx, f.module, manual("manual-1", nil, api.ManualShare{ShipmentID: "SH-A", Amount: 10_000}, api.ManualShare{ShipmentID: "SH-B", Amount: 50_000},
 		api.ManualShare{ShipmentID: "SH-C", Amount: 30_000})); !errors.Is(err, api.ErrRejected) || !strings.Contains(err.Error(), "FIN_MANUAL_SHARES") {
 		t.Fatalf("manual naming a house of a line's carried list: %v", err)
 	}
@@ -469,28 +469,28 @@ func TestHousesLeftOutStayOutOnPostgres(t *testing.T) {
 	u.checkLine("replaced", replaced, 1, api.MethodShipment, left(1, "A"), share(2, "B", 1, "SHP", 50_000), share(3, "C", 1, "SHP", 50_000))
 	both := u.apportionCmd("apportion-both", 6, []int{1}, "SH-A")
 	both.AllHouses = true
-	if _, err := f.module.ApportionConsolCosts(u.ctx, both); !errors.Is(err, api.ErrRejected) {
+	if _, err := previewAndSubmit(u.ctx, f.module, both); !errors.Is(err, api.ErrRejected) {
 		t.Fatalf("AllHouses with NotUsed: %v", err)
 	}
 	all := u.apportionCmd("apportion-all", 7, []int{1, 2})
 	all.AllHouses = true
-	r := u.must(f.module.ApportionConsolCosts(u.ctx, all))
+	r := u.must(previewAndSubmit(u.ctx, f.module, all))
 	p := u.ap.pool(u.pool)
 	last := p.Apportionments[len(p.Apportionments)-1]
 	u.checkLine("all", last, 1, api.MethodShipment, share(1, "A", 1, "SHP", 33_334), share(2, "B", 1, "SHP", 33_333), share(3, "C", 1, "SHP", 33_333))
 	u.checkLine("all", last, 2, api.MethodShipment, share(1, "A", 1, "SHP", 20_000), share(2, "B", 1, "SHP", 20_000), share(3, "C", 1, "SHP", 20_000))
 	// replay and idempotency of a command with AllHouses
-	if again, err := f.module.ApportionConsolCosts(u.ctx, all); err != nil || again != r {
+	if again, err := previewAndSubmit(u.ctx, f.module, all); err != nil || again != r {
 		t.Fatalf("replay with AllHouses: %+v %v, want %+v", again, err, r)
 	}
-	for name, change := range map[string]func(*api.ApportionConsolCosts){
-		"without AllHouses":   func(c *api.ApportionConsolCosts) { c.AllHouses = false },
-		"with a list instead": func(c *api.ApportionConsolCosts) { c.AllHouses, c.NotUsed = false, []string{"SH-C"} },
-		"with another line":   func(c *api.ApportionConsolCosts) { c.LineNos = []int{1} },
+	for name, change := range map[string]func(*api.PreviewConsolCostApportionment){
+		"without AllHouses":   func(c *api.PreviewConsolCostApportionment) { c.AllHouses = false },
+		"with a list instead": func(c *api.PreviewConsolCostApportionment) { c.AllHouses, c.NotUsed = false, []string{"SH-C"} },
+		"with another line":   func(c *api.PreviewConsolCostApportionment) { c.LineNos = []int{1} },
 	} {
 		other := all
 		change(&other)
-		if _, err := f.module.ApportionConsolCosts(u.ctx, other); !errors.Is(err, api.ErrIdempotencyConflict) {
+		if _, err := previewAndSubmit(u.ctx, f.module, other); !errors.Is(err, api.ErrIdempotencyConflict) {
 			t.Errorf("the same command id %s: %v", name, err)
 		}
 	}
@@ -503,12 +503,12 @@ func TestHousesLeftOutStayOutOnPostgres(t *testing.T) {
 	gone := u.apportion("apportion-6", 9, []int{1})
 	u.checkLine("detached", gone, 1, api.MethodShipment, share(1, "A", 1, "SHP", 50_000), share(2, "B", 1, "SHP", 50_000))
 	// every house still live left out: refused as when every house is named
-	if _, err := f.module.ApportionConsolCosts(u.ctx, u.apportionCmd("apportion-7", 9, []int{1}, "SH-A")); err != nil {
+	if _, err := previewAndSubmit(u.ctx, f.module, u.apportionCmd("apportion-7", 9, []int{1}, "SH-A")); err != nil {
 		t.Fatal(err)
 	}
 	basis.Houses = basis.Houses[:1]
 	f.w.costBases["CONSOL-U"] = basis
-	if _, err := f.module.ApportionConsolCosts(u.ctx, u.apportionCmd("apportion-8", 10, []int{1})); !errors.Is(err, api.ErrRejected) ||
+	if _, err := previewAndSubmit(u.ctx, f.module, u.apportionCmd("apportion-8", 10, []int{1})); !errors.Is(err, api.ErrRejected) ||
 		!strings.Contains(err.Error(), "every house still live was left out") {
 		t.Fatalf("a carried list that leaves no house taking part: %v", err)
 	}
@@ -537,7 +537,7 @@ func TestTheJobOfAHouseLeftOutIsCancelledOnPostgres(t *testing.T) {
 	if j := u.job("JOB-C"); j.State != api.JobCancelled {
 		t.Fatalf("JOB-C: %+v", j)
 	}
-	if _, err := f.module.ApportionConsolCosts(u.ctx, u.apportionCmd("apportion-2", 6, []int{1}, "SH-C")); !errors.Is(err, api.ErrRejected) ||
+	if _, err := previewAndSubmit(u.ctx, f.module, u.apportionCmd("apportion-2", 6, []int{1}, "SH-C")); !errors.Is(err, api.ErrRejected) ||
 		!strings.Contains(err.Error(), "FIN_POOL_JOB_MISSING") {
 		t.Fatalf("the next apportionment names a house whose job is cancelled: %v", err)
 	}
@@ -604,7 +604,7 @@ func TestTheBasisIsThatOfTheHousesThatTakePartOnPostgres(t *testing.T) {
 	b.Houses[2].GrossWeight = kernel.Quantity{Unit: "LBR", Amount: 110} // SH-C is not loaded: its planned scope weighs
 	f.w.costBases["CONSOL-U"] = b
 	u.record("cost-1", "AIR_FREIGHT", api.MethodGrossWeight, 100_000)
-	_, err := f.module.ApportionConsolCosts(u.ctx, u.apportionCmd("apportion-all", 4, []int{1}))
+	_, err := previewAndSubmit(u.ctx, f.module, u.apportionCmd("apportion-all", 4, []int{1}))
 	if !errors.Is(err, api.ErrRejected) || !strings.Contains(err.Error(), "FIN_POOL_UNIT") {
 		t.Fatalf("a weight in pounds in a house that takes part: %v", err)
 	}

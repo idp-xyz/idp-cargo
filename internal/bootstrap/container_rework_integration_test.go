@@ -14,17 +14,16 @@ import (
 )
 
 // A sealed container is opened for rework, a whole house is unloaded and the container is sealed again (PHY V2.85),
-// with the real ORG, RATE, COM, FUL, PHY and FIN. The owner's day: three houses H01, H02 and H03 of 10, 15 and 5 W/M in
-// one 22G1, H03 leaves. FIN's apportionment of three cost lines (OCEAN_FREIGHT by CHARGEABLE, THC by TEU, LASHING by
-// GROSS_WEIGHT, each CNY 100.01) is asked before the rework, during it and after, and the test asserts what today's
-// code gives. It is not a statement of what FIN should do: FIN is not changed in this step. The later steps will
-// change, in FIN, what is asserted as "during" here: an apportionment is held back while a container is in rework
-// (today only the container methods refuse, since they need every container sealed; CHARGEABLE and GROSS_WEIGHT read
-// the loaded facts and go on), the confirmation of the held back apportionment needs a person other than the one who
-// asked for the rework (UnitPackingList.Reworks.AskedBy, PHY), and the container's costs are attributed to the houses
-// again after the reseal, so that "after" would then not need the house that left to be named as not used. FUL and SEA,
-// whose view of the container follows PHY's CLOSED executions, follow the new seal and the contents in their own steps.
-func TestAContainerIsReworkedWithEveryContextAndFINApportionsAsTodayAssert(t *testing.T) {
+// with the real ORG, RATE, COM, FUL, PHY and FIN, and FIN freezes the pool while the container is open (V2.91). The
+// owner's day: three houses H01, H02 and H03 of 10, 15 and 5 W/M in one 22G1, H03 leaves. FIN's apportionment of three
+// cost lines (OCEAN_FREIGHT by CHARGEABLE, THC by TEU, LASHING by GROSS_WEIGHT, each CNY 100.01) is previewed and
+// submitted before the rework; while the container is open or its house is unloaded no preview or submission is
+// accepted, the pool cannot be closed and shows the apportionment that was submitted, in work; after the reseal the old
+// preview is stale, and the houses are apportioned again, with H03 named out as it is still attached with nothing
+// loaded. The confirmation by someone other than the person who asked for the rework is tested in
+// TestAPoolFrozenForAReworkIsConfirmedByAnotherPerson. FUL and SEA, whose view of the container follows PHY's CLOSED
+// executions, follow the new seal and the contents in their own steps.
+func TestAContainerIsReworkedWithEveryContextAndFINFreezesThePool(t *testing.T) {
 	d := newOceanDay(t, "cargo-ocean-rework-", map[string]int64{"H01": 312, "H02": 300, "H03": 288},
 		map[string]int64{"H01": 10_000_000, "H02": 15_000_000, "H03": 5_000_000}, []string{"22G1"},
 		[]struct{ code, method string }{{"OCEAN_FREIGHT", finapi.MethodChargeable}, {"THC", finapi.MethodTEU}, {"LASHING", finapi.MethodGrossWeight}})
@@ -59,7 +58,7 @@ func TestAContainerIsReworkedWithEveryContextAndFINApportionsAsTodayAssert(t *te
 	// apportion applies the lines asked, and leaves the houses named out of them
 	apportion := func(id string, notUsed []string, lines ...int) error {
 		t.Helper()
-		_, err := d.fin.ApportionConsolCosts(d.ctx, finapi.ApportionConsolCosts{CommandID: id, TenantID: d.tenant, ActorID: "fin-1", PoolID: "P-1",
+		_, err := previewAndSubmit(d.ctx, d.fin, finapi.PreviewConsolCostApportionment{CommandID: id, TenantID: d.tenant, ActorID: "fin-1", PoolID: "P-1",
 			ExpectedRevision: d.pool().Revision, LineNos: lines, NotUsed: notUsed, OccurredAt: d.hours(30)})
 		return err
 	}
@@ -92,9 +91,16 @@ func TestAContainerIsReworkedWithEveryContextAndFINApportionsAsTodayAssert(t *te
 		}
 	}
 
-	// OPENED: the same facts, the container not sealed. PHY reads the unit IN_USE and the packing list REWORK; FIN's
-	// container methods refuse at once (they need every container sealed), CHARGEABLE and GROSS_WEIGHT read the loaded
-	// facts, which have not moved, and give the same shares. FIN does not know the container is open.
+	// A preview made while the container is sealed, kept for after the rework.
+	old, err := d.fin.PreviewConsolCostApportionment(d.ctx, finapi.PreviewConsolCostApportionment{CommandID: "fin-old-preview", TenantID: d.tenant, ActorID: "fin-1",
+		PoolID: "P-1", ExpectedRevision: d.pool().Revision, LineNos: []int{1}, OccurredAt: d.hours(30)})
+	d.must("a preview before the rework", err)
+
+	// OPENED: the same facts, the container not sealed. PHY reads the unit IN_USE and the packing list REWORK. FIN
+	// freezes the whole pool: no preview, whatever its method (the container methods were refused before V2.91 for the
+	// unsealed container, CHARGEABLE and GROSS_WEIGHT went on), no submission of the preview made earlier, and no
+	// close; each refusal names the container and the way out. The pool shows the apportionment that was submitted, in
+	// work.
 	cmd := phyapi.OpenStuffingForRework{CommandID: "rework-1", TenantID: d.tenant, ActorID: "ops-asker", ExecutionID: "X-1", ExpectedRevision: d.revision["X-1"],
 		Reason: "the consignee of H03 withdrew its cargo", OccurredAt: d.hours(22)}
 	if _, err = d.phy.OpenStuffingForRework(d.ctx, cmd); err != nil {
@@ -106,23 +112,39 @@ func TestAContainerIsReworkedWithEveryContextAndFINApportionsAsTodayAssert(t *te
 		p.Reworks[0].AskedBy != "ops-asker" || during.LoadUnits[0].Status != phyapi.UnitStatusInUse || during.LoadUnits[0].ExecutionState != phyapi.ExecutionRework {
 		t.Fatalf("during: %+v, unit %+v", during.PackingLists, during.LoadUnits[0])
 	}
-	err = apportion("fin-open-teu", nil, 2)
-	if err == nil || !strings.Contains(err.Error(), "FIN_POOL_NO_BASIS") || !strings.Contains(err.Error(), "load unit 1 is IN_USE") {
-		t.Fatalf("the container method while the container is in rework: %v", err)
+	inWork := func(label string, err error) {
+		t.Helper()
+		for _, want := range []string{"FIN_POOL_IN_WORK", "load unit 1 (stuffing X-1)", "wait for PHY to seal the container again or to give its stuffing up"} {
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("%s: %v, want it to say %q", label, err, want)
+			}
+		}
 	}
-	if err = apportion("fin-open-1", nil, 1, 3); err != nil {
-		t.Fatalf("apportion while the container is open: %v", err)
+	inWork("the container method while the container is in rework", apportion("fin-open-teu", nil, 2))
+	inWork("the weighed methods while the container is in rework", apportion("fin-open-1", nil, 1, 3))
+	_, err = d.fin.SubmitConsolCostApportionment(d.ctx, finapi.SubmitConsolCostApportionment{CommandID: "fin-open-submit", TenantID: d.tenant, ActorID: "fin-1", PoolID: "P-1",
+		ExpectedRevision: d.pool().Revision, PreviewNo: int(old.Version), OccurredAt: d.hours(30)})
+	inWork("the submission of the preview made before the rework", err)
+	_, err = d.fin.CloseConsolCostPool(d.ctx, finapi.CloseConsolCostPool{CommandID: "fin-open-close", TenantID: d.tenant, ActorID: "fin-1", PoolID: "P-1",
+		ExpectedRevision: d.pool().Revision, OccurredAt: d.hours(30)})
+	inWork("the close", err)
+	inWorkPool := func(label string) {
+		t.Helper()
+		pool := d.pool()
+		if !pool.InWork || len(pool.WorkUnits) != 1 || pool.WorkUnits[0] != (finapi.WorkUnit{UnitNo: 1, ExecutionID: "X-1"}) || len(pool.Apportionments) != 1 ||
+			pool.Apportionments[0].PreviewNo != 1 || len(pool.Previews) != 2 || pool.Previews[1].SubmittedAs != 0 || pool.State != "OPEN" {
+			t.Fatalf("%s: the pool: %+v", label, pool)
+		}
+		shares(label+", W/M", pool.Apportionments[0], 1, 3_334, 5_000, 1_667)
+		profit, err := d.fin.GetConsolProfit(d.ctx, finapi.GetConsolProfit{TenantID: d.tenant, ConsolidationID: "C-1"})
+		if err != nil || !profit.InWork || len(profit.WorkUnits) != 1 {
+			t.Fatalf("%s: the consolidation's economics: %+v %v", label, profit, err)
+		}
 	}
-	a = last()
-	if a.Stage != finapi.BasisActual {
-		t.Fatalf("while open: %+v", a)
-	}
-	shares("open, W/M", a, 1, 3_334, 5_000, 1_667)
-	shares("open, weight", a, 2, 3_467, 3_334, 3_200) // lines 1 and 3 of the pool are the two lines of this apportionment
+	inWorkPool("opened")
 
-	// H03 UNLOADED: it is attached with nothing loaded. With no house named out, FIN reads the stage PLANNED (a house
-	// that takes part is not loaded) and divides on the plan, H03 among the houses; the container methods are refused
-	// for the stage; naming H03 out gives ACTUAL on the two houses in the container.
+	// H03 UNLOADED: it is attached with nothing loaded, in the container still in rework. Nothing is accepted, with or
+	// without H03 named out, and the pool still shows what was submitted before.
 	unload := phyapi.UnloadHouseForRework{CommandID: "unload-h03", TenantID: d.tenant, ActorID: "wh-1", ExecutionID: "X-1", ExpectedRevision: d.revision["X-1"], ShipmentID: "SH-H03",
 		Evidence: phyapi.Evidence{Source: "CFS-WMS", Reference: "UNSTUFF-H03", OccurredAt: d.hours(24)}, OccurredAt: d.hours(24)}
 	r, err := d.phy.UnloadHouseForRework(d.ctx, unload)
@@ -135,27 +157,9 @@ func TestAContainerIsReworkedWithEveryContextAndFINApportionsAsTodayAssert(t *te
 	if h03.ShipmentID != "SH-H03" || h03.LoadedPacks != 0 || len(h03.Units) != 0 || out.PackingLists[0].ExecutionState != phyapi.ExecutionRework || len(out.PackingLists[0].Lines) != 2 {
 		t.Fatalf("H03 unloaded: %+v, %+v", h03, out.PackingLists[0])
 	}
-	if err = apportion("fin-planned", nil, 1); err != nil {
-		t.Fatalf("apportion with H03 not loaded: %v", err)
-	}
-	a = last()
-	if a.Stage != finapi.BasisPlanned {
-		t.Fatalf("H03 is a house that takes part and is not loaded: %+v", a)
-	}
-	shares("planned, W/M", a, 1, 3_334, 3_334, 3_333)
-	err = apportion("fin-planned-teu", nil, 2)
-	if err == nil || !strings.Contains(err.Error(), "FIN_POOL_NO_BASIS") || !strings.Contains(err.Error(), "known once a house is stuffed") {
-		t.Fatalf("the container method at the stage PLANNED: %v", err)
-	}
-	if err = apportion("fin-h03-out", []string{"SH-H03"}, 1, 3); err != nil {
-		t.Fatalf("apportion with H03 named out: %v", err)
-	}
-	a = last()
-	if a.Stage != finapi.BasisActual {
-		t.Fatalf("H03 named out: %+v", a)
-	}
-	shares("H03 out, W/M", a, 1, 4_000, 6_001, 0)
-	shares("H03 out, weight", a, 2, 5_099, 4_902, 0)
+	inWork("with H03 not loaded", apportion("fin-planned", nil, 1))
+	inWork("with H03 named out", apportion("fin-h03-out", []string{"SH-H03"}, 1, 3))
+	inWorkPool("unloaded")
 
 	// FUL during the rework (run): the adapter reads the CLOSED executions only, so the container in REWORK is not
 	// relayed. H01's cargo is still in it, and FUL takes the evidence it has anyway: the packs as received, no
@@ -168,8 +172,10 @@ func TestAContainerIsReworkedWithEveryContextAndFINApportionsAsTodayAssert(t *te
 		}
 	}
 
-	// SEALED AGAIN: SEAL-2, the same execution, the same unit; H03 stays attached, with nothing loaded. The container
-	// methods work at ACTUAL again, with H03 named out, and give H03 nothing.
+	// SEALED AGAIN: SEAL-2, the same execution, the same unit; H03 stays attached, with nothing loaded. The pool is no
+	// longer in work, and the preview made before the rework is refused as stale: the container's digest and state, and
+	// the house's figures, are not what it read. The container methods work at ACTUAL again, with H03 named out, and
+	// give H03 nothing.
 	reseal := phyapi.CloseLoadExecution{CommandID: "reseal-1", TenantID: d.tenant, ActorID: "cfs-2", ExecutionID: "X-1", ExpectedRevision: d.revision["X-1"],
 		Evidence: d.evidence(phyapi.EvidenceSeal, "SEAL-X-1-NEW", 25), OccurredAt: d.hours(25)}
 	if _, err = d.phy.CloseLoadExecution(d.ctx, reseal); err != nil {
@@ -180,6 +186,14 @@ func TestAContainerIsReworkedWithEveryContextAndFINApportionsAsTodayAssert(t *te
 	if p.ExecutionID != "X-1" || p.ExecutionState != phyapi.ExecutionClosed || len(p.Lines) != 2 || after.LoadUnits[0].Status != phyapi.UnitStatusClosed || p.Digest == before.PackingLists[0].Digest ||
 		p.Digest == out.PackingLists[0].Digest || len(p.Reworks) != 1 || p.Reworks[0].NewSealReference != "SEAL-X-1-NEW" || p.Reworks[0].BrokenSeal.Reference != "SEAL-X-1" {
 		t.Fatalf("after: %+v", p)
+	}
+	if pool := d.pool(); pool.InWork || len(pool.WorkUnits) != 0 {
+		t.Fatalf("after the reseal the pool is not in work: %+v", pool)
+	}
+	_, err = d.fin.SubmitConsolCostApportionment(d.ctx, finapi.SubmitConsolCostApportionment{CommandID: "fin-old-submit", TenantID: d.tenant, ActorID: "fin-1", PoolID: "P-1",
+		ExpectedRevision: d.pool().Revision, PreviewNo: int(old.Version), OccurredAt: d.hours(30)})
+	if err == nil || !strings.Contains(err.Error(), "FIN_PREVIEW_STALE") || !strings.Contains(err.Error(), "packing.1") || !strings.Contains(err.Error(), "preview again") {
+		t.Fatalf("the preview made before the rework: %v", err)
 	}
 	if err = apportion("fin-after", nil, 2); err == nil || !strings.Contains(err.Error(), "FIN_POOL_NO_BASIS") {
 		t.Fatalf("after the reseal the stage is still PLANNED while H03 takes part: %v", err)

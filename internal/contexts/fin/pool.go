@@ -35,15 +35,21 @@ func (m *Module) ReviseConsolCost(ctx context.Context, cmd api.ReviseConsolCost)
 	return receipt(r, err)
 }
 
-func (m *Module) ApportionConsolCosts(ctx context.Context, cmd api.ApportionConsolCosts) (api.Receipt, error) {
+func (m *Module) PreviewConsolCostApportionment(ctx context.Context, cmd api.PreviewConsolCostApportionment) (api.Receipt, error) {
 	manual := make([]domain.ManualShare, 0, len(cmd.Manual))
 	for _, s := range cmd.Manual {
 		manual = append(manual, domain.ManualShare{ShipmentID: s.ShipmentID, Amount: s.Amount})
 	}
-	r, err := m.deps(cmd.TenantID, cmd.CommandID).ApportionPoolCosts(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID,
-		api.ActionApportionConsolCosts, cmd.PoolID, cmd.ExpectedRevision, cmd.OccurredAt, cmd),
+	r, err := m.deps(cmd.TenantID, cmd.CommandID).PreviewPoolApportionment(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID,
+		api.ActionPreviewConsolCostApportionment, cmd.PoolID, cmd.ExpectedRevision, cmd.OccurredAt, cmd),
 		application.ApportionAsk{LineNos: append([]int(nil), cmd.LineNos...), Method: cmd.Method, Manual: manual,
 			NotUsed: append([]string(nil), cmd.NotUsed...), AllHouses: cmd.AllHouses, Reason: cmd.Reason})
+	return receipt(r, err)
+}
+
+func (m *Module) SubmitConsolCostApportionment(ctx context.Context, cmd api.SubmitConsolCostApportionment) (api.Receipt, error) {
+	r, err := m.deps(cmd.TenantID, cmd.CommandID).SubmitPoolApportionment(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID,
+		api.ActionSubmitConsolCostApportionment, cmd.PoolID, cmd.ExpectedRevision, cmd.OccurredAt, cmd), cmd.PreviewNo)
 	return receipt(r, err)
 }
 
@@ -76,9 +82,8 @@ func poolView(p *domain.ConsolCostPool, revision int64) api.ConsolCostPool {
 		}
 		out.Lines = append(out.Lines, line)
 	}
-	for _, a := range st.Apportionments {
-		av := api.PoolApportionment{ApportionmentNo: a.No, BasisRevision: a.BasisRevision, Stage: a.Stage, By: a.By, At: a.At, EnteredAt: a.EnteredAt}
-		for _, la := range a.Lines {
+	linesOf := func(lines []domain.LineApportionment) (out []api.ApportionedLine) {
+		for _, la := range lines {
 			currency := st.Lines[la.LineNo-1].Versions[la.LineVersion-1].Amount.Currency
 			lv := api.ApportionedLine{LineNo: la.LineNo, LineVersion: la.LineVersion, Method: la.Method, Reason: la.Reason,
 				Amount: kernel.Money{Currency: currency, Minor: la.Amount}, Local: local(la.Local)}
@@ -86,11 +91,43 @@ func poolView(p *domain.ConsolCostPool, revision int64) api.ConsolCostPool {
 				lv.Shares = append(lv.Shares, api.PoolShare{ShareNo: s.No, ShipmentID: s.ShipmentID, JobID: s.JobID, NotUsed: !s.Used, Quantity: s.Quantity, Unit: s.Unit,
 					Amount: kernel.Money{Currency: currency, Minor: s.Amount}, Local: local(s.Local)})
 			}
-			av.Lines = append(av.Lines, lv)
+			out = append(out, lv)
 		}
-		out.Apportionments = append(out.Apportionments, av)
+		return out
+	}
+	submitted := map[int]int{}
+	for _, a := range st.Apportionments {
+		submitted[a.PreviewNo] = a.No
+		out.Apportionments = append(out.Apportionments, api.PoolApportionment{ApportionmentNo: a.No, BasisRevision: a.BasisRevision, Stage: a.Stage, By: a.By,
+			At: a.At, EnteredAt: a.EnteredAt, Lines: linesOf(a.Lines), PreviewNo: a.PreviewNo})
+	}
+	for _, v := range st.Previews {
+		out.Previews = append(out.Previews, api.PoolPreview{PreviewNo: v.No, BasisRevision: v.BasisRevision, Stage: v.Stage, By: v.By, At: v.At, EnteredAt: v.EnteredAt,
+			Lines: linesOf(v.Lines), FingerprintSHA256: v.FingerprintSHA256, SubmittedAs: submitted[v.No]})
 	}
 	return out
+}
+
+// workUnits asks PHY, outside FIN's transactions, which containers of the consolidation are in rework: the pool is in
+// work while there is one.
+func (m *Module) workUnits(ctx context.Context, d application.Deps, tenant, consolidation string) (units []api.WorkUnit, err error) {
+	if d.Physical == nil {
+		return nil, nil
+	}
+	basis, err := d.Physical.CostBasis(ctx, domain.TenantID(tenant), consolidation)
+	if err != nil {
+		return nil, err
+	}
+	for _, no := range basis.UnitsInRework() {
+		unit := api.WorkUnit{UnitNo: no}
+		for _, l := range basis.PackingLists {
+			if l.UnitNo == no {
+				unit.ExecutionID = l.ExecutionID
+			}
+		}
+		units = append(units, unit)
+	}
+	return units, nil
 }
 
 func (m *Module) GetConsolCostPool(ctx context.Context, q api.GetConsolCostPool) (api.ConsolCostPool, error) {
@@ -104,7 +141,12 @@ func (m *Module) GetConsolCostPool(ctx context.Context, q api.GetConsolCostPool)
 	if err != nil {
 		return api.ConsolCostPool{}, classify(err)
 	}
-	return poolView(p, revision), nil
+	out := poolView(p, revision)
+	if out.WorkUnits, err = m.workUnits(ctx, d, q.TenantID, out.ConsolidationID); err != nil {
+		return api.ConsolCostPool{}, classify(err)
+	}
+	out.InWork = len(out.WorkUnits) > 0
+	return out, nil
 }
 
 // GetConsolProfit reads a consolidation's economics through its pool: the pooled cost, its lines' current costs (what
@@ -179,6 +221,10 @@ func (m *Module) GetConsolProfit(ctx context.Context, q api.GetConsolProfit) (ap
 	if err != nil {
 		return api.ConsolProfit{}, classify(err)
 	}
+	if out.WorkUnits, err = m.workUnits(ctx, d, q.TenantID, q.ConsolidationID); err != nil {
+		return api.ConsolProfit{}, classify(err)
+	}
+	out.InWork = len(out.WorkUnits) > 0
 	return out, nil
 }
 

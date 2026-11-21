@@ -448,7 +448,7 @@ func TestPoolMatchingAndClosing(t *testing.T) {
 	if err := p.ReleaseCost(1, 1, "x", "ops-1", hour(4)); !errors.Is(err, ErrAccrualClosed) {
 		t.Fatalf("released once matched final: %v", err)
 	}
-	if err := p.Apportion(ApportionInput{LineNos: []int{1, 2}, Jobs: jobs()}, airBasis(), "ops-1", hour(4)); err != nil {
+	if err := apportion(p, ApportionInput{LineNos: []int{1, 2}, Jobs: jobs()}, airBasis(), "ops-1", hour(4)); err != nil {
 		t.Fatal(err)
 	}
 	if err := p.ReleaseCost(2, 1, "the CFS waived its fee", "ops-1", hour(5)); err != nil {
@@ -468,7 +468,7 @@ func TestPoolMatchingAndClosing(t *testing.T) {
 	if err := p.Close(airBasis(), "ops-1", hour(6)); !errors.Is(err, ErrPoolNotClosable) {
 		t.Fatalf("closed with line 2 apportioned at 30,000: %v", err)
 	}
-	if err := p.Apportion(ApportionInput{LineNos: []int{2}, Jobs: jobs()}, airBasis(), "ops-1", hour(6)); err != nil {
+	if err := apportion(p, ApportionInput{LineNos: []int{2}, Jobs: jobs()}, airBasis(), "ops-1", hour(6)); err != nil {
 		t.Fatal(err)
 	}
 	held := map[int]Consumption{1: {Amount: 85_000, Local: 85_000, Final: true, Held: true}}
@@ -547,7 +547,7 @@ func TestPoolMatchingAndClosing(t *testing.T) {
 	m := pool(t, airBasis())
 	recordCost(t, m, "AIRFREIGHT", cny(100_000), MethodChargeable)
 	m.Matched(map[int]Consumption{1: {Amount: 100_000, Local: 100_000, Final: true}})
-	if err := m.Apportion(ApportionInput{LineNos: []int{1}, Method: MethodManual, Reason: "agreed with the co-loader",
+	if err := apportion(m, ApportionInput{LineNos: []int{1}, Method: MethodManual, Reason: "agreed with the co-loader",
 		Manual: []ManualShare{{ShipmentID: "HS1", Amount: 70_000}, {ShipmentID: "HS2", Amount: 30_000}}, Jobs: jobs()}, airBasis(), "ops-1", hour(4)); err != nil {
 		t.Fatal(err)
 	}
@@ -611,26 +611,26 @@ func TestMatchedAccrualKeepsItsCreditor(t *testing.T) {
 func TestRetainedOnTheConsolidation(t *testing.T) {
 	p := pool(t, airBasis())
 	recordCost(t, p, "AIRFREIGHT", cny(100_000), MethodChargeable)
-	if err := p.Apportion(ApportionInput{Jobs: jobs()}, airBasis(), "ops-1", hour(4)); err != nil {
+	if err := apportion(p, ApportionInput{Jobs: jobs()}, airBasis(), "ops-1", hour(4)); err != nil {
 		t.Fatal(err)
 	}
 	// the airline's no-show charge after PHY cancelled the consolidation
 	p.Matched(map[int]Consumption{1: {Amount: 120_000, Local: 120_000, Final: true}})
 	cancelled := airBasis()
 	cancelled.State, cancelled.Houses = "CANCELLED", nil
-	if err := p.Apportion(ApportionInput{Jobs: jobs()}, cancelled, "ops-1", hour(5)); !errors.Is(err, ErrPoolNoBasis) {
+	if err := apportion(p, ApportionInput{Jobs: jobs()}, cancelled, "ops-1", hour(5)); !errors.Is(err, ErrPoolNoBasis) {
 		t.Fatalf("apportioned with no house: %v", err)
 	}
-	if err := p.Apportion(ApportionInput{Method: MethodRetained, Reason: "no-show charge of the cancelled flight"}, airBasis(), "ops-1", hour(5)); !errors.Is(err, ErrInvalid) {
+	if err := apportion(p, ApportionInput{Method: MethodRetained, Reason: "no-show charge of the cancelled flight"}, airBasis(), "ops-1", hour(5)); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("retained while houses are on the consolidation: %v", err)
 	}
-	if err := p.Apportion(ApportionInput{Method: MethodRetained}, cancelled, "ops-1", hour(5)); !errors.Is(err, ErrInvalid) {
+	if err := apportion(p, ApportionInput{Method: MethodRetained}, cancelled, "ops-1", hour(5)); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("retained without a reason: %v", err)
 	}
 	if err := p.Close(cancelled, "ops-1", hour(5)); !errors.Is(err, ErrPoolNotClosable) {
 		t.Fatalf("closed with line 1 apportioned at its accrual: %v", err)
 	}
-	if err := p.Apportion(ApportionInput{Method: MethodRetained, Reason: "no-show charge of the cancelled flight"}, cancelled, "ops-1", hour(5)); err != nil {
+	if err := apportion(p, ApportionInput{Method: MethodRetained, Reason: "no-show charge of the cancelled flight"}, cancelled, "ops-1", hour(5)); err != nil {
 		t.Fatal(err)
 	}
 	_, la, _ := p.SharesOfLine(1)

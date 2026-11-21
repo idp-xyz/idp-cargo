@@ -89,6 +89,10 @@ var (
 	ErrPoolNoBasis      = fmt.Errorf("fin: FIN_POOL_NO_BASIS: the method's quantities are zero for every house, or it cannot be worked out on this basis yet; apportion by another method or by hand")
 	ErrManualShares     = fmt.Errorf("fin: FIN_MANUAL_SHARES: manual shares name every house of the consolidation exactly once and sum to the line's amount")
 	ErrCostVersion      = fmt.Errorf("fin: the cost line's version is not the one expected")
+	ErrPoolInWork       = fmt.Errorf("fin: FIN_POOL_IN_WORK: a container of the consolidation is being reworked, so the pool is frozen: no apportionment is previewed or submitted and the pool is not closed; wait for PHY to seal the container again or to give its stuffing up, then preview again")
+	ErrPreviewStale     = fmt.Errorf("fin: FIN_PREVIEW_STALE: what the preview was computed on has changed since; preview again and submit the new preview")
+	ErrPreviewSubmitted = fmt.Errorf("fin: FIN_PREVIEW_SUBMITTED: the preview was submitted already, and a preview is submitted once; preview again to submit another apportionment")
+	ErrConfirmer        = fmt.Errorf("fin: FIN_CONFIRMER_ASKED_REWORK: the apportionment after a rework is not submitted by the person who asked for the rework; another finance user submits it, one who did not ask for an ended rework of these lines that is not yet carried")
 )
 
 // HouseFacts is what PhysicalCostBasis v1 tells of one live house: the plan scope PHY verified at attach, and the
@@ -135,14 +139,33 @@ type LoadUnitFacts struct {
 	ExecutionRevision int64
 }
 
+// How a rework of a stuffing ended in PHY, and the execution state of a container opened for rework.
+const (
+	ReworkSealed    = "SEALED"
+	ReworkGivenUp   = "GIVEN_UP"
+	ExecutionRework = "REWORK"
+)
+
+// ReworkFacts is one rework of a unit's stuffing as PHY reads it: its number, who asked for it, and how it ended (End
+// is empty while it is open, SEALED when the container was sealed again, GIVEN_UP when the stuffing was given up) and
+// when.
+type ReworkFacts struct {
+	No      int
+	AskedBy string
+	End     string
+	EndedAt time.Time
+}
+
 // UnitPackingListFacts is the identity of what one load unit holds as PHY reads it: the stuffing, its state and the
-// digest of its packing list (the lines are the houses' Units). Two reads with the same digest read the same unit. It
-// is carried for the methods and checks that come next; no rule uses it in this version.
+// digest of its packing list (the lines are the houses' Units), and the reworks of the stuffing. Two reads with the
+// same digest read the same unit, except that a rework which unloaded nothing leaves the digest as it was: the reworks
+// are read for that. The apportionment's fingerprint and the freeze of the pool read them (since V2.91).
 type UnitPackingListFacts struct {
 	UnitNo         int
 	ExecutionID    string
 	ExecutionState string
 	Digest         string
+	Reworks        []ReworkFacts
 }
 
 // CostBasis is what FIN reads of PHY's PhysicalCostBasis v1: the consolidation, its operating legal entity and its
@@ -157,6 +180,23 @@ type CostBasis struct {
 	Houses                 []HouseFacts
 	LoadUnits              []LoadUnitFacts
 	PackingLists           []UnitPackingListFacts
+}
+
+// UnitsInRework is the numbers of the load units whose stuffing is in REWORK, in order, each once.
+func (b CostBasis) UnitsInRework() []int {
+	var units []int
+	for _, u := range b.LoadUnits {
+		if u.ExecutionState == ExecutionRework {
+			units = append(units, u.UnitNo)
+		}
+	}
+	for _, l := range b.PackingLists {
+		if l.ExecutionState == ExecutionRework {
+			units = append(units, l.UnitNo)
+		}
+	}
+	slices.Sort(units)
+	return slices.Compact(units)
 }
 
 // PoolCostVersion is one immutable version of a pool cost line: the creditor (may not be known yet), the amount in
@@ -229,6 +269,8 @@ type Apportionment struct {
 	At            time.Time
 	EnteredAt     time.Time
 	Lines         []LineApportionment
+	// PreviewNo is the preview this apportionment was submitted from (since V2.91; 0 on one written before).
+	PreviewNo int
 }
 
 // PoolState is a stored pool, for persistence.
@@ -246,6 +288,7 @@ type PoolState struct {
 	EnteredAt          time.Time
 	Lines              []PoolCostLine
 	Apportionments     []Apportionment
+	Previews           []ApportionmentPreview
 	Closures           []PoolClosure
 }
 
@@ -272,9 +315,9 @@ type ConsolCostPool struct {
 }
 
 type storedPool struct {
-	lines, apportionments, closures int
-	versions                        map[int]int
-	reopened                        []int
+	lines, apportionments, previews, closures int
+	versions                                  map[int]int
+	reopened                                  []int
 }
 
 const (
@@ -311,7 +354,7 @@ func OpenPool(st PoolState, policy *FinancePolicy, basis CostBasis, by string, a
 		return nil, fmt.Errorf("%w: consolidation %s is operated by %s", ErrCrossLegalEntity, st.ConsolidationID, basis.OperatingLegalEntityID)
 	}
 	st.Mode, st.FunctionalCurrency, st.BookCode, st.State, st.OpenedBy, st.OpenedAt = mode, p.FunctionalCurrency, p.BookCode, PoolOpen, by, at.UTC()
-	st.Lines, st.Apportionments, st.Closures = nil, nil, nil
+	st.Lines, st.Apportionments, st.Previews, st.Closures = nil, nil, nil, nil
 	pool := &ConsolCostPool{state: st, storedPool: storedPool{versions: map[int]int{}}}
 	pool.record(eventPoolOpened, at, 0)
 	return pool, nil
@@ -536,24 +579,21 @@ func validLineMethod(method string) bool {
 	return false
 }
 
-// Apportion divides the named cost lines' latest versions over the house jobs by the basis PHY answers: the loaded
+// apportionment divides the named cost lines' latest versions over the house jobs by the basis PHY answers: the loaded
 // facts when every house that takes part has loading evidence (ACTUAL), the attach plan scope otherwise (PLANNED).
 // Shares conserve the line amount and its local amount by largest remainder (ties to the first shipment in order).
 // Houses named in NotUsed take no part: the quantities, the amounts and the stage are those of the houses that take
-// part, and a house left out keeps a share marked not used with zero amounts. A new apportionment supersedes an
-// earlier one line by line.
-func (p *ConsolCostPool) Apportion(in ApportionInput, basis CostBasis, by string, at time.Time) error {
-	if err := p.open(by, at); err != nil {
-		return err
-	}
+// part, and a house left out keeps a share marked not used with zero amounts. It changes nothing in the pool: Preview
+// stores what it returns.
+func (p *ConsolCostPool) apportionment(in ApportionInput, basis CostBasis, by string, at time.Time) (Apportionment, error) {
 	if in.Method == MethodRetained {
 		if len(in.NotUsed) > 0 || in.AllHouses {
-			return fmt.Errorf("%w: a cost retained on the consolidation has no houses to leave out", ErrInvalid)
+			return Apportionment{}, fmt.Errorf("%w: a cost retained on the consolidation has no houses to leave out", ErrInvalid)
 		}
 		return p.retain(in, basis, by, at)
 	}
 	if basis.ConsolidationID != p.state.ConsolidationID || len(basis.Houses) == 0 {
-		return fmt.Errorf("%w: PHY reports no live houses of consolidation %s", ErrPoolNoBasis, p.state.ConsolidationID)
+		return Apportionment{}, fmt.Errorf("%w: PHY reports no live houses of consolidation %s", ErrPoolNoBasis, p.state.ConsolidationID)
 	}
 	lineNos := slices.Clone(in.LineNos)
 	if len(lineNos) == 0 {
@@ -563,16 +603,16 @@ func (p *ConsolCostPool) Apportion(in ApportionInput, basis CostBasis, by string
 	}
 	slices.Sort(lineNos)
 	if len(lineNos) == 0 || slices.Contains(lineNos, 0) || lineNos[len(lineNos)-1] > len(p.state.Lines) || len(slices.Compact(lineNos)) != len(lineNos) {
-		return fmt.Errorf("%w: lines of the pool, each once", ErrInvalid)
+		return Apportionment{}, fmt.Errorf("%w: lines of the pool, each once", ErrInvalid)
 	}
 	houses := slices.Clone(basis.Houses)
 	slices.SortFunc(houses, func(a, b HouseFacts) int { return cmpString(a.ShipmentID, b.ShipmentID) })
 	if in.AllHouses && len(in.NotUsed) > 0 {
-		return fmt.Errorf("%w: every house takes part or the houses left out are named, not both", ErrInvalid)
+		return Apportionment{}, fmt.Errorf("%w: every house takes part or the houses left out are named, not both", ErrInvalid)
 	}
 	named, err := notUsedHouses(in.NotUsed, houses)
 	if err != nil {
-		return err
+		return Apportionment{}, err
 	}
 	// each line's houses left out: those named, or with none named (and not AllHouses) those its latest apportionment left
 	// out that are still live; the stage is PLANNED while a house that takes part in any of the lines is not loaded
@@ -582,7 +622,7 @@ func (p *ConsolCostPool) Apportion(in ApportionInput, basis CostBasis, by string
 		leftOut[no] = named
 		if len(in.NotUsed) == 0 && !in.AllHouses {
 			if leftOut[no], err = p.carriedLeftOut(no, houses); err != nil {
-				return err
+				return Apportionment{}, err
 			}
 		}
 		for _, h := range houses {
@@ -594,7 +634,7 @@ func (p *ConsolCostPool) Apportion(in ApportionInput, basis CostBasis, by string
 	jobs := make([]string, len(houses))
 	for i, h := range houses {
 		if jobs[i] = in.Jobs[h.ShipmentID]; jobs[i] == "" {
-			return fmt.Errorf("%w: house %s", ErrPoolJobMissing, h.ShipmentID)
+			return Apportionment{}, fmt.Errorf("%w: house %s", ErrPoolJobMissing, h.ShipmentID)
 		}
 	}
 	a := Apportionment{No: len(p.state.Apportionments) + 1, BasisRevision: basis.Revision, Stage: stage, By: by, At: at.UTC()}
@@ -618,30 +658,30 @@ func (p *ConsolCostPool) Apportion(in ApportionInput, basis CostBasis, by string
 		var unit string
 		if method == MethodManual {
 			if len(lineNos) != 1 || !text(in.Reason) {
-				return fmt.Errorf("%w: a manual apportionment divides one line with a reason", ErrInvalid)
+				return Apportionment{}, fmt.Errorf("%w: a manual apportionment divides one line with a reason", ErrInvalid)
 			}
 			la.Reason = in.Reason
 			if quantities, err = manualQuantities(taking, in.Manual, cost); err != nil {
-				return err
+				return Apportionment{}, err
 			}
 			unit = ""
 		} else if method == MethodRevenue {
 			if quantities, err = revenueQuantities(line.ChargeCode, taking, in.Revenue); err != nil {
-				return err
+				return Apportionment{}, err
 			}
 			unit = UnitRevenueMinor
 		} else {
 			if quantities, unit, err = methodQuantities(method, p.state.Mode, stage, taking, basis.LoadUnits); err != nil {
-				return err
+				return Apportionment{}, err
 			}
 		}
 		amounts, err := split(cost, quantities)
 		if err != nil {
-			return err
+			return Apportionment{}, err
 		}
 		locals, err := split(local, quantities)
 		if err != nil {
-			return err
+			return Apportionment{}, err
 		}
 		k := 0 // the next house that takes part
 		for i, h := range houses {
@@ -654,9 +694,7 @@ func (p *ConsolCostPool) Apportion(in ApportionInput, basis CostBasis, by string
 		}
 		a.Lines = append(a.Lines, la)
 	}
-	p.state.Apportionments = append(p.state.Apportionments, a)
-	p.record(eventPoolApportioned, at, a.No)
-	return nil
+	return a, nil
 }
 
 // carriedLeftOut is the houses a line's latest apportionment left out that are still live houses of the consolidation
@@ -700,8 +738,8 @@ func notUsedHouses(named []string, houses []HouseFacts) (map[string]bool, error)
 // retain keeps the named lines' costs (every line when none is named) on the consolidation, with a reason: allowed
 // only once PHY reports the consolidation cancelled or without a house left, so that while houses bear a consolidation
 // its costs reach their jobs. The lines' current costs are recorded and no share is written; a later apportionment
-// supersedes it as any other.
-func (p *ConsolCostPool) retain(in ApportionInput, basis CostBasis, by string, at time.Time) error {
+// supersedes it as any other. Like any apportionment it is previewed first and submitted.
+func (p *ConsolCostPool) retain(in ApportionInput, basis CostBasis, by string, at time.Time) (Apportionment, error) {
 	lineNos := slices.Clone(in.LineNos)
 	if len(lineNos) == 0 {
 		for _, l := range p.state.Lines {
@@ -711,14 +749,14 @@ func (p *ConsolCostPool) retain(in ApportionInput, basis CostBasis, by string, a
 	slices.Sort(lineNos)
 	switch {
 	case basis.ConsolidationID != p.state.ConsolidationID || basis.Revision < 1:
-		return fmt.Errorf("%w: PHY answered consolidation %s for %s", ErrInvalid, basis.ConsolidationID, p.state.ConsolidationID)
+		return Apportionment{}, fmt.Errorf("%w: PHY answered consolidation %s for %s", ErrInvalid, basis.ConsolidationID, p.state.ConsolidationID)
 	case basis.State != "CANCELLED" && len(basis.Houses) > 0:
-		return fmt.Errorf("%w: a cost is retained on the consolidation only once PHY reports it cancelled or without houses; %s has %d",
+		return Apportionment{}, fmt.Errorf("%w: a cost is retained on the consolidation only once PHY reports it cancelled or without houses; %s has %d",
 			ErrInvalid, p.state.ConsolidationID, len(basis.Houses))
 	case !text(in.Reason) || len(in.Manual) > 0:
-		return fmt.Errorf("%w: a cost retained on the consolidation needs a reason and takes no shares", ErrInvalid)
+		return Apportionment{}, fmt.Errorf("%w: a cost retained on the consolidation needs a reason and takes no shares", ErrInvalid)
 	case len(lineNos) == 0 || slices.Contains(lineNos, 0) || lineNos[len(lineNos)-1] > len(p.state.Lines) || len(slices.Compact(lineNos)) != len(lineNos):
-		return fmt.Errorf("%w: lines of the pool, each once", ErrInvalid)
+		return Apportionment{}, fmt.Errorf("%w: lines of the pool, each once", ErrInvalid)
 	}
 	a := Apportionment{No: len(p.state.Apportionments) + 1, BasisRevision: basis.Revision, Stage: BasisActual, By: by, At: at.UTC()}
 	for _, no := range lineNos {
@@ -727,9 +765,7 @@ func (p *ConsolCostPool) retain(in ApportionInput, basis CostBasis, by string, a
 		a.Lines = append(a.Lines, LineApportionment{LineNo: no, LineVersion: versions[len(versions)-1].No, Method: MethodRetained, Reason: in.Reason,
 			Amount: cost, Local: local})
 	}
-	p.state.Apportionments = append(p.state.Apportionments, a)
-	p.record(eventPoolApportioned, at, a.No)
-	return nil
+	return a, nil
 }
 
 func cmpString(a, b string) int {
@@ -1043,6 +1079,9 @@ func (p *ConsolCostPool) Close(basis CostBasis, by string, at time.Time) error {
 	if basis.ConsolidationID != p.state.ConsolidationID {
 		return fmt.Errorf("%w: PHY answered consolidation %s for %s", ErrInvalid, basis.ConsolidationID, p.state.ConsolidationID)
 	}
+	if err := inWork(basis); err != nil {
+		return err
+	}
 	gone := basis.State == "CANCELLED" || len(houses) == 0
 	for _, l := range p.state.Lines {
 		c := p.consumed[l.No]
@@ -1179,6 +1218,11 @@ func (p *ConsolCostPool) Stamp(entered time.Time) {
 			}
 		}
 	}
+	for i := range st.Previews {
+		if st.Previews[i].EnteredAt.IsZero() {
+			st.Previews[i].EnteredAt = e
+		}
+	}
 	for i := range st.Apportionments {
 		if st.Apportionments[i].EnteredAt.IsZero() {
 			st.Apportionments[i].EnteredAt = e
@@ -1200,7 +1244,8 @@ func RestorePool(st PoolState) (*ConsolCostPool, error) {
 	st.Lines = slices.Clone(st.Lines)
 	st.Apportionments = slices.Clone(st.Apportionments)
 	st.Closures = slices.Clone(st.Closures)
-	s := storedPool{lines: len(st.Lines), apportionments: len(st.Apportionments), closures: len(st.Closures), versions: map[int]int{}}
+	st.Previews = slices.Clone(st.Previews)
+	s := storedPool{lines: len(st.Lines), apportionments: len(st.Apportionments), previews: len(st.Previews), closures: len(st.Closures), versions: map[int]int{}}
 	for i, c := range st.Closures {
 		if c.No != i+1 || (i < len(st.Closures)-1 && c.ReopenedAt.IsZero()) {
 			return nil, fmt.Errorf("%w: closure %d of pool %s", ErrInvalid, i+1, st.PoolID)
@@ -1223,10 +1268,17 @@ func RestorePool(st PoolState) (*ConsolCostPool, error) {
 		}
 		s.versions[l.No] = len(l.Versions)
 	}
+	for i := range st.Previews {
+		v := &st.Previews[i]
+		v.Lines = cloneLines(v.Lines)
+		if v.No != i+1 {
+			return nil, fmt.Errorf("%w: preview %d of pool %s", ErrInvalid, i+1, st.PoolID)
+		}
+	}
 	for i := range st.Apportionments {
 		a := &st.Apportionments[i]
 		a.Lines = append([]LineApportionment(nil), a.Lines...)
-		if a.No != i+1 {
+		if a.No != i+1 || a.PreviewNo < 0 || a.PreviewNo > len(st.Previews) {
 			return nil, fmt.Errorf("%w: apportionment %d", ErrInvalid, i+1)
 		}
 		for k := range a.Lines {
@@ -1253,6 +1305,10 @@ func (p *ConsolCostPool) State() PoolState {
 			st.Apportionments[i].Lines[k].Shares = append([]Share(nil), st.Apportionments[i].Lines[k].Shares...)
 		}
 	}
+	st.Previews = slices.Clone(st.Previews)
+	for i := range st.Previews {
+		st.Previews[i].Lines = cloneLines(st.Previews[i].Lines)
+	}
 	st.Closures = slices.Clone(st.Closures)
 	return st
 }
@@ -1270,6 +1326,11 @@ func (p *ConsolCostPool) Added() (lines []PoolCostLine, versions []PoolCostVersi
 	return lines, versions, lineOf, st.Apportionments[p.storedPool.apportionments:]
 }
 
+// AddedPreviews returns the previews written since the pool was loaded.
+func (p *ConsolCostPool) AddedPreviews() []ApportionmentPreview {
+	return p.State().Previews[p.storedPool.previews:]
+}
+
 // AddedClosures returns the closures written since the pool was loaded and the stored ones reopened since.
 func (p *ConsolCostPool) AddedClosures() (closures, reopened []PoolClosure) {
 	st := p.State()
@@ -1284,7 +1345,8 @@ func (p *ConsolCostPool) Pending() []Event { return append([]Event(nil), p.pendi
 // Acknowledge is permitted only after the transaction holding the pool and its Outbox events commits.
 func (p *ConsolCostPool) Acknowledge() {
 	p.pending = nil
-	p.storedPool = storedPool{lines: len(p.state.Lines), apportionments: len(p.state.Apportionments), closures: len(p.state.Closures), versions: map[int]int{}}
+	p.storedPool = storedPool{lines: len(p.state.Lines), apportionments: len(p.state.Apportionments), previews: len(p.state.Previews),
+		closures: len(p.state.Closures), versions: map[int]int{}}
 	for _, l := range p.state.Lines {
 		p.storedPool.versions[l.No] = len(l.Versions)
 	}

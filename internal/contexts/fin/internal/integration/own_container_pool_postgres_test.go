@@ -112,10 +112,10 @@ func TestOwnContainerPoolOnPostgres(t *testing.T) {
 			ChargeCode: code, Method: method, Cost: api.ChargeSide{PartyID: "airline-mu", Amount: cny(amount)}, Reason: "entered for the container", OccurredAt: f.hours(hour)}))
 		rev = r.NewRevision
 	}
-	apportion := func(in api.ApportionConsolCosts, hour int) {
+	apportion := func(in api.PreviewConsolCostApportionment, hour int) {
 		t.Helper()
 		in.TenantID, in.ActorID, in.PoolID, in.ExpectedRevision, in.OccurredAt = f.tenant, "fin-1", "P-OWN", rev, f.hours(hour)
-		rev = must(f.module.ApportionConsolCosts(ctx, in)).NewRevision
+		rev = must(previewAndSubmit(ctx, f.module, in)).NewRevision
 	}
 	pool := func() api.ConsolCostPool {
 		t.Helper()
@@ -156,14 +156,14 @@ func TestOwnContainerPoolOnPostgres(t *testing.T) {
 		t.Fatalf("line %d is not in the latest apportionment: %+v", line, a)
 	}
 	record("cost-freight", "OCEAN_FREIGHT", api.MethodChargeable, 700_000, 5)
-	apportion(api.ApportionConsolCosts{CommandID: "apportion-planned"}, 6)
+	apportion(api.PreviewConsolCostApportionment{CommandID: "apportion-planned"}, 6)
 	shares(api.BasisPlanned, 1, api.MethodChargeable, "MWM", []int64{1200, 2000, 300}, []int64{240_000, 400_000, 60_000})
 
 	// every house loaded: the line is re-apportioned at ACTUAL on the loaded measures, W/M 1250 : 2400 : 351 of 4001,
 	// 700000 gives 218695.33 / 419895.03 / 61409.65: the floors sum to 699999 and the minor unit left goes to the largest
 	// remainder (SH-3, 2591 of 4001)
 	f.w.costBases["CONSOL-OWN"] = ownContainerConsol(f, "CONSOL-OWN", true)
-	apportion(api.ApportionConsolCosts{CommandID: "apportion-actual"}, 7)
+	apportion(api.PreviewConsolCostApportionment{CommandID: "apportion-actual"}, 7)
 	shares(api.BasisActual, 1, api.MethodChargeable, "MWM", []int64{1250, 2400, 351}, []int64{218_695, 419_895, 61_410})
 
 	// a line by VOLUME (cm³ 800000 : 2400000 : 300000; 90000 gives 20571.43 / 61714.29 / 7714.29, the unit left to SH-1),
@@ -171,11 +171,11 @@ func TestOwnContainerPoolOnPostgres(t *testing.T) {
 	record("cost-cfs", "CFS_HANDLING", api.MethodVolume, 90_000, 8)
 	record("cost-drayage", "DRAYAGE", api.MethodPieces, 30_000, 8)
 	record("cost-seal", "SEAL_AND_LASHING", api.MethodManual, 12_000, 8)
-	apportion(api.ApportionConsolCosts{CommandID: "apportion-cfs", LineNos: []int{2}}, 9)
+	apportion(api.PreviewConsolCostApportionment{CommandID: "apportion-cfs", LineNos: []int{2}}, 9)
 	shares(api.BasisActual, 2, api.MethodVolume, "CMQ", []int64{800_000, 2_400_000, 300_000}, []int64{20_572, 61_714, 7_714})
-	apportion(api.ApportionConsolCosts{CommandID: "apportion-drayage", LineNos: []int{3}}, 9)
+	apportion(api.PreviewConsolCostApportionment{CommandID: "apportion-drayage", LineNos: []int{3}}, 9)
 	shares(api.BasisActual, 3, api.MethodPieces, "PCS", []int64{6, 4, 2}, []int64{15_000, 10_000, 5_000})
-	apportion(api.ApportionConsolCosts{CommandID: "apportion-seal", LineNos: []int{4}, Method: api.MethodManual, Reason: "SH-2 was lashed twice",
+	apportion(api.PreviewConsolCostApportionment{CommandID: "apportion-seal", LineNos: []int{4}, Method: api.MethodManual, Reason: "SH-2 was lashed twice",
 		Manual: []api.ManualShare{{ShipmentID: "SH-1", Amount: 5_000}, {ShipmentID: "SH-2", Amount: 4_000}, {ShipmentID: "SH-3", Amount: 3_000}}}, 9)
 	shares(api.BasisActual, 4, api.MethodManual, "", []int64{5_000, 4_000, 3_000}, []int64{5_000, 4_000, 3_000})
 	if l := pool().Apportionments[len(pool().Apportionments)-1].Lines[0]; l.Reason != "SH-2 was lashed twice" {
@@ -229,15 +229,15 @@ func TestOwnContainerPoolOnPostgres(t *testing.T) {
 		must(f.module.RecordConsolCost(ctx, api.RecordConsolCost{CommandID: "cost-" + c, TenantID: f.tenant, ActorID: "fin-1", PoolID: id, ExpectedRevision: 1,
 			ChargeCode: "OCEAN_FREIGHT", Method: api.MethodChargeable, Cost: api.ChargeSide{Amount: cny(100_000)}, Reason: "entered for the container",
 			OccurredAt: f.hours(11)}))
-		volume := api.ApportionConsolCosts{CommandID: "volume-" + c, TenantID: f.tenant, ActorID: "fin-1", PoolID: id, ExpectedRevision: 2, Method: api.MethodVolume,
+		volume := api.PreviewConsolCostApportionment{CommandID: "volume-" + c, TenantID: f.tenant, ActorID: "fin-1", PoolID: id, ExpectedRevision: 2, Method: api.MethodVolume,
 			OccurredAt: f.hours(12)}
 		if i == 1 {
-			if _, err := f.module.ApportionConsolCosts(ctx, volume); !errors.Is(err, api.ErrRejected) || !strings.Contains(err.Error(), "FIN_POOL_NO_BASIS") {
+			if _, err := previewAndSubmit(ctx, f.module, volume); !errors.Is(err, api.ErrRejected) || !strings.Contains(err.Error(), "FIN_POOL_NO_BASIS") {
 				t.Fatalf("VOLUME when no house has volume: %v", err)
 			}
 			continue
 		}
-		must(f.module.ApportionConsolCosts(ctx, volume))
+		must(previewAndSubmit(ctx, f.module, volume))
 		got, err := f.module.GetConsolCostPool(ctx, api.GetConsolCostPool{TenantID: f.tenant, PoolID: id})
 		if err != nil || len(got.Apportionments) != 1 {
 			t.Fatalf("%s: %+v %v", id, got, err)
@@ -247,9 +247,9 @@ func TestOwnContainerPoolOnPostgres(t *testing.T) {
 		if s[0].Amount != cny(25_000) || s[1].Amount != cny(75_000) || s[2].Quantity != 0 || s[2].Amount != cny(0) {
 			t.Fatalf("VOLUME with one house without volume: %+v", s)
 		}
-		volume.CommandID, volume.ExpectedRevision, volume.Method = "chargeable-"+c, 3, api.MethodChargeable
+		volume.CommandID, volume.ExpectedRevision, volume.Method = "chargeable-"+c, 4, api.MethodChargeable
 		volume.OccurredAt = f.hours(13)
-		must(f.module.ApportionConsolCosts(ctx, volume))
+		must(previewAndSubmit(ctx, f.module, volume))
 		if got, err = f.module.GetConsolCostPool(ctx, api.GetConsolCostPool{TenantID: f.tenant, PoolID: id}); err != nil {
 			t.Fatal(err)
 		}
@@ -260,9 +260,9 @@ func TestOwnContainerPoolOnPostgres(t *testing.T) {
 			t.Fatalf("CHARGEABLE with a house without volume: %+v", s)
 		}
 	}
-	zero := api.ApportionConsolCosts{CommandID: "chargeable-CONSOL-ZERO", TenantID: f.tenant, ActorID: "fin-1", PoolID: "P-CONSOL-ZERO", ExpectedRevision: 2,
+	zero := api.PreviewConsolCostApportionment{CommandID: "chargeable-CONSOL-ZERO", TenantID: f.tenant, ActorID: "fin-1", PoolID: "P-CONSOL-ZERO", ExpectedRevision: 2,
 		OccurredAt: f.hours(13)}
-	must(f.module.ApportionConsolCosts(ctx, zero))
+	must(previewAndSubmit(ctx, f.module, zero))
 	got, err := f.module.GetConsolCostPool(ctx, api.GetConsolCostPool{TenantID: f.tenant, PoolID: "P-CONSOL-ZERO"})
 	// W/M by weight alone: 1250 : 200 : 351 of 1801; 100000 gives 69405.89 / 11104.94 / 19489.17 (remainders 1595, 1696,
 	// 311 of 1801): the two units left go to SH-2 and SH-1, so 69406 / 11105 / 19489
@@ -293,7 +293,7 @@ func TestOwnContainerPoolOnPostgres(t *testing.T) {
 	}
 	apportionPart := func(id string, h int) api.PoolApportionment {
 		t.Helper()
-		must(f.module.ApportionConsolCosts(ctx, api.ApportionConsolCosts{CommandID: id, TenantID: f.tenant, ActorID: "fin-1", PoolID: "P-PART",
+		must(previewAndSubmit(ctx, f.module, api.PreviewConsolCostApportionment{CommandID: id, TenantID: f.tenant, ActorID: "fin-1", PoolID: "P-PART",
 			ExpectedRevision: poolPart().Revision, OccurredAt: f.hours(h)}))
 		p := poolPart()
 		return p.Apportionments[len(p.Apportionments)-1]

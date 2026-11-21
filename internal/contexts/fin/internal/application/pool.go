@@ -174,8 +174,8 @@ func (d Deps) RevisePoolCost(ctx context.Context, c Command, in RevisePoolCostAs
 	})
 }
 
-// ApportionAsk is an apportionment as asked: the lines (every line when empty) and a method overriding each line's
-// default, or MANUAL with one line, shares and a reason, and the houses that take no part in them.
+// ApportionAsk is a preview of an apportionment as asked: the lines (every line when empty) and a method overriding
+// each line's default, or MANUAL with one line, shares and a reason, and the houses that take no part in them.
 type ApportionAsk struct {
 	LineNos   []int
 	Method    string
@@ -217,10 +217,11 @@ func apportionsByRevenue(pool *fin.ConsolCostPool, in ApportionAsk) bool {
 	return slices.ContainsFunc(in.LineNos, func(no int) bool { return no >= 1 && no <= len(lines) && lines[no-1].Method == fin.MethodRevenue })
 }
 
-// ApportionPoolCosts divides pool cost lines over the house jobs: PHY answers the consolidation's basis first (T3);
-// in the transaction FIN locks the houses' jobs in job id order, before the policy, and requires an OPEN job of the
-// pool's legal entity for every live house. A line by REVENUE also reads those jobs' revenue under that lock.
-func (d Deps) ApportionPoolCosts(ctx context.Context, c Command, in ApportionAsk) (Receipt, error) {
+// PreviewPoolApportionment computes an apportionment of pool cost lines over the house jobs and stores it as a preview:
+// PHY answers the consolidation's basis first (T3); in the transaction FIN locks the houses' jobs in job id order,
+// before the policy, and requires an OPEN job of the pool's legal entity for every live house. A line by REVENUE also
+// reads those jobs' revenue under that lock. Nothing but the preview is written.
+func (d Deps) PreviewPoolApportionment(ctx context.Context, c Command, in ApportionAsk) (Receipt, error) {
 	if d.Physical == nil {
 		return Receipt{}, ErrMissingDependency
 	}
@@ -238,11 +239,7 @@ func (d Deps) ApportionPoolCosts(ctx context.Context, c Command, in ApportionAsk
 		}
 		return nil
 	}, func(txCtx context.Context, pool *fin.ConsolCostPool) (err error) {
-		shipments := make([]string, 0, len(basis.Houses))
-		for _, h := range basis.Houses {
-			shipments = append(shipments, h.ShipmentID)
-		}
-		if jobs, err = d.Jobs.OpenJobsFor(txCtx, c.Scope.TenantID, pool.State().LegalEntityID, shipments); err != nil {
+		if jobs, err = d.openJobs(txCtx, c, pool, basis); err != nil {
 			return err
 		}
 		if apportionsByRevenue(pool, in) {
@@ -252,7 +249,46 @@ func (d Deps) ApportionPoolCosts(ctx context.Context, c Command, in ApportionAsk
 	}, func(_ context.Context, pool *fin.ConsolCostPool, _ *fin.FinancePolicy) (Receipt, error) {
 		input := fin.ApportionInput{LineNos: in.LineNos, Method: in.Method, Manual: in.Manual, NotUsed: in.NotUsed, AllHouses: in.AllHouses, Reason: in.Reason, Jobs: jobs,
 			Revenue: revenue}
-		if err := pool.Apportion(input, basis, c.Scope.ActorID, c.OccurredAt); err != nil {
+		if err := pool.Preview(input, basis, c.Scope.ActorID, c.OccurredAt); err != nil {
+			return Receipt{}, err
+		}
+		return Receipt{Version: len(pool.State().Previews)}, nil
+	})
+}
+
+// openJobs locks the open jobs of the pool's legal entity of the basis's live houses, in job id order.
+func (d Deps) openJobs(ctx context.Context, c Command, pool *fin.ConsolCostPool, basis fin.CostBasis) (map[string]string, error) {
+	shipments := make([]string, 0, len(basis.Houses))
+	for _, h := range basis.Houses {
+		shipments = append(shipments, h.ShipmentID)
+	}
+	return d.Jobs.OpenJobsFor(ctx, c.Scope.TenantID, pool.State().LegalEntityID, shipments)
+}
+
+// SubmitPoolApportionment writes the apportionment of a preview: PHY answers the consolidation's basis again first
+// (T3); in the transaction FIN locks the houses' jobs in job id order, before the policy, reads the revenue the preview
+// read when it has a line by REVENUE, and compares what the preview was computed on with what is there now.
+func (d Deps) SubmitPoolApportionment(ctx context.Context, c Command, previewNo int) (Receipt, error) {
+	if d.Physical == nil {
+		return Receipt{}, ErrMissingDependency
+	}
+	var basis fin.CostBasis
+	var jobs map[string]string
+	var revenue map[string]map[string]int64
+	return d.changePoolLocking(ctx, c, func(ctx context.Context, pool *fin.ConsolCostPool) (err error) {
+		basis, err = d.Physical.CostBasis(ctx, c.Scope.TenantID, pool.State().ConsolidationID)
+		return err
+	}, func(txCtx context.Context, pool *fin.ConsolCostPool) (err error) {
+		if jobs, err = d.openJobs(txCtx, c, pool, basis); err != nil {
+			return err
+		}
+		if previews := pool.State().Previews; previewNo >= 1 && previewNo <= len(previews) &&
+			slices.ContainsFunc(previews[previewNo-1].Lines, func(l fin.LineApportionment) bool { return l.Method == fin.MethodRevenue }) {
+			revenue, err = d.houseRevenue(txCtx, c.Scope.TenantID, jobs)
+		}
+		return err
+	}, func(_ context.Context, pool *fin.ConsolCostPool, _ *fin.FinancePolicy) (Receipt, error) {
+		if err := pool.Submit(previewNo, fin.SubmitInput{Basis: basis, Jobs: jobs, Revenue: revenue}, c.Scope.ActorID, c.OccurredAt); err != nil {
 			return Receipt{}, err
 		}
 		return Receipt{Version: len(pool.State().Apportionments)}, nil

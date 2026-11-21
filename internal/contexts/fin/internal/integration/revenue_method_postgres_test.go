@@ -102,7 +102,7 @@ func TestApportionmentByRevenueOnPostgres(t *testing.T) {
 
 	// a line no job sells has no basis; the others are not affected by being named separately
 	before := u.revision()
-	_, err := f.module.ApportionConsolCosts(ctx, u.apportionCmd("no-basis", 4, []int{3}))
+	_, err := previewAndSubmit(ctx, f.module, u.apportionCmd("no-basis", 4, []int{3}))
 	u.refusedWith("a code no job sells", err, "FIN_POOL_NO_BASIS")
 	if err != nil && !strings.Contains(err.Error(), "STORAGE") {
 		t.Errorf("the refusal does not name the charge code: %v", err)
@@ -111,18 +111,18 @@ func TestApportionmentByRevenueOnPostgres(t *testing.T) {
 		t.Fatalf("a refused apportionment changed the pool")
 	}
 	// every line of the command by the command's method: the same refusal while line 3 is among them
-	_, err = f.module.ApportionConsolCosts(ctx, u.apportionCmd("no-basis-all", 4, nil))
+	_, err = previewAndSubmit(ctx, f.module, u.apportionCmd("no-basis-all", 4, nil))
 	u.refusedWith("every line, one of a code no job sells", err, "FIN_POOL_NO_BASIS")
 
 	cmd := u.apportionCmd("apportion-1", 4, []int{1, 2})
-	r := u.must(f.module.ApportionConsolCosts(ctx, cmd))
+	r := u.must(previewAndSubmit(ctx, f.module, cmd))
 	one := u.ap.pool(u.pool).Apportionments[0]
 	if one.Stage != api.BasisActual || len(one.Lines) != 2 {
 		t.Fatalf("apportionment 1: %+v", one)
 	}
 	u.checkLine("line 1 by revenue", one, 1, api.MethodRevenue, share(1, "A", 854_808, "REV", 70_950), share(2, "B", 300_000, "REV", 24_901), share(3, "C", 50_000, "REV", 4_150))
 	u.checkLine("line 2 by revenue", one, 2, api.MethodRevenue, share(1, "A", 0, "REV", 0), share(2, "B", 99_999, "REV", 10_000), share(3, "C", 0, "REV", 0))
-	if again, err := f.module.ApportionConsolCosts(ctx, cmd); err != nil || again != r {
+	if again, err := previewAndSubmit(ctx, f.module, cmd); err != nil || again != r {
 		t.Fatalf("replay: %+v %v, want %+v", again, err, r)
 	}
 	if n := len(u.ap.pool(u.pool).Apportionments); n != 1 {
@@ -147,7 +147,7 @@ func TestApportionmentByRevenueOnPostgres(t *testing.T) {
 	// line 3 is not by anything the jobs sell: another method takes it, and the pool is whole
 	cmd3 := u.apportionCmd("apportion-3", 5, []int{3})
 	cmd3.Method = api.MethodShipment
-	u.must(f.module.ApportionConsolCosts(ctx, cmd3))
+	u.must(previewAndSubmit(ctx, f.module, cmd3))
 
 	// a debit note for JOB-A at the INVOICE rate: the job's own revenue follows the invoice, the pool's basis does not
 	f.w.mu.Lock()
@@ -288,17 +288,17 @@ INSERT INTO cargo_fin.pool_cost_version (tenant_id,pool_id,line_no,version_no,cr
 	}
 }
 
-// An apportionment by REVENUE races the revision of a sell side of one of the houses' jobs, ten rounds. Both commit
-// (they
-// change different aggregates), and whichever commits second sees the first: the order of the two events in the outbox
-// is
-// the order of the commits, since each is written after the job's lock is taken and the lock is held to the commit. If
-// the
-// revision came first the share records the revised revenue, if the apportionment came first the old revenue; never a
-// revenue the job did not have at that moment.
-func TestApportionByRevenueRacesASellRevision(t *testing.T) {
+// An apportionment by REVENUE (a preview and its submission) races the revision of a sell side of one of the houses'
+// jobs, ten rounds. Both commit (they change different aggregates), or the revision comes between the preview and the
+// submission and the submission is refused as stale, naming the house. When both commit, whichever commits second sees
+// the first: the order of the two events in the outbox is the order of the commits, since each is written after the
+// job's lock is taken and the lock is held to the commit. If the revision came first the share records the revised
+// revenue, if the apportionment came first the old revenue; never a revenue the job did not have at that moment. An
+// apportionment on the old revenue leaves the pool not closable (FIN_POOL_NOT_CLOSABLE). A preview alone never has an
+// event, and a preview that read the old revenue is refused when it is submitted after the revision.
+func TestPreviewByRevenueRacesASellRevision(t *testing.T) {
 	ctx := context.Background()
-	var revisionFirst, apportionFirst int
+	var revisionFirst, apportionFirst, between int
 	for round := range 10 {
 		u, _ := revenueWorld(t)
 		f := u.fixture
@@ -316,25 +316,34 @@ func TestApportionByRevenueRacesASellRevision(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			_, apportionErr = f.module.ApportionConsolCosts(ctx, apportion)
+			_, apportionErr = previewAndSubmit(ctx, f.module, apportion)
 		}()
 		go func() {
 			defer wg.Done()
 			<-start
-			time.Sleep(time.Duration(round) * 300 * time.Microsecond) // the later rounds let the apportionment get further first
+			time.Sleep(time.Duration(round) * 2 * time.Millisecond) // the later rounds let the apportionment get further first
 			_, reviseErr = f.module.ReviseChargeSide(ctx, revise)
 		}()
 		close(start)
 		wg.Wait()
-		if apportionErr != nil || reviseErr != nil {
-			t.Fatalf("round %d: apportion %v / revise %v", round, apportionErr, reviseErr)
+		if reviseErr != nil {
+			t.Fatalf("round %d: revise %v", round, reviseErr)
+		}
+		p := u.ap.pool(u.pool)
+		if apportionErr != nil { // the revision came between the preview and the submission
+			u.refusedWith("the revision between the preview and the submission", apportionErr, "FIN_PREVIEW_STALE")
+			if !strings.Contains(apportionErr.Error(), `revenue.1."SH-B"`) || len(p.Apportionments) != 0 || len(p.Previews) != 1 {
+				t.Fatalf("round %d: %v / %+v", round, apportionErr, p)
+			}
+			between++
+			continue
 		}
 		types := f.outboxTypes(t)
 		apportioned, revised := slices.Index(types, "ConsolCostsApportioned"), slices.Index(types, "ChargeSideRevised")
 		if apportioned < 0 || revised < 0 {
 			t.Fatalf("round %d: events %v", round, types)
 		}
-		got := u.ap.pool(u.pool).Apportionments[0].Lines[0].Shares
+		got := p.Apportionments[0].Lines[0].Shares
 		want := int64(30_000)
 		if revised < apportioned {
 			want = 90_000
@@ -350,8 +359,8 @@ func TestApportionByRevenueRacesASellRevision(t *testing.T) {
 		if sum := got[0].Amount.Minor + got[1].Amount.Minor + got[2].Amount.Minor; sum != 90_000 {
 			t.Fatalf("round %d: shares add up to %d", round, sum)
 		}
-		// and the close compares with the revenue now: after the apportionment first the pool is not closable on the old
-		// figure
+		// and the close compares with the revenue now: after the apportionment first the pool is not closable on the
+		// old figure
 		if want == 30_000 {
 			u.must(f.module.RecordCreditorInvoice(ctx, api.RecordCreditorInvoice{CommandID: "invoice", TenantID: f.tenant, ActorID: "ap-1", InvoiceID: "CI-X",
 				LegalEntityID: "LE", CreditorPartyID: "airline-mu", SupplierInvoiceNo: "X-1", InvoiceDate: f.hours(7).Format(time.DateOnly), Currency: "CNY",
@@ -362,7 +371,7 @@ func TestApportionByRevenueRacesASellRevision(t *testing.T) {
 			u.refusedWith("the revision came after the apportionment", err, "FIN_POOL_NOT_CLOSABLE")
 		}
 	}
-	t.Logf("%d rounds with the revision first, %d with the apportionment first", revisionFirst, apportionFirst)
+	t.Logf("%d rounds with the revision first, %d with the apportionment first, %d with the revision between preview and submission", revisionFirst, apportionFirst, between)
 }
 
 // jobsPool is revenueWorld with the three jobs selling AIR_FREIGHT (CNY 600.00, 300.00 and 100.00) and one line of
@@ -391,6 +400,13 @@ func jobsPool(t *testing.T, method string, apportioned bool) usedWorld {
 // (JobStore.Load: SELECT ... FOR NO KEY UPDATE, store.go), which it keeps until release is called.
 func holdingJob(t *testing.T, u usedWorld, job string) (release func()) {
 	t.Helper()
+	_, release = holdingJobPID(t, u, job)
+	return release
+}
+
+// holdingJobPID is holdingJob that also answers the backend of the connection that holds the lock.
+func holdingJobPID(t *testing.T, u usedWorld, job string) (pid int, release func()) {
+	t.Helper()
 	ctx := context.Background()
 	conn, err := pgx.Connect(ctx, os.Getenv("IDP_CARGO_POSTGRES_DSN"))
 	if err != nil {
@@ -404,6 +420,9 @@ func holdingJob(t *testing.T, u usedWorld, job string) (release func()) {
 	if _, err = tx.Exec(ctx, `SELECT set_config('app.tenant_id',$1,true)`, u.tenant); err == nil {
 		err = tx.QueryRow(ctx, `SELECT 1 FROM cargo_fin.freight_job WHERE tenant_id=$1 AND job_id=$2 FOR NO KEY UPDATE`, u.tenant, job).Scan(&one)
 	}
+	if err == nil {
+		err = tx.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&pid)
+	}
 	if err != nil {
 		t.Fatalf("holding the lock of %s: %v", job, err)
 	}
@@ -416,7 +435,7 @@ func holdingJob(t *testing.T, u usedWorld, job string) (release func()) {
 		}
 	}
 	t.Cleanup(release)
-	return release
+	return pid, release
 }
 
 // returnsWithin tells whether a command running in a goroutine has answered within d.
@@ -483,7 +502,7 @@ func TestTheCloseByRevenueWaitsForTheJobs(t *testing.T) {
 	a := jobsPool(t, api.MethodRevenue, false)
 	releaseA := holdingJob(t, a, "JOB-B")
 	done = start(func() error {
-		_, err := a.module.ApportionConsolCosts(ctx, a.apportionCmd("apportion-held", 5, nil))
+		_, err := previewAndSubmit(ctx, a.module, a.apportionCmd("apportion-held", 5, nil))
 		return err
 	})
 	if err, returned := returnsWithin(done, wait); returned {
@@ -527,7 +546,7 @@ func TestAnApportionmentByRevenueReadsTheRevenueUnderTheJobsLock(t *testing.T) {
 	u := jobsPool(t, api.MethodRevenue, false)
 	f := u.fixture
 	reviseErr, apportionErr := queuedBehindAHeldJob(t, u, func() error {
-		_, err := f.module.ApportionConsolCosts(context.Background(), u.apportionCmd("apportion", 5, nil))
+		_, err := previewAndSubmit(context.Background(), f.module, u.apportionCmd("apportion", 5, nil))
 		return err
 	})
 	if reviseErr != nil || apportionErr != nil {

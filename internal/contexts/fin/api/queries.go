@@ -600,10 +600,33 @@ type PoolApportionment struct {
 	ApportionmentNo int
 	BasisRevision   int64
 	Stage           string // ACTUAL or PLANNED
-	By              string
+	By              string // who submitted it
 	At              time.Time
 	EnteredAt       time.Time
 	Lines           []ApportionedLine
+	PreviewNo       int // the preview it was submitted from (FIN V2.91); 0 on one made before
+}
+
+// PoolPreview is one preview of an apportionment (FIN V2.91): the figures it computed, the basis revision and stage it
+// computed them on, who previewed it and when, the SHA-256 of the fingerprint of what it was computed on, and the
+// apportionment that submitted it (0 while it is not submitted). A preview is not an apportionment: nothing in a job's
+// cost or in the pool's current shares comes from it.
+type PoolPreview struct {
+	PreviewNo         int
+	BasisRevision     int64
+	Stage             string // ACTUAL or PLANNED
+	By                string
+	At                time.Time
+	EnteredAt         time.Time
+	Lines             []ApportionedLine
+	FingerprintSHA256 string
+	SubmittedAs       int
+}
+
+// WorkUnit is a container of a consolidation that PHY reads in rework.
+type WorkUnit struct {
+	UnitNo      int
+	ExecutionID string // the stuffing opened for rework
 }
 
 // ConsolCostPool is a consolidation's cost pool under one legal entity (FIN V0.4, FB3).
@@ -621,7 +644,12 @@ type ConsolCostPool struct {
 	OpenedAt           time.Time
 	Lines              []PoolCostLine
 	Apportionments     []PoolApportionment
+	Previews           []PoolPreview
 	Closures           []PoolClosure
+	// InWork is true while PHY reads a container of the consolidation in rework (FIN V2.91): the pool is frozen, and
+	// the last submitted apportionment in Apportionments is the one that stands, in work. WorkUnits are the containers.
+	InWork    bool
+	WorkUnits []WorkUnit
 }
 
 // HouseProfit is one house job's economics within a consolidation, in the functional currency: the job's own revenue,
@@ -651,6 +679,10 @@ type ConsolProfit struct {
 	Retained        kernel.Money // kept on the consolidation (RETAINED): the consolidation's own cost
 	Unapportioned   kernel.Money
 	Houses          []HouseProfit
+	// InWork is true while PHY reads a container of the consolidation in rework: what the houses bear is the last
+	// submitted apportionment, in work. WorkUnits are the containers.
+	InWork    bool
+	WorkUnits []WorkUnit
 }
 
 // GetConsolCostPool asks for a pool; GetConsolProfit for a consolidation's economics through its pool (ErrNotFound

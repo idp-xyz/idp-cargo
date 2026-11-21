@@ -216,6 +216,18 @@ func (w *world) GetLegalEntity(_ context.Context, q orgapi.GetLegalEntity) (orga
 		Status: status}, nil
 }
 
+// previewAndSubmit previews an apportionment and submits it at once by the same person, as the one-step command
+// ApportionConsolCosts did before FIN V2.91. The submission takes the pool's revision the preview left and its own
+// command id, so a replay of the pair answers the stored receipts. It answers the submission's receipt.
+func previewAndSubmit(ctx context.Context, m api.Commands, in api.PreviewConsolCostApportionment) (api.Receipt, error) {
+	preview, err := m.PreviewConsolCostApportionment(ctx, in)
+	if err != nil {
+		return api.Receipt{}, err
+	}
+	return m.SubmitConsolCostApportionment(ctx, api.SubmitConsolCostApportionment{CommandID: in.CommandID + "-submit", TenantID: in.TenantID, ActorID: in.ActorID,
+		PoolID: in.PoolID, ExpectedRevision: preview.NewRevision, PreviewNo: preview.Version, OccurredAt: in.OccurredAt})
+}
+
 type allow struct{}
 
 func (allow) AuthorizeFinAction(_ context.Context, _, actor, action, _ string) error {

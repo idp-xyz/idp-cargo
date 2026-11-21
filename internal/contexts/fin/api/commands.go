@@ -559,8 +559,14 @@ type ManualShare struct {
 	Amount     int64
 }
 
-// ApportionConsolCosts divides pool cost lines' latest versions over the house jobs (LineNos; every line when
-// empty). FIN reads PHY's PhysicalCostBasis v1 first: the basis is the houses' loaded facts when every house has
+// PreviewConsolCostApportionment computes the division of pool cost lines' latest versions over the house jobs
+// (LineNos; every line when empty) and stores it as a preview, as ApportionConsolCosts did in one step until FIN V2.91:
+// it is submitted by SubmitConsolCostApportionment, and nothing else is written (no share, no job cost, no current
+// apportionment). It is refused with FIN_POOL_IN_WORK while PHY's basis shows a container of the consolidation in
+// REWORK. The preview records a fingerprint of what it was computed on: the basis revision, each load unit and packing
+// list with its digest and its reworks with their ends, the live houses and their jobs and figures, each cost line's
+// version and cost, and, for a line by REVENUE, the revenue it read. The receipt's Version is the preview's number. FIN
+// reads PHY's PhysicalCostBasis v1 first: the basis is the houses' loaded facts when every house has
 // loading evidence (ACTUAL), the attach plan scope otherwise (PLANNED). Every live house needs an OPEN job of the
 // pool's legal entity (FIN_POOL_JOB_MISSING). Method overrides each line's default: CHARGEABLE weighs by the air
 // chargeable weight (6000 cm³ per kg, rounded up to 500 g) or the LCL W/M freight tonnes; VOLUME by volume; PIECES
@@ -602,7 +608,7 @@ type ManualShare struct {
 // unit REV). The revenue is read in the command's transaction under the jobs' locks, and the close of the pool reads it
 // again: a line by REVENUE whose houses' revenue has changed since is refused with FIN_POOL_NOT_CLOSABLE until it is
 // apportioned again.
-type ApportionConsolCosts struct {
+type PreviewConsolCostApportionment struct {
 	CommandID        string
 	TenantID         string
 	ActorID          string
@@ -617,17 +623,35 @@ type ApportionConsolCosts struct {
 	OccurredAt       time.Time
 }
 
-// Receipt confirms a committed command; replaying the command returns it again. SubjectID is the legal entity
-// (policy), the job (job and note commands), the debtor (billing profile), <legal entity>/<debtor> (credit account),
-// the debtor receipt, the pool (pool commands), the creditor invoice, the creditor payment or the fapiao record; Version is the rate entry recorded or ended,
-// the tax treatment set, the series registered, the variance threshold set, the pricing basis applied, the charge line
-// recorded, the side version written (a release's too), the billing profile version, the terms version set, the hold
-// placed or released, the last allocation written or the one reversed, the pool cost line recorded, the cost version
-// written, the apportionment made, the closure made or reopened, the matches of an invoice, or its dispute opened or
-// resolved, the last allocation of a creditor payment written or the one reversed (0 for opening a policy, job or pool,
-// cancelling a job, issuing a note, recording or cancelling a debtor receipt, a creditor invoice or a creditor payment,
-// approving a variance, and fapiao record commands); Number is the number of a note issued. For a billing
-// profile NewRevision is its version.
+// SubmitConsolCostApportionment writes the apportionment of a preview (PreviewNo, the receipt's Version of the preview
+// command), as ApportionConsolCosts wrote one until FIN V2.91, linked to the preview; its receipt's Version is the
+// apportionment's number and ConsolCostsApportioned.v1 is its event. FIN reads PHY's basis and the pool again and
+// refuses with FIN_PREVIEW_STALE, naming what changed, when what the preview was computed on is not the same: preview
+// again. It is refused with FIN_POOL_IN_WORK while a container is in rework, with FIN_PREVIEW_SUBMITTED when the
+// preview was submitted already, and with FIN_CONFIRMER_ASKED_REWORK when ActorID asked for a rework of the
+// consolidation's containers that has ended and that no earlier submitted apportionment carried as ended: another
+// finance user submits.
+type SubmitConsolCostApportionment struct {
+	CommandID        string
+	TenantID         string
+	ActorID          string
+	PoolID           string
+	ExpectedRevision int64
+	PreviewNo        int
+	OccurredAt       time.Time
+}
+
+// Receipt confirms a committed command; replaying the command returns it again. SubjectID is the legal entity (policy),
+// the job (job and note commands), the debtor (billing profile), <legal entity>/<debtor> (credit account), the debtor
+// receipt, the pool (pool commands), the creditor invoice, the creditor payment or the fapiao record; Version is the
+// rate entry recorded or ended, the tax treatment set, the series registered, the variance threshold set, the pricing
+// basis applied, the charge line recorded, the side version written (a release's too), the billing profile version, the
+// terms version set, the hold placed or released, the last allocation written or the one reversed, the pool cost line
+// recorded, the cost version written, the preview stored or the apportionment made, the closure made or reopened, the
+// matches of an invoice, or its dispute opened or resolved, the last allocation of a creditor payment written or the
+// one reversed (0 for opening a policy, job or pool, cancelling a job, issuing a note, recording or cancelling a debtor
+// receipt, a creditor invoice or a creditor payment, approving a variance, and fapiao record commands); Number is the
+// number of a note issued. For a billing profile NewRevision is its version.
 type Receipt struct {
 	CommandID   string
 	SubjectID   string
@@ -663,7 +687,8 @@ type Commands interface {
 	OpenConsolCostPool(ctx context.Context, cmd OpenConsolCostPool) (Receipt, error)
 	RecordConsolCost(ctx context.Context, cmd RecordConsolCost) (Receipt, error)
 	ReviseConsolCost(ctx context.Context, cmd ReviseConsolCost) (Receipt, error)
-	ApportionConsolCosts(ctx context.Context, cmd ApportionConsolCosts) (Receipt, error)
+	PreviewConsolCostApportionment(ctx context.Context, cmd PreviewConsolCostApportionment) (Receipt, error)
+	SubmitConsolCostApportionment(ctx context.Context, cmd SubmitConsolCostApportionment) (Receipt, error)
 	SetCostVarianceThreshold(ctx context.Context, cmd SetCostVarianceThreshold) (Receipt, error)
 	RecordCreditorInvoice(ctx context.Context, cmd RecordCreditorInvoice) (Receipt, error)
 	MatchCreditorInvoice(ctx context.Context, cmd MatchCreditorInvoice) (Receipt, error)
@@ -712,10 +737,11 @@ const (
 	ActionReverseDebtorReceiptAllocation = "ReverseDebtorReceiptAllocation"
 	ActionCancelDebtorReceipt            = "CancelDebtorReceipt"
 
-	ActionOpenConsolCostPool   = "OpenConsolCostPool"
-	ActionRecordConsolCost     = "RecordConsolCost"
-	ActionReviseConsolCost     = "ReviseConsolCost"
-	ActionApportionConsolCosts = "ApportionConsolCosts"
+	ActionOpenConsolCostPool             = "OpenConsolCostPool"
+	ActionRecordConsolCost               = "RecordConsolCost"
+	ActionReviseConsolCost               = "ReviseConsolCost"
+	ActionPreviewConsolCostApportionment = "PreviewConsolCostApportionment"
+	ActionSubmitConsolCostApportionment  = "SubmitConsolCostApportionment"
 
 	ActionSetCostVarianceThreshold      = "SetCostVarianceThreshold"
 	ActionRecordCreditorInvoice         = "RecordCreditorInvoice"

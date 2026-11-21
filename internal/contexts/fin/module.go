@@ -822,7 +822,8 @@ func classify(err error) error {
 		errors.Is(err, domain.ErrMatchCurrency), errors.Is(err, domain.ErrMatchCreditor), errors.Is(err, domain.ErrMatchTarget),
 		errors.Is(err, domain.ErrAccrualClosed), errors.Is(err, domain.ErrMatchExceeds), errors.Is(err, domain.ErrMatchIncomplete),
 		errors.Is(err, domain.ErrMatchChargeCode), errors.Is(err, domain.ErrInvoiceNumber), errors.Is(err, domain.ErrVarianceApproval),
-		errors.Is(err, domain.ErrAccrualMatched), errors.Is(err, domain.ErrPoolNotClosable), errors.Is(err, domain.ErrTargetClosed),
+		errors.Is(err, domain.ErrAccrualMatched), errors.Is(err, domain.ErrPoolNotClosable), errors.Is(err, domain.ErrTargetClosed), errors.Is(err, domain.ErrPoolInWork),
+		errors.Is(err, domain.ErrPreviewStale), errors.Is(err, domain.ErrPreviewSubmitted), errors.Is(err, domain.ErrConfirmer),
 		errors.Is(err, domain.ErrFinalBehind), errors.Is(err, domain.ErrNotPayable), errors.Is(err, domain.ErrInvoicePaid),
 		errors.Is(err, domain.ErrFapiaoCovers), errors.Is(err, domain.ErrFapiaoNumber), errors.Is(err, domain.ErrNotFapiaoable):
 		kind = api.ErrRejected

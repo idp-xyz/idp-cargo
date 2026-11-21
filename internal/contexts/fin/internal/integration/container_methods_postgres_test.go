@@ -99,13 +99,13 @@ func TestApportionmentByContainerCountAndTEUOnPostgres(t *testing.T) {
 	before := u.revision()
 	byTEU := u.apportionCmd("planned-teu", 4, []int{3})
 	byTEU.Method = api.MethodTEU
-	for name, in := range map[string]api.ApportionConsolCosts{
+	for name, in := range map[string]api.PreviewConsolCostApportionment{
 		"count at PLANNED":                         u.apportionCmd("planned-count", 4, []int{1}),
 		"TEU at PLANNED":                           u.apportionCmd("planned-tea", 4, []int{2}),
 		"TEU as the method of a SHIPMENT line":     byTEU,
 		"every line, with one by SHIPMENT amongst": u.apportionCmd("planned-all", 4, nil),
 	} {
-		_, err := f.module.ApportionConsolCosts(ctx, in)
+		_, err := previewAndSubmit(ctx, f.module, in)
 		u.refusedWith(name, err, "FIN_POOL_NO_BASIS")
 		if err != nil && !strings.Contains(err.Error(), "stuffed") {
 			t.Errorf("%s: the refusal does not say that a house's containers are known once it is stuffed: %v", name, err)
@@ -125,7 +125,7 @@ func TestApportionmentByContainerCountAndTEUOnPostgres(t *testing.T) {
 	f.w.costBases["CONSOL-K"] = loading
 	before = u.revision()
 	for _, lines := range [][]int{{1}, {2}} {
-		_, err := f.module.ApportionConsolCosts(ctx, u.apportionCmd("unsealed", 5, lines))
+		_, err := previewAndSubmit(ctx, f.module, u.apportionCmd("unsealed", 5, lines))
 		u.refusedWith("a unit still loading", err, "FIN_POOL_NO_BASIS")
 		if err != nil && !strings.Contains(err.Error(), "load unit 2 is IN_USE") {
 			t.Errorf("the refusal does not name the unit and its status: %v", err)
@@ -138,14 +138,14 @@ func TestApportionmentByContainerCountAndTEUOnPostgres(t *testing.T) {
 	// stuffed and sealed
 	f.w.costBases["CONSOL-K"] = containerBasis(f, true)
 	cmd := u.apportionCmd("apportion-1", 5, []int{1, 2})
-	r := u.must(f.module.ApportionConsolCosts(ctx, cmd))
+	r := u.must(previewAndSubmit(ctx, f.module, cmd))
 	one := u.ap.pool(u.pool).Apportionments[1]
 	if one.Stage != api.BasisActual || len(one.Lines) != 2 {
 		t.Fatalf("apportionment 2: %+v", one)
 	}
 	u.checkLine("by count", one, 1, api.MethodContainerCount, share(1, "A", 1, "CNT", 2_500), share(2, "B", 1, "CNT", 2_500), share(3, "C", 2, "CNT", 5_001))
 	u.checkLine("by TEU", one, 2, api.MethodTEU, share(1, "A", 10, "DTE", 1_667), share(2, "B", 20, "DTE", 3_334), share(3, "C", 30, "DTE", 5_000))
-	if again, err := f.module.ApportionConsolCosts(ctx, cmd); err != nil || again != r {
+	if again, err := previewAndSubmit(ctx, f.module, cmd); err != nil || again != r {
 		t.Fatalf("replay: %+v %v, want %+v", again, err, r)
 	}
 	if n := len(u.ap.pool(u.pool).Apportionments); n != 2 {
@@ -154,7 +154,7 @@ func TestApportionmentByContainerCountAndTEUOnPostgres(t *testing.T) {
 	// line 3 by TEU as the command's method
 	cmd3 := u.apportionCmd("apportion-3", 5, []int{3})
 	cmd3.Method = api.MethodTEU
-	u.must(f.module.ApportionConsolCosts(ctx, cmd3))
+	u.must(previewAndSubmit(ctx, f.module, cmd3))
 	three := u.ap.pool(u.pool).Apportionments[2]
 	u.checkLine("line 3 by TEU", three, 3, api.MethodTEU, share(1, "A", 10, "DTE", 1_000), share(2, "B", 20, "DTE", 2_000), share(3, "C", 30, "DTE", 3_000))
 
@@ -206,7 +206,7 @@ func TestApportionmentByContainerCountAndTEUOnPostgres(t *testing.T) {
 	notClosable("close-3", 13, "closed with line 3 still on the old containers")
 	cmd3b := u.apportionCmd("apportion-5", 14, []int{3})
 	cmd3b.Method = api.MethodTEU
-	u.must(f.module.ApportionConsolCosts(ctx, cmd3b))
+	u.must(previewAndSubmit(ctx, f.module, cmd3b))
 	last := u.ap.pool(u.pool).Apportionments
 	u.checkLine("by count again", last[3], 1, api.MethodContainerCount, share(1, "A", 1, "CNT", 3_334), share(2, "B", 1, "CNT", 3_334), share(3, "C", 1, "CNT", 3_333))
 	u.checkLine("by TEU again", last[3], 2, api.MethodTEU, share(1, "A", 10, "DTE", 2_500), share(2, "B", 20, "DTE", 5_001), share(3, "C", 10, "DTE", 2_500))

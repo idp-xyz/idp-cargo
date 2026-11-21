@@ -125,9 +125,9 @@ func TestConsolCostPoolOnPostgres(t *testing.T) {
 	}
 
 	// apportionment: every live house needs an OPEN job of the pool's legal entity
-	apportion := api.ApportionConsolCosts{CommandID: "apportion-1", TenantID: f.tenant, ActorID: "fin-1", PoolID: "P-1", ExpectedRevision: 4,
+	apportion := api.PreviewConsolCostApportionment{CommandID: "apportion-1", TenantID: f.tenant, ActorID: "fin-1", PoolID: "P-1", ExpectedRevision: 4,
 		OccurredAt: f.hours(6)}
-	if _, err = f.module.ApportionConsolCosts(ctx, apportion); !errors.Is(err, api.ErrRejected) || !strings.Contains(err.Error(), "FIN_POOL_JOB_MISSING") {
+	if _, err = previewAndSubmit(ctx, f.module, apportion); !errors.Is(err, api.ErrRejected) || !strings.Contains(err.Error(), "FIN_POOL_JOB_MISSING") {
 		t.Fatalf("SH-B has no job yet: %v", err)
 	}
 	if _, err = f.module.OpenFreightJob(ctx, api.OpenFreightJob{CommandID: "open-b", TenantID: f.tenant, ActorID: "fin-1", JobID: "JOB-B",
@@ -141,28 +141,28 @@ func TestConsolCostPoolOnPostgres(t *testing.T) {
 	}
 	stale := apportion
 	stale.CommandID, stale.ExpectedRevision = "apportion-stale", 3
-	if _, err = f.module.ApportionConsolCosts(ctx, stale); !errors.Is(err, api.ErrConflict) {
+	if _, err = previewAndSubmit(ctx, f.module, stale); !errors.Is(err, api.ErrConflict) {
 		t.Fatalf("an apportionment at a stale revision: %v", err)
 	}
-	if r, err = f.module.ApportionConsolCosts(ctx, apportion); err != nil || r.NewRevision != 5 || r.Version != 1 {
+	if r, err = previewAndSubmit(ctx, f.module, apportion); err != nil || r.NewRevision != 6 || r.Version != 1 { // the preview and the submission each move the pool
 		t.Fatalf("apportion: %+v %v", r, err)
 	}
 
 	// a manual apportionment of line 2 supersedes its shares line by line
-	manual := api.ApportionConsolCosts{CommandID: "apportion-manual", TenantID: f.tenant, ActorID: "fin-1", PoolID: "P-1", ExpectedRevision: 5,
+	manual := api.PreviewConsolCostApportionment{CommandID: "apportion-manual", TenantID: f.tenant, ActorID: "fin-1", PoolID: "P-1", ExpectedRevision: 6,
 		LineNos: []int{2}, Method: api.MethodManual, Manual: []api.ManualShare{{ShipmentID: "SH-A", Amount: 10_000}, {ShipmentID: "SH-B", Amount: 40_000}},
 		Reason: "the CFS charged SH-B's oversize piece", OccurredAt: f.hours(7)}
 	short := manual
 	short.CommandID, short.Manual = "apportion-short", []api.ManualShare{{ShipmentID: "SH-A", Amount: 10_000}, {ShipmentID: "SH-B", Amount: 39_999}}
-	if _, err = f.module.ApportionConsolCosts(ctx, short); !errors.Is(err, api.ErrRejected) || !strings.Contains(err.Error(), "FIN_MANUAL_SHARES") {
+	if _, err = previewAndSubmit(ctx, f.module, short); !errors.Is(err, api.ErrRejected) || !strings.Contains(err.Error(), "FIN_MANUAL_SHARES") {
 		t.Fatalf("manual shares not summing to the line: %v", err)
 	}
 	strangerHouse := manual
 	strangerHouse.CommandID, strangerHouse.Manual = "apportion-strange", []api.ManualShare{{ShipmentID: "SH-A", Amount: 10_000}, {ShipmentID: "SH-C", Amount: 40_000}}
-	if _, err = f.module.ApportionConsolCosts(ctx, strangerHouse); !errors.Is(err, api.ErrRejected) || !strings.Contains(err.Error(), "FIN_MANUAL_SHARES") {
+	if _, err = previewAndSubmit(ctx, f.module, strangerHouse); !errors.Is(err, api.ErrRejected) || !strings.Contains(err.Error(), "FIN_MANUAL_SHARES") {
 		t.Fatalf("a manual share of a house not in the consolidation: %v", err)
 	}
-	if r, err = f.module.ApportionConsolCosts(ctx, manual); err != nil || r.NewRevision != 6 || r.Version != 2 {
+	if r, err = previewAndSubmit(ctx, f.module, manual); err != nil || r.NewRevision != 8 || r.Version != 2 {
 		t.Fatalf("manual apportion: %+v %v", r, err)
 	}
 
@@ -171,8 +171,8 @@ func TestConsolCostPoolOnPostgres(t *testing.T) {
 	cancelled.State = "CANCELLED"
 	f.w.costBases["CONSOL-1"] = cancelled
 	gone := apportion
-	gone.CommandID, gone.ExpectedRevision = "apportion-gone", 6
-	if _, err = f.module.ApportionConsolCosts(ctx, gone); !errors.Is(err, api.ErrRejected) || !strings.Contains(err.Error(), "FIN_POOL_NO_BASIS") {
+	gone.CommandID, gone.ExpectedRevision = "apportion-gone", 8
+	if _, err = previewAndSubmit(ctx, f.module, gone); !errors.Is(err, api.ErrRejected) || !strings.Contains(err.Error(), "FIN_POOL_NO_BASIS") {
 		t.Fatalf("a cancelled consolidation: %v", err)
 	}
 	restored := f.w.costBases["CONSOL-1"]
@@ -181,7 +181,7 @@ func TestConsolCostPoolOnPostgres(t *testing.T) {
 
 	// the pool view
 	pool, err := f.module.GetConsolCostPool(ctx, api.GetConsolCostPool{TenantID: f.tenant, PoolID: "P-1"})
-	if err != nil || pool.Revision != 6 || pool.Mode != "AIR" || pool.FunctionalCurrency != "CNY" || pool.BookCode != "MAIN" ||
+	if err != nil || pool.Revision != 8 || pool.Mode != "AIR" || pool.FunctionalCurrency != "CNY" || pool.BookCode != "MAIN" ||
 		pool.LegalEntityID != "LE" || pool.State != "OPEN" || len(pool.Lines) != 2 || len(pool.Apportionments) != 2 {
 		t.Fatalf("pool: %+v %v", pool, err)
 	}
@@ -229,7 +229,7 @@ func TestConsolCostPoolOnPostgres(t *testing.T) {
 		Reason: "booked with the second carrier", OccurredAt: f.hours(9)}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = f.module.ApportionConsolCosts(ctx, api.ApportionConsolCosts{CommandID: "apportion-2", TenantID: f.tenant, ActorID: "fin-1", PoolID: "P-2",
+	if _, err = previewAndSubmit(ctx, f.module, api.PreviewConsolCostApportionment{CommandID: "apportion-2", TenantID: f.tenant, ActorID: "fin-1", PoolID: "P-2",
 		ExpectedRevision: 2, OccurredAt: f.hours(10)}); err != nil {
 		t.Fatal(err)
 	}
@@ -327,10 +327,11 @@ func TestConsolCostPoolOnPostgres(t *testing.T) {
 	}
 }
 
-// TestApportionRacesJobCancel races an apportionment against the cancellation of a house's job, four times: exactly
-// one commits. A cancellation first leaves the apportionment without the house's open job (FIN_POOL_JOB_MISSING); an
-// apportionment first leaves the cancellation refused at commit (pool_share_job_open) since the job holds current
-// shares.
+// TestApportionRacesJobCancel races the submission of a preview against the cancellation of a house's job, four times:
+// exactly one commits. A cancellation first leaves the submission without the house's open job, and the preview stale
+// (FIN_PREVIEW_STALE, naming the house: before V2.91 the one-step apportionment said FIN_POOL_JOB_MISSING); a
+// submission first leaves the cancellation refused at commit (pool_share_job_open) since the job holds current shares.
+// A preview that is made while the job is cancelled is refused as before (FIN_POOL_JOB_MISSING, checked at the end).
 func TestApportionRacesJobCancel(t *testing.T) {
 	ctx := context.Background()
 	for round := range 4 {
@@ -355,6 +356,11 @@ func TestApportionRacesJobCancel(t *testing.T) {
 			Reason: "booked", OccurredAt: f.hours(3)}); err != nil {
 			t.Fatal(err)
 		}
+		preview, err := f.module.PreviewConsolCostApportionment(ctx, api.PreviewConsolCostApportionment{CommandID: "preview", TenantID: f.tenant, ActorID: "fin-1",
+			PoolID: "P-R", ExpectedRevision: 2, OccurredAt: f.hours(4)})
+		if err != nil {
+			t.Fatal(err)
+		}
 		var apportionErr, cancelErr error
 		start := make(chan struct{})
 		var wg sync.WaitGroup
@@ -362,8 +368,8 @@ func TestApportionRacesJobCancel(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			_, apportionErr = f.module.ApportionConsolCosts(ctx, api.ApportionConsolCosts{CommandID: "apportion", TenantID: f.tenant, ActorID: "fin-1",
-				PoolID: "P-R", ExpectedRevision: 2, OccurredAt: f.hours(4)})
+			_, apportionErr = f.module.SubmitConsolCostApportionment(ctx, api.SubmitConsolCostApportionment{CommandID: "submit", TenantID: f.tenant, ActorID: "fin-1",
+				PoolID: "P-R", ExpectedRevision: preview.NewRevision, PreviewNo: preview.Version, OccurredAt: f.hours(4)})
 		}()
 		go func() {
 			defer wg.Done()
@@ -380,8 +386,9 @@ func TestApportionRacesJobCancel(t *testing.T) {
 		case apportionErr != nil && cancelErr != nil:
 			t.Fatalf("round %d: both refused: %v / %v", round, apportionErr, cancelErr)
 		case apportionErr != nil:
-			if !errors.Is(apportionErr, api.ErrRejected) || !strings.Contains(apportionErr.Error(), "FIN_POOL_JOB_MISSING") {
-				t.Fatalf("round %d: the apportionment refused for another reason: %v", round, apportionErr)
+			if !errors.Is(apportionErr, api.ErrRejected) || !strings.Contains(apportionErr.Error(), "FIN_PREVIEW_STALE") ||
+				!strings.Contains(apportionErr.Error(), `house."SH-B" changed`) {
+				t.Fatalf("round %d: the submission refused for another reason: %v", round, apportionErr)
 			}
 		default:
 			if state, constraint := sqlState(cancelErr); state != "23514" || constraint != "pool_share_job_open" {
@@ -396,6 +403,12 @@ func TestApportionRacesJobCancel(t *testing.T) {
 		if cancelErr == nil {
 			if len(pool.Apportionments) != 0 {
 				t.Fatalf("round %d: shares despite the cancellation: %+v", round, pool.Apportionments)
+			}
+			// a new preview meets the missing job
+			_, err = f.module.PreviewConsolCostApportionment(ctx, api.PreviewConsolCostApportionment{CommandID: "preview-again", TenantID: f.tenant, ActorID: "fin-1",
+				PoolID: "P-R", ExpectedRevision: preview.NewRevision, OccurredAt: f.hours(5)})
+			if !errors.Is(err, api.ErrRejected) || !strings.Contains(err.Error(), "FIN_POOL_JOB_MISSING") {
+				t.Fatalf("round %d: a preview without the cancelled house's job: %v", round, err)
 			}
 			continue
 		}
