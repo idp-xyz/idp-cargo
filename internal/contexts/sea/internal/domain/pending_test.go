@@ -75,7 +75,7 @@ func TestEveryBlockingPendingItemIsListedAndRefusesFinalize(t *testing.T) {
 				t.Fatal(err)
 			}
 		}},
-		{"gated in before the reseal", PendGatedBeforeReseal, ScopeContainer, "CSQU3054383", []string{"gated in or was loaded before PHY sealed it again", "return from the terminal"}, func(d *reDay) {
+		{"gated in before the reseal", PendGatedBeforeReseal, ScopeContainer, "CSQU3054383", []string{"was at the terminal when PHY sealed it again", "GATE_OUT_TERMINAL", "assert a new VGM"}, func(d *reDay) {
 			d.event(EventGateIn, "GIN-1", 22, 22)
 			d.reseal("S2", 25, true)
 		}},

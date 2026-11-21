@@ -50,6 +50,9 @@ const (
 	PendingHousePacks            = "HOUSE_PACKS_NOT_STUFFED"
 
 	// Warnings.
-	WarningVGMEnteredBeforeSealKnown = "VGM_ENTERED_BEFORE_SEAL_KNOWN"
-	WarningResealDatedBeforeStuffing = "RESEAL_DATED_BEFORE_STUFFING"
+	WarningVGMEnteredBeforeSealKnown  = "VGM_ENTERED_BEFORE_SEAL_KNOWN"
+	WarningResealDatedBeforeStuffing  = "RESEAL_DATED_BEFORE_STUFFING"
+	WarningReturnDatedAfterReseal     = "RETURN_DATED_AFTER_RESEAL"
+	WarningCarrierLoadingBeforeReseal = "CARRIER_LOADING_BEFORE_RESEAL"
+	WarningCarrierConflictReleased    = "CARRIER_LOADING_CONFLICT_RELEASED"
 )

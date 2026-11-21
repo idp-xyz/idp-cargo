@@ -28,7 +28,8 @@ var (
 
 // VisitStatus is a container visit's state. ASSIGNED: the container is assigned to a planned load unit of the
 // movement's consolidation. STUFFED: PHY's stuffing of the unit is sealed, as FUL relays it. RELEASED: the container
-// was given back unused. VGM_SUBMITTED, GATED_IN and LOADED come with the VGM and the container events.
+// was given back unused. VGM_SUBMITTED, GATED_IN and LOADED come with the VGM and the container events; a gated-in
+// container taken back out of the terminal is VGM_SUBMITTED again.
 type VisitStatus string
 
 const (
@@ -53,6 +54,7 @@ const (
 	EventEmptyPickedUp = "EMPTY_PICKED_UP"
 	EventArrivedAtCFS  = "ARRIVED_AT_CFS"
 	EventGateIn        = "GATE_IN_TERMINAL"
+	EventGateOut       = "GATE_OUT_TERMINAL"
 	EventLoaded        = "LOADED_ON_BOARD"
 	EventRolled        = "ROLLED"
 )
@@ -153,9 +155,11 @@ type VisitState struct {
 	ReleasedAt         time.Time
 	Assertions         []VgmAssertion
 	Events             []VisitEvent
-	AssignedBy         string
-	AssignedAt         time.Time
-	EnteredAt          time.Time
+	// Releases are the operator's releases of a conflict with a carrier's loading report (V2.89), only added.
+	Releases   []ConflictRelease
+	AssignedBy string
+	AssignedAt time.Time
+	EnteredAt  time.Time
 }
 
 // VgmAssertion is one immutable statement of the container's verified gross mass. Signatory is the authorised
@@ -202,7 +206,7 @@ func (e VisitEvent) valid() bool {
 
 func containerEventKind(kind string) bool {
 	switch kind {
-	case EventEmptyReleased, EventEmptyPickedUp, EventArrivedAtCFS, ContainerStuffedEvent, EventGateIn, EventLoaded, EventRolled:
+	case EventEmptyReleased, EventEmptyPickedUp, EventArrivedAtCFS, ContainerStuffedEvent, EventGateIn, EventGateOut, EventLoaded, EventRolled:
 		return true
 	}
 	return false
@@ -211,6 +215,7 @@ func containerEventKind(kind string) bool {
 // Visit is the aggregate root (ContainerVisit). Seals, VGM assertions and container events are only added.
 type Visit struct {
 	state      VisitState
+	releases   int
 	seals      int
 	assertions int
 	events     int
@@ -226,6 +231,7 @@ const (
 	eventContainerReleased = "ContainerReleased.v1"
 	eventVgmAsserted       = "VgmAsserted.v1"
 	eventVgmResponse       = "VgmResponseRecorded.v1"
+	eventConflictReleased  = "CarrierLoadingConflictReleased.v1"
 
 	// ContainerStuffedEvent is the kind of the container event a stuffing done records.
 	ContainerStuffedEvent = "STUFFED"
@@ -567,9 +573,11 @@ func (v *Visit) RecordVgmResponse(response, source, by string, at time.Time) err
 }
 
 // RecordContainerEvent records a carrier or terminal fact about the container. It never moves a house. A container
-// is gated in only once its VGM is submitted, and loaded on board only once it is gated in. Stuffing is not recorded
-// here. The same source reference with the same content changes nothing and returns its number; with other content
-// it is refused. The number is the event's place in the visit's history, and added reports whether this call recorded it.
+// is gated in only once its VGM is submitted, and loaded on board only once it is gated in. A gated-in container is
+// taken back out of the terminal (GATE_OUT_TERMINAL, the full container returned to the forwarder's warehouse), which
+// returns the visit to VGM_SUBMITTED; a loaded container is not taken back here. Stuffing is not recorded here. The
+// same source reference with the same content changes nothing and returns its number; with other content it is
+// refused. The number is the event's place in the visit's history, and added reports whether this call recorded it.
 func (v *Visit) RecordContainerEvent(kind string, where kernel.LocationCode, occurred time.Time, source, reference, by string, at time.Time) (int, bool, error) {
 	if v.state.Status == VisitReleased {
 		return 0, false, ErrInvalidTransition
@@ -595,6 +603,23 @@ func (v *Visit) RecordContainerEvent(kind string, where kernel.LocationCode, occ
 		if v.state.Status != VisitVGM && v.state.Status != VisitGatedIn && v.state.Status != VisitLoaded {
 			return 0, false, fmt.Errorf("%w: a container is gated in once its VGM is submitted", ErrInvalidEvent)
 		}
+	case EventGateOut:
+		switch v.state.Status {
+		case VisitGatedIn:
+			for i := len(v.state.Events) - 1; i >= 0; i-- {
+				if g := v.state.Events[i]; g.Kind == EventGateIn {
+					if occurred.Before(g.OccurredAt) {
+						return 0, false, fmt.Errorf("%w: the return is dated %s, before the container gated in (%s): give the time it was taken back out",
+							ErrInvalidEvent, occurred.Format(time.RFC3339), g.OccurredAt.Format(time.RFC3339))
+					}
+					break
+				}
+			}
+		case VisitLoaded:
+			return 0, false, fmt.Errorf("%w: a container loaded on board is not taken back out of the terminal here; that is handled outside the system", ErrInvalidEvent)
+		default:
+			return 0, false, fmt.Errorf("%w: a container is taken back out of the terminal only while it is gated in", ErrInvalidEvent)
+		}
 	case EventLoaded:
 		if v.state.Status != VisitGatedIn && v.state.Status != VisitLoaded {
 			return 0, false, fmt.Errorf("%w: a container is loaded once it is gated in", ErrInvalidEvent)
@@ -610,6 +635,8 @@ func (v *Visit) RecordContainerEvent(kind string, where kernel.LocationCode, occ
 		if v.state.Status == VisitVGM {
 			v.state.Status = VisitGatedIn
 		}
+	case EventGateOut:
+		v.state.Status = VisitVGM
 	case EventLoaded:
 		v.state.Status = VisitLoaded
 	}
@@ -642,6 +669,9 @@ func (v *Visit) Stamp(entered time.Time) {
 	for i := v.events; i < len(v.state.Events); i++ {
 		v.state.Events[i].EnteredAt = entered.UTC()
 	}
+	for i := v.releases; i < len(v.state.Releases); i++ {
+		v.state.Releases[i].EnteredAt = entered.UTC()
+	}
 	if v.responded > 0 {
 		v.state.Assertions[v.responded-1].ResponseEnteredAt = entered.UTC()
 	}
@@ -652,10 +682,11 @@ func RestoreVisit(st VisitState) (*Visit, error) {
 	st.Seals = append([]VisitSeal(nil), st.Seals...)
 	st.Assertions = append([]VgmAssertion(nil), st.Assertions...)
 	st.Events = append([]VisitEvent(nil), st.Events...)
+	st.Releases = append([]ConflictRelease(nil), st.Releases...)
 	for i := range st.Assertions {
 		st.Assertions[i].Signatory = ""
 	}
-	v := &Visit{state: st, seals: len(st.Seals), assertions: len(st.Assertions), events: len(st.Events)}
+	v := &Visit{state: st, seals: len(st.Seals), assertions: len(st.Assertions), events: len(st.Events), releases: len(st.Releases)}
 	if err := v.validate(); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidVisit, err)
 	}
@@ -706,7 +737,12 @@ func (v *Visit) validate() error {
 			return fmt.Errorf("seal %d", i+1)
 		}
 	}
-	var gatedFacts, loadedFacts int
+	for i, r := range st.Releases {
+		if r.No != i+1 || !packed || !r.valid() || r.At.Before(st.StuffedAt) || (i > 0 && r.At.Before(st.Releases[i-1].At)) {
+			return fmt.Errorf("release %d", i+1)
+		}
+	}
+	lastIn, lastOut, lastLoad, lastTerminal := -1, -1, -1, ""
 	seen := map[string]struct{}{}
 	for i, e := range st.Events {
 		if e.No != i+1 || !e.valid() || e.At.Before(st.AssignedAt) {
@@ -716,14 +752,25 @@ func (v *Visit) validate() error {
 			return fmt.Errorf("event %d", i+1)
 		}
 		seen[e.Source+"\x00"+e.Reference] = struct{}{}
-		if e.Kind == EventGateIn {
-			gatedFacts++
+		switch e.Kind {
+		case EventGateIn:
+			lastIn = i
+		case EventGateOut:
+			if lastTerminal != EventGateIn {
+				return fmt.Errorf("event %d", i+1)
+			}
+			lastOut = i
+		case EventLoaded:
+			lastLoad = i
 		}
-		if e.Kind == EventLoaded {
-			loadedFacts++
+		if e.Kind == EventGateIn || e.Kind == EventGateOut {
+			lastTerminal = e.Kind
 		}
 	}
-	if (gated || loaded) != (gatedFacts > 0) || loaded != (loadedFacts > 0) {
+	// A container is gated in or loaded exactly when its latest gate-in comes after its latest gate-out, loaded exactly
+	// when a loading is recorded, and no gate-out comes after a loading. A gate-out follows a gate-in with no gate-out
+	// between them.
+	if (gated || loaded) != (lastIn > lastOut) || loaded != (lastLoad >= 0) || (lastLoad >= 0 && lastOut > lastLoad) {
 		return fmt.Errorf("event")
 	}
 	return nil
@@ -735,11 +782,15 @@ func (v *Visit) State() VisitState {
 	st.Seals = append([]VisitSeal(nil), st.Seals...)
 	st.Assertions = append([]VgmAssertion(nil), st.Assertions...)
 	st.Events = append([]VisitEvent(nil), st.Events...)
+	st.Releases = append([]ConflictRelease(nil), st.Releases...)
 	return st
 }
 
 func (v *Visit) ID() VisitID      { return v.state.VisitID }
 func (v *Visit) Pending() []Event { return append([]Event(nil), v.pending...) }
+
+// AddedReleases returns the releases recorded since the visit was loaded.
+func (v *Visit) AddedReleases() []ConflictRelease { return v.state.Releases[v.releases:] }
 
 // AddedSeals returns the seals recorded since the visit was loaded.
 func (v *Visit) AddedSeals() []VisitSeal { return v.state.Seals[v.seals:] }

@@ -75,6 +75,17 @@ type assertionRow struct {
 	ResponseEnteredAt *time.Time `json:"response_entered_at"`
 }
 
+type releaseRow struct {
+	ReleaseNo   int       `json:"release_no"`
+	FactNo      int       `json:"fact_no"`
+	PHYSeal     string    `json:"phy_seal"`
+	PHYSealedAt time.Time `json:"phy_sealed_at"`
+	Reason      string    `json:"reason"`
+	RecordedBy  string    `json:"recorded_by"`
+	RecordedAt  time.Time `json:"recorded_at"`
+	EnteredAt   time.Time `json:"entered_at"`
+}
+
 type eventRow struct {
 	EventNo    int       `json:"event_no"`
 	Kind       string    `json:"kind"`
@@ -95,17 +106,18 @@ func readVisit(ctx context.Context, q queryRower, tenant sea.TenantID, id sea.Vi
 	var stuffedAt, releasedAt, phySealedAt *time.Time
 	var phySeal *string
 	var revision int64
-	var seals, assertions, events []byte
+	var seals, assertions, events, releases []byte
 	err := q.QueryRow(ctx, `SELECT v.movement_id,v.consolidation_id,v.load_unit_no,v.container_number,v.size_type,v.tare_kg,v.max_gross_kg,v.plate_source,
       v.status,v.execution_id,v.difference_reason,v.stuffed_by,v.stuffed_at,v.stuffed_phy_seal,v.stuffed_phy_sealed_at,v.release_reason,v.released_by,v.released_at,v.assigned_by,v.assigned_at,
       v.entered_at,v.revision,
       (SELECT coalesce(json_agg(s ORDER BY s.seal_no), '[]') FROM cargo_sea.container_seal s WHERE s.tenant_id=v.tenant_id AND s.visit_id=v.visit_id),
       (SELECT coalesce(json_agg(a ORDER BY a.version), '[]') FROM cargo_sea.vgm_assertion a WHERE a.tenant_id=v.tenant_id AND a.visit_id=v.visit_id),
-      (SELECT coalesce(json_agg(e ORDER BY e.event_no), '[]') FROM cargo_sea.container_event e WHERE e.tenant_id=v.tenant_id AND e.visit_id=v.visit_id)
+      (SELECT coalesce(json_agg(e ORDER BY e.event_no), '[]') FROM cargo_sea.container_event e WHERE e.tenant_id=v.tenant_id AND e.visit_id=v.visit_id),
+      (SELECT coalesce(json_agg(r ORDER BY r.release_no), '[]') FROM cargo_sea.carrier_conflict_release r WHERE r.tenant_id=v.tenant_id AND r.visit_id=v.visit_id)
       FROM cargo_sea.container_visit v WHERE v.tenant_id=$1 AND v.visit_id=$2`, string(tenant), string(id)).Scan(
 		&st.MovementID, &st.ConsolidationID, &st.LoadUnitNo, &st.Number, &st.SizeType, &tare, &maxGross, &plate, &st.Status,
 		&execution, &difference, &stuffedBy, &stuffedAt, &phySeal, &phySealedAt, &releaseReason, &releasedBy, &releasedAt, &st.AssignedBy, &st.AssignedAt, &st.EnteredAt,
-		&revision, &seals, &assertions, &events)
+		&revision, &seals, &assertions, &events, &releases)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, 0, fmt.Errorf("%w: visit %s", bentorepo.ErrNotFound, id)
 	}
@@ -145,6 +157,14 @@ func readVisit(ctx context.Context, q queryRower, tenant sea.TenantID, id sea.Vi
 	for _, e := range happened {
 		st.Events = append(st.Events, sea.VisitEvent{No: e.EventNo, Kind: e.Kind, Location: kernel.LocationCode{Scheme: kernel.UNLOCODE, Code: e.Location},
 			OccurredAt: utc(e.OccurredAt), Source: e.Source, Reference: e.Reference, By: e.RecordedBy, At: utc(e.RecordedAt), EnteredAt: utc(e.EnteredAt)})
+	}
+	var released []releaseRow
+	if err = json.Unmarshal(releases, &released); err != nil {
+		return nil, 0, err
+	}
+	for _, r := range released {
+		st.Releases = append(st.Releases, sea.ConflictRelease{No: r.ReleaseNo, FactNo: r.FactNo, PHYSeal: r.PHYSeal, PHYSealedAt: utc(r.PHYSealedAt), Reason: r.Reason,
+			By: r.RecordedBy, At: utc(r.RecordedAt), EnteredAt: utc(r.EnteredAt)})
 	}
 	v, err := sea.RestoreVisit(st)
 	return v, revision, err
@@ -206,7 +226,22 @@ func (s VisitStore) Save(ctx context.Context, v *sea.Visit, expected int64) (int
 	if err = writeEvents(ctx, q, v); err != nil {
 		return 0, err
 	}
+	if err = writeReleases(ctx, q, v); err != nil {
+		return 0, err
+	}
 	return revision, nil
+}
+
+func writeReleases(ctx context.Context, q bentopg.Executor, v *sea.Visit) error {
+	st := v.State()
+	for _, r := range v.AddedReleases() {
+		if _, err := q.Exec(ctx, `INSERT INTO cargo_sea.carrier_conflict_release (tenant_id,visit_id,release_no,fact_no,phy_seal,phy_sealed_at,reason,recorded_by,recorded_at,entered_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+			string(st.TenantID), string(st.VisitID), r.No, r.FactNo, r.PHYSeal, r.PHYSealedAt, r.Reason, r.By, r.At, r.EnteredAt); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func writeEvents(ctx context.Context, q bentopg.Executor, v *sea.Visit) error {

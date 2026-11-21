@@ -187,7 +187,11 @@ func (d Deps) ChangeVisitReading(ctx context.Context, c Command, read func(conte
 		if added := v.AddedAssertions(); len(added) > 0 {
 			assertion = added[len(added)-1].Version
 		}
-		return Receipt{SubjectID: c.Subject, NewRevision: revision, SealNo: seal, AssertionNo: assertion, EventNo: eventNo}, append(aggs, v), nil
+		release := 0
+		if added := v.AddedReleases(); len(added) > 0 {
+			release = added[len(added)-1].No
+		}
+		return Receipt{SubjectID: c.Subject, NewRevision: revision, SealNo: seal, AssertionNo: assertion, EventNo: eventNo, ReleaseNo: release}, append(aggs, v), nil
 	})
 }
 
@@ -389,4 +393,33 @@ func (d Deps) signatoryScope(ctx context.Context, c Command) error {
 		return fmt.Errorf("%w: %v", ErrUnauthorized, err)
 	}
 	return nil
+}
+
+// AcceptCarrierLoadingConflict releases the conflict between SEA's records and a carrier's loading report that the
+// visit's pending item reports. It runs as any visit command: the command id, the visit, then the movement are locked
+// (a finalize of the same movement waits for it or is waited for), and the movement's live containers are counted as
+// they stand in the transaction. Nothing of the movement is written.
+func (d Deps) AcceptCarrierLoadingConflict(ctx context.Context, c Command, reason string) (Receipt, error) {
+	return d.ChangeVisit(ctx, c, func(txCtx context.Context, v *sea.Visit) (int, error) {
+		st := v.State()
+		mv, err := d.Movement(txCtx, st.TenantID, st.MovementID)
+		if err != nil {
+			return 0, err
+		}
+		ids, err := d.Visits.OfMovement(txCtx, st.TenantID, st.MovementID)
+		if err != nil {
+			return 0, err
+		}
+		live := 0
+		for _, id := range ids {
+			other, _, err := d.Visits.Read(txCtx, st.TenantID, id)
+			if err != nil {
+				return 0, err
+			}
+			if other.Live() {
+				live++
+			}
+		}
+		return 0, v.AcceptCarrierLoadingConflict(mv, live, reason, c.Scope.ActorID, c.OccurredAt)
+	})
 }

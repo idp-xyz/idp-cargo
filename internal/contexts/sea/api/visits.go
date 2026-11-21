@@ -49,6 +49,25 @@ type RecordContainerSeal struct {
 	OccurredAt       time.Time
 }
 
+// AcceptCarrierLoadingConflict releases the conflict between SEA's records and a carrier's loading report at a reseal
+// (V2.89): the pending item GATED_IN_BEFORE_RESEAL that is raised only because the carrier reported a loading (naming
+// the container, or naming none while it is the movement's only live container) dated before PHY sealed the container
+// again, while the container's own events show neither a loading nor a stay at the terminal then. The operator, having
+// checked, states a Reason (at most 500 characters, required), which is kept with who and when; the item then reads as
+// a warning. The release covers that report against that seal of PHY's and nothing else. It is accepted while the
+// movement is OPEN, on a container that has such an item; an item raised by the container's own loading or by its
+// gate-in with no return cannot be released this way. The receipt names the release (ReleaseNo). The published facts
+// do not change.
+type AcceptCarrierLoadingConflict struct {
+	CommandID        string
+	TenantID         string
+	ActorID          string
+	VisitID          string
+	ExpectedRevision int64
+	Reason           string
+	OccurredAt       time.Time
+}
+
 // RecordStuffingDone records that an assigned container is stuffed and sealed. A seal must be recorded, and the
 // movement's live houses must carry, as FUL relays it from PHY (OD-2), one sealed stuffing of the visit's load
 // unit; refresh the houses first when FUL has newer evidence. The visit keeps PHY's stuffing and becomes STUFFED:
@@ -106,8 +125,11 @@ type AssertVgm struct {
 }
 
 // RecordContainerEvent records a carrier or terminal fact about the container: the empty container released or picked
-// up, its arrival at the CFS, its gate-in, its loading on board, or a roll to another vessel. It never moves a house.
-// A container is gated in only once its verified gross mass is submitted, and loaded only once it is gated in.
+// up, its arrival at the CFS, its gate-in, its return from the terminal, its loading on board, or a roll to another
+// vessel. It never moves a house. A container is gated in only once its verified gross mass is submitted, and loaded
+// only once it is gated in. GATE_OUT_TERMINAL is the full container taken back out of the terminal to the forwarder's
+// warehouse: it is accepted only while the container is gated in, returns the visit to VGM_SUBMITTED and is refused on
+// a loaded container (handled outside the system).
 // Stuffing is recorded by RecordStuffingDone. The source reference is recorded once: the same message again returns
 // the same event and leaves the revision, and the same reference with other content is refused. Location is the
 // UN/LOCODE where the fact happened. HappenedAt is when it happened; OccurredAt is when it is recorded. A loading
@@ -151,19 +173,21 @@ type VisitCommands interface {
 	AssertVgm(ctx context.Context, cmd AssertVgm) (Receipt, error)
 	RecordVgmResponse(ctx context.Context, cmd RecordVgmResponse) (Receipt, error)
 	RecordContainerEvent(ctx context.Context, cmd RecordContainerEvent) (Receipt, error)
+	AcceptCarrierLoadingConflict(ctx context.Context, cmd AcceptCarrierLoadingConflict) (Receipt, error)
 }
 
 // Actions of container visits; the subject is the visit.
 const (
-	ActionAssignContainer      = "AssignContainer"
-	ActionRecordContainerSeal  = "RecordContainerSeal"
-	ActionRecordStuffingDone   = "RecordStuffingDone"
-	ActionReleaseContainer     = "ReleaseContainer"
-	ActionAssertVgm            = "AssertVgm"
-	ActionRecordVgmResponse    = "RecordVgmResponse"
-	ActionRecordContainerEvent = "RecordContainerEvent"
-	ActionReadVgmSignatory     = "ReadVgmSignatory"
-	ActionReadVgmSignatoryLog  = "ReadVgmSignatoryAccess"
+	ActionAssignContainer              = "AssignContainer"
+	ActionRecordContainerSeal          = "RecordContainerSeal"
+	ActionRecordStuffingDone           = "RecordStuffingDone"
+	ActionReleaseContainer             = "ReleaseContainer"
+	ActionAssertVgm                    = "AssertVgm"
+	ActionRecordVgmResponse            = "RecordVgmResponse"
+	ActionRecordContainerEvent         = "RecordContainerEvent"
+	ActionAcceptCarrierLoadingConflict = "AcceptCarrierLoadingConflict"
+	ActionReadVgmSignatory             = "ReadVgmSignatory"
+	ActionReadVgmSignatoryLog          = "ReadVgmSignatoryAccess"
 )
 
 // Visit states, seal parties and plate sources.
@@ -179,6 +203,7 @@ const (
 	EventEmptyPickedUp = "EMPTY_PICKED_UP"
 	EventArrivedAtCFS  = "ARRIVED_AT_CFS"
 	EventGateIn        = "GATE_IN_TERMINAL"
+	EventGateOut       = "GATE_OUT_TERMINAL"
 	EventLoaded        = "LOADED_ON_BOARD"
 	EventRolled        = "ROLLED"
 
@@ -207,6 +232,18 @@ type ContainerSeal struct {
 	RecordedAt time.Time
 }
 
+// CarrierConflictRelease is an operator's release of a conflict with a carrier's loading report: the report (its fact
+// number on the movement), PHY's seal and when it was sealed, the reason, who and when.
+type CarrierConflictRelease struct {
+	ReleaseNo   int
+	FactNo      int
+	PHYSeal     string
+	PHYSealedAt time.Time
+	Reason      string
+	RecordedBy  string
+	RecordedAt  time.Time
+}
+
 // ContainerVisit is a container visit with its seals, latest first.
 type ContainerVisit struct {
 	TenantID        string
@@ -224,9 +261,10 @@ type ContainerVisit struct {
 	SealNumber      string // the current seal; empty before one is recorded
 	SealParty       string
 	Seals           []ContainerSeal
-	Assertions      []VgmAssertion   // latest first; none carries the signatory's name
-	Events          []ContainerEvent // latest first
-	ExecutionID     string           // PHY's stuffing of the unit, once STUFFED
+	Assertions      []VgmAssertion           // latest first; none carries the signatory's name
+	Events          []ContainerEvent         // latest first
+	Releases        []CarrierConflictRelease // latest first
+	ExecutionID     string                   // PHY's stuffing of the unit, once STUFFED
 	// DifferenceReason is why the container was taken as stuffed although PHY's seal or size-type differed.
 	DifferenceReason string
 	StuffedAt        time.Time
@@ -260,8 +298,10 @@ const (
 	SealRecorded           = "SealRecorded.v1"
 	ContainerEventRecorded = "ContainerEventRecorded.v1"
 	ContainerReleased      = "ContainerReleased.v1"
-	VgmAsserted            = "VgmAsserted.v1"
-	VgmResponseRecorded    = "VgmResponseRecorded.v1"
+	// CarrierLoadingConflictReleased names the release (release_no) of a conflict with a carrier's loading report.
+	CarrierLoadingConflictReleased = "CarrierLoadingConflictReleased.v1"
+	VgmAsserted                    = "VgmAsserted.v1"
+	VgmResponseRecorded            = "VgmResponseRecorded.v1"
 
 	ContainerEventStuffed = "STUFFED"
 )

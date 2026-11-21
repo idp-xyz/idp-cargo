@@ -456,7 +456,7 @@ func TestAContainerGatedInBeforeTheReworkIsStoppedWithEveryContext(t *testing.T)
 		t.Fatalf("S2 is followed on the gated-in container: %s %s", sealList(v), v.Status)
 	}
 	d.visit = v.Revision
-	refusedWith(t, "F3", d.finalize("fin-f3", 31), "gated in or was loaded before PHY sealed it again", "its return from the terminal is not recorded yet")
+	refusedWith(t, "F3", d.finalize("fin-f3", 31), "was at the terminal when PHY sealed it again", "RecordContainerEvent GATE_OUT_TERMINAL")
 	if err := d.vgm("vgm-2", 2950, 31); err == nil || !strings.Contains(err.Error(), "invalid state transition") {
 		t.Fatalf("a VGM on a gated-in container is refused as today: %v", err)
 	}
@@ -740,7 +740,7 @@ func TestAResealRecordedAfterSEAsStuffingButDatedBeforeItIsFollowedWithEveryCont
 		d.visit = d.cv().Revision
 		d.must("refresh H02", d.refresh("SH-H02", 34))
 		if gated {
-			refusedWith(t, "F3 after a backdated reseal", d.finalize("fin-f3", 35), "gated in or was loaded before PHY sealed it again", "by its gate-in")
+			refusedWith(t, "F3 after a backdated reseal", d.finalize("fin-f3", 35), "was at the terminal when PHY sealed it again", "GATE_OUT_TERMINAL")
 			continue
 		}
 		// only warnings: SEA learned of the seal after the VGM was keyed in, and PHY's reseal is dated before the

@@ -198,6 +198,7 @@ type Receipt struct {
 	SealNo       int
 	AssertionNo  int
 	EventNo      int
+	ReleaseNo    int
 	FactsVersion int
 	FactNo       int
 }
