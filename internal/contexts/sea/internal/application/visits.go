@@ -164,7 +164,7 @@ func (d Deps) ChangeVisitReading(ctx context.Context, c Command, read func(conte
 		default:
 			for _, e := range v.AddedEvents() {
 				if e.Kind == sea.EventLoaded && err == nil {
-					err = mv.LoadedOnBoard(e.OccurredAt, c.Scope.ActorID, c.OccurredAt)
+					err = mv.ContainerLoadedOnBoard(v.State().Number, e.OccurredAt, c.Scope.ActorID, c.OccurredAt)
 				}
 			}
 		}

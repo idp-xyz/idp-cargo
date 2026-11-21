@@ -638,11 +638,53 @@ func (m *Movement) changesOnBoard(occurred time.Time) bool {
 	return published.IsZero() || occurred.Before(published)
 }
 
+// changesContainerOnBoard reports whether a loading of the container with this number at occurred changes the
+// on-board date the latest published facts state for that container: they state none for it, or a later one. Facts
+// published before each container carried its own date state none for any container and are read by the movement's
+// date only, so a loading changes nothing in them beyond what changesOnBoard says, as before.
+func (m *Movement) changesContainerOnBoard(number string, occurred time.Time) bool {
+	n := len(m.state.DocFacts)
+	if n == 0 || !m.state.DocFacts[n-1].Facts.ContainerDates {
+		return false
+	}
+	published := m.state.DocFacts[n-1].Facts
+	for _, c := range published.Containers {
+		if c.Number == number {
+			return m.namedByAHouse(published, c.VisitID) && (c.OnBoardAt.IsZero() || occurred.Before(c.OnBoardAt))
+		}
+	}
+	return false
+}
+
+// namedByAHouse reports whether a house of the published facts has packs in the container: a loading of a container
+// that no house names changes no house's date, so it leaves the facts as they are.
+func (m *Movement) namedByAHouse(published OceanDocFacts, visit string) bool {
+	for _, h := range published.Houses {
+		for _, b := range h.Containers {
+			if b.VisitID == visit {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // LoadedOnBoard returns a FINAL movement to OPEN when a container's loading at occurred changes the on-board date
 // its published facts state, as a new seal does. A loading that leaves the published date as it is, and a movement
 // that is not FINAL, are left as they are.
 func (m *Movement) LoadedOnBoard(occurred time.Time, by string, at time.Time) error {
-	if m.state.State != StateFinal || !m.changesOnBoard(occurred) {
+	return m.loadedOnBoard("", occurred, by, at)
+}
+
+// ContainerLoadedOnBoard is LoadedOnBoard for the loading of the container with this number: the movement also
+// returns to OPEN when the loading changes the on-board date the published facts state for that container, because
+// DOC dates a house's bill by the loading of its own containers and would not otherwise see this one.
+func (m *Movement) ContainerLoadedOnBoard(number string, occurred time.Time, by string, at time.Time) error {
+	return m.loadedOnBoard(number, occurred, by, at)
+}
+
+func (m *Movement) loadedOnBoard(number string, occurred time.Time, by string, at time.Time) error {
+	if m.state.State != StateFinal || !m.changesOnBoard(occurred) && !(number != "" && m.changesContainerOnBoard(number, occurred)) {
 		return nil
 	}
 	if err := m.changeable(by, at); err != nil {
@@ -696,7 +738,7 @@ func (m *Movement) RecordCarrierFact(f CarrierFact, liveContainers []string, by 
 	if err := m.changeable(by, at); err != nil {
 		return 0, false, err
 	}
-	if f.Kind == CarrierLoaded && m.state.State == StateFinal && m.changesOnBoard(f.OccurredAt) {
+	if f.Kind == CarrierLoaded && m.state.State == StateFinal && (m.changesOnBoard(f.OccurredAt) || m.changesContainerOnBoard(f.ContainerNumber, f.OccurredAt)) {
 		m.reopen(at)
 	}
 	f.No, f.By, f.At = len(m.state.CarrierFacts)+1, by, at.UTC()

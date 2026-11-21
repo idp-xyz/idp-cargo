@@ -36,9 +36,11 @@ func (f Facts) Latest(ctx context.Context, tenant doc.TenantID, movement string)
 		ConsolidationID: got.ConsolidationID, LegalEntityID: got.OperatingLegalEntityID, CarrierPartyID: got.CarrierPartyID,
 		MasterBill: got.MasterBillNumber, CarrierPartyRevision: got.CarrierPartyRevision, CarrierRole: got.CarrierRole,
 		MasterBillKind: got.MasterBillKind, Vessel: got.Vessel, Voyage: got.Voyage, PlaceOfReceipt: got.PlaceOfReceipt,
-		PortOfLoading: got.PortOfLoading, PortOfDischarge: got.PortOfDischarge, Edition: got.LocationEdition, OnBoardAt: got.OnBoardAt}
+		PortOfLoading: got.PortOfLoading, PortOfDischarge: got.PortOfDischarge, Edition: got.LocationEdition, OnBoardAt: got.OnBoardAt,
+		ContainerDates: got.ContainerDates}
 	for _, c := range got.Containers {
-		out.Containers = append(out.Containers, doc.OceanContainer{VisitID: c.VisitID, Number: c.Number, SizeType: c.SizeType, SealNumber: c.SealNumber})
+		out.Containers = append(out.Containers, doc.OceanContainer{VisitID: c.VisitID, Number: c.Number, SizeType: c.SizeType, SealNumber: c.SealNumber,
+			OnBoardAt: c.OnBoardAt})
 	}
 	for _, h := range got.Houses {
 		house := doc.OceanHouse{ShipmentID: h.ShipmentID, HBL: h.HBL, Packs: h.Packs, Package: h.PackageType, GrossGrams: h.GrossWeightGrams,

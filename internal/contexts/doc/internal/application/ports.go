@@ -61,6 +61,10 @@ type DocumentStore interface {
 	Insert(context.Context, *doc.Document) (int64, error)
 	Save(context.Context, *doc.Document, int64) (int64, error)
 	List(ctx context.Context, tenant doc.TenantID, shipment, consolidation string) ([]Summary, error)
+	// ListOfMovement returns the ids of the house bills (HBL, house sea waybill) whose document names the movement and
+	// is not cancelled (a surrendered one is listed; the domain gives it no items). The consolidation of the movement
+	// is given so that the store can use its index.
+	ListOfMovement(ctx context.Context, tenant doc.TenantID, movement, consolidation string) ([]doc.DocumentID, error)
 	// IssuedFor returns the shipment or movement a number of a legal entity and kind was issued for, if it was.
 	IssuedFor(ctx context.Context, tenant doc.TenantID, legalEntity string, kind doc.Kind, number string) (subject string, found bool, err error)
 }

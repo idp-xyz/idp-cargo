@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"time"
@@ -402,6 +403,66 @@ type Reads struct {
 	Tx          TxRunner
 	Documents   DocumentStore
 	Authorities AuthorityStore
+	Ocean       Ocean
+}
+
+// PendingOfDocument lists the pending items of a sea house bill: the document is read in one snapshot and SEA's latest
+// facts of its movement after it, outside any transaction. A document that has none by definition answers none.
+func (r Reads) PendingOfDocument(ctx context.Context, tenant doc.TenantID, id doc.DocumentID) ([]doc.PendingItem, error) {
+	if r.Ocean == nil {
+		return nil, ErrMissingDependency
+	}
+	m, _, err := r.Document(ctx, tenant, id)
+	if err != nil {
+		return nil, err
+	}
+	movement, ok := m.PendingMovement()
+	if !ok {
+		return nil, nil
+	}
+	facts, err := r.Ocean.Latest(ctx, tenant, movement)
+	if err != nil {
+		return nil, err
+	}
+	return m.PendingItems(facts), nil
+}
+
+// PendingOfMovement lists the pending items of the sea house bills whose document names the movement, in the order of
+// their ids. SEA's latest facts are read first (they give the movement's consolidation, which the store's index
+// serves), then each document in its own snapshot.
+func (r Reads) PendingOfMovement(ctx context.Context, tenant doc.TenantID, movement string) ([]doc.PendingItem, error) {
+	if tenant == "" || movement == "" {
+		return nil, ErrInvalidQuery
+	}
+	if r.Ocean == nil {
+		return nil, ErrMissingDependency
+	}
+	facts, err := r.Ocean.Latest(ctx, tenant, movement)
+	if errors.Is(err, ErrUnknownSource) {
+		return nil, nil // SEA has published no facts of it (unknown, or never finalized): no bill was built on any
+	}
+	if err != nil {
+		return nil, err
+	}
+	var ids []doc.DocumentID
+	if err = r.Tx.WithinTransaction(ctx, func(txCtx context.Context) error {
+		var err error
+		ids, err = r.Documents.ListOfMovement(txCtx, tenant, movement, facts.ConsolidationID)
+		return err
+	}); err != nil {
+		return nil, err
+	}
+	var out []doc.PendingItem
+	for _, id := range ids {
+		m, _, err := r.Document(ctx, tenant, id)
+		if err != nil {
+			return nil, err
+		}
+		if at, ok := m.PendingMovement(); ok && at == movement {
+			out = append(out, m.PendingItems(facts)...)
+		}
+	}
+	return out, nil
 }
 
 func (r Reads) Document(ctx context.Context, tenant doc.TenantID, id doc.DocumentID) (*doc.Document, int64, error) {

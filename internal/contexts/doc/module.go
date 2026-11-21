@@ -57,6 +57,7 @@ func WithRecordWindow(w kernel.RecordWindow) Option { return func(m *Module) { m
 var (
 	_ api.Commands                         = (*Module)(nil)
 	_ api.Queries                          = (*Module)(nil)
+	_ api.PendingQueries                   = (*Module)(nil)
 	_ api.TransportDocumentSnapshotQueries = (*Module)(nil)
 )
 
@@ -337,7 +338,31 @@ func (m *Module) GetIssuanceAuthority(ctx context.Context, q api.GetIssuanceAuth
 
 func (m *Module) reads(tenant string) application.Reads {
 	return application.Reads{Tx: bento.TenantTransactor{DB: m.db, Tenant: tenant}, Documents: postgres.DocumentStore{DB: m.db},
-		Authorities: postgres.AuthorityStore{DB: m.db}}
+		Authorities: postgres.AuthorityStore{DB: m.db}, Ocean: m.ocean}
+}
+
+func (m *Module) GetPendingItemsOfMovement(ctx context.Context, q api.GetPendingItemsOfMovement) ([]api.PendingItem, error) {
+	found, err := m.reads(q.TenantID).PendingOfMovement(ctx, domain.TenantID(q.TenantID), q.MovementID)
+	return pendingItems(found, err)
+}
+
+func (m *Module) GetPendingItemsOfDocument(ctx context.Context, q api.GetPendingItemsOfDocument) ([]api.PendingItem, error) {
+	if q.TenantID == "" || q.DocumentID == "" {
+		return nil, classify(application.ErrInvalidQuery)
+	}
+	found, err := m.reads(q.TenantID).PendingOfDocument(ctx, domain.TenantID(q.TenantID), domain.DocumentID(q.DocumentID))
+	return pendingItems(found, err)
+}
+
+func pendingItems(found []domain.PendingItem, err error) ([]api.PendingItem, error) {
+	if err != nil {
+		return nil, classify(err)
+	}
+	out := []api.PendingItem{}
+	for _, p := range found {
+		out = append(out, api.PendingItem{Kind: p.Kind, DocumentID: string(p.DocumentID), ShipmentID: p.ShipmentID, Number: p.Number, Message: p.Message, Blocking: p.Blocking})
+	}
+	return out, nil
 }
 
 func (m *Module) deps(tenant, commandID string) application.Deps {
