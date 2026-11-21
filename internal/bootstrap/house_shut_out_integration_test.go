@@ -252,7 +252,7 @@ func TestAHouseShutOutBeforeStuffingIsTransferredWithEveryContext(t *testing.T) 
 	d.must("cost of P-2", err)
 	p2, err := d.fin.GetConsolCostPool(d.ctx, finapi.GetConsolCostPool{TenantID: d.tenant, PoolID: "P-2"})
 	d.must("P-2", err)
-	if _, err = d.fin.ApportionConsolCosts(d.ctx, finapi.ApportionConsolCosts{CommandID: "fin-apportion-p2", TenantID: d.tenant, ActorID: "fin-1", PoolID: "P-2",
+	if _, err = previewAndSubmit(d.ctx, d.fin, finapi.PreviewConsolCostApportionment{CommandID: "fin-apportion-p2", TenantID: d.tenant, ActorID: "fin-1", PoolID: "P-2",
 		ExpectedRevision: p2.Revision, LineNos: []int{1}, OccurredAt: d.hours(34)}); err != nil {
 		t.Fatalf("apportion P-2: %v", err)
 	}

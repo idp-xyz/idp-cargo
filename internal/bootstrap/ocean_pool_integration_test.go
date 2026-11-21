@@ -332,7 +332,7 @@ func TestTheOceanConsolidationIsCostedWithEveryContext(t *testing.T) {
 	}
 	apportion := func(id string, h int, lines ...int) {
 		t.Helper()
-		_, err := finModule.ApportionConsolCosts(ctx, finapi.ApportionConsolCosts{CommandID: id, TenantID: tenant, ActorID: "fin-1", PoolID: "P-1",
+		_, err := previewAndSubmit(ctx, finModule, finapi.PreviewConsolCostApportionment{CommandID: id, TenantID: tenant, ActorID: "fin-1", PoolID: "P-1",
 			ExpectedRevision: pool().Revision, LineNos: lines, OccurredAt: hours(h)})
 		must("apportion "+id, err)
 	}
@@ -907,7 +907,7 @@ func TestTwoOwnContainersAndASplitHouseAreCostedWithPHYAndFIN(t *testing.T) {
 	// FIN apportions the freight at ACTUAL on those measures: W/M 800 : 288 : 2000 of 3088, USD 100,000 -> 25,907 / 9,326 /
 	// 64,767 and CNY 712,340 -> 184,544 / 66,436 / 461,360 (the hand calculation is in the first test), the same as if the
 	// three houses had been stuffed into one container
-	_, err = finModule.ApportionConsolCosts(ctx, finapi.ApportionConsolCosts{CommandID: "fin-apportion", TenantID: tenant, ActorID: "fin-1", PoolID: "P-1",
+	_, err = previewAndSubmit(ctx, finModule, finapi.PreviewConsolCostApportionment{CommandID: "fin-apportion", TenantID: tenant, ActorID: "fin-1", PoolID: "P-1",
 		ExpectedRevision: 2, OccurredAt: hours(17)})
 	must("apportion", err)
 	pool, err := finModule.GetConsolCostPool(ctx, finapi.GetConsolCostPool{TenantID: tenant, PoolID: "P-1"})
@@ -1099,7 +1099,7 @@ func TestAHouseLeftOutOfTheContainerBearsNoCostWithEveryContext(t *testing.T) {
 	}
 
 	// 2. the freight over all three houses: PLANNED, and C has a share
-	_, err = finModule.ApportionConsolCosts(ctx, finapi.ApportionConsolCosts{CommandID: "fin-apportion-all", TenantID: tenant, ActorID: "fin-1", PoolID: "P-1",
+	_, err = previewAndSubmit(ctx, finModule, finapi.PreviewConsolCostApportionment{CommandID: "fin-apportion-all", TenantID: tenant, ActorID: "fin-1", PoolID: "P-1",
 		ExpectedRevision: pool().Revision, OccurredAt: hours(16)})
 	must("apportion over all three houses", err)
 	all := latest()
@@ -1124,7 +1124,7 @@ func TestAHouseLeftOutOfTheContainerBearsNoCostWithEveryContext(t *testing.T) {
 	}
 
 	// 4. the same line with C left out: ACTUAL, A and B share the whole line by their loaded W/M, C's share is not used
-	_, err = finModule.ApportionConsolCosts(ctx, finapi.ApportionConsolCosts{CommandID: "fin-apportion-used", TenantID: tenant, ActorID: "fin-1", PoolID: "P-1",
+	_, err = previewAndSubmit(ctx, finModule, finapi.PreviewConsolCostApportionment{CommandID: "fin-apportion-used", TenantID: tenant, ActorID: "fin-1", PoolID: "P-1",
 		ExpectedRevision: pool().Revision, NotUsed: []string{"SH-C"}, OccurredAt: hours(20)})
 	must("apportion with SH-C left out", err)
 	used := latest()
@@ -1358,7 +1358,7 @@ func TestTheCostBasisTellsWhichHouseIsInWhichContainerWithPHYAndFIN(t *testing.T
 	// FIN apportions the freight at ACTUAL on those measures: W/M 800 : 288 : 2000 of 3088, USD 100,000 -> 25,907 / 9,326 /
 	// 64,767 and CNY 712,340 -> 184,544 / 66,436 / 461,360 (the hand calculation is in the first test of this file), the same as if the
 	// three houses had been stuffed into one container
-	_, err = finModule.ApportionConsolCosts(ctx, finapi.ApportionConsolCosts{CommandID: "fin-apportion", TenantID: tenant, ActorID: "fin-1", PoolID: "P-1",
+	_, err = previewAndSubmit(ctx, finModule, finapi.PreviewConsolCostApportionment{CommandID: "fin-apportion", TenantID: tenant, ActorID: "fin-1", PoolID: "P-1",
 		ExpectedRevision: 2, OccurredAt: hours(17)})
 	must("apportion", err)
 	pool, err := finModule.GetConsolCostPool(ctx, finapi.GetConsolCostPool{TenantID: tenant, PoolID: "P-1"})
@@ -1472,7 +1472,7 @@ func TestCostsAreApportionedByContainerCountAndTEUWithPHYAndFIN(t *testing.T) {
 	// before the stuffing no house is in any container: a line by TEU, and one by container count, are refused and nothing
 	// is stored
 	for i, method := range []string{finapi.MethodTEU, finapi.MethodContainerCount} {
-		_, err = finModule.ApportionConsolCosts(ctx, finapi.ApportionConsolCosts{CommandID: "fin-planned-" + method, TenantID: tenant, ActorID: "fin-1", PoolID: "P-1",
+		_, err = previewAndSubmit(ctx, finModule, finapi.PreviewConsolCostApportionment{CommandID: "fin-planned-" + method, TenantID: tenant, ActorID: "fin-1", PoolID: "P-1",
 			ExpectedRevision: pool().Revision, LineNos: []int{2 - i}, OccurredAt: hours(12)})
 		if err == nil || !strings.Contains(err.Error(), "FIN_POOL_NO_BASIS") || !strings.Contains(err.Error(), "stuffed") {
 			t.Fatalf("%s before the stuffing: %v", method, err)
@@ -1547,7 +1547,7 @@ func TestCostsAreApportionedByContainerCountAndTEUWithPHYAndFIN(t *testing.T) {
 	}
 	apportion := func(id string, h int, lines []int, notUsed ...string) {
 		t.Helper()
-		_, err := finModule.ApportionConsolCosts(ctx, finapi.ApportionConsolCosts{CommandID: id, TenantID: tenant, ActorID: "fin-1", PoolID: "P-1",
+		_, err := previewAndSubmit(ctx, finModule, finapi.PreviewConsolCostApportionment{CommandID: id, TenantID: tenant, ActorID: "fin-1", PoolID: "P-1",
 			ExpectedRevision: pool().Revision, LineNos: lines, NotUsed: notUsed, OccurredAt: hours(h)})
 		must("apportion "+id, err)
 	}
@@ -1767,7 +1767,7 @@ func TestContainerMethodsNeedEverySealedContainerWithPHYAndFIN(t *testing.T) {
 	}
 	apportion := func(id string, lines ...int) error {
 		t.Helper()
-		_, err := finModule.ApportionConsolCosts(ctx, finapi.ApportionConsolCosts{CommandID: id, TenantID: tenant, ActorID: "fin-1", PoolID: "P-1",
+		_, err := previewAndSubmit(ctx, finModule, finapi.PreviewConsolCostApportionment{CommandID: id, TenantID: tenant, ActorID: "fin-1", PoolID: "P-1",
 			ExpectedRevision: pool().Revision, LineNos: lines, OccurredAt: hours(17)})
 		return err
 	}
@@ -1966,7 +1966,7 @@ func TestCostsAreApportionedByRevenueWithPHYAndFIN(t *testing.T) {
 	}
 	apportion := func(id string, h int, method string, lines ...int) error {
 		t.Helper()
-		_, err := finModule.ApportionConsolCosts(ctx, finapi.ApportionConsolCosts{CommandID: id, TenantID: tenant, ActorID: "fin-1", PoolID: "P-1",
+		_, err := previewAndSubmit(ctx, finModule, finapi.PreviewConsolCostApportionment{CommandID: id, TenantID: tenant, ActorID: "fin-1", PoolID: "P-1",
 			ExpectedRevision: pool().Revision, LineNos: lines, Method: method, OccurredAt: hours(h)})
 		return err
 	}
@@ -2126,6 +2126,18 @@ func (d *oceanDay) evidence(source, ref string, h int) phyapi.Evidence {
 	return phyapi.Evidence{Source: source, Reference: ref, OccurredAt: d.hours(h)}
 }
 
+// previewAndSubmit previews an apportionment and submits it at once by the same person, as the one-step command
+// ApportionConsolCosts did before FIN V2.91. The submission takes the pool's revision the preview left and its own
+// command id, so a replay of the pair answers the stored receipts. It answers the submission's receipt.
+func previewAndSubmit(ctx context.Context, m finapi.Commands, in finapi.PreviewConsolCostApportionment) (finapi.Receipt, error) {
+	preview, err := m.PreviewConsolCostApportionment(ctx, in)
+	if err != nil {
+		return finapi.Receipt{}, err
+	}
+	return m.SubmitConsolCostApportionment(ctx, finapi.SubmitConsolCostApportionment{CommandID: in.CommandID + "-submit", TenantID: in.TenantID, ActorID: in.ActorID,
+		PoolID: in.PoolID, ExpectedRevision: preview.NewRevision, PreviewNo: preview.Version, OccurredAt: in.OccurredAt})
+}
+
 func newOceanDay(t *testing.T, prefix string, weights map[string]int64, volumes map[string]int64, units []string, costs []struct{ code, method string }) *oceanDay {
 	t.Helper()
 	ctx := context.Background()
@@ -2273,7 +2285,7 @@ func (d *oceanDay) seal(x string) {
 
 func (d *oceanDay) apportion(id string, lines ...int) error {
 	d.t.Helper()
-	_, err := d.fin.ApportionConsolCosts(d.ctx, finapi.ApportionConsolCosts{CommandID: id, TenantID: d.tenant, ActorID: "fin-1", PoolID: "P-1",
+	_, err := previewAndSubmit(d.ctx, d.fin, finapi.PreviewConsolCostApportionment{CommandID: id, TenantID: d.tenant, ActorID: "fin-1", PoolID: "P-1",
 		ExpectedRevision: d.pool().Revision, LineNos: lines, OccurredAt: d.hours(17)})
 	return err
 }

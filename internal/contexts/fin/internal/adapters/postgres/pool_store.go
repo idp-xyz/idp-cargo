@@ -63,6 +63,18 @@ type (
 		By            string    `json:"made_by"`
 		At            time.Time `json:"made_at"`
 		EnteredAt     time.Time `json:"entered_at"`
+		PreviewNo     *int      `json:"preview_no"`
+	}
+	previewRow struct {
+		No                int             `json:"preview_no"`
+		BasisRevision     int64           `json:"basis_revision"`
+		Stage             string          `json:"stage"`
+		Figures           json.RawMessage `json:"figures"`
+		Fingerprint       string          `json:"fingerprint"`
+		FingerprintSHA256 string          `json:"fingerprint_sha256"`
+		By                string          `json:"made_by"`
+		At                time.Time       `json:"made_at"`
+		EnteredAt         time.Time       `json:"entered_at"`
 	}
 	apportionedLineRow struct {
 		ApportionmentNo int     `json:"apportionment_no"`
@@ -72,6 +84,26 @@ type (
 		Reason          *string `json:"reason"`
 		Amount          *int64  `json:"amount_minor"` // NULL on lines of FIN V0.4: they divided their version's figures
 		Local           *int64  `json:"local_minor"`
+	}
+	// figureLine and figureShare are a preview's figures as stored: one JSON array of the lines it divided.
+	figureLine struct {
+		LineNo      int           `json:"line_no"`
+		LineVersion int           `json:"line_version"`
+		Method      string        `json:"method"`
+		Reason      string        `json:"reason,omitempty"`
+		Amount      int64         `json:"amount_minor"`
+		Local       int64         `json:"local_minor"`
+		Shares      []figureShare `json:"shares"`
+	}
+	figureShare struct {
+		No         int    `json:"share_no"`
+		ShipmentID string `json:"shipment_id"`
+		JobID      string `json:"job_id"`
+		Used       bool   `json:"used"`
+		Quantity   int64  `json:"quantity"`
+		Unit       string `json:"unit,omitempty"`
+		Amount     int64  `json:"amount_minor"`
+		Local      int64  `json:"local_minor"`
 	}
 	closureRow struct {
 		No              int        `json:"closure_no"`
@@ -103,7 +135,7 @@ const poolColumns = `p.pool_id,p.consolidation_id,p.legal_entity_id,p.mode,p.fun
 func poolChildren() string {
 	key := "c.tenant_id=p.tenant_id AND c.pool_id=p.pool_id"
 	return children("pool_cost_line", key, "c.line_no") + `,` + children("pool_cost_version", key, "c.line_no, c.version_no") + `,` +
-		children("pool_apportionment", key, "c.apportionment_no") + `,` + children("pool_apportionment_line", key, "c.apportionment_no, c.line_no") + `,` +
+		children("pool_apportionment", key, "c.apportionment_no") + `,` + children("pool_apportionment_preview", key, "c.preview_no") + `,` + children("pool_apportionment_line", key, "c.apportionment_no, c.line_no") + `,` +
 		children("pool_apportionment_share", key, "c.apportionment_no, c.line_no, c.share_no") + `,` +
 		children("consol_cost_pool_closure", key, "c.closure_no")
 }
@@ -112,20 +144,21 @@ func scanPool(row pgx.Row, tenant fin.TenantID) (*fin.ConsolCostPool, int64, err
 	st := fin.PoolState{TenantID: tenant}
 	var currency string
 	var revision int64
-	var lines, versions, apportionments, apportionedLines, shares, closures []byte
+	var lines, versions, apportionments, previews, apportionedLines, shares, closures []byte
 	err := row.Scan(&st.PoolID, &st.ConsolidationID, &st.LegalEntityID, &st.Mode, &currency, &st.BookCode, &st.State, &st.OpenedBy, &st.OpenedAt,
-		&st.EnteredAt, &revision, &lines, &versions, &apportionments, &apportionedLines, &shares, &closures)
+		&st.EnteredAt, &revision, &lines, &versions, &apportionments, &previews, &apportionedLines, &shares, &closures)
 	if err != nil {
 		return nil, 0, err
 	}
 	var lr []poolLineRow
 	var vr []poolVersionRow
 	var ar []apportionmentRow
+	var pr []previewRow
 	var alr []apportionedLineRow
 	var sr []shareRow
 	var cr []closureRow
 	if err = errors.Join(json.Unmarshal(lines, &lr), json.Unmarshal(versions, &vr), json.Unmarshal(apportionments, &ar),
-		json.Unmarshal(apportionedLines, &alr), json.Unmarshal(shares, &sr), json.Unmarshal(closures, &cr)); err != nil {
+		json.Unmarshal(previews, &pr), json.Unmarshal(apportionedLines, &alr), json.Unmarshal(shares, &sr), json.Unmarshal(closures, &cr)); err != nil {
 		return nil, 0, err
 	}
 	for _, c := range cr {
@@ -152,7 +185,24 @@ func scanPool(row pgx.Row, tenant fin.TenantID) (*fin.ConsolCostPool, int64, err
 	}
 	for _, a := range ar {
 		st.Apportionments = append(st.Apportionments, fin.Apportionment{No: a.No, BasisRevision: a.BasisRevision, Stage: a.Stage, By: a.By, At: utc(a.At),
-			EnteredAt: utc(a.EnteredAt)})
+			EnteredAt: utc(a.EnteredAt), PreviewNo: deref(a.PreviewNo)})
+	}
+	for _, v := range pr {
+		var figures []figureLine
+		if err = json.Unmarshal(v.Figures, &figures); err != nil {
+			return nil, 0, err
+		}
+		preview := fin.ApportionmentPreview{No: v.No, BasisRevision: v.BasisRevision, Stage: v.Stage, By: v.By, At: utc(v.At), EnteredAt: utc(v.EnteredAt),
+			Fingerprint: v.Fingerprint, FingerprintSHA256: v.FingerprintSHA256}
+		for _, f := range figures {
+			la := fin.LineApportionment{LineNo: f.LineNo, LineVersion: f.LineVersion, Method: f.Method, Reason: f.Reason, Amount: f.Amount, Local: f.Local}
+			for _, sh := range f.Shares {
+				la.Shares = append(la.Shares, fin.Share{No: sh.No, ShipmentID: sh.ShipmentID, JobID: sh.JobID, Used: sh.Used, Quantity: sh.Quantity, Unit: sh.Unit,
+					Amount: sh.Amount, Local: sh.Local})
+			}
+			preview.Lines = append(preview.Lines, la)
+		}
+		st.Previews = append(st.Previews, preview)
 	}
 	for _, l := range alr {
 		if l.ApportionmentNo < 1 || l.ApportionmentNo > len(st.Apportionments) {
@@ -296,6 +346,7 @@ func (s PoolStore) Save(ctx context.Context, p *fin.ConsolCostPool, expected int
 func writePool(ctx context.Context, q bentopg.Executor, p *fin.ConsolCostPool) error {
 	st := p.State()
 	lines, versions, lineOf, apportionments := p.Added()
+	previews := p.AddedPreviews()
 	exec := func(sql string, args ...any) error {
 		_, err := q.Exec(ctx, sql, append([]any{string(st.TenantID), st.PoolID}, args...)...)
 		return err
@@ -331,9 +382,39 @@ func writePool(ctx context.Context, q bentopg.Executor, p *fin.ConsolCostPool) e
 			return err
 		}
 	}
+	for _, v := range previews {
+		figures := make([]figureLine, 0, len(v.Lines))
+		for _, la := range v.Lines {
+			f := figureLine{LineNo: la.LineNo, LineVersion: la.LineVersion, Method: la.Method, Reason: la.Reason, Amount: la.Amount, Local: la.Local,
+				Shares: []figureShare{}}
+			for _, sh := range la.Shares {
+				f.Shares = append(f.Shares, figureShare{No: sh.No, ShipmentID: sh.ShipmentID, JobID: sh.JobID, Used: sh.Used, Quantity: sh.Quantity, Unit: sh.Unit,
+					Amount: sh.Amount, Local: sh.Local})
+			}
+			figures = append(figures, f)
+		}
+		blob, err := json.Marshal(figures)
+		if err != nil {
+			return err
+		}
+		if err = exec(`INSERT INTO cargo_fin.pool_apportionment_preview (tenant_id,pool_id,preview_no,basis_revision,stage,figures,fingerprint,fingerprint_sha256,
+            made_by,made_at,entered_at) VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9,$10,$11)`, v.No, v.BasisRevision, v.Stage, string(blob), v.Fingerprint,
+			v.FingerprintSHA256, v.By, v.At, v.EnteredAt); err != nil {
+			return err
+		}
+	}
 	for _, a := range apportionments {
-		if err := exec(`INSERT INTO cargo_fin.pool_apportionment (tenant_id,pool_id,apportionment_no,basis_revision,stage,made_by,made_at,entered_at)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, a.No, a.BasisRevision, a.Stage, a.By, a.At, a.EnteredAt); err != nil {
+		var preview any
+		if a.PreviewNo != 0 {
+			preview = a.PreviewNo
+		}
+		err := exec(`INSERT INTO cargo_fin.pool_apportionment (tenant_id,pool_id,apportionment_no,basis_revision,stage,made_by,made_at,entered_at,preview_no)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, a.No, a.BasisRevision, a.Stage, a.By, a.At, a.EnteredAt, preview)
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "pool_apportionment_one_per_preview" {
+			return fmt.Errorf("%w: preview %d of pool %s was submitted already", fin.ErrPreviewSubmitted, a.PreviewNo, st.PoolID)
+		}
+		if err != nil {
 			return err
 		}
 		for _, la := range a.Lines {

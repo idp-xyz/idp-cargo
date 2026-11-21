@@ -5,6 +5,7 @@ import (
 	"math/rand"
 	"strings"
 	"testing"
+	"time"
 
 	"go.idp.xyz/idp-cargo/internal/kernel"
 )
@@ -44,6 +45,15 @@ func recordCost(t *testing.T, p *ConsolCostPool, code string, amount kernel.Mone
 }
 
 func jobs() map[string]string { return map[string]string{"HS1": "JOB-1", "HS2": "JOB-2"} }
+
+// apportion previews an apportionment and submits it at once by the same person at the same time, on the basis the
+// preview read: what ApportionConsolCosts did in one step before V2.91.
+func apportion(p *ConsolCostPool, in ApportionInput, basis CostBasis, by string, at time.Time) error {
+	if err := p.Preview(in, basis, by, at); err != nil {
+		return err
+	}
+	return p.Submit(len(p.State().Previews), SubmitInput{Basis: basis, Jobs: in.Jobs, Revenue: in.Revenue}, by, at)
+}
 
 func TestOpenPoolChecks(t *testing.T) {
 	basis := airBasis()
@@ -100,7 +110,7 @@ func TestRecordAndReviseCost(t *testing.T) {
 func TestApportionChargeableAir(t *testing.T) {
 	p := pool(t, airBasis())
 	recordCost(t, p, "AIRFREIGHT", cny(100_000), MethodChargeable)
-	if err := p.Apportion(ApportionInput{Jobs: jobs()}, airBasis(), "ops-1", hour(4)); err != nil {
+	if err := apportion(p, ApportionInput{Jobs: jobs()}, airBasis(), "ops-1", hour(4)); err != nil {
 		t.Fatal(err)
 	}
 	a := p.State().Apportionments[0]
@@ -122,7 +132,7 @@ func TestApportionWMSeaLCL(t *testing.T) {
 	basis.Houses[1].LoadedGrossWeight, basis.Houses[1].LoadedVolume = kg(1200), cmq(900_000)
 	p := pool(t, basis)
 	recordCost(t, p, "OCEANFREIGHT", cny(36_000), MethodChargeable)
-	if err := p.Apportion(ApportionInput{Jobs: jobs()}, basis, "ops-1", hour(4)); err != nil {
+	if err := apportion(p, ApportionInput{Jobs: jobs()}, basis, "ops-1", hour(4)); err != nil {
 		t.Fatal(err)
 	}
 	s := p.State().Apportionments[0].Lines[0].Shares
@@ -135,7 +145,7 @@ func TestApportionVolumePiecesManual(t *testing.T) {
 	p := pool(t, airBasis())
 	recordCost(t, p, "HANDLING", cny(10_001), MethodVolume) // equal volumes: 50.01 and 50.00 by largest remainder (tie to HS1)
 	recordCost(t, p, "TERMINAL", cny(9_000), MethodPieces)  // 10 : 5 packs = 60.00 / 30.00
-	if err := p.Apportion(ApportionInput{Jobs: jobs()}, airBasis(), "ops-1", hour(4)); err != nil {
+	if err := apportion(p, ApportionInput{Jobs: jobs()}, airBasis(), "ops-1", hour(4)); err != nil {
 		t.Fatal(err)
 	}
 	a := p.State().Apportionments[0]
@@ -155,13 +165,13 @@ func TestApportionVolumePiecesManual(t *testing.T) {
 		"no reason":   {LineNos: []int{1}, Method: MethodManual, Manual: []ManualShare{{"HS1", 1}, {"HS2", 10_000}}, Jobs: jobs()},
 		"other house": {LineNos: []int{1}, Method: MethodManual, Manual: []ManualShare{{"HS9", 1}, {"HS2", 10_000}}, Reason: "r", Jobs: jobs()},
 	} {
-		if err := p.Apportion(in, airBasis(), "ops-1", hour(5)); err == nil {
+		if err := apportion(p, in, airBasis(), "ops-1", hour(5)); err == nil {
 			t.Errorf("%s: apportioned", name)
 		}
 	}
 	manual := ApportionInput{LineNos: []int{1}, Method: MethodManual, Manual: []ManualShare{{"HS1", 1}, {"HS2", 10_000}},
 		Reason: "agreed with the co-loader", Jobs: jobs()}
-	if err := p.Apportion(manual, airBasis(), "ops-1", hour(5)); err != nil {
+	if err := apportion(p, manual, airBasis(), "ops-1", hour(5)); err != nil {
 		t.Fatal(err)
 	}
 	// the manual apportionment supersedes line 1; line 2 keeps the first apportionment's shares
@@ -178,7 +188,7 @@ func TestApportionPlannedBeforeLoading(t *testing.T) {
 	basis.Houses[1].LoadedPacks, basis.Houses[1].LoadedGrossWeight, basis.Houses[1].LoadedVolume = 0, kernel.Quantity{}, kernel.Quantity{}
 	p := pool(t, basis)
 	recordCost(t, p, "AIRFREIGHT", cny(100_000), MethodChargeable)
-	if err := p.Apportion(ApportionInput{Jobs: jobs()}, basis, "ops-1", hour(4)); err != nil {
+	if err := apportion(p, ApportionInput{Jobs: jobs()}, basis, "ops-1", hour(4)); err != nil {
 		t.Fatal(err)
 	}
 	a := p.State().Apportionments[0]
@@ -192,28 +202,28 @@ func TestApportionRefusals(t *testing.T) {
 	basis := airBasis()
 	p := pool(t, basis)
 	recordCost(t, p, "AIRFREIGHT", cny(100_000), MethodChargeable)
-	if err := p.Apportion(ApportionInput{Jobs: map[string]string{"HS1": "JOB-1"}}, basis, "ops-1", hour(4)); !errors.Is(err, ErrPoolJobMissing) {
+	if err := apportion(p, ApportionInput{Jobs: map[string]string{"HS1": "JOB-1"}}, basis, "ops-1", hour(4)); !errors.Is(err, ErrPoolJobMissing) {
 		t.Fatalf("missing job: %v", err)
 	}
 	pounds := basis
 	pounds.Houses[0].LoadedGrossWeight = kernel.Quantity{Unit: "LBR", Amount: 100}
-	if err := p.Apportion(ApportionInput{Jobs: jobs()}, pounds, "ops-1", hour(4)); !errors.Is(err, ErrPoolUnit) {
+	if err := apportion(p, ApportionInput{Jobs: jobs()}, pounds, "ops-1", hour(4)); !errors.Is(err, ErrPoolUnit) {
 		t.Fatalf("pounds: %v", err)
 	}
 	empty := basis
 	for i := range empty.Houses {
 		empty.Houses[i].LoadedVolume = kernel.Quantity{}
 	}
-	if err := p.Apportion(ApportionInput{Method: MethodVolume, Jobs: jobs()}, empty, "ops-1", hour(4)); !errors.Is(err, ErrPoolNoBasis) {
+	if err := apportion(p, ApportionInput{Method: MethodVolume, Jobs: jobs()}, empty, "ops-1", hour(4)); !errors.Is(err, ErrPoolNoBasis) {
 		t.Fatalf("no volumes: %v", err)
 	}
-	if err := p.Apportion(ApportionInput{LineNos: []int{2}, Jobs: jobs()}, basis, "ops-1", hour(4)); !errors.Is(err, ErrInvalid) {
+	if err := apportion(p, ApportionInput{LineNos: []int{2}, Jobs: jobs()}, basis, "ops-1", hour(4)); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("unknown line: %v", err)
 	}
-	if err := p.Apportion(ApportionInput{Jobs: jobs()}, CostBasis{ConsolidationID: "CONSOL-9"}, "ops-1", hour(4)); !errors.Is(err, ErrPoolNoBasis) {
+	if err := apportion(p, ApportionInput{Jobs: jobs()}, CostBasis{ConsolidationID: "CONSOL-9"}, "ops-1", hour(4)); !errors.Is(err, ErrPoolNoBasis) {
 		t.Fatalf("other consolidation: %v", err)
 	}
-	if err := p.Apportion(ApportionInput{Jobs: jobs()}, basis, "ops-1", hour(1)); !errors.Is(err, ErrInvalid) {
+	if err := apportion(p, ApportionInput{Jobs: jobs()}, basis, "ops-1", hour(1)); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("backdated: %v", err)
 	}
 }
@@ -259,7 +269,7 @@ func TestSplitConservesEveryMinorUnit(t *testing.T) {
 func TestPoolRestoreRoundTrip(t *testing.T) {
 	p := pool(t, airBasis())
 	recordCost(t, p, "AIRFREIGHT", cny(100_000), MethodChargeable)
-	if err := p.Apportion(ApportionInput{Jobs: jobs()}, airBasis(), "ops-1", hour(4)); err != nil {
+	if err := apportion(p, ApportionInput{Jobs: jobs()}, airBasis(), "ops-1", hour(4)); err != nil {
 		t.Fatal(err)
 	}
 	p.Stamp(hour(4))
@@ -327,7 +337,7 @@ func TestApportionWMOwnContainer(t *testing.T) {
 	}
 	recordCost(t, p, "OCEANFREIGHT", cny(100_000), MethodChargeable)
 	in := ApportionInput{Jobs: map[string]string{"HS1": "JOB-1", "HS2": "JOB-2", "HS3": "JOB-3"}}
-	if err := p.Apportion(in, basis, "ops-1", hour(4)); err != nil {
+	if err := apportion(p, in, basis, "ops-1", hour(4)); err != nil {
 		t.Fatal(err)
 	}
 	a := p.State().Apportionments[0]
@@ -422,7 +432,7 @@ func TestApportionNothingLeftOutKeepsEveryMethod(t *testing.T) {
 	} {
 		p := pool(t, threeHouses())
 		recordCost(t, p, "AIRFREIGHT", cny(100_000), tc.method)
-		if err := p.Apportion(ApportionInput{Jobs: threeJobs()}, threeHouses(), "ops-1", hour(4)); err != nil {
+		if err := apportion(p, ApportionInput{Jobs: threeJobs()}, threeHouses(), "ops-1", hour(4)); err != nil {
 			t.Fatalf("%s: %v", tc.method, err)
 		}
 		a := p.State().Apportionments[0]
@@ -453,7 +463,7 @@ func TestApportionLeavingOneOfThreeHousesOut(t *testing.T) {
 	} {
 		p := pool(t, threeHouses())
 		recordCost(t, p, "AIRFREIGHT", cny(100_000), tc.method)
-		if err := p.Apportion(ApportionInput{NotUsed: []string{"HS2"}, Jobs: threeJobs()}, threeHouses(), "ops-1", hour(4)); err != nil {
+		if err := apportion(p, ApportionInput{NotUsed: []string{"HS2"}, Jobs: threeJobs()}, threeHouses(), "ops-1", hour(4)); err != nil {
 			t.Fatalf("%s: %v", tc.method, err)
 		}
 		checkShares(t, tc.method, p.State().Apportionments[0].Lines[0].Shares, 1, tc.want, 100_000)
@@ -461,7 +471,7 @@ func TestApportionLeavingOneOfThreeHousesOut(t *testing.T) {
 	// the same through a method override of a line recorded by another method, and the first house left out
 	p := pool(t, threeHouses())
 	recordCost(t, p, "AIRFREIGHT", cny(100_000), MethodChargeable)
-	if err := p.Apportion(ApportionInput{Method: MethodShipment, NotUsed: []string{"HS1"}, Jobs: threeJobs()}, threeHouses(), "ops-1", hour(4)); err != nil {
+	if err := apportion(p, ApportionInput{Method: MethodShipment, NotUsed: []string{"HS1"}, Jobs: threeJobs()}, threeHouses(), "ops-1", hour(4)); err != nil {
 		t.Fatal(err)
 	}
 	checkShares(t, "override", p.State().Apportionments[0].Lines[0].Shares, 0, []wantShare{{}, {1, 50_000, "SHP"}, {1, 50_000, "SHP"}}, 100_000)
@@ -478,20 +488,20 @@ func TestApportionBasisIsThatOfTheHousesThatTakePart(t *testing.T) {
 	b.Houses[1].LoadedVolume = kernel.Quantity{}
 	p := pool(t, b)
 	recordCost(t, p, "AIRFREIGHT", cny(100_000), MethodChargeable)
-	if err := p.Apportion(ApportionInput{Jobs: threeJobs()}, b, "ops-1", hour(4)); !errors.Is(err, ErrPoolUnit) {
+	if err := apportion(p, ApportionInput{Jobs: threeJobs()}, b, "ops-1", hour(4)); !errors.Is(err, ErrPoolUnit) {
 		t.Fatalf("pounds with the house taking part: %v", err)
 	}
-	if err := p.Apportion(ApportionInput{NotUsed: []string{"HS2"}, Jobs: threeJobs()}, b, "ops-1", hour(4)); err != nil {
+	if err := apportion(p, ApportionInput{NotUsed: []string{"HS2"}, Jobs: threeJobs()}, b, "ops-1", hour(4)); err != nil {
 		t.Fatalf("pounds with the house left out: %v", err)
 	}
 	b = threeHouses()
 	b.Houses[0].LoadedVolume, b.Houses[2].LoadedVolume = kernel.Quantity{}, kernel.Quantity{}
 	p = pool(t, b)
 	recordCost(t, p, "AIRFREIGHT", cny(100_000), MethodVolume)
-	if err := p.Apportion(ApportionInput{Jobs: threeJobs()}, b, "ops-1", hour(4)); err != nil {
+	if err := apportion(p, ApportionInput{Jobs: threeJobs()}, b, "ops-1", hour(4)); err != nil {
 		t.Fatalf("one house has the volume: %v", err)
 	}
-	if err := p.Apportion(ApportionInput{NotUsed: []string{"HS2"}, Jobs: threeJobs()}, b, "ops-1", hour(5)); !errors.Is(err, ErrPoolNoBasis) {
+	if err := apportion(p, ApportionInput{NotUsed: []string{"HS2"}, Jobs: threeJobs()}, b, "ops-1", hour(5)); !errors.Is(err, ErrPoolNoBasis) {
 		t.Fatalf("no volume among the houses that take part: %v", err)
 	}
 }
@@ -505,7 +515,7 @@ func TestApportionNotUsedRefusals(t *testing.T) {
 		"one of them not": {"HS2", "HS9"},
 		"every house":     {"HS3", "HS1", "HS2"},
 	} {
-		if err := p.Apportion(ApportionInput{NotUsed: notUsed, Jobs: threeJobs()}, threeHouses(), "ops-1", hour(4)); !errors.Is(err, ErrInvalid) {
+		if err := apportion(p, ApportionInput{NotUsed: notUsed, Jobs: threeJobs()}, threeHouses(), "ops-1", hour(4)); !errors.Is(err, ErrInvalid) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
@@ -514,14 +524,14 @@ func TestApportionNotUsedRefusals(t *testing.T) {
 	}
 	// RETAINED leaves no house out: on a cancelled consolidation it keeps the cost, but not with a list of houses
 	gone := CostBasis{ConsolidationID: "CONSOL-1", Revision: 8, Kind: "AIR_CONSOL", OperatingLegalEntityID: "LE", State: "CANCELLED"}
-	if err := p.Apportion(ApportionInput{Method: MethodRetained, NotUsed: []string{"HS1"}, Reason: "dead freight"}, gone, "ops-1", hour(4)); !errors.Is(err, ErrInvalid) {
+	if err := apportion(p, ApportionInput{Method: MethodRetained, NotUsed: []string{"HS1"}, Reason: "dead freight"}, gone, "ops-1", hour(4)); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("retained with houses left out: %v", err)
 	}
-	if err := p.Apportion(ApportionInput{Method: MethodRetained, Reason: "dead freight"}, gone, "ops-1", hour(4)); err != nil {
+	if err := apportion(p, ApportionInput{Method: MethodRetained, Reason: "dead freight"}, gone, "ops-1", hour(4)); err != nil {
 		t.Fatalf("retained: %v", err)
 	}
 	// the job of a house left out is still needed
-	if err := p.Apportion(ApportionInput{NotUsed: []string{"HS2"}, Jobs: map[string]string{"HS1": "JOB-1", "HS3": "JOB-3"}}, threeHouses(), "ops-1", hour(5)); !errors.Is(err, ErrPoolJobMissing) {
+	if err := apportion(p, ApportionInput{NotUsed: []string{"HS2"}, Jobs: map[string]string{"HS1": "JOB-1", "HS3": "JOB-3"}}, threeHouses(), "ops-1", hour(5)); !errors.Is(err, ErrPoolJobMissing) {
 		t.Fatalf("job of the house left out: %v", err)
 	}
 }
@@ -538,11 +548,11 @@ func TestApportionManualWithAHouseLeftOut(t *testing.T) {
 		"names it instead":         manual(ManualShare{"HS1", 30_000}, ManualShare{"HS2", 70_000}),
 		"omits one taking part":    manual(ManualShare{"HS1", 100_000}),
 	} {
-		if err := p.Apportion(in, threeHouses(), "ops-1", hour(4)); !errors.Is(err, ErrManualShares) {
+		if err := apportion(p, in, threeHouses(), "ops-1", hour(4)); !errors.Is(err, ErrManualShares) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
-	if err := p.Apportion(manual(ManualShare{"HS3", 70_000}, ManualShare{"HS1", 30_000}), threeHouses(), "ops-1", hour(4)); err != nil {
+	if err := apportion(p, manual(ManualShare{"HS3", 70_000}, ManualShare{"HS1", 30_000}), threeHouses(), "ops-1", hour(4)); err != nil {
 		t.Fatal(err)
 	}
 	s := p.State().Apportionments[0].Lines[0].Shares
@@ -568,7 +578,7 @@ func TestApportionStageIsThatOfTheHousesThatTakePart(t *testing.T) {
 		}
 		p := pool(t, b)
 		recordCost(t, p, "AIRFREIGHT", cny(100_000), MethodChargeable)
-		if err := p.Apportion(ApportionInput{NotUsed: tc.notUsed, Jobs: threeJobs()}, b, "ops-1", hour(4)); err != nil {
+		if err := apportion(p, ApportionInput{NotUsed: tc.notUsed, Jobs: threeJobs()}, b, "ops-1", hour(4)); err != nil {
 			t.Fatalf("%s: %v", tc.name, err)
 		}
 		if got := p.State().Apportionments[0].Stage; got != tc.stage {
@@ -588,7 +598,7 @@ func TestApportionGrossWeightPlannedAndActual(t *testing.T) {
 	unloaded(&b, 2)
 	p := pool(t, b)
 	recordCost(t, p, "AIRFREIGHT", cny(100_000), MethodGrossWeight)
-	if err := p.Apportion(ApportionInput{Jobs: threeJobs()}, b, "ops-1", hour(4)); err != nil {
+	if err := apportion(p, ApportionInput{Jobs: threeJobs()}, b, "ops-1", hour(4)); err != nil {
 		t.Fatal(err)
 	}
 	a := p.State().Apportionments[0]
@@ -600,19 +610,19 @@ func TestApportionGrossWeightPlannedAndActual(t *testing.T) {
 	b.Houses[0].LoadedVolume = kernel.Quantity{}
 	p = pool(t, b)
 	recordCost(t, p, "AIRFREIGHT", cny(100_000), MethodGrossWeight)
-	if err := p.Apportion(ApportionInput{Jobs: threeJobs()}, b, "ops-1", hour(4)); err != nil {
+	if err := apportion(p, ApportionInput{Jobs: threeJobs()}, b, "ops-1", hour(4)); err != nil {
 		t.Fatalf("a missing volume: %v", err)
 	}
 	checkShares(t, "actual", p.State().Apportionments[0].Lines[0].Shares, -1, []wantShare{{300_000, 54_545, "GRM"}, {100_000, 18_182, "GRM"},
 		{150_000, 27_273, "GRM"}}, 100_000)
 	b.Houses[0].LoadedGrossWeight = kernel.Quantity{Unit: "LBR", Amount: 100}
-	if err := p.Apportion(ApportionInput{Jobs: threeJobs()}, b, "ops-1", hour(5)); !errors.Is(err, ErrPoolUnit) {
+	if err := apportion(p, ApportionInput{Jobs: threeJobs()}, b, "ops-1", hour(5)); !errors.Is(err, ErrPoolUnit) {
 		t.Fatalf("pounds: %v", err)
 	}
 	for i := range b.Houses {
 		b.Houses[i].LoadedGrossWeight = kernel.Quantity{}
 	}
-	if err := p.Apportion(ApportionInput{Jobs: threeJobs()}, b, "ops-1", hour(5)); !errors.Is(err, ErrPoolNoBasis) {
+	if err := apportion(p, ApportionInput{Jobs: threeJobs()}, b, "ops-1", hour(5)); !errors.Is(err, ErrPoolNoBasis) {
 		t.Fatalf("no weights: %v", err)
 	}
 }
@@ -623,10 +633,10 @@ func TestApportionGrossWeightPlannedAndActual(t *testing.T) {
 func TestApportionShipmentExtraMinorUnits(t *testing.T) {
 	p := pool(t, threeHouses())
 	recordCost(t, p, "AIRFREIGHT", cny(100_001), MethodShipment)
-	if err := p.Apportion(ApportionInput{Jobs: threeJobs()}, threeHouses(), "ops-1", hour(4)); err != nil {
+	if err := apportion(p, ApportionInput{Jobs: threeJobs()}, threeHouses(), "ops-1", hour(4)); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.Apportion(ApportionInput{NotUsed: []string{"HS2"}, Jobs: threeJobs()}, threeHouses(), "ops-1", hour(5)); err != nil {
+	if err := apportion(p, ApportionInput{NotUsed: []string{"HS2"}, Jobs: threeJobs()}, threeHouses(), "ops-1", hour(5)); err != nil {
 		t.Fatal(err)
 	}
 	st := p.State()
@@ -635,7 +645,7 @@ func TestApportionShipmentExtraMinorUnits(t *testing.T) {
 	// a cost of zero is shared as zero
 	z := pool(t, threeHouses())
 	recordCost(t, z, "AIRFREIGHT", cny(0), MethodShipment)
-	if err := z.Apportion(ApportionInput{Jobs: threeJobs()}, threeHouses(), "ops-1", hour(4)); err != nil {
+	if err := apportion(z, ApportionInput{Jobs: threeJobs()}, threeHouses(), "ops-1", hour(4)); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -660,7 +670,7 @@ func closable(t *testing.T, method string, notUsed []string, b CostBasis) *Conso
 	p := pool(t, b)
 	recordCost(t, p, "AIRFREIGHT", cny(100_000), method)
 	p.Matched(map[int]Consumption{1: {Amount: 100_000, Local: 100_000, Final: true}})
-	if err := p.Apportion(ApportionInput{NotUsed: notUsed, Jobs: threeJobs()}, b, "ops-1", hour(4)); err != nil {
+	if err := apportion(p, ApportionInput{NotUsed: notUsed, Jobs: threeJobs()}, b, "ops-1", hour(4)); err != nil {
 		t.Fatal(err)
 	}
 	return p
@@ -730,7 +740,7 @@ func TestCloseWithNothingLeftOutNeedsEveryHouseLoaded(t *testing.T) {
 	}
 	// the same line apportioned again with HS2 taking part, while it is still not loaded: the close is refused
 	l := closable(t, MethodChargeable, []string{"HS2"}, b)
-	if err := l.Apportion(ApportionInput{AllHouses: true, Jobs: threeJobs()}, b, "ops-1", hour(5)); err != nil {
+	if err := apportion(l, ApportionInput{AllHouses: true, Jobs: threeJobs()}, b, "ops-1", hour(5)); err != nil {
 		t.Fatal(err)
 	}
 	if err := l.Close(b, "ops-1", hour(6)); !errors.Is(err, ErrPoolNotClosable) {
@@ -738,7 +748,7 @@ func TestCloseWithNothingLeftOutNeedsEveryHouseLoaded(t *testing.T) {
 	}
 	// loaded at last and apportioned over all three: it closes
 	loaded := threeHouses()
-	if err := l.Apportion(ApportionInput{AllHouses: true, Jobs: threeJobs()}, loaded, "ops-1", hour(7)); err != nil {
+	if err := apportion(l, ApportionInput{AllHouses: true, Jobs: threeJobs()}, loaded, "ops-1", hour(7)); err != nil {
 		t.Fatal(err)
 	}
 	if err := l.Close(loaded, "ops-1", hour(8)); err != nil {
@@ -753,10 +763,10 @@ func TestApportionKeepsTheHousesLeftOut(t *testing.T) {
 	recordCost(t, p, "AIRFREIGHT", cny(100_000), MethodShipment)
 	recordCost(t, p, "HANDLING", cny(60_000), MethodShipment)
 	recordCost(t, p, "TERMINAL", cny(30_000), MethodShipment)
-	apportion := func(h int, in ApportionInput) []LineApportionment {
+	apportionH := func(h int, in ApportionInput) []LineApportionment {
 		t.Helper()
 		in.Jobs = threeJobs()
-		if err := p.Apportion(in, threeHouses(), "ops-1", hour(h)); err != nil {
+		if err := apportion(p, in, threeHouses(), "ops-1", hour(h)); err != nil {
 			t.Fatal(err)
 		}
 		return p.State().Apportionments[len(p.State().Apportionments)-1].Lines
@@ -770,11 +780,11 @@ func TestApportionKeepsTheHousesLeftOut(t *testing.T) {
 		return out
 	}
 	// line 1 leaves HS2 out, line 2 leaves HS3 out, line 3 all take part
-	apportion(4, ApportionInput{LineNos: []int{1}, NotUsed: []string{"HS2"}})
-	apportion(4, ApportionInput{LineNos: []int{2}, NotUsed: []string{"HS3"}})
-	apportion(4, ApportionInput{LineNos: []int{3}})
+	apportionH(4, ApportionInput{LineNos: []int{1}, NotUsed: []string{"HS2"}})
+	apportionH(4, ApportionInput{LineNos: []int{2}, NotUsed: []string{"HS3"}})
+	apportionH(4, ApportionInput{LineNos: []int{3}})
 	// with nothing named, each line keeps its own list, in one command
-	got := apportion(5, ApportionInput{})
+	got := apportionH(5, ApportionInput{})
 	if used(got[0]) != "13" || used(got[1]) != "12" || used(got[2]) != "123" {
 		t.Fatalf("carried lists: %q %q %q", used(got[0]), used(got[1]), used(got[2]))
 	}
@@ -783,20 +793,20 @@ func TestApportionKeepsTheHousesLeftOut(t *testing.T) {
 	}
 	// MANUAL takes the carried list too
 	manual := ApportionInput{LineNos: []int{1}, Method: MethodManual, Manual: []ManualShare{{"HS1", 10_000}, {"HS3", 90_000}}, Reason: "agreed"}
-	if got = apportion(6, manual); used(got[0]) != "13" {
+	if got = apportionH(6, manual); used(got[0]) != "13" {
 		t.Fatalf("manual: %q", used(got[0]))
 	}
 	manual.Manual = []ManualShare{{"HS1", 10_000}, {"HS2", 10_000}, {"HS3", 80_000}}
-	if err := p.Apportion(ApportionInput{LineNos: []int{1}, Method: MethodManual, Manual: manual.Manual, Reason: "x", Jobs: threeJobs()}, threeHouses(),
+	if err := apportion(p, ApportionInput{LineNos: []int{1}, Method: MethodManual, Manual: manual.Manual, Reason: "x", Jobs: threeJobs()}, threeHouses(),
 		"ops-1", hour(6)); !errors.Is(err, ErrManualShares) {
 		t.Fatalf("manual naming the house kept out: %v", err)
 	}
 	// another list replaces the line's
-	if got = apportion(7, ApportionInput{LineNos: []int{1}, NotUsed: []string{"HS1"}}); used(got[0]) != "23" {
+	if got = apportionH(7, ApportionInput{LineNos: []int{1}, NotUsed: []string{"HS1"}}); used(got[0]) != "23" {
 		t.Fatalf("replaced: %q", used(got[0]))
 	}
 	// AllHouses takes everyone back in, in every line of the command
-	got = apportion(8, ApportionInput{AllHouses: true})
+	got = apportionH(8, ApportionInput{AllHouses: true})
 	if used(got[0]) != "123" || used(got[1]) != "123" || used(got[2]) != "123" {
 		t.Fatalf("all houses: %q %q %q", used(got[0]), used(got[1]), used(got[2]))
 	}
@@ -804,12 +814,12 @@ func TestApportionKeepsTheHousesLeftOut(t *testing.T) {
 	for name, in := range map[string]ApportionInput{
 		"all and a list": {AllHouses: true, NotUsed: []string{"HS2"}, Jobs: threeJobs()},
 	} {
-		if err := p.Apportion(in, threeHouses(), "ops-1", hour(9)); !errors.Is(err, ErrInvalid) {
+		if err := apportion(p, in, threeHouses(), "ops-1", hour(9)); !errors.Is(err, ErrInvalid) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
 	gone := CostBasis{ConsolidationID: "CONSOL-1", Revision: 8, Kind: "AIR_CONSOL", OperatingLegalEntityID: "LE", State: "CANCELLED"}
-	if err := p.Apportion(ApportionInput{Method: MethodRetained, AllHouses: true, Reason: "r"}, gone, "ops-1", hour(9)); !errors.Is(err, ErrInvalid) {
+	if err := apportion(p, ApportionInput{Method: MethodRetained, AllHouses: true, Reason: "r"}, gone, "ops-1", hour(9)); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("retained with AllHouses: %v", err)
 	}
 }
@@ -819,19 +829,19 @@ func TestApportionKeepsTheHousesLeftOut(t *testing.T) {
 func TestCarriedListDropsHousesNoLongerLive(t *testing.T) {
 	p := pool(t, threeHouses())
 	recordCost(t, p, "AIRFREIGHT", cny(100_000), MethodShipment)
-	if err := p.Apportion(ApportionInput{NotUsed: []string{"HS2", "HS3"}, Jobs: threeJobs()}, threeHouses(), "ops-1", hour(4)); err != nil {
+	if err := apportion(p, ApportionInput{NotUsed: []string{"HS2", "HS3"}, Jobs: threeJobs()}, threeHouses(), "ops-1", hour(4)); err != nil {
 		t.Fatal(err)
 	}
 	// HS1 detached: HS2 and HS3 are all that is left, and both were left out
 	b := threeHouses()
 	b.Houses = b.Houses[1:]
-	if err := p.Apportion(ApportionInput{Jobs: threeJobs()}, b, "ops-1", hour(5)); !errors.Is(err, ErrInvalid) {
+	if err := apportion(p, ApportionInput{Jobs: threeJobs()}, b, "ops-1", hour(5)); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("every house still live left out: %v", err)
 	}
 	// HS3 detached instead: HS2 stays out, HS1 takes part, the dropped HS3 is not named by any share
 	b = threeHouses()
 	b.Houses = b.Houses[:2]
-	if err := p.Apportion(ApportionInput{Jobs: threeJobs()}, b, "ops-1", hour(5)); err != nil {
+	if err := apportion(p, ApportionInput{Jobs: threeJobs()}, b, "ops-1", hour(5)); err != nil {
 		t.Fatal(err)
 	}
 	checkShares(t, "after a detach", p.State().Apportionments[1].Lines[0].Shares, 1, []wantShare{{1, 100_000, "SHP"}, {}}, 100_000)
@@ -846,7 +856,7 @@ func TestStageOfAnApportionmentThatCarriesTheHousesLeftOut(t *testing.T) {
 	recordCost(t, p, "AIRFREIGHT", cny(100_000), MethodChargeable)
 	for i, in := range []ApportionInput{{NotUsed: []string{"HS2"}}, {}, {AllHouses: true}} {
 		in.Jobs = threeJobs()
-		if err := p.Apportion(in, b, "ops-1", hour(4+i)); err != nil {
+		if err := apportion(p, in, b, "ops-1", hour(4+i)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -882,7 +892,7 @@ func apportionedLine(t *testing.T, b CostBasis, line Money, method string, notUs
 	t.Helper()
 	p := pool(t, b)
 	recordCost(t, p, "SEAFREIGHT", line, method)
-	if err := p.Apportion(ApportionInput{NotUsed: notUsed, Jobs: threeJobs()}, b, "ops-1", hour(4)); err != nil {
+	if err := apportion(p, ApportionInput{NotUsed: notUsed, Jobs: threeJobs()}, b, "ops-1", hour(4)); err != nil {
 		t.Fatalf("%s: %v", method, err)
 	}
 	a := p.State().Apportionments[0]
@@ -913,7 +923,7 @@ func TestApportionByContainerCountAndTEU(t *testing.T) {
 		p := pool(t, b)
 		recordCost(t, p, "SEAFREIGHT", usd(10_001), tc.method)
 		cost, local := p.LineCost(1)
-		if err := p.Apportion(ApportionInput{Jobs: threeJobs()}, b, "ops-1", hour(4)); err != nil {
+		if err := apportion(p, ApportionInput{Jobs: threeJobs()}, b, "ops-1", hour(4)); err != nil {
 			t.Fatalf("%s: %v", tc.method, err)
 		}
 		a := p.State().Apportionments[0]
@@ -973,22 +983,22 @@ func TestContainerMethodsNeedTheActualStage(t *testing.T) {
 		p := pool(t, b)
 		recordCost(t, p, "SEAFREIGHT", cny(100_000), m)
 		recordCost(t, p, "HANDLING", cny(60_000), MethodShipment)
-		if err := p.Apportion(ApportionInput{LineNos: []int{1}, Jobs: threeJobs()}, b, "ops-1", hour(4)); !errors.Is(err, ErrPoolNoBasis) {
+		if err := apportion(p, ApportionInput{LineNos: []int{1}, Jobs: threeJobs()}, b, "ops-1", hour(4)); !errors.Is(err, ErrPoolNoBasis) {
 			t.Errorf("%s at PLANNED: %v", m, err)
 		}
-		if err := p.Apportion(ApportionInput{Jobs: threeJobs()}, b, "ops-1", hour(4)); !errors.Is(err, ErrPoolNoBasis) {
+		if err := apportion(p, ApportionInput{Jobs: threeJobs()}, b, "ops-1", hour(4)); !errors.Is(err, ErrPoolNoBasis) {
 			t.Errorf("%s with another line by SHIPMENT in the command: %v", m, err)
 		}
-		if err := p.Apportion(ApportionInput{LineNos: []int{1}, Method: m, Jobs: threeJobs()}, b, "ops-1", hour(4)); !errors.Is(err, ErrPoolNoBasis) {
+		if err := apportion(p, ApportionInput{LineNos: []int{1}, Method: m, Jobs: threeJobs()}, b, "ops-1", hour(4)); !errors.Is(err, ErrPoolNoBasis) {
 			t.Errorf("%s as the command's method at PLANNED: %v", m, err)
 		}
 		if n := len(p.State().Apportionments); n != 0 {
 			t.Errorf("%s: %d apportionments recorded by refused commands", m, n)
 		}
-		if err := p.Apportion(ApportionInput{Jobs: threeJobs()}, containerBasis(), "ops-1", hour(4)); err != nil {
+		if err := apportion(p, ApportionInput{Jobs: threeJobs()}, containerBasis(), "ops-1", hour(4)); err != nil {
 			t.Errorf("%s at ACTUAL: %v", m, err)
 		}
-		if err := p.Apportion(ApportionInput{LineNos: []int{1}, NotUsed: []string{"HS2"}, Jobs: threeJobs()}, b, "ops-1", hour(5)); err != nil {
+		if err := apportion(p, ApportionInput{LineNos: []int{1}, NotUsed: []string{"HS2"}, Jobs: threeJobs()}, b, "ops-1", hour(5)); err != nil {
 			t.Errorf("%s with the unloaded house left out: %v", m, err)
 		}
 	}
@@ -1000,7 +1010,7 @@ func TestContainerMethodsNeedContainers(t *testing.T) {
 		b := threeHouses() // loaded, tendered: no Units, no LoadUnits
 		p := pool(t, b)
 		recordCost(t, p, "SEAFREIGHT", cny(100_000), m)
-		if err := p.Apportion(ApportionInput{Jobs: threeJobs()}, b, "ops-1", hour(4)); !errors.Is(err, ErrPoolNoBasis) {
+		if err := apportion(p, ApportionInput{Jobs: threeJobs()}, b, "ops-1", hour(4)); !errors.Is(err, ErrPoolNoBasis) {
 			t.Errorf("%s with no containers: %v", m, err)
 		}
 	}
@@ -1019,7 +1029,7 @@ func TestContainerMethodsInconsistentBasis(t *testing.T) {
 		change(&b)
 		p := pool(t, b)
 		recordCost(t, p, "SEAFREIGHT", cny(100_000), MethodTEU)
-		if err := p.Apportion(ApportionInput{Jobs: threeJobs()}, b, "ops-1", hour(4)); !errors.Is(err, ErrPoolUnit) {
+		if err := apportion(p, ApportionInput{Jobs: threeJobs()}, b, "ops-1", hour(4)); !errors.Is(err, ErrPoolUnit) {
 			t.Errorf("TEU, %s: %v", name, err)
 		}
 		if got := apportionedLine(t, b, cny(100_000), MethodContainerCount, nil); got[0].Quantity != 1 || got[2].Quantity != 2 {
@@ -1166,12 +1176,12 @@ func TestContainerMethodsWithAHouseHalfStuffed(t *testing.T) {
 		half.LoadUnits[1].Status = "IN_USE"
 		p := pool(t, half)
 		recordCost(t, p, "SEAFREIGHT", cny(100_000), m)
-		if err := p.Apportion(ApportionInput{Jobs: threeJobs()}, half, "ops-1", hour(4)); !errors.Is(err, ErrPoolNoBasis) {
+		if err := apportion(p, ApportionInput{Jobs: threeJobs()}, half, "ops-1", hour(4)); !errors.Is(err, ErrPoolNoBasis) {
 			t.Fatalf("%s with unit 2 still loading: %v", m, err)
 		}
 		half.LoadUnits[1].Status = LoadUnitClosed
 		half.Houses[2].Units = containerBasis().Houses[2].Units
-		if err := p.Apportion(ApportionInput{Jobs: threeJobs()}, half, "ops-1", hour(5)); err != nil {
+		if err := apportion(p, ApportionInput{Jobs: threeJobs()}, half, "ops-1", hour(5)); err != nil {
 			t.Fatalf("%s with both sealed: %v", m, err)
 		}
 		want := map[string]int64{MethodContainerCount: 2, MethodTEU: 30}[m]
@@ -1195,7 +1205,7 @@ func TestContainerMethodsNeedEveryContainerSealed(t *testing.T) {
 			b.LoadUnits = units
 			p := pool(t, b)
 			recordCost(t, p, "SEAFREIGHT", cny(100_000), m)
-			err := p.Apportion(ApportionInput{Jobs: threeJobs()}, b, "ops-1", hour(4))
+			err := apportion(p, ApportionInput{Jobs: threeJobs()}, b, "ops-1", hour(4))
 			if !errors.Is(err, ErrPoolNoBasis) || !strings.Contains(err.Error(), "sealed") {
 				t.Errorf("%s, %s: %v", m, name, err)
 			}
@@ -1210,7 +1220,7 @@ func TestContainerMethodsNeedEveryContainerSealed(t *testing.T) {
 		b.Houses[1].Units = nil
 		p := pool(t, b)
 		recordCost(t, p, "SEAFREIGHT", cny(100_000), m)
-		if err := p.Apportion(ApportionInput{Jobs: threeJobs()}, b, "ops-1", hour(4)); !errors.Is(err, ErrPoolNoBasis) || !strings.Contains(err.Error(), "stuffed") {
+		if err := apportion(p, ApportionInput{Jobs: threeJobs()}, b, "ops-1", hour(4)); !errors.Is(err, ErrPoolNoBasis) || !strings.Contains(err.Error(), "stuffed") {
 			t.Errorf("%s at PLANNED with a unit planned: %v", m, err)
 		}
 		if got := apportionedLine(t, containerBasis(), cny(100_000), m, nil); got[2].Amount == 0 {
@@ -1290,7 +1300,7 @@ func TestApportionByRevenue(t *testing.T) {
 	if local != 71_241 {
 		t.Fatalf("the line's local amount is %d, the hand calculation says 71,241", local)
 	}
-	if err := p.Apportion(ApportionInput{Jobs: threeJobs(), Revenue: houseRevenues()}, b, "ops-1", hour(4)); err != nil {
+	if err := apportion(p, ApportionInput{Jobs: threeJobs(), Revenue: houseRevenues()}, b, "ops-1", hour(4)); err != nil {
 		t.Fatal(err)
 	}
 	a := p.State().Apportionments[0]
@@ -1318,7 +1328,7 @@ func TestApportionByRevenueEachLineByItsOwnCode(t *testing.T) {
 	p := pool(t, b)
 	recordCost(t, p, "AIRFREIGHT", cny(100_000), MethodRevenue)
 	recordCost(t, p, "THC", cny(100_000), MethodRevenue)
-	if err := p.Apportion(ApportionInput{Jobs: threeJobs(), Revenue: houseRevenues()}, b, "ops-1", hour(4)); err != nil {
+	if err := apportion(p, ApportionInput{Jobs: threeJobs(), Revenue: houseRevenues()}, b, "ops-1", hour(4)); err != nil {
 		t.Fatal(err)
 	}
 	lines := p.State().Apportionments[0].Lines
@@ -1329,7 +1339,7 @@ func TestApportionByRevenueEachLineByItsOwnCode(t *testing.T) {
 	q := pool(t, b)
 	recordCost(t, q, "AIRFREIGHT", cny(100_000), MethodShipment)
 	recordCost(t, q, "THC", cny(100_000), MethodChargeable)
-	if err := q.Apportion(ApportionInput{Method: MethodRevenue, Jobs: threeJobs(), Revenue: houseRevenues()}, b, "ops-1", hour(4)); err != nil {
+	if err := apportion(q, ApportionInput{Method: MethodRevenue, Jobs: threeJobs(), Revenue: houseRevenues()}, b, "ops-1", hour(4)); err != nil {
 		t.Fatal(err)
 	}
 	for i, la := range q.State().Apportionments[0].Lines {
@@ -1348,7 +1358,7 @@ func TestApportionByRevenueRefusals(t *testing.T) {
 		t.Helper()
 		p := pool(t, b)
 		recordCost(t, p, code, cny(100_000), MethodRevenue)
-		err := p.Apportion(ApportionInput{NotUsed: notUsed, Jobs: threeJobs(), Revenue: revenue}, b, "ops-1", hour(4))
+		err := apportion(p, ApportionInput{NotUsed: notUsed, Jobs: threeJobs(), Revenue: revenue}, b, "ops-1", hour(4))
 		if !errors.Is(err, ErrPoolNoBasis) {
 			t.Fatalf("%s: %v", name, err)
 		}
@@ -1373,14 +1383,14 @@ func TestApportionByRevenueRefusals(t *testing.T) {
 	// a negative revenue of a house left out is not a weight and does not matter
 	p := pool(t, b)
 	recordCost(t, p, "AIRFREIGHT", cny(100_000), MethodRevenue)
-	if err := p.Apportion(ApportionInput{NotUsed: []string{"HS2"}, Jobs: threeJobs(), Revenue: r}, b, "ops-1", hour(4)); err != nil {
+	if err := apportion(p, ApportionInput{NotUsed: []string{"HS2"}, Jobs: threeJobs(), Revenue: r}, b, "ops-1", hour(4)); err != nil {
 		t.Fatalf("a negative revenue of a house left out: %v", err)
 	}
 	checkShares(t, "left out", p.State().Apportionments[0].Lines[0].Shares, 1, []wantShare{{60_000, 85_714, UnitRevenueMinor}, {}, {10_000, 14_286, UnitRevenueMinor}}, 100_000)
 	// the existing refusals stay: every house needs its open job
 	p = pool(t, b)
 	recordCost(t, p, "AIRFREIGHT", cny(100_000), MethodRevenue)
-	if err := p.Apportion(ApportionInput{Jobs: map[string]string{"HS1": "JOB-1", "HS2": "JOB-2"}, Revenue: houseRevenues()}, b, "ops-1", hour(4)); !errors.Is(err, ErrPoolJobMissing) {
+	if err := apportion(p, ApportionInput{Jobs: map[string]string{"HS1": "JOB-1", "HS2": "JOB-2"}, Revenue: houseRevenues()}, b, "ops-1", hour(4)); !errors.Is(err, ErrPoolJobMissing) {
 		t.Fatalf("a house without a job: %v", err)
 	}
 }
@@ -1397,7 +1407,7 @@ func TestApportionByRevenueAtBothStages(t *testing.T) {
 	}{"ACTUAL, a container not sealed": {b, BasisActual}, "PLANNED": {func() CostBasis { x := copyOf(b); unloaded(&x, 2); return x }(), BasisPlanned}} {
 		p := pool(t, c.basis)
 		recordCost(t, p, "AIRFREIGHT", cny(100_000), MethodRevenue)
-		if err := p.Apportion(ApportionInput{Jobs: threeJobs(), Revenue: houseRevenues()}, c.basis, "ops-1", hour(4)); err != nil {
+		if err := apportion(p, ApportionInput{Jobs: threeJobs(), Revenue: houseRevenues()}, c.basis, "ops-1", hour(4)); err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
 		a := p.State().Apportionments[0]
@@ -1406,7 +1416,7 @@ func TestApportionByRevenueAtBothStages(t *testing.T) {
 		}
 		q := pool(t, c.basis)
 		recordCost(t, q, "AIRFREIGHT", cny(100_000), MethodContainerCount)
-		if err := q.Apportion(ApportionInput{Jobs: threeJobs(), Revenue: houseRevenues()}, c.basis, "ops-1", hour(4)); !errors.Is(err, ErrPoolNoBasis) {
+		if err := apportion(q, ApportionInput{Jobs: threeJobs(), Revenue: houseRevenues()}, c.basis, "ops-1", hour(4)); !errors.Is(err, ErrPoolNoBasis) {
 			t.Errorf("%s: the container method is refused as before: %v", name, err)
 		}
 	}
@@ -1420,12 +1430,12 @@ func TestApportionByRevenueWithAHouseLeftOutAndCarried(t *testing.T) {
 	recordCost(t, p, "AIRFREIGHT", cny(70_001), MethodRevenue)
 	recordCost(t, p, "AIRFREIGHT", cny(70_001), MethodRevenue)
 	// 70,001 x 6/7 = 60,000.86 and x 1/7 = 10,000.14: the floors leave one unit, to HS1 (.86)
-	if err := p.Apportion(ApportionInput{LineNos: []int{1}, NotUsed: []string{"HS2"}, Jobs: threeJobs(), Revenue: houseRevenues()}, b, "ops-1", hour(4)); err != nil {
+	if err := apportion(p, ApportionInput{LineNos: []int{1}, NotUsed: []string{"HS2"}, Jobs: threeJobs(), Revenue: houseRevenues()}, b, "ops-1", hour(4)); err != nil {
 		t.Fatal(err)
 	}
 	checkShares(t, "left out", p.State().Apportionments[0].Lines[0].Shares, 1, []wantShare{{60_000, 60_001, UnitRevenueMinor}, {}, {10_000, 10_000, UnitRevenueMinor}}, 70_001)
 	// line 2 names no list and was never apportioned: every house takes part; line 1 again keeps HS2 out
-	if err := p.Apportion(ApportionInput{Jobs: threeJobs(), Revenue: houseRevenues()}, b, "ops-1", hour(5)); err != nil {
+	if err := apportion(p, ApportionInput{Jobs: threeJobs(), Revenue: houseRevenues()}, b, "ops-1", hour(5)); err != nil {
 		t.Fatal(err)
 	}
 	second := p.State().Apportionments[1].Lines
@@ -1438,10 +1448,10 @@ func TestApportionByRevenueWithAHouseLeftOutAndCarried(t *testing.T) {
 	// the carried list is kept even when the revenue of the house left out is negative: it is not read
 	r := copyRevenues(houseRevenues())
 	r["HS2"]["AIRFREIGHT"] = -1
-	if err := p.Apportion(ApportionInput{LineNos: []int{1}, Jobs: threeJobs(), Revenue: r}, b, "ops-1", hour(6)); err != nil {
+	if err := apportion(p, ApportionInput{LineNos: []int{1}, Jobs: threeJobs(), Revenue: r}, b, "ops-1", hour(6)); err != nil {
 		t.Fatalf("a carried list on a later command: %v", err)
 	}
-	if err := p.Apportion(ApportionInput{LineNos: []int{1}, AllHouses: true, Jobs: threeJobs(), Revenue: r}, b, "ops-1", hour(7)); !errors.Is(err, ErrPoolNoBasis) {
+	if err := apportion(p, ApportionInput{LineNos: []int{1}, AllHouses: true, Jobs: threeJobs(), Revenue: r}, b, "ops-1", hour(7)); !errors.Is(err, ErrPoolNoBasis) {
 		t.Fatalf("every house taking part again reads the negative revenue: %v", err)
 	}
 }
@@ -1454,7 +1464,7 @@ func revenueClosable(t *testing.T, notUsed []string, revenue map[string]map[stri
 	p := pool(t, threeHouses())
 	recordCost(t, p, "AIRFREIGHT", cny(100_000), MethodRevenue)
 	p.Matched(map[int]Consumption{1: {Amount: 100_000, Local: 100_000, Final: true}})
-	if err := p.Apportion(ApportionInput{NotUsed: notUsed, Jobs: threeJobs(), Revenue: revenue}, threeHouses(), "ops-1", hour(4)); err != nil {
+	if err := apportion(p, ApportionInput{NotUsed: notUsed, Jobs: threeJobs(), Revenue: revenue}, threeHouses(), "ops-1", hour(4)); err != nil {
 		t.Fatal(err)
 	}
 	return p
@@ -1529,7 +1539,7 @@ func TestCloseByRevenue(t *testing.T) {
 	if err := p.Close(b, "ops-1", hour(6)); !errors.Is(err, ErrPoolNotClosable) {
 		t.Fatalf("revenue changed: %v", err)
 	}
-	if err := p.Apportion(ApportionInput{Jobs: threeJobs(), Revenue: changed}, b, "ops-1", hour(7)); err != nil {
+	if err := apportion(p, ApportionInput{Jobs: threeJobs(), Revenue: changed}, b, "ops-1", hour(7)); err != nil {
 		t.Fatal(err)
 	}
 	if err := p.Close(b, "ops-1", hour(8)); err != nil {
@@ -1580,7 +1590,7 @@ func TestExistingMethodsIgnoreRevenue(t *testing.T) {
 			p := pool(t, b)
 			recordCost(t, p, "AIRFREIGHT", cny(100_000), method)
 			p.Matched(map[int]Consumption{1: {Amount: 100_000, Local: 100_000, Final: true}})
-			if err := p.Apportion(ApportionInput{Jobs: threeJobs(), Revenue: revenue}, b, "ops-1", hour(4)); err != nil {
+			if err := apportion(p, ApportionInput{Jobs: threeJobs(), Revenue: revenue}, b, "ops-1", hour(4)); err != nil {
 				t.Fatalf("%s: %v", method, err)
 			}
 			shares[i] = p.State().Apportionments[0].Lines[0].Shares
@@ -1615,7 +1625,7 @@ func TestRecordCostAcceptsRevenue(t *testing.T) {
 		t.Fatalf("a method outside the list: %v", err)
 	}
 	b := threeHouses()
-	if err := p.Apportion(ApportionInput{Method: "NO_SUCH_METHOD", Jobs: threeJobs(), Revenue: houseRevenues()}, b, "ops-1", hour(4)); !errors.Is(err, ErrInvalid) {
+	if err := apportion(p, ApportionInput{Method: "NO_SUCH_METHOD", Jobs: threeJobs(), Revenue: houseRevenues()}, b, "ops-1", hour(4)); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("an apportionment by a method outside the list: %v", err)
 	}
 }
@@ -1630,7 +1640,7 @@ func TestCloseOfAPoolWhoseSecondLineIsByRevenue(t *testing.T) {
 		recordCost(t, p, "AIRFREIGHT", cny(100_000), MethodShipment)
 		recordCost(t, p, "AIRFREIGHT", cny(100_000), MethodRevenue)
 		p.Matched(map[int]Consumption{1: {Amount: 100_000, Local: 100_000, Final: true}, 2: {Amount: 100_000, Local: 100_000, Final: true}})
-		if err := p.Apportion(ApportionInput{Jobs: threeJobs(), Revenue: houseRevenues()}, b, "ops-1", hour(4)); err != nil {
+		if err := apportion(p, ApportionInput{Jobs: threeJobs(), Revenue: houseRevenues()}, b, "ops-1", hour(4)); err != nil {
 			t.Fatal(err)
 		}
 		return p

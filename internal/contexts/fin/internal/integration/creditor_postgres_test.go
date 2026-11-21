@@ -136,7 +136,7 @@ func creditorWorld(t *testing.T) ap {
 	a.must(a.module.RecordConsolCost(ctx, api.RecordConsolCost{CommandID: "cfs", TenantID: a.tenant, ActorID: "fin-1", PoolID: "P-1", ExpectedRevision: 2,
 		ChargeCode: "CFS_HANDLING", Method: api.MethodPieces, Cost: api.ChargeSide{PartyID: "trucker", Amount: cny(50_000)}, Reason: "CFS tariff",
 		OccurredAt: a.hours(2)}))
-	a.must(a.module.ApportionConsolCosts(ctx, api.ApportionConsolCosts{CommandID: "apportion", TenantID: a.tenant, ActorID: "fin-1", PoolID: "P-1",
+	a.must(previewAndSubmit(ctx, a.module, api.PreviewConsolCostApportionment{CommandID: "apportion", TenantID: a.tenant, ActorID: "fin-1", PoolID: "P-1",
 		ExpectedRevision: 3, OccurredAt: a.hours(2)}))
 	return a
 }
@@ -262,7 +262,7 @@ func TestCreditorInvoicesOnPostgres(t *testing.T) {
 	}
 	_, err = f.module.CloseConsolCostPool(ctx, closeCmd("close-stale", 8))
 	a.rejected("closed on an apportionment at the accrual", err, "FIN_POOL_NOT_CLOSABLE")
-	a.must(f.module.ApportionConsolCosts(ctx, api.ApportionConsolCosts{CommandID: "apportion-final", TenantID: f.tenant, ActorID: "fin-1", PoolID: "P-1",
+	a.must(previewAndSubmit(ctx, f.module, api.PreviewConsolCostApportionment{CommandID: "apportion-final", TenantID: f.tenant, ActorID: "fin-1", PoolID: "P-1",
 		ExpectedRevision: a.pool("P-1").Revision, OccurredAt: a.hours(8)}))
 	final := a.pool("P-1").Apportionments[1].Lines[0]
 	if final.Amount != usd(105_000) || final.Local != cny(756_000) || final.Shares[0].Amount != usd(63_000) || final.Shares[0].Local != cny(453_600) ||
@@ -322,7 +322,7 @@ func TestCreditorInvoicesOnPostgres(t *testing.T) {
 	_, err = f.module.MatchCreditorInvoice(ctx, a.match("CI-MU-3", "ap-1", 12, onPool("P-1", 1, 1, 1_000, true)))
 	a.rejected("a match to a released accrual", err, "FIN_ACCRUAL_CLOSED")
 	a.must(f.module.RecordCreditorInvoice(ctx, a.record("CI-MU-2B", "airline-mu", "MU-0002", 12, "USD", line("AIR_FREIGHT", 45_000))))
-	a.must(f.module.ApportionConsolCosts(ctx, api.ApportionConsolCosts{CommandID: "apportion-released", TenantID: f.tenant, ActorID: "fin-1", PoolID: "P-1",
+	a.must(previewAndSubmit(ctx, f.module, api.PreviewConsolCostApportionment{CommandID: "apportion-released", TenantID: f.tenant, ActorID: "fin-1", PoolID: "P-1",
 		ExpectedRevision: a.pool("P-1").Revision, LineNos: []int{1}, OccurredAt: a.hours(12)}))
 	if r = a.must(f.module.CloseConsolCostPool(ctx, closeCmd("close-again", 13))); r.Version != 2 {
 		t.Fatalf("closed again: %+v", r)
@@ -536,13 +536,13 @@ func TestDisputeRacesPoolClose(t *testing.T) {
 		a.must(a.module.MatchCreditorInvoice(a.ctx, a.match("CI-MU", "ap-1", 3, onPool("P-1", 1, 1, 100_000, true))))
 		a.must(a.module.RecordCreditorInvoice(a.ctx, a.record("CI-CFS", "trucker", "CFS-1", 3, "CNY", line("CFS_HANDLING", 50_000))))
 		a.must(a.module.MatchCreditorInvoice(a.ctx, a.match("CI-CFS", "ap-1", 3, onPool("P-1", 2, 1, 50_000, true))))
-		a.must(a.module.ApportionConsolCosts(a.ctx, api.ApportionConsolCosts{CommandID: "apportion-final", TenantID: a.tenant, ActorID: "fin-1",
+		a.must(previewAndSubmit(a.ctx, a.module, api.PreviewConsolCostApportionment{CommandID: "apportion-final", TenantID: a.tenant, ActorID: "fin-1",
 			PoolID: "P-1", ExpectedRevision: a.pool("P-1").Revision, OccurredAt: a.hours(3)}))
 		return a
 	}
 	closing := func(a ap) error {
 		_, err := a.module.CloseConsolCostPool(a.ctx, api.CloseConsolCostPool{CommandID: "close", TenantID: a.tenant, ActorID: "fin-1", PoolID: "P-1",
-			ExpectedRevision: 5, OccurredAt: a.hours(4)})
+			ExpectedRevision: 7, OccurredAt: a.hours(4)})
 		return err
 	}
 	disputing := func(a ap) error {
@@ -644,7 +644,7 @@ func TestReviewFindingsOnPostgres(t *testing.T) {
 		Reason: "MU's charter rate", OccurredAt: a.hours(3)}))
 	a.must(f.module.RecordCreditorInvoice(ctx, a.record("CI-BIG", "airline-mu", "MU-BIG", 5, "USD", line("AIR_FREIGHT", 35_466_527))))
 	a.must(f.module.MatchCreditorInvoice(ctx, a.match("CI-BIG", "ap-1", 7, onPool("P-2", 1, 1, 35_466_527, false))))
-	a.must(f.module.ApportionConsolCosts(ctx, api.ApportionConsolCosts{CommandID: "p2-apportion", TenantID: f.tenant, ActorID: "fin-1", PoolID: "P-2",
+	a.must(previewAndSubmit(ctx, f.module, api.PreviewConsolCostApportionment{CommandID: "p2-apportion", TenantID: f.tenant, ActorID: "fin-1", PoolID: "P-2",
 		ExpectedRevision: a.pool("P-2").Revision, OccurredAt: a.hours(7)}))
 	p2 := a.pool("P-2")
 	if la := p2.Apportionments[0].Lines[0]; la.Local != p2.Lines[0].CostLocal || la.Amount != usd(123_456_789) {
@@ -656,7 +656,7 @@ func TestReviewFindingsOnPostgres(t *testing.T) {
 	a.must(f.module.MatchCreditorInvoice(ctx, a.match("CI-MU", "ap-1", 7, onPool("P-1", 1, 1, 100_000, true))))
 	a.must(f.module.RecordCreditorInvoice(ctx, a.record("CI-CFS", "trucker", "CFS-1", 5, "CNY", line("CFS_HANDLING", 50_000))))
 	a.must(f.module.MatchCreditorInvoice(ctx, a.match("CI-CFS", "ap-1", 7, onPool("P-1", 2, 1, 50_000, true))))
-	a.must(f.module.ApportionConsolCosts(ctx, api.ApportionConsolCosts{CommandID: "p1-final", TenantID: f.tenant, ActorID: "fin-1", PoolID: "P-1",
+	a.must(previewAndSubmit(ctx, f.module, api.PreviewConsolCostApportionment{CommandID: "p1-final", TenantID: f.tenant, ActorID: "fin-1", PoolID: "P-1",
 		ExpectedRevision: a.pool("P-1").Revision, OccurredAt: a.hours(8)}))
 	a.must(f.module.CloseConsolCostPool(ctx, api.CloseConsolCostPool{CommandID: "p1-close", TenantID: f.tenant, ActorID: "fin-1", PoolID: "P-1",
 		ExpectedRevision: a.pool("P-1").Revision, OccurredAt: a.hours(8)}))
@@ -754,9 +754,9 @@ func TestRetainedOnPostgres(t *testing.T) {
 	ctx, f := a.ctx, a.fixture
 	cancelled := a.w.costBases["CONSOL-1"]
 	cancelled.State, cancelled.Houses = "CANCELLED", nil
-	retain := api.ApportionConsolCosts{CommandID: "retain-early", TenantID: f.tenant, ActorID: "fin-1", PoolID: "P-1", ExpectedRevision: a.pool("P-1").Revision,
+	retain := api.PreviewConsolCostApportionment{CommandID: "retain-early", TenantID: f.tenant, ActorID: "fin-1", PoolID: "P-1", ExpectedRevision: a.pool("P-1").Revision,
 		Method: api.MethodRetained, Reason: "MU's no-show charge", OccurredAt: a.hours(4)}
-	_, err := f.module.ApportionConsolCosts(ctx, retain)
+	_, err := previewAndSubmit(ctx, f.module, retain)
 	a.rejected("retained while PHY reports houses", err, "retained on the consolidation only once")
 
 	// PHY cancels the flight's consolidation; MU bills a no-show charge of 1,200.00 USD on its freight accrual
@@ -769,15 +769,15 @@ func TestRetainedOnPostgres(t *testing.T) {
 		ExpectedRevision: a.invoice("CI-NS").Revision, Reason: "no-show charge per MU's conditions", OccurredAt: a.hours(5)}))
 	a.must(f.module.ReleasePoolAccrual(ctx, api.ReleasePoolAccrual{CommandID: "release-cfs", TenantID: f.tenant, ActorID: "fin-1", PoolID: "P-1",
 		ExpectedRevision: a.pool("P-1").Revision, LineNo: 2, ExpectedVersion: 1, Reason: "nothing went through the CFS", OccurredAt: a.hours(5)}))
-	_, err = f.module.ApportionConsolCosts(ctx, api.ApportionConsolCosts{CommandID: "apportion-cancelled", TenantID: f.tenant, ActorID: "fin-1",
+	_, err = previewAndSubmit(ctx, f.module, api.PreviewConsolCostApportionment{CommandID: "apportion-cancelled", TenantID: f.tenant, ActorID: "fin-1",
 		PoolID: "P-1", ExpectedRevision: a.pool("P-1").Revision, OccurredAt: a.hours(6)})
 	a.rejected("apportioned on a cancelled consolidation", err, "FIN_POOL_NO_BASIS")
 	noReason := retain
 	noReason.CommandID, noReason.ExpectedRevision, noReason.Reason, noReason.OccurredAt = "retain-no-reason", a.pool("P-1").Revision, "", a.hours(6)
-	_, err = f.module.ApportionConsolCosts(ctx, noReason)
+	_, err = previewAndSubmit(ctx, f.module, noReason)
 	a.rejected("retained without a reason", err, "needs a reason")
 	retain.CommandID, retain.ExpectedRevision, retain.OccurredAt = "retain", a.pool("P-1").Revision, a.hours(6)
-	if r := a.must(f.module.ApportionConsolCosts(ctx, retain)); r.Version != 2 {
+	if r := a.must(previewAndSubmit(ctx, f.module, retain)); r.Version != 2 {
 		t.Fatalf("retained: %+v", r)
 	}
 	kept := a.pool("P-1").Apportionments[1]

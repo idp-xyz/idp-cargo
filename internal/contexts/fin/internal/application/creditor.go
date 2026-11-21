@@ -236,9 +236,9 @@ func (d Deps) ReleasePoolAccrual(ctx context.Context, c Command, lineNo, expecte
 
 // ClosePool closes a pool whose costs are final: PHY answers the consolidation's current basis first (T3). A pool with
 // a line whose latest apportionment is by REVENUE also locks the houses' jobs, in job id order after the pool and
-// before the policy as ApportionPoolCosts does, and reads their revenue for the comparison; any other pool takes the
-// locks and reads what it always did. The jobs are also locked and read when the REVENUE line's final cost is zero or
-// the consolidation is gone, where Close compares nothing: more locks than needed, never a wrong result.
+// before the policy as PreviewPoolApportionment does, and reads their revenue for the comparison; any other pool takes
+// the locks and reads what it always did. The jobs are also locked and read when the REVENUE line's final cost is zero
+// or the consolidation is gone, where Close compares nothing: more locks than needed, never a wrong result.
 func (d Deps) ClosePool(ctx context.Context, c Command) (Receipt, error) {
 	if d.Physical == nil {
 		return Receipt{}, ErrMissingDependency

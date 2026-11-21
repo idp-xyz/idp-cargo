@@ -83,3 +83,32 @@ func TestAClosedUnitArrivesAsTheDomainConstant(t *testing.T) {
 		t.Fatalf("load units: %+v", got.LoadUnits)
 	}
 }
+
+// The reworks of a unit's stuffing arrive with their number, who asked, how each ended and when; a stuffing in REWORK
+// arrives as the state the domain reads to freeze the pool, and the units in rework are told in order.
+func TestTheAdapterCarriesTheReworksOfEachPackingList(t *testing.T) {
+	ended := time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)
+	basis := phyapi.PhysicalCostBasis{ConsolidationID: "C-3", Revision: 9, Kind: "SEA_LCL_OWN", OperatingLegalEntityID: "LE", State: "CLOSED",
+		LoadUnits: []phyapi.PlannedLoadUnit{
+			{UnitNo: 1, TypeCode: "22G1", TEUTenths: 10, Status: phyapi.UnitStatusClosed, ExecutionID: "X-1", ExecutionState: phyapi.ExecutionClosed},
+			{UnitNo: 2, TypeCode: "22G1", TEUTenths: 10, Status: phyapi.UnitStatusInUse, ExecutionID: "X-2", ExecutionState: phyapi.ExecutionRework}},
+		PackingLists: []phyapi.UnitPackingList{
+			{UnitNo: 1, ExecutionID: "X-1", ExecutionState: phyapi.ExecutionClosed, Digest: "d1", Reworks: []phyapi.Rework{
+				{ReworkNo: 1, AskedBy: "ops-a", Reason: "wrong seal", End: phyapi.ReworkSealed, EndedBy: "cfs-1", EndedAt: ended, NewSealReference: "S-2"},
+				{ReworkNo: 2, AskedBy: "ops-b", End: phyapi.ReworkSealed, EndedAt: ended.Add(time.Hour)}}},
+			{UnitNo: 2, ExecutionID: "X-2", ExecutionState: phyapi.ExecutionRework, Digest: "d2", Reworks: []phyapi.Rework{{ReworkNo: 1, AskedBy: "ops-c"}}}}}
+	got, err := Physical{PHY: basisStub{basis}}.CostBasis(context.Background(), "t", "C-3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []fin.UnitPackingListFacts{
+		{UnitNo: 1, ExecutionID: "X-1", ExecutionState: "CLOSED", Digest: "d1", Reworks: []fin.ReworkFacts{
+			{No: 1, AskedBy: "ops-a", End: "SEALED", EndedAt: ended}, {No: 2, AskedBy: "ops-b", End: "SEALED", EndedAt: ended.Add(time.Hour)}}},
+		{UnitNo: 2, ExecutionID: "X-2", ExecutionState: "REWORK", Digest: "d2", Reworks: []fin.ReworkFacts{{No: 1, AskedBy: "ops-c"}}}}
+	if !reflect.DeepEqual(got.PackingLists, want) {
+		t.Fatalf("packing lists =\n%+v\nwant\n%+v", got.PackingLists, want)
+	}
+	if units := got.UnitsInRework(); !reflect.DeepEqual(units, []int{2}) {
+		t.Fatalf("units in rework: %v", units)
+	}
+}
