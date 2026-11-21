@@ -40,6 +40,7 @@ type EventPayload struct {
 	SealNo          int    `json:"seal_no,omitempty"`
 	AssertionNo     int    `json:"assertion_no,omitempty"`
 	EventNo         int    `json:"event_no,omitempty"`
+	ReleaseNo       int    `json:"release_no,omitempty"`
 	FactNo          int    `json:"fact_no,omitempty"`
 	FactsVersion    int    `json:"facts_version,omitempty"`
 	BookingID       string `json:"booking_id,omitempty"`

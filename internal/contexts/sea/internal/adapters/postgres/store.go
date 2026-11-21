@@ -628,10 +628,10 @@ func (s CommandReceipts) Find(ctx context.Context, tenant sea.TenantID, id strin
 	r := app.Receipt{CommandID: id}
 	var entry, bill *int
 	var hbl *string
-	var seal, assertion, eventNo, facts, factNo *int
-	err = q.QueryRow(ctx, `SELECT request_sha256,result_type,result_id,result_revision,result_entry_no,result_hbl,result_bill_no,result_seal_no,result_assertion_no,result_event_no,result_facts_version,result_fact_no
+	var seal, assertion, eventNo, release, facts, factNo *int
+	err = q.QueryRow(ctx, `SELECT request_sha256,result_type,result_id,result_revision,result_entry_no,result_hbl,result_bill_no,result_seal_no,result_assertion_no,result_event_no,result_release_no,result_facts_version,result_fact_no
       FROM cargo_sea.command_receipt WHERE tenant_id=$1 AND command_id=$2`, string(tenant), id).Scan(
-		&r.RequestHash, &r.Kind, &r.SubjectID, &r.NewRevision, &entry, &hbl, &bill, &seal, &assertion, &eventNo, &facts, &factNo)
+		&r.RequestHash, &r.Kind, &r.SubjectID, &r.NewRevision, &entry, &hbl, &bill, &seal, &assertion, &eventNo, &release, &facts, &factNo)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return app.Receipt{}, false, nil
 	}
@@ -652,6 +652,9 @@ func (s CommandReceipts) Find(ctx context.Context, tenant sea.TenantID, id strin
 	}
 	if eventNo != nil {
 		r.EventNo = *eventNo
+	}
+	if release != nil {
+		r.ReleaseNo = *release
 	}
 	if facts != nil {
 		r.FactsVersion = *facts
@@ -680,9 +683,9 @@ func (s CommandReceipts) Save(ctx context.Context, tenant sea.TenantID, r app.Re
 		return err
 	}
 	_, err = q.Exec(ctx, `INSERT INTO cargo_sea.command_receipt (tenant_id,command_id,request_sha256,result_type,result_id,result_revision,result_entry_no,
-      result_hbl,result_bill_no,result_seal_no,result_assertion_no,result_event_no,result_facts_version,result_fact_no) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+      result_hbl,result_bill_no,result_seal_no,result_assertion_no,result_event_no,result_release_no,result_facts_version,result_fact_no) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
 		string(tenant), r.CommandID, r.RequestHash, kind, r.SubjectID, r.NewRevision, orNull(r.EntryNo), orNull(r.HBL), orNull(r.BillNo), orNull(r.SealNo),
-		orNull(r.AssertionNo), orNull(r.EventNo), orNull(r.FactsVersion), orNull(r.FactNo))
+		orNull(r.AssertionNo), orNull(r.EventNo), orNull(r.ReleaseNo), orNull(r.FactsVersion), orNull(r.FactNo))
 	return err
 }
 
@@ -706,7 +709,7 @@ func SEAEnvelope(commandID string, e sea.Event, recordedAt time.Time) (eventing.
 	id := commandID + "\x00" + e.Type + "\x00" + string(e.TenantID) + "\x00" + e.SubjectID + "\x00" + e.ShipmentID + "\x00" +
 		strconv.Itoa(e.EntryNo) + "\x00" + strconv.Itoa(e.BillNo)
 	// Movement and seal join the id only when a visit sets them, so a command recorded before keeps its event id.
-	if e.MovementID != "" || e.SealNo != 0 || e.AssertionNo != 0 || e.EventNo != 0 {
+	if e.MovementID != "" || e.SealNo != 0 || e.AssertionNo != 0 || e.EventNo != 0 || e.ReleaseNo != 0 {
 		id += "\x00" + e.MovementID + "\x00" + strconv.Itoa(e.SealNo)
 		if e.AssertionNo != 0 {
 			id += "\x00" + strconv.Itoa(e.AssertionNo)
@@ -714,13 +717,16 @@ func SEAEnvelope(commandID string, e sea.Event, recordedAt time.Time) (eventing.
 		if e.EventNo != 0 {
 			id += "\x00" + strconv.Itoa(e.EventNo)
 		}
+		if e.ReleaseNo != 0 {
+			id += "\x00release\x00" + strconv.Itoa(e.ReleaseNo)
+		}
 	}
 	if e.FactNo != 0 {
 		id += "\x00" + strconv.Itoa(e.FactNo)
 	}
 	digest := sha256.Sum256([]byte(id))
 	payload, err := json.Marshal(api.EventPayload{TenantID: string(e.TenantID), SubjectID: e.SubjectID, ConsolidationID: e.ConsolidationID,
-		MovementID: e.MovementID, ShipmentID: e.ShipmentID, EntryNo: e.EntryNo, BillNo: e.BillNo, SealNo: e.SealNo, AssertionNo: e.AssertionNo, EventNo: e.EventNo,
+		MovementID: e.MovementID, ShipmentID: e.ShipmentID, EntryNo: e.EntryNo, BillNo: e.BillNo, SealNo: e.SealNo, AssertionNo: e.AssertionNo, EventNo: e.EventNo, ReleaseNo: e.ReleaseNo,
 		FactsVersion: e.FactsVersion, FactNo: e.FactNo,
 		BookingID:       e.BookingID,
 		CapacityVersion: e.CapacityVersion, Reason: e.Reason})

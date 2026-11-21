@@ -39,8 +39,11 @@ const (
 	PendHousePacks            = "HOUSE_PACKS_NOT_STUFFED"
 
 	// Warnings: they do not block.
-	WarnVGMEnteredBeforeSealKnown = "VGM_ENTERED_BEFORE_SEAL_KNOWN"
-	WarnResealDatedBeforeStuffing = "RESEAL_DATED_BEFORE_STUFFING"
+	WarnVGMEnteredBeforeSealKnown  = "VGM_ENTERED_BEFORE_SEAL_KNOWN"
+	WarnResealDatedBeforeStuffing  = "RESEAL_DATED_BEFORE_STUFFING"
+	WarnReturnDatedAfterReseal     = "RETURN_DATED_AFTER_RESEAL"
+	WarnCarrierLoadingBeforeReseal = "CARRIER_LOADING_BEFORE_RESEAL"
+	WarnCarrierConflictReleased    = "CARRIER_LOADING_CONFLICT_RELEASED"
 )
 
 func houseStage(kind string) bool {
@@ -107,9 +110,9 @@ func (m *Movement) houseItems(plans []Plan) []PendingItem {
 
 // containerItems checks every live container. P is PHY's seal of the container's stuffing as the movement's live houses
 // carry it (seal and sealed-at). After the container has a seal: F1 the houses agree on P, F2 P is one of the
-// container's seals and only a customs or carrier seal follows it, F3 the container did not gate in or load before PHY
-// sealed it again, F4 its latest VGM was submitted, and for a resealed container determined, not before P. A container
-// no live house names has no P and none of the four apply.
+// container's seals and only a customs or carrier seal follows it, F3 the container was not at the terminal, nor
+// loaded, when PHY sealed it again, F4 its latest VGM was submitted, and for a resealed container determined, not
+// before P. A container no live house names has no P and none of the four apply.
 func (m *Movement) containerItems(houses []Entry, visits []VisitState) (blocking, warnings []PendingItem) {
 	cut, hasCut := m.VGMCutOff()
 	byUnit := map[int]VisitState{}
@@ -130,7 +133,16 @@ func (m *Movement) containerItems(houses []Entry, visits []VisitState) (blocking
 		resealed := false
 		if carried {
 			resealed = v.resealed(p, m.sealHistory(v.ExecutionID))
-			m.sealItems(v, p, resealed, add)
+			m.sealItems(v, p, resealed, len(visits) == 1, add)
+			if w, ok := v.returnWarning(p); ok && resealed {
+				warnings = append(warnings, w)
+			}
+			if w, ok := m.carrierLoadingWarning(v, p, len(visits) == 1); ok && resealed {
+				warnings = append(warnings, w)
+			}
+			if resealed {
+				warnings = append(warnings, m.releasedWarnings(v, p, len(visits) == 1)...)
+			}
 		}
 		ready := vgmReady(v, cut, hasCut)
 		if !ready {
@@ -301,17 +313,23 @@ func (v VisitState) lastChange() time.Time {
 	for _, e := range v.Events {
 		last = later(last, e.At)
 	}
+	for _, r := range v.Releases {
+		last = later(last, r.At)
+	}
 	return last
 }
 
 // sealItems are F2 and F3 of a container whose stuffing PHY sealed with p. F2: p's seal is one of the container's
 // seals, and every seal recorded after the latest one with p's key is a CUSTOMS or CARRIER seal; a container taken as
 // stuffed with a difference reason, whose stuffing PHY has not sealed again since, keeps the rule it was taken under
-// and is not asked. F3: a container PHY sealed again after SEA took it as stuffed did not gate in, nor was it loaded,
-// before PHY sealed it again: by its own gate-in or loading events, or by the carrier's loading reports that name its
-// number or name no container (a report naming another container is that container's). A time equal to PHY's is not
-// before it.
-func (m *Movement) sealItems(v VisitState, p Stuffing, resealed bool, add func(kind, msg string)) {
+// and is not asked. F3: a container PHY sealed again after SEA took it as stuffed was not at the terminal when PHY
+// sealed it again (its latest gate-in before that time has no gate-out after it), and was not loaded before it: by its
+// own loading events, or by the carrier's loading reports that name its number (a report that names no container only
+// warns: it cannot show which container was loaded; with exactly one live container, released visits not counted, it
+// can only be about that container and counts as naming it, judged on the live containers as they stand when the items
+// are read). A time equal to PHY's is not before it. A container loaded is
+// told that it is handled outside the system, one at the terminal that its return is to be recorded.
+func (m *Movement) sealItems(v VisitState, p Stuffing, resealed, only bool, add func(kind, msg string)) {
 	if v.DifferenceReason == "" || resealed {
 		key, last := sealKey(p.Seal), -1
 		for i, s := range v.Seals {
@@ -335,24 +353,150 @@ func (m *Movement) sealItems(v VisitState, p Stuffing, resealed bool, add func(k
 	if !resealed {
 		return
 	}
-	what := ""
-	for _, e := range v.Events {
-		switch {
-		case e.Kind == EventGateIn && e.OccurredAt.Before(p.SealedAt):
-			what = "gate-in"
-		case e.Kind == EventLoaded && e.OccurredAt.Before(p.SealedAt) && what == "":
-			what = "loading"
+	own := v.loadedBefore(p.SealedAt)
+	at, in := v.atTerminal(p.SealedAt)
+	switch {
+	case own != "":
+		add(PendGatedBeforeReseal, fmt.Sprintf("container %s was loaded before PHY sealed it again (%s), by %s; a container loaded on board is not supported in SEA: it is handled outside the system",
+			v.Number, p.SealedAt.UTC().Format(time.RFC3339), own))
+	case at && v.loadedAtAll():
+		add(PendGatedBeforeReseal, fmt.Sprintf("container %s was at the terminal when PHY sealed it again (%s) and has been loaded since; it cannot be taken back, and a container loaded on board is not supported in SEA: it is handled outside the system",
+			v.Number, p.SealedAt.UTC().Format(time.RFC3339)))
+	case at:
+		add(PendGatedBeforeReseal, fmt.Sprintf("container %s was at the terminal when PHY sealed it again (%s): it gated in (%s) and its return is not recorded; record it (RecordContainerEvent %s, dated before PHY opened the rework), then assert a new VGM (AssertVgm) and gate it in again",
+			v.Number, p.SealedAt.UTC().Format(time.RFC3339), in.UTC().Format(time.RFC3339), EventGateOut))
+	default:
+		// only the carrier says it was loaded: SEA's records and the report conflict, which the operator may release
+		for _, c := range m.carrierLoadingFacts(v, p, only) {
+			if _, done := v.released(c, p); !done {
+				add(PendGatedBeforeReseal, conflictMessage(v, p, c, only))
+				break
+			}
 		}
+	}
+}
+
+// conflictMessage says what conflicts and the ways out.
+func conflictMessage(v VisitState, p Stuffing, c CarrierFact, only bool) string {
+	names := "naming this container"
+	if c.ContainerNumber == "" && only {
+		names = "naming no container, while this is the movement's only live container"
+	}
+	records := "SEA has no gate-in or loading of it before then"
+	if v.lastGateIn(p.SealedAt) >= 0 {
+		records = "SEA has it gated in and taken back out before then, and no loading of it"
+	}
+	return fmt.Sprintf("container %s: the carrier's report of a loading at %s (%s) is dated before PHY sealed it again (%s), while %s; "+
+		"once checked, release the conflict with a reason (AcceptCarrierLoadingConflict); if the container was in fact loaded, it is handled outside the system",
+		v.Number, c.OccurredAt.UTC().Format(time.RFC3339), names, p.SealedAt.UTC().Format(time.RFC3339), records)
+}
+
+// releasedWarnings are the warnings of the carrier's loading reports against p that an operator released: who, when and
+// why. They do not block.
+func (m *Movement) releasedWarnings(v VisitState, p Stuffing, only bool) []PendingItem {
+	var out []PendingItem
+	for _, c := range m.carrierLoadingFacts(v, p, only) {
+		if r, done := v.released(c, p); done {
+			out = append(out, PendingItem{Kind: WarnCarrierConflictReleased, Scope: ScopeContainer, SubjectID: v.Number, Message: fmt.Sprintf(
+				"the carrier's report of a loading at %s, before PHY sealed container %s again (%s), was released by %s at %s: %s",
+				c.OccurredAt.UTC().Format(time.RFC3339), v.Number, p.SealedAt.UTC().Format(time.RFC3339), r.By, r.At.UTC().Format(time.RFC3339), r.Reason)})
+		}
+	}
+	return out
+}
+
+// carrierLoadingWarning is given for a resealed container when a carrier's loading report that names no container is
+// dated before PHY sealed it again and the movement has two or more live containers: such a report cannot show which
+// container was loaded, so it does not block (only the container's own events and a report that names it do); the times
+// and the container are to be checked, and a container that was loaded is handled outside the system. With exactly one
+// live container the report can only be about it, and sealItems counts it as naming it.
+func (m *Movement) carrierLoadingWarning(v VisitState, p Stuffing, only bool) (PendingItem, bool) {
+	if only {
+		return PendingItem{}, false // the report can only be about this container: sealItems counts it as naming it
 	}
 	for _, c := range m.state.CarrierFacts {
-		if what == "" && c.Kind == CarrierLoaded && (c.ContainerNumber == "" || c.ContainerNumber == v.Number) && c.OccurredAt.Before(p.SealedAt) {
-			what = "the carrier's report of its loading"
+		if c.Kind == CarrierLoaded && c.ContainerNumber == "" && c.OccurredAt.Before(p.SealedAt) {
+			return PendingItem{Kind: WarnCarrierLoadingBeforeReseal, Scope: ScopeContainer, SubjectID: v.Number, Message: fmt.Sprintf(
+				"the carrier reported a loading at %s, before PHY sealed container %s again (%s), without naming a container: check whether this container was the one loaded; if it was, it is handled outside the system",
+				c.OccurredAt.UTC().Format(time.RFC3339), v.Number, p.SealedAt.UTC().Format(time.RFC3339))}, true
 		}
 	}
-	if what != "" {
-		add(PendGatedBeforeReseal, fmt.Sprintf("container %s gated in or was loaded before PHY sealed it again (%s), by its %s, and its return from the terminal is not recorded yet (the next step records it)",
-			v.Number, p.SealedAt.UTC().Format(time.RFC3339), what))
+	return PendingItem{}, false
+}
+
+// loadedBefore says by what the container's own events show it loaded before t: "its loading", or nothing.
+func (v VisitState) loadedBefore(t time.Time) string {
+	for _, e := range v.Events {
+		if e.Kind == EventLoaded && e.OccurredAt.Before(t) {
+			return "its loading"
+		}
 	}
+	return ""
+}
+
+// loadedAtAll reports whether a loading is recorded for the container, whatever its date.
+func (v VisitState) loadedAtAll() bool {
+	for _, e := range v.Events {
+		if e.Kind == EventLoaded {
+			return true
+		}
+	}
+	return false
+}
+
+// lastGateIn is the index of the container's latest gate-in (by the event's number) that occurred before t, or -1. A
+// time equal to t is not before it.
+func (v VisitState) lastGateIn(t time.Time) int {
+	in := -1
+	for i, e := range v.Events {
+		if e.Kind == EventGateIn && e.OccurredAt.Before(t) {
+			in = i
+		}
+	}
+	return in
+}
+
+// atTerminal reports whether the container was at the terminal at t, and when it gated in: its latest gate-in that
+// occurred before t has no later gate-out (a higher number) at all. A gate-out dated at or after t still counts as the
+// return (the visit's status follows the event numbers); returnWarning asks for its time to be checked.
+func (v VisitState) atTerminal(t time.Time) (bool, time.Time) {
+	in := v.lastGateIn(t)
+	if in < 0 {
+		return false, time.Time{}
+	}
+	for _, e := range v.Events[in+1:] {
+		if e.Kind == EventGateOut {
+			return false, time.Time{}
+		}
+	}
+	return true, v.Events[in].OccurredAt
+}
+
+// returnWarning is given when the times say the container was resealed at the terminal, yet it counts as returned: its
+// latest gate-in before t is followed by a gate-out, and none of the gate-outs after that gate-in occurred before t.
+// It does not block; the times are to be checked.
+func (v VisitState) returnWarning(p Stuffing) (PendingItem, bool) {
+	in := v.lastGateIn(p.SealedAt)
+	if in < 0 {
+		return PendingItem{}, false
+	}
+	var first *VisitEvent
+	for i := in + 1; i < len(v.Events); i++ {
+		if e := v.Events[i]; e.Kind == EventGateOut {
+			if e.OccurredAt.Before(p.SealedAt) {
+				return PendingItem{}, false
+			}
+			if first == nil {
+				first = &v.Events[i]
+			}
+		}
+	}
+	if first == nil {
+		return PendingItem{}, false
+	}
+	return PendingItem{Kind: WarnReturnDatedAfterReseal, Scope: ScopeContainer, SubjectID: v.Number, Message: fmt.Sprintf(
+		"container %s was taken back out of the terminal at %s, not before PHY sealed it again (%s): the times say it was resealed at the terminal; check them",
+		v.Number, first.OccurredAt.UTC().Format(time.RFC3339), p.SealedAt.UTC().Format(time.RFC3339))}, true
 }
 
 // sealMissingMessage says why PHY's seal is not on the container and what to do: SEA records it by itself on a refresh

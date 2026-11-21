@@ -116,7 +116,7 @@ func TestF3IsPerContainer(t *testing.T) {
 	e := newTwoDay(t)
 	e.event(e.v1, EventGateIn, "GIN-1", 22, 22)
 	e.reseal(25, map[string]string{"X-1": "S2"})
-	if err := e.finalize(30); !errors.Is(err, ErrNotFinalizable) || !strings.Contains(err.Error(), "CSQU3054383") || !strings.Contains(err.Error(), "by its gate-in") {
+	if err := e.finalize(30); !errors.Is(err, ErrNotFinalizable) || !strings.Contains(err.Error(), "CSQU3054383") || !strings.Contains(err.Error(), "was at the terminal when PHY sealed it again") {
 		t.Fatalf("CV-1 gated in: %v", err)
 	}
 	// its own loading, gate-in dated after the reseal: by its loading
@@ -148,7 +148,7 @@ func TestF3CarrierReportsAndBoundaries(t *testing.T) {
 	}{
 		"the other container's report":      {"TEMU1234565", "", 23, false},
 		"this container's report":           {"CSQU3054383", "", 23, true},
-		"a report naming the bill":          {"", "MAEU123456789", 23, true},
+		"a report naming the bill":          {"", "MAEU123456789", 23, false},
 		"this container's report at PHY's":  {"CSQU3054383", "", 25, false},
 		"a report naming the bill at PHY's": {"", "MAEU123456789", 25, false},
 	} {

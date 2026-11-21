@@ -57,6 +57,7 @@ type Receipt struct {
 	SealNo       int // the seal a RecordContainerSeal wrote
 	AssertionNo  int // the VGM assertion an AssertVgm or RecordVgmResponse wrote
 	EventNo      int // the container event a RecordContainerEvent wrote
+	ReleaseNo    int // the release an AcceptCarrierLoadingConflict wrote
 	FactNo       int // the carrier fact a RecordOceanCarrierFact wrote
 	FactsVersion int // the OceanDocFacts version a FinalizeOceanDocFacts published
 	RequestHash  string

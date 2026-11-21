@@ -159,9 +159,9 @@ func TestTheModelEmitsThePublishedEventTypes(t *testing.T) {
 	published := map[string]bool{api.OceanMovementOpened: true, api.VoyageLegsLinked: true, api.MasterBillRecorded: true, api.HouseBillAssociated: true,
 		api.HouseBillFactsRefreshed: true, api.HouseBillAssociationEnded: true, api.OceanMovementCancelled: true, api.HblSeriesRegistered: true,
 		api.ContainerAssigned: true, api.SealRecorded: true, api.ContainerEventRecorded: true, api.ContainerReleased: true,
-		api.VgmAsserted: true, api.VgmResponseRecorded: true, api.OceanCarrierFactRecorded: true}
+		api.VgmAsserted: true, api.VgmResponseRecorded: true, api.OceanCarrierFactRecorded: true, api.CarrierLoadingConflictReleased: true}
 	emitted := map[string]bool{}
-	for _, e := range slices.Concat(m.Pending(), s.Pending(), v.Pending(), free.Pending()) {
+	for _, e := range slices.Concat(m.Pending(), s.Pending(), v.Pending(), free.Pending(), releaseEvents(t)) {
 		if e.Type == api.ContainerEventRecorded && e.Reason != api.ContainerEventStuffed && e.Reason != api.EventGateIn && e.Reason != api.EventLoaded {
 			t.Errorf("%s carries the reason %q", e.Type, e.Reason)
 		}

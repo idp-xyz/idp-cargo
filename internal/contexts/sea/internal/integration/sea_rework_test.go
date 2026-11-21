@@ -433,8 +433,8 @@ func TestFinalizeAContainerGatedInBeforeTheResealOnPostgres(t *testing.T) {
 		t.Fatalf("S2 is followed on a gated-in container: %s %s", got, v.Status)
 	}
 	_, err = f.finalize("fin-1", 7)
-	if !errors.Is(err, api.ErrRejected) || !strings.Contains(err.Error(), "gated in or was loaded before PHY sealed it again") ||
-		!strings.Contains(err.Error(), "its return from the terminal is not recorded yet") || strings.Contains(err.Error(), "assert a new one") {
+	if !errors.Is(err, api.ErrRejected) || !strings.Contains(err.Error(), "was at the terminal when PHY sealed it again") ||
+		!strings.Contains(err.Error(), "RecordContainerEvent GATE_OUT_TERMINAL") || strings.Contains(err.Error(), "assert a new one") {
 		t.Fatalf("F3: %v", err)
 	}
 	if _, err = f.vgm("vgm-2", r.NewRevision+1, 7); !errors.Is(err, api.ErrRejected) {

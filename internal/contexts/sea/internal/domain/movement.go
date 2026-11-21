@@ -219,6 +219,7 @@ type Event struct {
 	SealNo          int
 	AssertionNo     int
 	EventNo         int
+	ReleaseNo       int
 	FactNo          int
 	FactsVersion    int
 	BookingID       string

@@ -332,6 +332,12 @@ func (m *Module) AssertVgm(ctx context.Context, cmd api.AssertVgm) (api.Receipt,
 	return receipt(r, err)
 }
 
+func (m *Module) AcceptCarrierLoadingConflict(ctx context.Context, cmd api.AcceptCarrierLoadingConflict) (api.Receipt, error) {
+	r, err := m.deps(cmd.TenantID, cmd.CommandID).AcceptCarrierLoadingConflict(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID,
+		api.ActionAcceptCarrierLoadingConflict, cmd.VisitID, cmd.ExpectedRevision, cmd.OccurredAt, cmd), cmd.Reason)
+	return receipt(r, err)
+}
+
 func (m *Module) RecordContainerEvent(ctx context.Context, cmd api.RecordContainerEvent) (api.Receipt, error) {
 	r, err := m.deps(cmd.TenantID, cmd.CommandID).RecordContainerEvent(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, api.ActionRecordContainerEvent, cmd.VisitID,
 		cmd.ExpectedRevision, cmd.OccurredAt, cmd), cmd.Kind, cmd.Location, stored(cmd.HappenedAt), cmd.Source, cmd.Reference)
@@ -604,6 +610,11 @@ func visitView(v *domain.Visit, revision int64) api.ContainerVisit {
 			LateReason: a.LateReason, RecordedBy: a.By, RecordedAt: a.At, Response: a.Response, ResponseSource: a.ResponseSource,
 			RespondedAt: a.RespondedAt, ResponseBy: a.ResponseBy})
 	}
+	for i := len(st.Releases) - 1; i >= 0; i-- {
+		r := st.Releases[i]
+		out.Releases = append(out.Releases, api.CarrierConflictRelease{ReleaseNo: r.No, FactNo: r.FactNo, PHYSeal: r.PHYSeal, PHYSealedAt: r.PHYSealedAt,
+			Reason: r.Reason, RecordedBy: r.By, RecordedAt: r.At})
+	}
 	for i := len(st.Events) - 1; i >= 0; i-- {
 		e := st.Events[i]
 		out.Events = append(out.Events, api.ContainerEvent{EventNo: e.No, Kind: e.Kind, Location: e.Location, HappenedAt: e.OccurredAt,
@@ -647,7 +658,7 @@ func receipt(r application.Receipt, err error) (api.Receipt, error) {
 		return api.Receipt{}, classify(err)
 	}
 	out := api.Receipt{CommandID: r.CommandID, NewRevision: r.NewRevision, EntryNo: r.EntryNo, HBL: r.HBL, BillNo: r.BillNo, SealNo: r.SealNo,
-		AssertionNo: r.AssertionNo, EventNo: r.EventNo, FactsVersion: r.FactsVersion, FactNo: r.FactNo}
+		AssertionNo: r.AssertionNo, EventNo: r.EventNo, ReleaseNo: r.ReleaseNo, FactsVersion: r.FactsVersion, FactNo: r.FactNo}
 	if r.Kind == "ContainerVisit" {
 		out.VisitID = r.SubjectID
 	} else {

@@ -382,17 +382,18 @@ func TestFinalizeTheHousesAgreeOnPHYsSeal(t *testing.T) {
 	}
 }
 
-// F3: a container that gated in or was loaded before PHY sealed it again is refused, and the message is F3's, not F4's.
+// F3: a container that was at the terminal or was loaded before PHY sealed it again is refused, and the message is
+// F3's, not F4's.
 func TestFinalizeAContainerGatedInBeforeTheReseal(t *testing.T) {
-	const gatedMessage = "gated in or was loaded before PHY sealed it again"
+	const gatedMessage = "PHY sealed it again"
 	gate := func(d *reDay) { d.event(EventGateIn, "GIN-1", 22, 22) }
 	for name, prepare := range map[string]func(*reDay){
 		"gate-in": gate,
 		"loading": func(d *reDay) { gate(d); d.event(EventLoaded, "LD-1", 23, 23) },
 		"the movement's on-board date, by the carrier's report": func(d *reDay) {
 			d.vgm(22)
-			if _, _, err := d.m.RecordCarrierFact(CarrierFact{Kind: CarrierLoaded, BillNumber: "MAEU123456789", Vessel: "EVER GIVEN", Voyage: "0123W",
-				Source: "line", Reference: "LD-9", SHA256: strings.Repeat("ab", 32), OccurredAt: hr(23)}, nil, "ops", hr(23)); err != nil {
+			if _, _, err := d.m.RecordCarrierFact(CarrierFact{Kind: CarrierLoaded, ContainerNumber: "CSQU3054383", Vessel: "EVER GIVEN", Voyage: "0123W",
+				Source: "line", Reference: "LD-9", SHA256: strings.Repeat("ab", 32), OccurredAt: hr(23)}, []string{"CSQU3054383"}, "ops", hr(23)); err != nil {
 				d.t.Fatal(err)
 			}
 		},
@@ -400,7 +401,11 @@ func TestFinalizeAContainerGatedInBeforeTheReseal(t *testing.T) {
 		d := newReDay(t)
 		prepare(d)
 		d.reseal("S2", 25, true)
-		refused(t, name, d.finalize(30), gatedMessage, "CSQU3054383", "return from the terminal")
+		way := "outside the system"
+		if name == "gate-in" {
+			way = "GATE_OUT_TERMINAL"
+		}
+		refused(t, name, d.finalize(30), gatedMessage, "CSQU3054383", way)
 		// not as the VGM's message: the old VGM is before PHY's seal too
 		if strings.Contains(d.finalize(30).Error(), "assert a new one") {
 			t.Fatalf("%s: F4's message shows before F3's", name)
@@ -412,7 +417,7 @@ func TestFinalizeAContainerGatedInBeforeTheReseal(t *testing.T) {
 	d.vgm(26)
 	d.event(EventGateIn, "GIN-9", 26, 26)
 	d.event(EventLoaded, "LD-9", 24, 27)
-	refused(t, "a loading before the reseal", d.finalize(30), "gated in or was loaded before PHY sealed it again")
+	refused(t, "a loading before the reseal", d.finalize(30), "was loaded before PHY sealed it again", "outside the system")
 	// a gate-in after the reseal is accepted (with the new VGM, which a gated-in container could not take: it is
 	// asserted first)
 	d = newReDay(t)
