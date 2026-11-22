@@ -151,16 +151,17 @@ func (r Reads) Evidence(ctx context.Context, tenant phy.TenantID, shipment phy.S
 	return lots, executions, units, err
 }
 
-// CostBasis reads a consolidation, its live houses, its load executions and the houses' lots in one snapshot,
-// for PhysicalCostBasis v1.
+// CostBasis reads a consolidation, its live houses, the houses that left it, its load executions and the houses' lots
+// in one transaction, for PhysicalCostBasis v1 (the caller makes it a snapshot).
 func (r Reads) CostBasis(ctx context.Context, tenant phy.TenantID, id phy.ConsolidationID) (*phy.Consolidation, int64, []House,
-	[]ExecutionRead, map[phy.ShipmentID][]LotRead, error) {
+	[]FormerHouse, []ExecutionRead, map[phy.ShipmentID][]LotRead, error) {
 	if tenant == "" || id == "" {
-		return nil, 0, nil, nil, nil, ErrInvalidQuery
+		return nil, 0, nil, nil, nil, nil, ErrInvalidQuery
 	}
 	var c *phy.Consolidation
 	var revision int64
 	var houses []House
+	var former []FormerHouse
 	var executions []ExecutionRead
 	lots := map[phy.ShipmentID][]LotRead{}
 	err := r.Tx.WithinTransaction(ctx, func(txCtx context.Context) error {
@@ -170,6 +171,19 @@ func (r Reads) CostBasis(ctx context.Context, tenant phy.TenantID, id phy.Consol
 		}
 		if houses, err = r.Consolidations.LiveHouses(txCtx, tenant, id); err != nil {
 			return err
+		}
+		if former, err = r.Consolidations.FormerHouses(txCtx, tenant, id); err != nil {
+			return err
+		}
+		// An entry ended while the consolidation was OPEN, or by the shipment's cancellation, names no rework even when
+		// a rework unloaded the house: the reversal lines say which, those PHY entered since the entry began.
+		for i, f := range former {
+			if f.Entry.ReworkNo != 0 {
+				continue
+			}
+			if former[i].Reversal, former[i].Unloaded, err = r.Executions.HouseReworkSince(txCtx, tenant, id, f.ShipmentID, f.Entry.EnteredAt); err != nil {
+				return err
+			}
 		}
 		if executions, err = r.Executions.ByConsolidation(txCtx, tenant, id); err != nil {
 			return err
@@ -181,7 +195,7 @@ func (r Reads) CostBasis(ctx context.Context, tenant phy.TenantID, id phy.Consol
 		}
 		return nil
 	})
-	return c, revision, houses, executions, lots, err
+	return c, revision, houses, former, executions, lots, err
 }
 
 // OpenDiscrepancies lists open discrepancies by the time they were raised.

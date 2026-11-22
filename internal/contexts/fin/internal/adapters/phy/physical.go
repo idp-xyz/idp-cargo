@@ -56,5 +56,17 @@ func (p Physical) CostBasis(ctx context.Context, tenant fin.TenantID, consolidat
 		}
 		out.PackingLists = append(out.PackingLists, facts)
 	}
+	for _, g := range b.GivenUpStuffings {
+		facts := fin.GivenUpStuffingFacts{UnitNo: g.UnitNo, ExecutionID: g.ExecutionID}
+		for _, r := range g.Reworks {
+			facts.Reworks = append(facts.Reworks, fin.ReworkFacts{No: r.ReworkNo, AskedBy: r.AskedBy, End: r.End, EndedAt: r.EndedAt})
+		}
+		out.GivenUpStuffings = append(out.GivenUpStuffings, facts)
+	}
+	for _, f := range b.FormerHouses {
+		out.FormerHouses = append(out.FormerHouses, fin.FormerHouseFacts{ShipmentID: f.ShipmentID, End: f.End, TransferredTo: f.TransferredTo,
+			Reason: f.Reason, EndedBy: f.EndedBy, EndedAt: f.EndedAt, EndedEnteredAt: f.EndedEnteredAt, ReworkFrom: f.ReworkFrom, ReworkExecutionID: f.ReworkExecutionID,
+			ReworkNo: f.ReworkNo, ReworkUnitNo: f.ReworkUnitNo, ReworkAskedBy: f.ReworkAskedBy})
+	}
 	return out, nil
 }

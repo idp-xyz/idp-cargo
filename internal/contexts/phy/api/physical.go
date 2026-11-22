@@ -848,6 +848,70 @@ type PhysicalCostBasis struct {
 	Houses                 []HouseCostBasis
 	LoadUnits              []PlannedLoadUnit
 	PackingLists           []UnitPackingList // one for every load unit that has a stuffing, in unit order
+	// FormerHouses are the houses that left the consolidation, in shipment order (V2.92). GivenUpStuffings are the
+	// stuffings of the consolidation that were given up after a rework, in unit order and, for one unit, by stuffing.
+	// Neither is part of any digest, and neither changes Revision.
+	FormerHouses     []FormerHouse
+	GivenUpStuffings []GivenUpStuffing
+}
+
+// How a house left a consolidation (FormerHouse.End).
+const (
+	FormerDetached    = "DETACHED"
+	FormerTransferred = "TRANSFERRED"
+	FormerCancelled   = "SHIPMENT_CANCELLED"
+)
+
+// Where a former house's rework came from (FormerHouse.ReworkFrom).
+const (
+	ReworkFromEntry    = "ENTRY"    // the membership entry that ended names it (the house left a CLOSED consolidation)
+	ReworkFromReversal = "REVERSAL" // the entry names none; the reversal lines of the house say which rework unloaded it
+	ReworkFromNone     = "NONE"     // no rework unloaded the house
+)
+
+// FormerHouse is a house whose latest membership entry in the consolidation ended by a detach, a transfer or the
+// shipment's cancellation: one per house, listed in shipment order, whatever the house's earlier entries were. The
+// latest entry decides: a house that left and was attached to the consolidation again is live and not listed, and one
+// that left, came back and then had its shipment cancelled is listed as cancelled, with that entry's reason, person and
+// times. An entry ended by a refresh is never the latest (the house stays with a new entry).
+//
+// End is DETACHED, TRANSFERRED or SHIPMENT_CANCELLED; for a transfer TransferredTo is the consolidation the house went
+// to. Reason and ReasonText are the operator's (SHIPMENT_CANCELLED for a cancellation, PHY's own). EndedBy is who ended
+// the entry, EndedAt the business time and EndedEnteredAt when PHY recorded it.
+//
+// The rework is the latest rework of a sealed container of the consolidation in which the house was unloaded, as the
+// stuffing's Reworks give it (ReworkExecutionID, ReworkNo, ReworkUnitNo and ReworkAskedBy; the stuffing may be sealed
+// again or given up). ReworkFrom says where PHY found it: ENTRY when the entry that ended names it (the database
+// records it only for an entry ended in a CLOSED consolidation), REVERSAL when the entry names none but the house's
+// reversal lines in the consolidation's stuffings carry a rework number (the house left an OPEN consolidation after its
+// container was emptied and the consolidation reopened, or its shipment was cancelled), and NONE when no rework
+// unloaded the house (shut out before stuffing, or never loaded). A reversal-derived rework is the latest that unloaded
+// the house since the entry began (only reversals PHY recorded at or after the start of the house's latest entry count,
+// so the reversals of an earlier stay do not), even if the house was loaded again in another stuffing afterwards.
+// ReworkUnitNo and ReworkAskedBy are empty when the stuffing is not found among the consolidation's.
+type FormerHouse struct {
+	ShipmentID        string
+	End               string
+	TransferredTo     string
+	Reason            string
+	ReasonText        string
+	EndedBy           string
+	EndedAt           time.Time
+	EndedEnteredAt    time.Time
+	ReworkFrom        string
+	ReworkExecutionID string
+	ReworkNo          int
+	ReworkUnitNo      int
+	ReworkAskedBy     string
+}
+
+// GivenUpStuffing is a stuffing of the consolidation in state CANCELLED (given up with no packs left) that has at least
+// one rework: its unit, its execution and its reworks as UnitPackingList.Reworks gives them, the last of which ended
+// GIVEN_UP and the earlier ones SEALED. A cancelled stuffing has no packing list; this is where its reworks are read.
+type GivenUpStuffing struct {
+	UnitNo      int
+	ExecutionID string
+	Reworks     []Rework
 }
 
 // UnitPackingList is what one load unit holds as this basis reads it, with a digest of it.
