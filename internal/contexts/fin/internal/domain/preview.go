@@ -45,7 +45,7 @@ type SubmitInput struct {
 func cloneLines(lines []LineApportionment) []LineApportionment {
 	out := slices.Clone(lines)
 	for i := range out {
-		out[i].Shares = slices.Clone(out[i].Shares)
+		out[i] = cloneApportionedLine(out[i])
 	}
 	return out
 }
@@ -98,7 +98,9 @@ func (p *ConsolCostPool) Preview(in ApportionInput, basis CostBasis, by string, 
 // computed on is still what PHY and the pool answer: the fingerprint is computed again and any difference is refused,
 // naming what changed. It is refused too while a container is in rework, when the preview was submitted already, and
 // when the submitter asked for a rework of the consolidation's containers that has ended and that no earlier submitted
-// apportionment's fingerprint carried as ended.
+// apportionment's fingerprint carried as ended. A preview that carries a new or changed attribution of a house that
+// left is refused too to the person who asked for the rework that unloaded the house and to the person who ended its
+// place in the consolidation, naming the house (since V2.93); an attribution carried unchanged needs no such check.
 func (p *ConsolCostPool) Submit(previewNo int, in SubmitInput, by string, at time.Time) error {
 	if err := p.open(by, at); err != nil {
 		return err
@@ -123,6 +125,16 @@ func (p *ConsolCostPool) Submit(previewNo int, in SubmitInput, by string, at tim
 	}
 	if now := p.fingerprint(in.Basis, in.Jobs, in.Revenue, v.Lines); now != v.Fingerprint {
 		return fmt.Errorf("%w: preview %d: %s", ErrPreviewStale, previewNo, strings.Join(fingerprintChanges(v.Fingerprint, now), "; "))
+	}
+	for _, la := range v.Lines {
+		for _, x := range la.Attributions {
+			if x.Loss > 0 && in.Jobs[x.ShipmentID] != x.JobID {
+				return fmt.Errorf("%w: house %s bears a loss on line %d and its job %s is not open; preview again", ErrPoolJobMissing, x.ShipmentID, la.LineNo, x.JobID)
+			}
+		}
+	}
+	if refused := attributionsConfirmedBy(in.Basis, by, v.Lines); len(refused) > 0 {
+		return fmt.Errorf("%w: %s", ErrAttributionConfirmer, strings.Join(refused, "; "))
 	}
 	if asked := p.reworksAskedBy(in.Basis, by, v.Lines); len(asked) > 0 {
 		return fmt.Errorf("%w: %s asked for %s", ErrConfirmer, by, strings.Join(asked, ", "))

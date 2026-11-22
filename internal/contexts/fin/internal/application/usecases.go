@@ -7,6 +7,7 @@ import (
 	"math/big"
 	"regexp"
 	"slices"
+	"strings"
 	"time"
 
 	bentorepo "go.idp.xyz/idp-bento-go/repository"
@@ -671,9 +672,34 @@ func (d Deps) Revise(ctx context.Context, c Command, in ReviseInput) (Receipt, e
 
 // CancelJob cancels an open job with a reason.
 func (d Deps) CancelJob(ctx context.Context, c Command, reason string) (Receipt, error) {
-	return d.change(ctx, c, nil, func(_ context.Context, j *fin.FreightJob, _ *fin.FinancePolicy) (Receipt, error) {
-		return Receipt{}, j.Cancel(reason, c.Scope.ActorID, c.OccurredAt)
+	// FIN refuses before it writes, naming the pool, the line and the way out; the database's rule is the backstop
+	return d.change(ctx, c, nil, func(txCtx context.Context, j *fin.FreightJob, _ *fin.FinancePolicy) (Receipt, error) {
+		if err := j.Cancel(reason, c.Scope.ActorID, c.OccurredAt); err != nil || d.Pools == nil {
+			return Receipt{}, err
+		}
+		held, err := d.Pools.HoldingsOfJob(txCtx, c.Scope.TenantID, c.Subject)
+		if err != nil || len(held) == 0 {
+			return Receipt{}, err
+		}
+		return Receipt{}, holdingsRefusal(c.Subject, held)
 	})
+}
+
+// holdingsRefusal names every share and loss a job bears (pool, line and the way out of each), those in a closed pool
+// with "reopen the pool first".
+func holdingsRefusal(job string, held []PoolHolding) error {
+	var parts []string
+	for _, h := range held {
+		what, way := "a share", "apportion the line again leaving the house out, or, for a house that left the consolidation, have finance attribute its former share"
+		if h.Loss {
+			what, way = "a re-routing loss", "have finance change the attribution: apportion the line again with the loss changed, with a reason and a voucher"
+		}
+		if h.Closed {
+			way = "reopen the pool first (ReopenConsolCostPool), then " + way
+		}
+		parts = append(parts, fmt.Sprintf("%s on line %d of pool %s (%s)", what, h.LineNo, h.PoolID, way))
+	}
+	return fmt.Errorf("%w: job %s bears %s", fin.ErrJobBearsPoolCost, job, strings.Join(parts, "; "))
 }
 
 // TermsInput is a terms change as asked.

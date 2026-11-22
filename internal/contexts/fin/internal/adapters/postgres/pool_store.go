@@ -84,16 +84,37 @@ type (
 		Reason          *string `json:"reason"`
 		Amount          *int64  `json:"amount_minor"` // NULL on lines of FIN V0.4: they divided their version's figures
 		Local           *int64  `json:"local_minor"`
+		ToAllocate      int64   `json:"to_allocate_minor"`
+		ToAllocateLocal int64   `json:"to_allocate_local_minor"`
+	}
+	attributionRow struct {
+		ApportionmentNo int       `json:"apportionment_no"`
+		LineNo          int       `json:"line_no"`
+		ShipmentID      string    `json:"shipment_id"`
+		JobID           string    `json:"job_id"`
+		Loss            int64     `json:"loss_minor"`
+		LossLocal       int64     `json:"loss_local_minor"`
+		Exception       int64     `json:"exception_minor"`
+		ExceptionLocal  int64     `json:"exception_local_minor"`
+		Party           *string   `json:"party"`
+		PartyReference  *string   `json:"party_reference"`
+		Voucher         string    `json:"voucher"`
+		Reason          *string   `json:"reason"`
+		DepartedAt      time.Time `json:"departed_at"`
+		Carried         bool      `json:"carried"`
 	}
 	// figureLine and figureShare are a preview's figures as stored: one JSON array of the lines it divided.
 	figureLine struct {
-		LineNo      int           `json:"line_no"`
-		LineVersion int           `json:"line_version"`
-		Method      string        `json:"method"`
-		Reason      string        `json:"reason,omitempty"`
-		Amount      int64         `json:"amount_minor"`
-		Local       int64         `json:"local_minor"`
-		Shares      []figureShare `json:"shares"`
+		LineNo          int              `json:"line_no"`
+		LineVersion     int              `json:"line_version"`
+		Method          string           `json:"method"`
+		Reason          string           `json:"reason,omitempty"`
+		Amount          int64            `json:"amount_minor"`
+		Local           int64            `json:"local_minor"`
+		Shares          []figureShare    `json:"shares"`
+		ToAllocate      int64            `json:"to_allocate_minor"`
+		ToAllocateLocal int64            `json:"to_allocate_local_minor"`
+		Attributions    []attributionRow `json:"attributions"`
 	}
 	figureShare struct {
 		No         int    `json:"share_no"`
@@ -137,6 +158,7 @@ func poolChildren() string {
 	return children("pool_cost_line", key, "c.line_no") + `,` + children("pool_cost_version", key, "c.line_no, c.version_no") + `,` +
 		children("pool_apportionment", key, "c.apportionment_no") + `,` + children("pool_apportionment_preview", key, "c.preview_no") + `,` + children("pool_apportionment_line", key, "c.apportionment_no, c.line_no") + `,` +
 		children("pool_apportionment_share", key, "c.apportionment_no, c.line_no, c.share_no") + `,` +
+		children("pool_apportionment_attribution", key, "c.apportionment_no, c.line_no, c.shipment_id") + `,` +
 		children("consol_cost_pool_closure", key, "c.closure_no")
 }
 
@@ -144,9 +166,9 @@ func scanPool(row pgx.Row, tenant fin.TenantID) (*fin.ConsolCostPool, int64, err
 	st := fin.PoolState{TenantID: tenant}
 	var currency string
 	var revision int64
-	var lines, versions, apportionments, previews, apportionedLines, shares, closures []byte
+	var lines, versions, apportionments, previews, apportionedLines, shares, attributions, closures []byte
 	err := row.Scan(&st.PoolID, &st.ConsolidationID, &st.LegalEntityID, &st.Mode, &currency, &st.BookCode, &st.State, &st.OpenedBy, &st.OpenedAt,
-		&st.EnteredAt, &revision, &lines, &versions, &apportionments, &previews, &apportionedLines, &shares, &closures)
+		&st.EnteredAt, &revision, &lines, &versions, &apportionments, &previews, &apportionedLines, &shares, &attributions, &closures)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -156,9 +178,10 @@ func scanPool(row pgx.Row, tenant fin.TenantID) (*fin.ConsolCostPool, int64, err
 	var pr []previewRow
 	var alr []apportionedLineRow
 	var sr []shareRow
+	var xr []attributionRow
 	var cr []closureRow
 	if err = errors.Join(json.Unmarshal(lines, &lr), json.Unmarshal(versions, &vr), json.Unmarshal(apportionments, &ar),
-		json.Unmarshal(previews, &pr), json.Unmarshal(apportionedLines, &alr), json.Unmarshal(shares, &sr), json.Unmarshal(closures, &cr)); err != nil {
+		json.Unmarshal(previews, &pr), json.Unmarshal(apportionedLines, &alr), json.Unmarshal(shares, &sr), json.Unmarshal(attributions, &xr), json.Unmarshal(closures, &cr)); err != nil {
 		return nil, 0, err
 	}
 	for _, c := range cr {
@@ -195,7 +218,11 @@ func scanPool(row pgx.Row, tenant fin.TenantID) (*fin.ConsolCostPool, int64, err
 		preview := fin.ApportionmentPreview{No: v.No, BasisRevision: v.BasisRevision, Stage: v.Stage, By: v.By, At: utc(v.At), EnteredAt: utc(v.EnteredAt),
 			Fingerprint: v.Fingerprint, FingerprintSHA256: v.FingerprintSHA256}
 		for _, f := range figures {
-			la := fin.LineApportionment{LineNo: f.LineNo, LineVersion: f.LineVersion, Method: f.Method, Reason: f.Reason, Amount: f.Amount, Local: f.Local}
+			la := fin.LineApportionment{LineNo: f.LineNo, LineVersion: f.LineVersion, Method: f.Method, Reason: f.Reason, Amount: f.Amount, Local: f.Local,
+				ToAllocate: f.ToAllocate, ToAllocateLocal: f.ToAllocateLocal}
+			for _, x := range f.Attributions {
+				la.Attributions = append(la.Attributions, attributionOf(x))
+			}
 			for _, sh := range f.Shares {
 				la.Shares = append(la.Shares, fin.Share{No: sh.No, ShipmentID: sh.ShipmentID, JobID: sh.JobID, Used: sh.Used, Quantity: sh.Quantity, Unit: sh.Unit,
 					Amount: sh.Amount, Local: sh.Local})
@@ -218,7 +245,7 @@ func scanPool(row pgx.Row, tenant fin.TenantID) (*fin.ConsolCostPool, int64, err
 			amount, local = &v.Amount.Minor, &v.Local
 		}
 		a.Lines = append(a.Lines, fin.LineApportionment{LineNo: l.LineNo, LineVersion: l.LineVersion, Method: l.Method, Reason: deref(l.Reason),
-			Amount: *amount, Local: *local})
+			Amount: *amount, Local: *local, ToAllocate: l.ToAllocate, ToAllocateLocal: l.ToAllocateLocal})
 	}
 	for _, s := range sr {
 		if s.ApportionmentNo < 1 || s.ApportionmentNo > len(st.Apportionments) {
@@ -237,8 +264,41 @@ func scanPool(row pgx.Row, tenant fin.TenantID) (*fin.ConsolCostPool, int64, err
 			return nil, 0, fmt.Errorf("%w: share of apportionment %d line %d", fin.ErrInvalid, s.ApportionmentNo, s.LineNo)
 		}
 	}
+	for _, x := range xr {
+		if x.ApportionmentNo < 1 || x.ApportionmentNo > len(st.Apportionments) {
+			return nil, 0, fmt.Errorf("%w: attribution of apportionment %d", fin.ErrInvalid, x.ApportionmentNo)
+		}
+		a := &st.Apportionments[x.ApportionmentNo-1]
+		placed := false
+		for i := range a.Lines {
+			if a.Lines[i].LineNo == x.LineNo {
+				a.Lines[i].Attributions = append(a.Lines[i].Attributions, attributionOf(x))
+				placed = true
+			}
+		}
+		if !placed {
+			return nil, 0, fmt.Errorf("%w: attribution of apportionment %d line %d", fin.ErrInvalid, x.ApportionmentNo, x.LineNo)
+		}
+	}
 	p, err := fin.RestorePool(st)
 	return p, revision, err
+}
+
+func attributionOf(x attributionRow) fin.Attribution {
+	return fin.Attribution{ShipmentID: x.ShipmentID, JobID: x.JobID, Loss: x.Loss, LossLocal: x.LossLocal, Exception: x.Exception, ExceptionLocal: x.ExceptionLocal,
+		Party: deref(x.Party), PartyReference: deref(x.PartyReference), Voucher: x.Voucher, Reason: deref(x.Reason), DepartedAt: utc(x.DepartedAt), Carried: x.Carried}
+}
+
+func rowOfAttribution(x fin.Attribution) attributionRow {
+	return attributionRow{ShipmentID: x.ShipmentID, JobID: x.JobID, Loss: x.Loss, LossLocal: x.LossLocal, Exception: x.Exception, ExceptionLocal: x.ExceptionLocal,
+		Party: orNullString(x.Party), PartyReference: orNullString(x.PartyReference), Voucher: x.Voucher, Reason: orNullString(x.Reason), DepartedAt: x.DepartedAt, Carried: x.Carried}
+}
+
+func orNullString(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }
 
 func (s PoolStore) read(ctx context.Context, q bentopg.Querier, tenant fin.TenantID, id string) (*fin.ConsolCostPool, int64, error) {
@@ -386,7 +446,10 @@ func writePool(ctx context.Context, q bentopg.Executor, p *fin.ConsolCostPool) e
 		figures := make([]figureLine, 0, len(v.Lines))
 		for _, la := range v.Lines {
 			f := figureLine{LineNo: la.LineNo, LineVersion: la.LineVersion, Method: la.Method, Reason: la.Reason, Amount: la.Amount, Local: la.Local,
-				Shares: []figureShare{}}
+				Shares: []figureShare{}, ToAllocate: la.ToAllocate, ToAllocateLocal: la.ToAllocateLocal, Attributions: []attributionRow{}}
+			for _, x := range la.Attributions {
+				f.Attributions = append(f.Attributions, rowOfAttribution(x))
+			}
 			for _, sh := range la.Shares {
 				f.Shares = append(f.Shares, figureShare{No: sh.No, ShipmentID: sh.ShipmentID, JobID: sh.JobID, Used: sh.Used, Quantity: sh.Quantity, Unit: sh.Unit,
 					Amount: sh.Amount, Local: sh.Local})
@@ -419,9 +482,17 @@ func writePool(ctx context.Context, q bentopg.Executor, p *fin.ConsolCostPool) e
 		}
 		for _, la := range a.Lines {
 			if err := exec(`INSERT INTO cargo_fin.pool_apportionment_line (tenant_id,pool_id,apportionment_no,line_no,line_version,method,reason,
-                amount_minor,local_minor) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, a.No, la.LineNo, la.LineVersion, la.Method, orNull(la.Reason), la.Amount,
-				la.Local); err != nil {
+                amount_minor,local_minor,to_allocate_minor,to_allocate_local_minor) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, a.No, la.LineNo, la.LineVersion,
+				la.Method, orNull(la.Reason), la.Amount, la.Local, la.ToAllocate, la.ToAllocateLocal); err != nil {
 				return err
+			}
+			for _, x := range la.Attributions {
+				if err := exec(`INSERT INTO cargo_fin.pool_apportionment_attribution (tenant_id,pool_id,apportionment_no,line_no,shipment_id,job_id,loss_minor,
+                    loss_local_minor,exception_minor,exception_local_minor,party,party_reference,voucher,reason,departed_at,carried)
+                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`, a.No, la.LineNo, x.ShipmentID, x.JobID, x.Loss, x.LossLocal, x.Exception,
+					x.ExceptionLocal, orNull(x.Party), orNull(x.PartyReference), x.Voucher, orNull(x.Reason), x.DepartedAt, x.Carried); err != nil {
+					return err
+				}
 			}
 			for _, sh := range la.Shares {
 				if err := exec(`INSERT INTO cargo_fin.pool_apportionment_share (tenant_id,pool_id,apportionment_no,line_no,share_no,shipment_id,job_id,
@@ -456,9 +527,10 @@ func (s PoolStore) SharesOfJob(ctx context.Context, tenant fin.TenantID, job str
 	if err != nil {
 		return nil, err
 	}
-	rows, err := q.Query(ctx, `SELECT sh.pool_id, sh.line_no, al.line_version, cl.charge_code, al.method, a.stage, sh.quantity, coalesce(sh.unit,''),
+	rows, err := q.Query(ctx, `SELECT sh.pool_id, p.consolidation_id, sh.line_no, al.line_version, cl.charge_code, al.method, a.stage, sh.quantity, coalesce(sh.unit,''),
         v.currency, sh.amount_minor, sh.local_minor
       FROM cargo_fin.pool_apportionment_share sh
+      JOIN cargo_fin.consol_cost_pool p ON p.tenant_id=sh.tenant_id AND p.pool_id=sh.pool_id
       JOIN cargo_fin.pool_apportionment_line al ON al.tenant_id=sh.tenant_id AND al.pool_id=sh.pool_id
         AND al.apportionment_no=sh.apportionment_no AND al.line_no=sh.line_no
       JOIN cargo_fin.pool_apportionment a ON a.tenant_id=sh.tenant_id AND a.pool_id=sh.pool_id AND a.apportionment_no=sh.apportionment_no
@@ -476,12 +548,75 @@ func (s PoolStore) SharesOfJob(ctx context.Context, tenant fin.TenantID, job str
 		var sh app.PoolShare
 		var currency string
 		var amount int64
-		if err := rows.Scan(&sh.PoolID, &sh.LineNo, &sh.LineVersion, &sh.ChargeCode, &sh.Method, &sh.Stage, &sh.Quantity, &sh.Unit, &currency, &amount,
+		if err := rows.Scan(&sh.PoolID, &sh.ConsolidationID, &sh.LineNo, &sh.LineVersion, &sh.ChargeCode, &sh.Method, &sh.Stage, &sh.Quantity, &sh.Unit, &currency, &amount,
 			&sh.Local); err != nil {
 			return nil, err
 		}
 		sh.Amount = kernel.Money{Currency: kernel.CurrencyCode(currency), Minor: amount}
 		out = append(out, sh)
+	}
+	return out, rows.Err()
+}
+
+// LossesOfJob lists the re-routing losses a job bears under each pool line's latest apportionment (FIN V2.93), by pool
+// and line; an attribution without a loss is not listed.
+func (s PoolStore) LossesOfJob(ctx context.Context, tenant fin.TenantID, job string) ([]app.PoolLoss, error) {
+	q, err := s.DB.ReadExecutor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := q.Query(ctx, `SELECT x.pool_id, x.line_no, x.voucher, x.departed_at, v.currency, x.loss_minor, x.loss_local_minor
+      FROM cargo_fin.pool_apportionment_attribution x
+      JOIN cargo_fin.pool_apportionment_line al ON al.tenant_id=x.tenant_id AND al.pool_id=x.pool_id AND al.apportionment_no=x.apportionment_no AND al.line_no=x.line_no
+      JOIN cargo_fin.pool_cost_version v ON v.tenant_id=x.tenant_id AND v.pool_id=x.pool_id AND v.line_no=al.line_no AND v.version_no=al.line_version
+      WHERE x.tenant_id=$1 AND x.job_id=$2 AND x.loss_minor > 0 AND x.apportionment_no = (SELECT max(l2.apportionment_no) FROM cargo_fin.pool_apportionment_line l2
+        WHERE l2.tenant_id=x.tenant_id AND l2.pool_id=x.pool_id AND l2.line_no=x.line_no)
+      ORDER BY x.pool_id, x.line_no`, string(tenant), job)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []app.PoolLoss
+	for rows.Next() {
+		var l app.PoolLoss
+		var currency string
+		var amount int64
+		if err := rows.Scan(&l.PoolID, &l.LineNo, &l.Voucher, &l.DepartedAt, &currency, &amount, &l.Local); err != nil {
+			return nil, err
+		}
+		l.DepartedAt = utc(l.DepartedAt)
+		l.Amount = kernel.Money{Currency: kernel.CurrencyCode(currency), Minor: amount}
+		out = append(out, l)
+	}
+	return out, rows.Err()
+}
+
+// HoldingsOfJob lists the used shares and the losses a job bears under each pool line's latest apportionment, with
+// whether the pool is closed (FIN V2.93): what stops the job from being cancelled.
+func (s PoolStore) HoldingsOfJob(ctx context.Context, tenant fin.TenantID, job string) ([]app.PoolHolding, error) {
+	q, err := s.DB.ReadExecutor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := q.Query(ctx, `SELECT x.pool_id, x.line_no, x.loss, p.state = 'CLOSED' FROM (
+        SELECT sh.tenant_id, sh.pool_id, sh.line_no, sh.apportionment_no, false AS loss FROM cargo_fin.pool_apportionment_share sh WHERE sh.job_id=$2 AND sh.used
+        UNION ALL
+        SELECT a.tenant_id, a.pool_id, a.line_no, a.apportionment_no, true FROM cargo_fin.pool_apportionment_attribution a WHERE a.job_id=$2 AND a.loss_minor > 0) x
+      JOIN cargo_fin.consol_cost_pool p ON p.tenant_id=x.tenant_id AND p.pool_id=x.pool_id
+      WHERE x.tenant_id=$1 AND x.apportionment_no = (SELECT max(l2.apportionment_no) FROM cargo_fin.pool_apportionment_line l2
+        WHERE l2.tenant_id=x.tenant_id AND l2.pool_id=x.pool_id AND l2.line_no=x.line_no)
+      ORDER BY x.pool_id, x.line_no, x.loss`, string(tenant), job)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []app.PoolHolding
+	for rows.Next() {
+		var h app.PoolHolding
+		if err := rows.Scan(&h.PoolID, &h.LineNo, &h.Loss, &h.Closed); err != nil {
+			return nil, err
+		}
+		out = append(out, h)
 	}
 	return out, rows.Err()
 }

@@ -40,10 +40,15 @@ func (m *Module) PreviewConsolCostApportionment(ctx context.Context, cmd api.Pre
 	for _, s := range cmd.Manual {
 		manual = append(manual, domain.ManualShare{ShipmentID: s.ShipmentID, Amount: s.Amount})
 	}
+	attributions := make([]domain.AttributionInput, 0, len(cmd.Attributions))
+	for _, a := range cmd.Attributions {
+		attributions = append(attributions, domain.AttributionInput{LineNo: a.LineNo, ShipmentID: a.ShipmentID, Loss: a.Loss, Exception: a.Exception,
+			Party: a.Party, PartyReference: a.PartyReference, Voucher: a.Voucher, Reason: a.Reason})
+	}
 	r, err := m.deps(cmd.TenantID, cmd.CommandID).PreviewPoolApportionment(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID,
 		api.ActionPreviewConsolCostApportionment, cmd.PoolID, cmd.ExpectedRevision, cmd.OccurredAt, cmd),
 		application.ApportionAsk{LineNos: append([]int(nil), cmd.LineNos...), Method: cmd.Method, Manual: manual,
-			NotUsed: append([]string(nil), cmd.NotUsed...), AllHouses: cmd.AllHouses, Reason: cmd.Reason})
+			NotUsed: append([]string(nil), cmd.NotUsed...), AllHouses: cmd.AllHouses, Reason: cmd.Reason, Attributions: attributions})
 	return receipt(r, err)
 }
 
@@ -86,7 +91,14 @@ func poolView(p *domain.ConsolCostPool, revision int64) api.ConsolCostPool {
 		for _, la := range lines {
 			currency := st.Lines[la.LineNo-1].Versions[la.LineVersion-1].Amount.Currency
 			lv := api.ApportionedLine{LineNo: la.LineNo, LineVersion: la.LineVersion, Method: la.Method, Reason: la.Reason,
-				Amount: kernel.Money{Currency: currency, Minor: la.Amount}, Local: local(la.Local)}
+				Amount: kernel.Money{Currency: currency, Minor: la.Amount}, Local: local(la.Local),
+				ToAllocate: kernel.Money{Currency: currency, Minor: la.ToAllocate}, ToAllocateLocal: local(la.ToAllocateLocal)}
+			for _, x := range la.Attributions {
+				lv.Attributions = append(lv.Attributions, api.PoolAttribution{ShipmentID: x.ShipmentID, JobID: x.JobID,
+					Loss: kernel.Money{Currency: currency, Minor: x.Loss}, LossLocal: local(x.LossLocal),
+					Exception: kernel.Money{Currency: currency, Minor: x.Exception}, ExceptionLocal: local(x.ExceptionLocal), Party: x.Party,
+					PartyReference: x.PartyReference, Voucher: x.Voucher, Reason: x.Reason, DepartedAt: x.DepartedAt, Carried: x.Carried})
+			}
 			for _, s := range la.Shares {
 				lv.Shares = append(lv.Shares, api.PoolShare{ShareNo: s.No, ShipmentID: s.ShipmentID, JobID: s.JobID, NotUsed: !s.Used, Quantity: s.Quantity, Unit: s.Unit,
 					Amount: kernel.Money{Currency: currency, Minor: s.Amount}, Local: local(s.Local)})
@@ -109,14 +121,14 @@ func poolView(p *domain.ConsolCostPool, revision int64) api.ConsolCostPool {
 }
 
 // workUnits asks PHY, outside FIN's transactions, which containers of the consolidation are in rework: the pool is in
-// work while there is one.
-func (m *Module) workUnits(ctx context.Context, d application.Deps, tenant, consolidation string) (units []api.WorkUnit, err error) {
+// work while there is one. It answers PHY's basis too, which tells the houses that left (the former shares).
+func (m *Module) workUnits(ctx context.Context, d application.Deps, tenant, consolidation string) (basis domain.CostBasis, units []api.WorkUnit, err error) {
 	if d.Physical == nil {
-		return nil, nil
+		return domain.CostBasis{}, nil, nil
 	}
-	basis, err := d.Physical.CostBasis(ctx, domain.TenantID(tenant), consolidation)
+	basis, err = d.Physical.CostBasis(ctx, domain.TenantID(tenant), consolidation)
 	if err != nil {
-		return nil, err
+		return domain.CostBasis{}, nil, err
 	}
 	for _, no := range basis.UnitsInRework() {
 		unit := api.WorkUnit{UnitNo: no}
@@ -127,7 +139,51 @@ func (m *Module) workUnits(ctx context.Context, d application.Deps, tenant, cons
 		}
 		units = append(units, unit)
 	}
-	return units, nil
+	return basis, units, nil
+}
+
+// lineAttributions says, for each line of the pool apportioned, what its latest apportionment leaves out of the shares:
+// the losses, the exception costs by party (those whose party is PENDING apart), the amount to be allocated and the
+// former shares pending finance's confirmation, which PHY's basis tells.
+func lineAttributions(p *domain.ConsolCostPool, basis domain.CostBasis) []api.LineAttributions {
+	st := p.State()
+	local := func(n int64) kernel.Money { return kernel.Money{Currency: st.FunctionalCurrency, Minor: n} }
+	var out []api.LineAttributions
+	for _, l := range st.Lines {
+		_, la, ok := p.SharesOfLine(l.No)
+		if !ok {
+			continue
+		}
+		currency := l.Versions[la.LineVersion-1].Amount.Currency
+		money := func(n int64) kernel.Money { return kernel.Money{Currency: currency, Minor: n} }
+		v := api.LineAttributions{LineNo: l.No, ToAllocate: money(la.ToAllocate), ToAllocateLocal: local(la.ToAllocateLocal), ExceptionPending: money(0),
+			ExceptionPendingLocal: local(0)}
+		byParty := map[string][2]int64{}
+		for _, x := range la.Attributions {
+			if x.Loss > 0 {
+				v.Losses = append(v.Losses, api.HouseLoss{ShipmentID: x.ShipmentID, JobID: x.JobID, Amount: money(x.Loss), Local: local(x.LossLocal)})
+			}
+			if x.Exception > 0 {
+				sum := byParty[x.Party]
+				byParty[x.Party] = [2]int64{sum[0] + x.Exception, sum[1] + x.ExceptionLocal}
+			}
+		}
+		for _, party := range []string{domain.PartyCarrier, domain.PartyWarehouse, domain.PartyOwnOperations} {
+			if sum, ok := byParty[party]; ok {
+				v.Exceptions = append(v.Exceptions, api.ExceptionByParty{Party: party, Amount: money(sum[0]), Local: local(sum[1])})
+			}
+		}
+		pending := byParty[domain.PartyPending]
+		v.ExceptionPending, v.ExceptionPendingLocal = money(pending[0]), local(pending[1])
+		for _, f := range p.FormerShares(basis) {
+			if f.LineNo == l.No {
+				v.FormerShares = append(v.FormerShares, api.FormerShare{ShipmentID: f.Share.ShipmentID, JobID: f.Share.JobID, Amount: money(f.Share.Amount),
+					Local: local(f.Share.Local), End: f.House.End, EndedAt: f.House.EndedAt})
+			}
+		}
+		out = append(out, v)
+	}
+	return out
 }
 
 func (m *Module) GetConsolCostPool(ctx context.Context, q api.GetConsolCostPool) (api.ConsolCostPool, error) {
@@ -142,19 +198,24 @@ func (m *Module) GetConsolCostPool(ctx context.Context, q api.GetConsolCostPool)
 		return api.ConsolCostPool{}, classify(err)
 	}
 	out := poolView(p, revision)
-	if out.WorkUnits, err = m.workUnits(ctx, d, q.TenantID, out.ConsolidationID); err != nil {
+	var basis domain.CostBasis
+	if basis, out.WorkUnits, err = m.workUnits(ctx, d, q.TenantID, out.ConsolidationID); err != nil {
 		return api.ConsolCostPool{}, classify(err)
 	}
+	out.Attributions = lineAttributions(p, basis)
 	out.InWork = len(out.WorkUnits) > 0
 	return out, nil
 }
 
 // GetConsolProfit reads a consolidation's economics through its pool: the pooled cost, its lines' current costs (what
 // creditor invoices matched plus what is still accrued), the part the latest apportionments cover, and the house jobs
-// of those apportionments with their own economics and their pool shares.
+// of those apportionments with their own economics and their pool shares. Since V2.93 the houses' losses, the exception
+// costs, what is still to be allocated and the former shares pending finance's confirmation are told apart, and the
+// costs are conserved: the former shares are in no house's cost, a loss is in its house's. PHY's basis tells which
+// houses left; the query fails when PHY does not answer.
 func (m *Module) GetConsolProfit(ctx context.Context, q api.GetConsolProfit) (api.ConsolProfit, error) {
 	d := m.deps(q.TenantID, "")
-	var out api.ConsolProfit
+	var pool *domain.ConsolCostPool
 	err := d.Reader(ctx, func(txCtx context.Context) error {
 		pools, _, err := d.Pools.ForConsolidation(txCtx, domain.TenantID(q.TenantID), q.ConsolidationID)
 		if err != nil {
@@ -163,35 +224,65 @@ func (m *Module) GetConsolProfit(ctx context.Context, q api.GetConsolProfit) (ap
 		if len(pools) == 0 {
 			return fmt.Errorf("%w: consolidation %s has no cost pool", bentorepo.ErrNotFound, q.ConsolidationID)
 		}
-		st := pools[0].State()
-		consumed, err := d.Creditors.Consumed(txCtx, domain.TenantID(q.TenantID), domain.TargetPoolCost, st.PoolID)
+		pool = pools[0]
+		consumed, err := d.Creditors.Consumed(txCtx, domain.TenantID(q.TenantID), domain.TargetPoolCost, pool.State().PoolID)
 		if err != nil {
 			return err
 		}
-		pools[0].Matched(consumed)
+		pool.Matched(consumed)
+		return nil
+	})
+	if err != nil {
+		return api.ConsolProfit{}, classify(err)
+	}
+	basis, workUnits, err := m.workUnits(ctx, d, q.TenantID, q.ConsolidationID)
+	if err != nil {
+		return api.ConsolProfit{}, classify(err)
+	}
+	var out api.ConsolProfit
+	err = d.Reader(ctx, func(txCtx context.Context) error {
+		st := pool.State()
 		local := func(n int64) kernel.Money { return kernel.Money{Currency: st.FunctionalCurrency, Minor: n} }
 		out = api.ConsolProfit{ConsolidationID: q.ConsolidationID, PoolID: st.PoolID, LegalEntityID: st.LegalEntityID, State: st.State}
-		var pooled, matched, apportioned, retained int64
+		var pooled, matched, apportioned, retained, losses, exceptions, pending, toAllocated, former int64
 		type house struct {
 			jobID string
 			pool  int64
 		}
 		byShipment := map[string]*house{}
 		for _, l := range st.Lines {
-			_, cost := pools[0].LineCost(l.No)
+			_, cost := pool.LineCost(l.No)
 			pooled += cost
-			matched += pools[0].Consumed(l.No).Local
-			_, la, ok := pools[0].SharesOfLine(l.No)
+			matched += pool.Consumed(l.No).Local
+			_, la, ok := pool.SharesOfLine(l.No)
 			if !ok {
 				continue
 			}
+			taken := int64(0)
+			for _, x := range la.Attributions {
+				if byShipment[x.ShipmentID] == nil {
+					byShipment[x.ShipmentID] = &house{jobID: x.JobID}
+				}
+				byShipment[x.ShipmentID].pool += x.LossLocal // a loss is in its house's cost
+				losses += x.LossLocal
+				exceptions += x.ExceptionLocal
+				if x.Party == domain.PartyPending {
+					pending += x.ExceptionLocal
+				}
+				taken += x.LossLocal + x.ExceptionLocal
+			}
+			toAllocated += la.ToAllocateLocal
 			if la.Method == domain.MethodRetained {
-				retained += la.Local
+				retained += la.Local - taken
 				continue
 			}
 			for _, s := range la.Shares {
 				if byShipment[s.ShipmentID] == nil {
 					byShipment[s.ShipmentID] = &house{jobID: s.JobID} // a house the lines name is listed, bearing cost or not
+				}
+				if _, left := basis.Former(s.ShipmentID); left && s.Used && s.Amount > 0 {
+					former += s.Local // pending finance's confirmation: in no house's cost
+					continue
 				}
 				if s.Used { // a house left out carries nothing of the line
 					apportioned += s.Local
@@ -200,7 +291,10 @@ func (m *Module) GetConsolProfit(ctx context.Context, q api.GetConsolProfit) (ap
 			}
 		}
 		out.Pooled, out.Matched, out.Apportioned, out.Retained = local(pooled), local(matched), local(apportioned), local(retained)
-		out.Unapportioned = local(pooled - apportioned - retained)
+		out.Losses, out.Exceptions, out.ExceptionsPending, out.ToAllocated, out.FormerSharesPending = local(losses), local(exceptions), local(pending),
+			local(toAllocated), local(former)
+		out.Unapportioned = local(pooled - apportioned - retained - losses - exceptions - toAllocated - former)
+		out.Lines = lineAttributions(pool, basis)
 		shipments := make([]string, 0, len(byShipment))
 		for s := range byShipment {
 			shipments = append(shipments, s)
@@ -221,9 +315,7 @@ func (m *Module) GetConsolProfit(ctx context.Context, q api.GetConsolProfit) (ap
 	if err != nil {
 		return api.ConsolProfit{}, classify(err)
 	}
-	if out.WorkUnits, err = m.workUnits(ctx, d, q.TenantID, q.ConsolidationID); err != nil {
-		return api.ConsolProfit{}, classify(err)
-	}
+	out.WorkUnits = workUnits
 	out.InWork = len(out.WorkUnits) > 0
 	return out, nil
 }

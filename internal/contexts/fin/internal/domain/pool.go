@@ -289,6 +289,13 @@ type LineApportionment struct {
 	Amount      int64
 	Local       int64
 	Shares      []Share
+	// Attributions are the attributions of the houses that left, under this apportionment (since V2.93): the loss and
+	// the exception cost of each, taken out of the line's cost before the shares divide what remains. ToAllocate is
+	// what remains when no live house takes part (to be allocated), in the line's currency and in the functional
+	// currency.
+	Attributions    []Attribution
+	ToAllocate      int64
+	ToAllocateLocal int64
 }
 
 // Apportionment is one immutable division of pool cost lines over the house jobs: the PHY basis revision and stage
@@ -599,6 +606,9 @@ type ApportionInput struct {
 	// Revenue is each house job's revenue by charge code at the estimate rate (FreightJob.EstimatedRevenue), per house
 	// shipment as Jobs is, read by the application for a line by REVENUE.
 	Revenue map[string]map[string]int64
+	// Attributions state, per line and house that left, who bears the house's former share (since V2.93). Jobs also
+	// names the open job of each house that left, which bears its loss.
+	Attributions []AttributionInput
 }
 
 // validLineMethod is a method a cost line may carry as its default and an apportionment may name (RETAINED is only
@@ -624,7 +634,9 @@ func (p *ConsolCostPool) apportionment(in ApportionInput, basis CostBasis, by st
 		}
 		return p.retain(in, basis, by, at)
 	}
-	if basis.ConsolidationID != p.state.ConsolidationID || len(basis.Houses) == 0 {
+	// With no live house a line's cost, less the attributions, is to be allocated: that needs a house that left (since
+	// V2.93).
+	if basis.ConsolidationID != p.state.ConsolidationID || (len(basis.Houses) == 0 && len(basis.FormerHouses) == 0) {
 		return Apportionment{}, fmt.Errorf("%w: PHY reports no live houses of consolidation %s", ErrPoolNoBasis, p.state.ConsolidationID)
 	}
 	lineNos := slices.Clone(in.LineNos)
@@ -669,6 +681,10 @@ func (p *ConsolCostPool) apportionment(in ApportionInput, basis CostBasis, by st
 			return Apportionment{}, fmt.Errorf("%w: house %s", ErrPoolJobMissing, h.ShipmentID)
 		}
 	}
+	attributed, err := p.attribute(in, basis, lineNos)
+	if err != nil {
+		return Apportionment{}, err
+	}
 	a := Apportionment{No: len(p.state.Apportionments) + 1, BasisRevision: basis.Revision, Stage: stage, By: by, At: at.UTC()}
 	for _, no := range lineNos {
 		line := p.state.Lines[no-1]
@@ -678,13 +694,31 @@ func (p *ConsolCostPool) apportionment(in ApportionInput, basis CostBasis, by st
 		if in.Method != "" {
 			method = in.Method
 		}
-		la := LineApportionment{LineNo: no, LineVersion: v.No, Method: method, Amount: cost, Local: local}
+		la := LineApportionment{LineNo: no, LineVersion: v.No, Method: method, Amount: cost, Local: local, Attributions: attributed[no].rows}
+		// what remains after the attributions is divided over the houses that take part
+		remainder, remainderLocal := attributed[no].remainder, attributed[no].remainderLocal
 		notUsed := leftOut[no]
 		var taking []HouseFacts // the houses that take part in this line, in shipment order
 		for _, h := range houses {
 			if !notUsed[h.ShipmentID] {
 				taking = append(taking, h)
 			}
+		}
+		if len(taking) == 0 {
+			// no house is live: the remainder is to be allocated on the line, with no share
+			if method == MethodManual {
+				if len(lineNos) != 1 || !text(in.Reason) || len(in.Manual) > 0 {
+					return Apportionment{}, fmt.Errorf("%w: a manual apportionment divides one line with a reason, and no share when no house is live", ErrInvalid)
+				}
+				la.Reason = in.Reason
+			}
+			if len(la.Attributions) == 0 && remainder == 0 {
+				return Apportionment{}, fmt.Errorf("%w: cost line %d costs nothing and no house is live: it needs no apportionment and does not hold back the close; "+
+					"preview the other lines", ErrInvalid, no)
+			}
+			la.ToAllocate, la.ToAllocateLocal = remainder, remainderLocal
+			a.Lines = append(a.Lines, la)
+			continue
 		}
 		var quantities []int64
 		var unit string
@@ -693,7 +727,7 @@ func (p *ConsolCostPool) apportionment(in ApportionInput, basis CostBasis, by st
 				return Apportionment{}, fmt.Errorf("%w: a manual apportionment divides one line with a reason", ErrInvalid)
 			}
 			la.Reason = in.Reason
-			if quantities, err = manualQuantities(taking, in.Manual, cost); err != nil {
+			if quantities, err = manualQuantities(taking, in.Manual, remainder); err != nil {
 				return Apportionment{}, err
 			}
 			unit = ""
@@ -707,11 +741,11 @@ func (p *ConsolCostPool) apportionment(in ApportionInput, basis CostBasis, by st
 				return Apportionment{}, err
 			}
 		}
-		amounts, err := split(cost, quantities)
+		amounts, err := split(remainder, quantities)
 		if err != nil {
 			return Apportionment{}, err
 		}
-		locals, err := split(local, quantities)
+		locals, err := split(remainderLocal, quantities)
 		if err != nil {
 			return Apportionment{}, err
 		}
@@ -790,12 +824,16 @@ func (p *ConsolCostPool) retain(in ApportionInput, basis CostBasis, by string, a
 	case len(lineNos) == 0 || slices.Contains(lineNos, 0) || lineNos[len(lineNos)-1] > len(p.state.Lines) || len(slices.Compact(lineNos)) != len(lineNos):
 		return Apportionment{}, fmt.Errorf("%w: lines of the pool, each once", ErrInvalid)
 	}
+	attributed, err := p.attribute(in, basis, lineNos)
+	if err != nil {
+		return Apportionment{}, err
+	}
 	a := Apportionment{No: len(p.state.Apportionments) + 1, BasisRevision: basis.Revision, Stage: BasisActual, By: by, At: at.UTC()}
 	for _, no := range lineNos {
 		versions := p.state.Lines[no-1].Versions
 		cost, local := p.LineCost(no)
 		a.Lines = append(a.Lines, LineApportionment{LineNo: no, LineVersion: versions[len(versions)-1].No, Method: MethodRetained, Reason: in.Reason,
-			Amount: cost, Local: local})
+			Amount: cost, Local: local, Attributions: attributed[no].rows})
 	}
 	return a, nil
 }
@@ -1099,9 +1137,11 @@ func split(amount int64, quantities []int64) ([]int64, error) {
 // line by REVENUE the quantities are the used houses' revenue under the line's charge code now (HouseRevenue), and the
 // close is refused when any differs from what the apportionment recorded. The stage rule is the same for every
 // method: a line apportioned by REVENUE at the stage PLANNED must be apportioned again once every house that takes part
-// is loaded before the pool can close. A line whose final cost is zero needs no apportionment (or one of zero). Once
-// PHY cancelled the consolidation or no house is left on it, there is no basis to compare: the latest apportionments at
-// the final costs stand. The pool then takes no change until reopened.
+// is loaded before the pool can close. A line that holds a former share of a house that left, which no apportionment
+// has attributed, or an amount still to be allocated, is not closed, whatever PHY reports (since V2.93); an exception
+// cost whose party is PENDING does not stop it. A line whose final cost is zero needs no apportionment (or one of
+// zero). Once PHY cancelled the consolidation or no house is left on it, there is no basis to compare: the latest
+// apportionments at the final costs stand. The pool then takes no change until reopened.
 func (p *ConsolCostPool) Close(basis CostBasis, by string, at time.Time) error {
 	if err := p.open(by, at); err != nil {
 		return err
@@ -1134,6 +1174,12 @@ func (p *ConsolCostPool) Close(basis CostBasis, by string, at time.Time) error {
 		case la.Amount != cost || la.Local != local:
 			return fmt.Errorf("%w: cost line %d was apportioned at %d (%d local); its final cost is %d (%d local)", ErrPoolNotClosable, l.No, la.Amount,
 				la.Local, cost, local)
+		case la.ToAllocate != 0 || la.ToAllocateLocal != 0:
+			return fmt.Errorf("%w: cost line %d has %d to be allocated, as no house of the consolidation is live; add cargo and apportion the line again, or "+
+				"attribute it as a loss or an exception cost of a house that left, or cancel the consolidation and retain it", ErrPoolNotClosable, l.No, la.ToAllocate)
+		case len(formerSharesOf(la, basis)) > 0:
+			return fmt.Errorf("%w: cost line %d holds a former share of house %s that left the consolidation and that nobody has attributed; attribute it by "+
+				"apportioning the line again with its loss and its exception cost", ErrPoolNotClosable, l.No, formerSharesOf(la, basis)[0].ShipmentID)
 		case la.Method == MethodRetained && !gone && (cost != 0 || local != 0):
 			return fmt.Errorf("%w: cost line %d is retained on the consolidation while PHY reports houses on it", ErrPoolNotClosable, l.No)
 		case cost == 0 && local == 0, gone:
@@ -1314,7 +1360,7 @@ func RestorePool(st PoolState) (*ConsolCostPool, error) {
 			return nil, fmt.Errorf("%w: apportionment %d", ErrInvalid, i+1)
 		}
 		for k := range a.Lines {
-			a.Lines[k].Shares = append([]Share(nil), a.Lines[k].Shares...)
+			a.Lines[k] = cloneApportionedLine(a.Lines[k])
 			if a.Lines[k].LineNo < 1 || a.Lines[k].LineNo > len(st.Lines) {
 				return nil, fmt.Errorf("%w: apportionment %d of line %d", ErrInvalid, a.No, a.Lines[k].LineNo)
 			}
@@ -1334,7 +1380,7 @@ func (p *ConsolCostPool) State() PoolState {
 	for i := range st.Apportionments {
 		st.Apportionments[i].Lines = append([]LineApportionment(nil), st.Apportionments[i].Lines...)
 		for k := range st.Apportionments[i].Lines {
-			st.Apportionments[i].Lines[k].Shares = append([]Share(nil), st.Apportionments[i].Lines[k].Shares...)
+			st.Apportionments[i].Lines[k] = cloneApportionedLine(st.Apportionments[i].Lines[k])
 		}
 	}
 	st.Previews = slices.Clone(st.Previews)

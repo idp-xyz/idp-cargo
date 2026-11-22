@@ -268,8 +268,8 @@ func TestConsolCostPoolOnPostgres(t *testing.T) {
 	if _, err = f.module.CancelFreightJob(ctx, api.CancelFreightJob{CommandID: "cancel-b", TenantID: f.tenant, ActorID: "fin-1", JobID: "JOB-B",
 		ExpectedRevision: 1, Reason: "x", OccurredAt: f.hours(11)}); err == nil {
 		t.Fatal("JOB-B holds current shares of P-1 and P-2")
-	} else if state, constraint := sqlState(err); state != "23514" || constraint != "pool_share_job_open" {
-		t.Fatalf("refused for another reason: %v (state %s, constraint %s)", err, state, constraint)
+	} else if !errors.Is(err, api.ErrRejected) || !strings.Contains(err.Error(), "FIN_JOB_BEARS_POOL_COST") {
+		t.Fatalf("refused for another reason: %v", err) // since V2.93 FIN refuses before it writes; the database's rule is the backstop
 	}
 	if j, err := f.module.GetFreightJob(ctx, api.GetFreightJob{TenantID: f.tenant, JobID: "JOB-B"}); err != nil || j.State != api.JobOpen {
 		t.Fatalf("JOB-B after the refused cancel: %+v %v", j, err)
@@ -391,7 +391,7 @@ func TestApportionRacesJobCancel(t *testing.T) {
 				t.Fatalf("round %d: the submission refused for another reason: %v", round, apportionErr)
 			}
 		default:
-			if state, constraint := sqlState(cancelErr); state != "23514" || constraint != "pool_share_job_open" {
+			if !errors.Is(cancelErr, api.ErrRejected) || !strings.Contains(cancelErr.Error(), "FIN_JOB_BEARS_POOL_COST") {
 				t.Fatalf("round %d: the cancellation refused for another reason: %v", round, cancelErr)
 			}
 		}
