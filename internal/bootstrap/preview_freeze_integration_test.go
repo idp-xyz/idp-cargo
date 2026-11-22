@@ -232,11 +232,13 @@ func TestAPoolFrozenForAReworkIsConfirmedByAnotherPerson(t *testing.T) {
 	}
 }
 
-// A rework given up leaves no trace in PHY's cost basis (a cancelled stuffing has no packing list, as the stuffing
-// given up empty in TestAnEmptyStuffingIsGivenUpAndThePoolClosesWithPHYAndFIN), so FIN cannot read who asked for it:
-// the pool is not in work, the preview made before is stale, and the person who asked for the rework is not refused
-// (run with the real contexts, V2.91).
-func TestAReworkGivenUpLeavesNothingForFINToReadWithEveryContext(t *testing.T) {
+// A rework given up leaves no packing list in PHY's cost basis (a cancelled stuffing has none, as the stuffing given up
+// empty in TestAnEmptyStuffingIsGivenUpAndThePoolClosesWithPHYAndFIN), and until V2.91 FIN could not read who asked for
+// it (V2.91 called this test TestAReworkGivenUpLeavesNothingForFINToReadWithEveryContext): the person who asked for the
+// rework was not refused. Since V2.92 the basis tells of the stuffing given up and its reworks (GivenUpStuffings), so
+// the pool is not in work, the preview made before is stale, and the person who asked for the rework is refused, as for
+// any ended rework (run with the real contexts).
+func TestTheAskerOfAReworkGivenUpIsRefusedAndAnotherFinanceUserAcceptedWithEveryContext(t *testing.T) {
 	d := newOceanDay(t, "cargo-box-a-given-up-", map[string]int64{"H01": 312, "H02": 300}, map[string]int64{"H01": 10_000_000, "H02": 15_000_000}, []string{"22G1"}, nil)
 	d.stuff("X-1", 1)
 	for _, h := range []string{"H01", "H02"} {
@@ -278,9 +280,17 @@ func TestAReworkGivenUpLeavesNothingForFINToReadWithEveryContext(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "FIN_PREVIEW_STALE") || !strings.Contains(err.Error(), "packing.1") {
 		t.Fatalf("the preview made before: %v", err)
 	}
+	if len(b.GivenUpStuffings) != 1 || b.GivenUpStuffings[0].ExecutionID != "X-1" || len(b.GivenUpStuffings[0].Reworks) != 1 ||
+		b.GivenUpStuffings[0].Reworks[0].AskedBy != "fin-asker" || b.GivenUpStuffings[0].Reworks[0].End != phyapi.ReworkGivenUp {
+		t.Fatalf("PHY's basis tells of the stuffing given up: %+v", b.GivenUpStuffings)
+	}
 	fresh, err := d.previewBy("ops-1", "fin-preview-planned")
 	d.must("a preview on the plan", err)
-	if _, err = d.submitBy("fin-asker", "fin-submit-asker", fresh.Version); err != nil {
-		t.Fatalf("FIN cannot see who asked for a rework that was given up: %v", err)
+	_, err = d.submitBy("fin-asker", "fin-submit-asker", fresh.Version)
+	if err == nil || !strings.Contains(err.Error(), "FIN_CONFIRMER_ASKED_REWORK") || !strings.Contains(err.Error(), "fin-asker asked for rework 1 of load unit 1 (given-up stuffing X-1)") {
+		t.Fatalf("the person who asked for a rework that was given up: %v", err)
+	}
+	if _, err = d.submitBy("fin-1", "fin-submit-other", fresh.Version); err != nil {
+		t.Fatalf("another finance user: %v", err)
 	}
 }

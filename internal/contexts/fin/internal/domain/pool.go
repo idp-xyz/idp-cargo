@@ -168,9 +168,39 @@ type UnitPackingListFacts struct {
 	Reworks        []ReworkFacts
 }
 
+// FormerHouseFacts is a house that left the consolidation, as PHY reads it (since V2.92): how its entry ended
+// (DETACHED, TRANSFERRED or SHIPMENT_CANCELLED, and for a transfer the consolidation it went to), the operator's
+// reason, who ended it and when (the business time and when PHY recorded it), and the rework of a sealed container in
+// which it was unloaded, when it was (the stuffing, the rework's number, the load unit and who asked for it; empty and
+// zero otherwise). The fingerprint reads the shipment, the end, the target, the time and the rework; nothing else reads
+// them yet.
+type FormerHouseFacts struct {
+	ShipmentID        string
+	End               string
+	TransferredTo     string
+	Reason            string
+	EndedBy           string
+	EndedAt           time.Time
+	EndedEnteredAt    time.Time
+	ReworkFrom        string // ENTRY, REVERSAL or NONE: where PHY found the rework
+	ReworkExecutionID string
+	ReworkNo          int
+	ReworkUnitNo      int
+	ReworkAskedBy     string
+}
+
+// GivenUpStuffingFacts is a stuffing of the consolidation given up after a rework, with its reworks as PHY reads them
+// (since V2.92). PHY gives it no packing list, so its reworks are not in UnitPackingListFacts.
+type GivenUpStuffingFacts struct {
+	UnitNo      int
+	ExecutionID string
+	Reworks     []ReworkFacts
+}
+
 // CostBasis is what FIN reads of PHY's PhysicalCostBasis v1: the consolidation, its operating legal entity and its
 // live houses. LoadUnits are the load units PHY answers that are not removed, in unit order; the container methods
-// read them.
+// read them. FormerHouses and GivenUpStuffings are what V2.92 reads of the houses that left and of the stuffings given
+// up.
 type CostBasis struct {
 	ConsolidationID        string
 	Revision               int64
@@ -180,6 +210,8 @@ type CostBasis struct {
 	Houses                 []HouseFacts
 	LoadUnits              []LoadUnitFacts
 	PackingLists           []UnitPackingListFacts
+	FormerHouses           []FormerHouseFacts
+	GivenUpStuffings       []GivenUpStuffingFacts
 }
 
 // UnitsInRework is the numbers of the load units whose stuffing is in REWORK, in order, each once.

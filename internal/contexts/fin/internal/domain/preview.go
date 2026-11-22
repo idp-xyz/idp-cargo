@@ -158,28 +158,36 @@ func (p *ConsolCostPool) reworksAskedBy(basis CostBasis, by string, lines []Line
 		}
 	}
 	var out []string
-	for _, l := range basis.PackingLists {
-		for _, r := range l.Reworks {
+	check := func(unit int, execution, kind string, reworks []ReworkFacts) {
+		for _, r := range reworks {
 			if r.End == "" || r.AskedBy != by {
 				continue
 			}
 			var missing []string
 			for _, la := range lines {
-				if !carried[reworkKey(l, r)][la.LineNo] {
+				if !carried[reworkKey(unit, execution, r)][la.LineNo] {
 					missing = append(missing, fmt.Sprint(la.LineNo))
 				}
 			}
 			if len(missing) > 0 {
-				out = append(out, fmt.Sprintf("rework %d of load unit %d (stuffing %s), which ended %s, for line %s", r.No, l.UnitNo, l.ExecutionID, r.End,
+				out = append(out, fmt.Sprintf("rework %d of load unit %d (%s%s), which ended %s, for line %s", r.No, unit, kind, execution, r.End,
 					strings.Join(missing, ", ")))
 			}
 		}
 	}
+	for _, l := range basis.PackingLists {
+		check(l.UnitNo, l.ExecutionID, "stuffing ", l.Reworks)
+	}
+	for _, g := range basis.GivenUpStuffings {
+		check(g.UnitNo, g.ExecutionID, "given-up stuffing ", g.Reworks)
+	}
 	return out
 }
 
-func reworkKey(l UnitPackingListFacts, r ReworkFacts) string {
-	return fmt.Sprintf("rework.%d.%q.%d", l.UnitNo, l.ExecutionID, r.No)
+// reworkKey is the fingerprint's key of a rework: the same for a stuffing with a packing list and for one given up, so
+// a rework that a preview read as ended is still read as that after its stuffing was given up.
+func reworkKey(unit int, execution string, r ReworkFacts) string {
+	return fmt.Sprintf("rework.%d.%q.%d", unit, execution, r.No)
 }
 
 func quantityText(q kernel.Quantity) string { return fmt.Sprintf("%d%s", q.Amount, q.Unit) }
@@ -187,9 +195,10 @@ func quantityText(q kernel.Quantity) string { return fmt.Sprintf("%d%s", q.Amoun
 // fingerprint is the text of what an apportionment of lines is computed on, as PHY's basis and the pool now answer it:
 // one fact to a line, a key and a value separated by a tab, in key order. The facts are the basis revision; each load
 // unit with its type, TEU, status and stuffing; each packing list with its stuffing, state and digest, and each rework
-// of it with its end; each live house with its job and its plan and loaded figures; each line of the preview with its
-// version, its cost and the number of the apportionment in force for it (0 when none: another apportionment of the line
-// submitted since makes the preview stale, a revision or a new line of another line does not); and, for a line by
+// of it with its end, and the reworks of each stuffing given up the same way; each house that left, with how, to where,
+// when and in which rework; each live house with its job and its plan and loaded figures; each line of the preview with
+// its version, its cost and the number of the apportionment in force for it (0 when none: another apportionment of the
+// line submitted since makes the preview stale, a revision or a new line of another line does not); and, for a line by
 // REVENUE, the revenue of each house that takes part. The people who asked for the reworks are not in it: the confirmer
 // rule reads them from PHY's basis.
 func (p *ConsolCostPool) fingerprint(basis CostBasis, jobs map[string]string, revenue map[string]map[string]int64, lines []LineApportionment) string {
@@ -201,8 +210,17 @@ func (p *ConsolCostPool) fingerprint(basis CostBasis, jobs map[string]string, re
 	for _, l := range basis.PackingLists {
 		facts[fmt.Sprintf("packing.%d", l.UnitNo)] = fmt.Sprintf("stuffing %q state %q digest %q", l.ExecutionID, l.ExecutionState, l.Digest)
 		for _, r := range l.Reworks {
-			facts[reworkKey(l, r)] = fmt.Sprintf("end %q ended_at %s", r.End, r.EndedAt.UTC().Format(time.RFC3339Nano))
+			facts[reworkKey(l.UnitNo, l.ExecutionID, r)] = fmt.Sprintf("end %q ended_at %s", r.End, r.EndedAt.UTC().Format(time.RFC3339Nano))
 		}
+	}
+	for _, g := range basis.GivenUpStuffings {
+		for _, r := range g.Reworks {
+			facts[reworkKey(g.UnitNo, g.ExecutionID, r)] = fmt.Sprintf("end %q ended_at %s", r.End, r.EndedAt.UTC().Format(time.RFC3339Nano))
+		}
+	}
+	for _, f := range basis.FormerHouses {
+		facts[fmt.Sprintf("former.%q", f.ShipmentID)] = fmt.Sprintf("end %q to %q ended_at %s rework %q %d", f.End, f.TransferredTo,
+			f.EndedAt.UTC().Format(time.RFC3339Nano), f.ReworkExecutionID, f.ReworkNo)
 	}
 	for _, h := range basis.Houses {
 		var units []string

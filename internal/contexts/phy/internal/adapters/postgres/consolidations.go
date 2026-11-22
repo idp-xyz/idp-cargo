@@ -276,6 +276,44 @@ func (s ConsolidationStore) LiveHouses(ctx context.Context, tenant phy.TenantID,
 	return houses, rows.Err()
 }
 
+// FormerHouses returns the houses whose latest entry in a consolidation ended by a detach, a transfer or the shipment's
+// cancellation, by shipment, each with the consolidation its transfer went to (the next entry of its ledger). The
+// latest entry of the house in the consolidation decides: a live one means the house is in it, and a refresh always has
+// a successor in the same consolidation, so it is never the latest that ended. An earlier departure that was undone
+// (the house was attached again) is not listed in place of what ended the house's last entry.
+func (s ConsolidationStore) FormerHouses(ctx context.Context, tenant phy.TenantID, id phy.ConsolidationID) ([]app.FormerHouse, error) {
+	q, err := s.DB.ReadExecutor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := q.Query(ctx, `SELECT row_to_json(e), coalesce(n.consolidation_id, '')
+      FROM (SELECT DISTINCT ON (shipment_id) * FROM cargo_phy.membership_entry
+             WHERE tenant_id=$1 AND consolidation_id=$2
+             ORDER BY shipment_id, entry_no DESC) e
+      LEFT JOIN cargo_phy.membership_entry n
+        ON n.tenant_id=e.tenant_id AND n.shipment_id=e.shipment_id AND n.stage=e.stage AND n.entry_no=e.successor_no
+      WHERE e.end_kind IN ('DETACHED','TRANSFERRED','SHIPMENT_CANCELLED')
+      ORDER BY e.shipment_id`, string(tenant), string(id))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []app.FormerHouse
+	for rows.Next() {
+		var entryJSON []byte
+		var to string
+		if err = rows.Scan(&entryJSON, &to); err != nil {
+			return nil, err
+		}
+		var e entryRow
+		if err = json.Unmarshal(entryJSON, &e); err != nil {
+			return nil, err
+		}
+		out = append(out, app.FormerHouse{ShipmentID: phy.ShipmentID(e.ShipmentID), Entry: e.entry(nil), To: phy.ConsolidationID(to)})
+	}
+	return out, rows.Err()
+}
+
 // ListOpen lists OPEN consolidations by planned departure, with their number of live houses.
 func (s ConsolidationStore) ListOpen(ctx context.Context, tenant phy.TenantID, f app.ListFilter) ([]app.Summary, error) {
 	q, err := s.DB.ReadExecutor(ctx)

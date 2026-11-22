@@ -108,6 +108,17 @@ type House struct {
 	Entry              phy.Entry
 }
 
+// FormerHouse is a house whose latest entry in a consolidation ended by a detach, a transfer or the shipment's
+// cancellation: that entry, for a transfer the consolidation of the entry that continues it, and, when the entry names
+// no rework, the latest rework that unloaded the house according to the reversal lines (Reversal, when Unloaded).
+type FormerHouse struct {
+	ShipmentID phy.ShipmentID
+	Entry      phy.Entry
+	To         phy.ConsolidationID
+	Reversal   phy.ReworkRef
+	Unloaded   bool
+}
+
 // Summary is an OPEN consolidation for the attach screen.
 type Summary struct {
 	State      phy.ConsolidationState // with the current version only
@@ -135,6 +146,9 @@ type ConsolidationStore interface {
 	Read(context.Context, phy.TenantID, phy.ConsolidationID) (*phy.Consolidation, int64, error)
 	Save(context.Context, *phy.Consolidation, int64) (int64, error)
 	LiveHouses(context.Context, phy.TenantID, phy.ConsolidationID) ([]House, error)
+	// FormerHouses returns the houses whose latest entry in the consolidation ended by a detach, a transfer or the
+	// shipment's cancellation, by shipment. It takes no lock.
+	FormerHouses(context.Context, phy.TenantID, phy.ConsolidationID) ([]FormerHouse, error)
 	ListOpen(context.Context, phy.TenantID, ListFilter) ([]Summary, error)
 }
 
@@ -236,6 +250,8 @@ type ExecutionStore interface {
 	// HouseRework returns the latest rework of a sealed container of the consolidation in which the house was unloaded,
 	// by the time PHY entered its reversals (V2.86); false when it was unloaded in none.
 	HouseRework(context.Context, phy.TenantID, phy.ConsolidationID, phy.ShipmentID) (phy.ReworkRef, bool, error)
+	// HouseReworkSince is HouseRework over the reversals PHY entered at or after the time given.
+	HouseReworkSince(context.Context, phy.TenantID, phy.ConsolidationID, phy.ShipmentID, time.Time) (phy.ReworkRef, bool, error)
 	// HouseLastReversal returns the business time of the house's latest reversal, of any kind, in any execution of the
 	// consolidation (V2.87); false when it has none, that is when it was never loaded.
 	HouseLastReversal(context.Context, phy.TenantID, phy.ConsolidationID, phy.ShipmentID) (time.Time, bool, error)

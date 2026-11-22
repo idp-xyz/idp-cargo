@@ -1,6 +1,7 @@
 package phy
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -11,7 +12,18 @@ import (
 	"go.idp.xyz/idp-cargo/internal/contexts/phy/api"
 	"go.idp.xyz/idp-cargo/internal/contexts/phy/internal/application"
 	"go.idp.xyz/idp-cargo/internal/contexts/phy/internal/domain"
+	"go.idp.xyz/idp-cargo/internal/foundation/bento"
 )
+
+// basisReads is reads for the cost basis: its transaction is one snapshot (REPEATABLE READ, READ ONLY, set before the
+// first statement), so the live houses, the houses that left, the executions and the lots are one state of the
+// database. A house detached while the basis is read is in the live houses or in the former houses, never in neither
+// (V2.92).
+func (m *Module) basisReads(tenant string) application.Reads {
+	r := m.reads(tenant)
+	r.Tx = bento.TenantTransactor{DB: m.db, Tenant: tenant, Snapshot: true}
+	return r
+}
 
 // GetPhysicalCostBasis answers PhysicalCostBasis v1: the consolidation and, of every live house, the scope PHY froze at
 // attach and what its tenders actually loaded, from one snapshot. Loaded measures follow PhysicalLoadEvidence v1: lines
@@ -21,9 +33,11 @@ import (
 // measured as the totals are, over every stuffing the lot is loaded in: a lot's measure is divided over them), each
 // load unit carries the state and revision of its stuffing's record, and each unit with a stuffing has its packing list
 // with a digest (UnitPackingList), built from the same figures, and the unit's cargo against its container's default
-// limits (UnitPackingList.Limits).
+// limits (UnitPackingList.Limits). Since V2.92 it also lists the houses that left the consolidation (FormerHouses) and
+// the stuffings given up after a rework (GivenUpStuffings), in the same snapshot; neither is part of a digest or of
+// Revision.
 func (m *Module) GetPhysicalCostBasis(ctx context.Context, q api.GetPhysicalCostBasis) (api.PhysicalCostBasis, error) {
-	c, revision, houses, executions, lots, err := m.reads(q.TenantID).CostBasis(ctx, domain.TenantID(q.TenantID),
+	c, revision, houses, former, executions, lots, err := m.basisReads(q.TenantID).CostBasis(ctx, domain.TenantID(q.TenantID),
 		domain.ConsolidationID(q.ConsolidationID))
 	if err != nil {
 		return api.PhysicalCostBasis{}, classify(err)
@@ -86,6 +100,11 @@ func (m *Module) GetPhysicalCostBasis(ctx context.Context, q api.GetPhysicalCost
 	uses := map[int]application.UnitUse{}
 	for _, r := range executions {
 		// A cancelled stuffing was given up with no live packs: its unit is PLANNED again, and it has no packing list.
+		// Its reworks are read apart (V2.92).
+		if st := r.Execution.State(); st.LoadUnitNo > 0 && st.State == domain.ExecutionCancelled && len(st.Reworks) > 0 {
+			out.GivenUpStuffings = append(out.GivenUpStuffings, api.GivenUpStuffing{UnitNo: st.LoadUnitNo, ExecutionID: string(st.ExecutionID),
+				Reworks: reworkViews(st.Reworks)})
+		}
 		if st := r.Execution.State(); st.LoadUnitNo > 0 && st.State != domain.ExecutionCancelled {
 			uses[st.LoadUnitNo] = application.UnitUse{ExecutionID: st.ExecutionID, State: st.State, Revision: r.Revision}
 			lines := unitLines[st.LoadUnitNo]
@@ -101,10 +120,46 @@ func (m *Module) GetPhysicalCostBasis(ctx context.Context, q api.GetPhysicalCost
 		}
 	}
 	slices.SortFunc(out.PackingLists, func(a, b api.UnitPackingList) int { return a.UnitNo - b.UnitNo })
+	slices.SortFunc(out.GivenUpStuffings, func(a, b api.GivenUpStuffing) int {
+		return cmp.Or(a.UnitNo-b.UnitNo, strings.Compare(a.ExecutionID, b.ExecutionID))
+	})
+	for _, f := range former {
+		out.FormerHouses = append(out.FormerHouses, formerHouse(f, executions))
+	}
 	for _, u := range c.LiveLoadUnits() {
 		out.LoadUnits = append(out.LoadUnits, loadUnit(u, uses))
 	}
 	return out, nil
+}
+
+// formerHouse tells how a house left the consolidation and its rework: the entry's, else the one the reversal lines
+// name, with the unit and the asker as the stuffing's reworks give them (a stuffing given up is among the executions as
+// well).
+func formerHouse(f application.FormerHouse, executions []application.ExecutionRead) api.FormerHouse {
+	e := f.Entry
+	out := api.FormerHouse{ShipmentID: string(f.ShipmentID), End: string(e.End), TransferredTo: string(f.To), Reason: string(e.Reason), ReasonText: e.ReasonText,
+		EndedBy: e.EndedBy, EndedAt: e.EndedAt, EndedEnteredAt: e.EndEnteredAt, ReworkFrom: api.ReworkFromNone}
+	switch {
+	case e.ReworkNo != 0:
+		out.ReworkFrom, out.ReworkExecutionID, out.ReworkNo = api.ReworkFromEntry, string(e.ReworkExecutionID), e.ReworkNo
+	case f.Unloaded:
+		out.ReworkFrom, out.ReworkExecutionID, out.ReworkNo = api.ReworkFromReversal, string(f.Reversal.ExecutionID), f.Reversal.No
+	default:
+		return out
+	}
+	for _, r := range executions {
+		st := r.Execution.State()
+		if string(st.ExecutionID) != out.ReworkExecutionID {
+			continue
+		}
+		out.ReworkUnitNo = st.LoadUnitNo
+		for _, w := range st.Reworks {
+			if w.No == out.ReworkNo {
+				out.ReworkAskedBy = w.AskedBy
+			}
+		}
+	}
+	return out
 }
 
 // packingListDigest is the SHA-256, in hexadecimal, of the canonical text of a unit's packing list: the three lines
