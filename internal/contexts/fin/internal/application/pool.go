@@ -183,6 +183,8 @@ type ApportionAsk struct {
 	NotUsed   []string
 	AllHouses bool
 	Reason    string
+	// Attributions state who bears the former share of each house that left (since V2.93).
+	Attributions []fin.AttributionInput
 }
 
 // houseRevenue reads the revenue by charge code at the estimate rate of the open jobs OpenJobsFor answered, per house
@@ -248,7 +250,7 @@ func (d Deps) PreviewPoolApportionment(ctx context.Context, c Command, in Apport
 		return err
 	}, func(_ context.Context, pool *fin.ConsolCostPool, _ *fin.FinancePolicy) (Receipt, error) {
 		input := fin.ApportionInput{LineNos: in.LineNos, Method: in.Method, Manual: in.Manual, NotUsed: in.NotUsed, AllHouses: in.AllHouses, Reason: in.Reason, Jobs: jobs,
-			Revenue: revenue}
+			Revenue: revenue, Attributions: in.Attributions}
 		if err := pool.Preview(input, basis, c.Scope.ActorID, c.OccurredAt); err != nil {
 			return Receipt{}, err
 		}
@@ -256,12 +258,16 @@ func (d Deps) PreviewPoolApportionment(ctx context.Context, c Command, in Apport
 	})
 }
 
-// openJobs locks the open jobs of the pool's legal entity of the basis's live houses, in job id order.
+// openJobs locks the open jobs of the pool's legal entity of the basis's live houses and, since V2.93, of the houses
+// that left and that hold a former share or an attribution in force on one of the pool's lines (one of them bears the
+// loss an attribution states), in job id order. Only the live houses are in the preview's fingerprint; the others' jobs
+// are there to bear a loss.
 func (d Deps) openJobs(ctx context.Context, c Command, pool *fin.ConsolCostPool, basis fin.CostBasis) (map[string]string, error) {
 	shipments := make([]string, 0, len(basis.Houses))
 	for _, h := range basis.Houses {
 		shipments = append(shipments, h.ShipmentID)
 	}
+	shipments = append(shipments, pool.HousesToAttribute(basis)...)
 	return d.Jobs.OpenJobsFor(ctx, c.Scope.TenantID, pool.State().LegalEntityID, shipments)
 }
 

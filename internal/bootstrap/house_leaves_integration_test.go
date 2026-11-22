@@ -23,7 +23,8 @@ import (
 // after the house left, and the test asserts what today's code gives. It is not a statement of what FIN should do: FIN
 // is not changed in this step. The later steps will change, in FIN, what is asserted as "after" here: the cost of the
 // house that left is taken from the pool of the consolidation it goes to, and the share it was given before the rework
-// (line 1 below) is taken back; today it keeps it. FUL records the house's leaving from PHY's membership when it is
+// (line 1 below) is taken back; today it keeps it (since V2.93: pending finance's attribution, outside the house's
+// cost). FUL records the house's leaving from PHY's membership when it is
 // asked to, and not before.
 
 // leaveOf builds the day up to the second seal, and returns FUL over the same database.
@@ -223,12 +224,13 @@ func TestAHouseUnloadedInAReworkIsTransferredWithEveryContext(t *testing.T) {
 		t.Fatalf("C-1: %+v %v", c1, err)
 	}
 
-	// FIN (run), after the transfer, with today's code. The house is charged in both pools: P-2 is opened on C-2 with one
-	// line of CNY 100.01, apportioned on the one house, and JOB-H03 carries 1,667 from P-1 (line 1, apportioned before
-	// the rework) and 10,001 from P-2. Nothing says so. P-1 cannot be closed as it stands (its line 1 is not apportioned
-	// on the loaded basis it has now): FIN_POOL_NOT_CLOSABLE. Once line 1 is apportioned again, on H01 and H02, the pool
-	// closes and the job's cost falls to 10,001. The later FIN steps take the house out of the source pool's
-	// apportionments when it leaves, so that neither the double cost nor the refused close arises.
+	// FIN (run), after the transfer. P-2 is opened on C-2 with one line of CNY 100.01, apportioned on the one house.
+	// JOB-H03 holds 1,667 from P-1 (line 1, apportioned before the rework) and 10,001 from P-2. Until V2.93 the house
+	// was charged in both pools (11,668) and nothing said so. Since V2.93 the 1,667 is a former share pending finance's
+	// attribution: it is not in the job's cost (10,001, from P-2) and the job lists it apart. P-1 cannot be closed
+	// while it stands: FIN_POOL_NOT_CLOSABLE naming the house. Line 1 cannot be apportioned again without finance's
+	// attribution of the house (FIN_ATTRIBUTION_MISSING); once it is, on H01 and H02, the pool closes and the job's
+	// cost is still 10,001.
 	if err = d.apportion("fin-after-transfer", 2, 3); err != nil {
 		t.Fatalf("apportion lines 2 and 3 of P-1 after the transfer: %v", err)
 	}
@@ -251,20 +253,29 @@ func TestAHouseUnloadedInAReworkIsTransferredWithEveryContext(t *testing.T) {
 		d.must("the profit of JOB-H03", err)
 		return jp.PoolCost.Minor
 	}
-	if got := jobCost(); got != 1_667+10_001 {
-		t.Fatalf("JOB-H03 is charged by both pools: %d, want 11,668", got)
+	if got := jobCost(); got != 10_001 {
+		t.Fatalf("JOB-H03 is charged by P-2 only, its share of P-1 is pending: %d, want 10,001", got)
 	}
-	if err = d.closeInvoicedPool("P-1", 3); err == nil || !strings.Contains(err.Error(), "FIN_POOL_NOT_CLOSABLE") {
-		t.Fatalf("P-1 closes with the house's line 1 apportioned before it left: %v", err)
+	if jp, err := d.fin.GetJobProfit(d.ctx, finapi.GetJobProfit{TenantID: d.tenant, JobID: "JOB-H03"}); err != nil || jp.FormerSharesPending.Minor != 1_667 || len(jp.FormerShares) != 1 {
+		t.Fatalf("JOB-H03 lists its former share of P-1 apart: %+v %v", jp, err)
 	}
-	if err = d.apportion("fin-reapportion", 1); err != nil {
-		t.Fatalf("apportion line 1 of P-1 again: %v", err)
+	if err = d.closeInvoicedPool("P-1", 3); err == nil || !strings.Contains(err.Error(), "FIN_POOL_NOT_CLOSABLE") || !strings.Contains(err.Error(), "former share of house SH-H03") {
+		t.Fatalf("P-1 closes with the house's former share of line 1 not attributed: %v", err)
+	}
+	if err = d.apportion("fin-reapportion", 1); err == nil || !strings.Contains(err.Error(), "FIN_ATTRIBUTION_MISSING") || !strings.Contains(err.Error(), "1667 CNY") {
+		t.Fatalf("line 1 is apportioned again without finance's attribution of the house: %v", err)
+	}
+	if err = d.attribute("fin-attribute", "fin-1", statement("H03", 0, 0, "")); err != nil {
+		t.Fatalf("attribute the house's former share of line 1, all to H01 and H02: %v", err)
 	}
 	if err = d.closePoolAgain("P-1"); err != nil {
 		t.Fatalf("close P-1 after line 1 is apportioned again: %v", err)
 	}
 	if got := jobCost(); got != 10_001 {
 		t.Fatalf("JOB-H03 is charged by P-2 only: %d, want 10,001", got)
+	}
+	if jp, err := d.fin.GetJobProfit(d.ctx, finapi.GetJobProfit{TenantID: d.tenant, JobID: "JOB-H03"}); err != nil || jp.FormerSharesPending.Minor != 0 || len(jp.FormerShares) != 0 {
+		t.Fatalf("JOB-H03 has no former share left: %+v %v", jp, err)
 	}
 }
 

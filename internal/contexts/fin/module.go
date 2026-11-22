@@ -373,26 +373,48 @@ func jobView(j *domain.FreightJob, revision int64) api.FreightJob {
 	return out
 }
 
+// GetJobProfit reads a job's economics. Its pool shares are those under each pool line's latest apportionment; since
+// V2.93 a share of a pool of a consolidation the job's house left (PHY's basis lists it among the former houses) is a
+// former share pending finance's confirmation: it is not in PoolCost or Profit and is listed apart, and a re-routing
+// loss the job bears is in them, labelled. PHY's basis of each pool the job has a share in is read, outside FIN's
+// transactions; when PHY does not answer, the query fails, as FIN cannot tell what the job bears. A job with no share
+// asks PHY nothing.
 func (m *Module) GetJobProfit(ctx context.Context, q api.GetJobProfit) (api.JobProfit, error) {
 	d := m.deps(q.TenantID, "")
 	var j *domain.FreightJob
 	var revision int64
 	var shares []application.PoolShare
+	var losses []application.PoolLoss
 	err := d.Reader(ctx, func(txCtx context.Context) (err error) {
 		if j, revision, err = readJob(txCtx, d, q.TenantID, q.JobID); err != nil {
 			return err
 		}
-		shares, err = d.Pools.SharesOfJob(txCtx, domain.TenantID(q.TenantID), q.JobID)
+		if shares, err = d.Pools.SharesOfJob(txCtx, domain.TenantID(q.TenantID), q.JobID); err != nil {
+			return err
+		}
+		losses, err = d.Pools.LossesOfJob(txCtx, domain.TenantID(q.TenantID), q.JobID)
 		return err
 	})
 	if err != nil {
 		return api.JobProfit{}, classify(err)
 	}
+	bases, err := d.FormerBases(ctx, domain.TenantID(q.TenantID), shares)
+	if err != nil {
+		return api.JobProfit{}, classify(err)
+	}
+	costs := application.SplitFormerShares(shares, losses, j.State().ShipmentID, bases)
 	p := j.Profit()
 	money := func(n int64) kernel.Money { return kernel.Money{Currency: p.Currency, Minor: n} }
-	poolShares, pool := poolShareViews(shares, p.Currency)
+	poolShares, _ := poolShareViews(costs.Borne, p.Currency)
+	formerShares, _ := poolShareViews(costs.Former, p.Currency)
+	var reroutings []api.JobReroutingLoss
+	for _, l := range costs.Losses {
+		reroutings = append(reroutings, api.JobReroutingLoss{PoolID: l.PoolID, LineNo: l.LineNo, Amount: l.Amount, Local: money(l.Local), Voucher: l.Voucher,
+			DepartedAt: l.DepartedAt})
+	}
 	out := api.JobProfit{JobID: q.JobID, Revision: revision, Revenue: money(p.Revenue), Invoiced: money(p.Invoiced), Cost: money(p.Cost),
-		CostMatched: money(p.Matched), CostAccrued: money(p.Accrued), PoolCost: money(pool), Profit: money(p.Profit - pool), PoolShares: poolShares}
+		CostMatched: money(p.Matched), CostAccrued: money(p.Accrued), PoolCost: money(costs.Cost), Profit: money(p.Profit - costs.Cost), PoolShares: poolShares,
+		ReroutingLosses: reroutings, ReroutingLoss: money(costs.LossTotal), FormerShares: formerShares, FormerSharesPending: money(costs.FormerTotal)}
 	for _, c := range p.Lines {
 		out.ByCode = append(out.ByCode, api.ChargeCodeProfit{ChargeCode: c.ChargeCode, Revenue: money(c.Revenue), Cost: money(c.Cost), Profit: money(c.Profit)})
 	}
@@ -823,7 +845,7 @@ func classify(err error) error {
 		errors.Is(err, domain.ErrAccrualClosed), errors.Is(err, domain.ErrMatchExceeds), errors.Is(err, domain.ErrMatchIncomplete),
 		errors.Is(err, domain.ErrMatchChargeCode), errors.Is(err, domain.ErrInvoiceNumber), errors.Is(err, domain.ErrVarianceApproval),
 		errors.Is(err, domain.ErrAccrualMatched), errors.Is(err, domain.ErrPoolNotClosable), errors.Is(err, domain.ErrTargetClosed), errors.Is(err, domain.ErrPoolInWork),
-		errors.Is(err, domain.ErrPreviewStale), errors.Is(err, domain.ErrPreviewSubmitted), errors.Is(err, domain.ErrConfirmer),
+		errors.Is(err, domain.ErrPreviewStale), errors.Is(err, domain.ErrPreviewSubmitted), errors.Is(err, domain.ErrConfirmer), errors.Is(err, domain.ErrAttributionMissing), errors.Is(err, domain.ErrJobBearsPoolCost), errors.Is(err, domain.ErrAttributionConfirmer),
 		errors.Is(err, domain.ErrFinalBehind), errors.Is(err, domain.ErrNotPayable), errors.Is(err, domain.ErrInvoicePaid),
 		errors.Is(err, domain.ErrFapiaoCovers), errors.Is(err, domain.ErrFapiaoNumber), errors.Is(err, domain.ErrNotFapiaoable):
 		kind = api.ErrRejected

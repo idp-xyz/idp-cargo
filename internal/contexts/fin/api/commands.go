@@ -559,6 +559,31 @@ type ManualShare struct {
 	Amount     int64
 }
 
+// Who is responsible for a consolidation's exception cost in an attribution; PENDING is a cost whose cause is not
+// established yet, which does not stop the close of the pool.
+const (
+	PartyCarrier       = "CARRIER"
+	PartyWarehouse     = "WAREHOUSE"
+	PartyOwnOperations = "OWN_OPERATIONS"
+	PartyPending       = "PENDING"
+)
+
+// AttributionStatement states who bears a house's former share of one cost line (since FIN V2.93), in the line's
+// currency: the house's re-routing loss, which its own job bears, and the consolidation's exception cost with the party
+// responsible for it (empty when Exception is 0) and a free reference. Voucher is required, also when both are 0 (all
+// of the line goes to the cargo that remains); Reason is required when the statement replaces a different attribution
+// in force on the line (a correction).
+type AttributionStatement struct {
+	LineNo         int
+	ShipmentID     string
+	Loss           int64
+	Exception      int64
+	Party          string
+	PartyReference string
+	Voucher        string
+	Reason         string
+}
+
 // PreviewConsolCostApportionment computes the division of pool cost lines' latest versions over the house jobs
 // (LineNos; every line when empty) and stores it as a preview, as ApportionConsolCosts did in one step until FIN V2.91:
 // it is submitted by SubmitConsolCostApportionment, and nothing else is written (no share, no job cost, no current
@@ -608,6 +633,22 @@ type ManualShare struct {
 // unit REV). The revenue is read in the command's transaction under the jobs' locks, and the close of the pool reads it
 // again: a line by REVENUE whose houses' revenue has changed since is refused with FIN_POOL_NOT_CLOSABLE until it is
 // apportioned again.
+//
+// Since FIN V2.93 a house that PHY lists among the former houses of the consolidation and that holds a used share on
+// the apportionment in force of a line has a former share on it, pending finance's confirmation: it is not in the
+// house's profit, and a preview of the line is refused with FIN_ATTRIBUTION_MISSING, naming the line, the house and the
+// former share (the loss it would bear by default, for reference), until Attributions state who bears it. For each such
+// house an attribution gives its re-routing loss (a share its own job bears, which must be OPEN), the consolidation's
+// exception cost with the party responsible (CARRIER, WAREHOUSE, OWN_OPERATIONS, or PENDING while that is not
+// established) and a voucher; a loss or an exception cost below 0, or losses and exception costs above the line's cost,
+// are refused naming the line. What remains of the line's cost is divided over the live houses by the line's method
+// (MANUAL: the manual shares sum to it); the line's local cost is divided over the remainder and each loss and
+// exception cost by the same largest remainder, in proportion to the amounts in the line's currency. With no live house
+// the remainder is to be allocated on the line. An attribution in force is carried when the line is apportioned again
+// and none is stated for the house; the remainder follows a change of the line's cost, and the preview is refused when
+// the carried amounts no longer fit. A statement that differs from the one in force is a correction and needs a reason.
+// Each attribution records the house's departure as its business date. A RETAINED line takes attributions too and
+// retains the remainder.
 type PreviewConsolCostApportionment struct {
 	CommandID        string
 	TenantID         string
@@ -620,7 +661,9 @@ type PreviewConsolCostApportionment struct {
 	NotUsed          []string `json:",omitempty"` // left out of the request hash when empty, so earlier commands hash as they did
 	AllHouses        bool     `json:",omitempty"` // likewise when false
 	Reason           string
-	OccurredAt       time.Time
+	// Attributions state who bears the former share of each house that left the consolidation (FIN V2.93); likewise.
+	Attributions []AttributionStatement `json:",omitempty"`
+	OccurredAt   time.Time
 }
 
 // SubmitConsolCostApportionment writes the apportionment of a preview (PreviewNo, the receipt's Version of the preview
@@ -630,7 +673,10 @@ type PreviewConsolCostApportionment struct {
 // again. It is refused with FIN_POOL_IN_WORK while a container is in rework, with FIN_PREVIEW_SUBMITTED when the
 // preview was submitted already, and with FIN_CONFIRMER_ASKED_REWORK when ActorID asked for a rework of the
 // consolidation's containers that has ended and that no earlier submitted apportionment carried as ended: another
-// finance user submits.
+// finance user submits. Since FIN V2.93 a preview that carries a new or changed attribution of a house that left is
+// refused with FIN_ATTRIBUTION_CONFIRMER, naming the house and the person, when ActorID asked for the rework that
+// unloaded that house (whatever the rework's end) or ended its place in the consolidation (detached or transferred it):
+// another finance user submits. An attribution carried unchanged needs no such check.
 type SubmitConsolCostApportionment struct {
 	CommandID        string
 	TenantID         string

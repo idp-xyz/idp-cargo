@@ -245,17 +245,38 @@ type Physical interface {
 }
 
 // PoolShare is a job's share of a pool cost line under the latest apportionment that covers the line.
+// ConsolidationID is the pool's consolidation: PHY's basis of it says whether the job's house left it.
 type PoolShare struct {
-	PoolID      string
-	LineNo      int
-	LineVersion int
-	ChargeCode  string
-	Method      string
-	Stage       string
-	Quantity    int64
-	Unit        string
-	Amount      kernel.Money
-	Local       int64
+	PoolID          string
+	ConsolidationID string
+	LineNo          int
+	LineVersion     int
+	ChargeCode      string
+	Method          string
+	Stage           string
+	Quantity        int64
+	Unit            string
+	Amount          kernel.Money
+	Local           int64
+}
+
+// PoolLoss is a re-routing loss a job bears on a pool cost line under the latest apportionment that covers the line
+// (FIN V2.93): an attribution's loss, in the line's currency and in the functional currency.
+type PoolLoss struct {
+	PoolID     string
+	LineNo     int
+	Voucher    string
+	DepartedAt time.Time
+	Amount     kernel.Money
+	Local      int64
+}
+
+// PoolHolding is a used share (Loss false) or a re-routing loss (Loss true) a job bears on a pool line.
+type PoolHolding struct {
+	PoolID string
+	LineNo int
+	Loss   bool
+	Closed bool
 }
 
 // PoolStore loads and writes consol cost pools; Load locks the pool row. A second pool of a consolidation and legal
@@ -269,6 +290,12 @@ type PoolStore interface {
 	ForConsolidation(ctx context.Context, tenant fin.TenantID, consolidation string) ([]*fin.ConsolCostPool, []int64, error)
 	// SharesOfJob lists a job's shares under each pool line's latest apportionment, by pool and line.
 	SharesOfJob(ctx context.Context, tenant fin.TenantID, job string) ([]PoolShare, error)
+	// LossesOfJob lists the re-routing losses a job bears under each pool line's latest apportionment, by pool and
+	// line.
+	LossesOfJob(ctx context.Context, tenant fin.TenantID, job string) ([]PoolLoss, error)
+	// HoldingsOfJob lists what stops a job from being cancelled: its used shares and its losses under each pool line's
+	// latest apportionment, with whether the pool is closed.
+	HoldingsOfJob(ctx context.Context, tenant fin.TenantID, job string) ([]PoolHolding, error)
 }
 
 // CreditorInvoiceStore loads and writes creditor invoices (Load locks the invoice row; a second invoice not cancelled

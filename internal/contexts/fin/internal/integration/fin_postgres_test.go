@@ -209,7 +209,7 @@ func (w *world) GetLegalEntity(_ context.Context, q orgapi.GetLegalEntity) (orga
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	status := orgapi.LegalEntityVerified
-	if w.suspended || q.LegalEntityID != "LE" {
+	if w.suspended || (q.LegalEntityID != "LE" && q.LegalEntityID != "LE2") {
 		status = orgapi.LegalEntitySuspended
 	}
 	return orgapi.LegalEntityRef{TenantID: q.TenantID, LegalEntityID: q.LegalEntityID, Revision: 1, RegisteredName: "LE", Jurisdiction: "CN",

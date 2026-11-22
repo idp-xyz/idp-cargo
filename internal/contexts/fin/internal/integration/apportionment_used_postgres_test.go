@@ -528,8 +528,9 @@ func TestTheJobOfAHouseLeftOutIsCancelledOnPostgres(t *testing.T) {
 			Reason: "shipment left behind", OccurredAt: f.hours(5)})
 		return err
 	}
-	if state, constraint := sqlState(cancel("JOB-B", "cancel-b")); state != "23514" || constraint != "pool_share_job_open" {
-		t.Fatalf("the job of a house with a share used: state %s %s", state, constraint)
+	// since V2.93 FIN refuses before it writes; the database's rule (pool_share_job_open) is the backstop
+	if err := cancel("JOB-B", "cancel-b"); !errors.Is(err, api.ErrRejected) || !strings.Contains(err.Error(), "FIN_JOB_BEARS_POOL_COST") {
+		t.Fatalf("the job of a house with a share used: %v", err)
 	}
 	if err := cancel("JOB-C", "cancel-c"); err != nil {
 		t.Fatalf("the job of a house left out of every line: %v", err)

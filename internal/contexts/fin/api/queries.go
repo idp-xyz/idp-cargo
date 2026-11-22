@@ -216,6 +216,24 @@ type JobProfit struct {
 	PoolCost    kernel.Money
 	Profit      kernel.Money
 	PoolShares  []JobPoolShare
+	// Since FIN V2.93: the re-routing losses the job bears under the pool lines' latest apportionments (in PoolCost
+	// and Profit; ReroutingLoss is their sum), and the former shares of pools of consolidations the job's house left,
+	// pending finance's confirmation: they are not in PoolCost or Profit, and are listed here (FormerSharesPending is
+	// their sum). The query reads PHY's basis of each pool the job has a share in, and fails when PHY does not answer.
+	ReroutingLosses     []JobReroutingLoss
+	ReroutingLoss       kernel.Money
+	FormerShares        []JobPoolShare
+	FormerSharesPending kernel.Money
+}
+
+// JobReroutingLoss is a re-routing loss a job bears on a pool's cost line, with its voucher and the house's departure.
+type JobReroutingLoss struct {
+	PoolID     string
+	LineNo     int
+	Amount     kernel.Money
+	Local      kernel.Money
+	Voucher    string
+	DepartedAt time.Time
 }
 
 // CreditTerms is a version of a debtor's terms.
@@ -582,16 +600,80 @@ type PoolShare struct {
 	Local      kernel.Money
 }
 
+// PoolAttribution is who bears one house's former share of one cost line under an apportionment (FIN V2.93): the loss
+// the house's own job bears and the consolidation's exception cost with the party responsible for it (empty when it is
+// 0), each in the line's currency and in the functional currency (together with the shares and the amount to be
+// allocated they make up the line's cost); the voucher and the reason; the house's departure as the business date; and
+// whether the apportionment only carries forward what an earlier one stated.
+type PoolAttribution struct {
+	ShipmentID     string
+	JobID          string
+	Loss           kernel.Money
+	LossLocal      kernel.Money
+	Exception      kernel.Money
+	ExceptionLocal kernel.Money
+	Party          string
+	PartyReference string
+	Voucher        string
+	Reason         string
+	DepartedAt     time.Time
+	Carried        bool
+}
+
 // ApportionedLine is one line's shares under an apportionment, at the line version it divided, and the line's cost it
-// divided (Amount, Local: the version's figures before FIN V0.5).
+// divided (Amount, Local: the version's figures before FIN V0.5). Since FIN V2.93 the line's cost is also divided into
+// the attributions of the houses that left and ToAllocate, what remains when no house is live (zero otherwise).
 type ApportionedLine struct {
-	LineNo      int
-	LineVersion int
-	Method      string
-	Reason      string // the MANUAL reason
-	Amount      kernel.Money
-	Local       kernel.Money
-	Shares      []PoolShare
+	LineNo          int
+	LineVersion     int
+	Method          string
+	Reason          string // the MANUAL reason
+	Amount          kernel.Money
+	Local           kernel.Money
+	Shares          []PoolShare
+	Attributions    []PoolAttribution
+	ToAllocate      kernel.Money
+	ToAllocateLocal kernel.Money
+}
+
+// HouseLoss is a house's re-routing loss on a cost line, borne by its own job; ExceptionByParty is the consolidation's
+// exception cost the attributions of a line state for one party; FormerShare is a house that left the consolidation and
+// its used share of a line under the apportionment in force, pending finance's confirmation: it is nobody's cost in the
+// profit of the house's job, and is listed apart (the amounts in the line's currency and in the functional currency).
+type (
+	HouseLoss struct {
+		ShipmentID string
+		JobID      string
+		Amount     kernel.Money
+		Local      kernel.Money
+	}
+	ExceptionByParty struct {
+		Party  string
+		Amount kernel.Money
+		Local  kernel.Money
+	}
+	FormerShare struct {
+		ShipmentID string
+		JobID      string
+		Amount     kernel.Money
+		Local      kernel.Money
+		End        string // DETACHED, TRANSFERRED or SHIPMENT_CANCELLED
+		EndedAt    time.Time
+	}
+)
+
+// LineAttributions is what the latest apportionment of a cost line leaves out of its shares (FIN V2.93): the losses
+// (house, job), the exception costs by party with the ones whose party is PENDING apart, the amount to be allocated
+// and the former shares pending finance's confirmation. With the line's shares they make up its cost.
+type LineAttributions struct {
+	LineNo                int
+	Losses                []HouseLoss
+	Exceptions            []ExceptionByParty
+	ExceptionPending      kernel.Money
+	ExceptionPendingLocal kernel.Money
+	ToAllocate            kernel.Money
+	ToAllocateLocal       kernel.Money
+	FormerShares          []FormerShare
 }
 
 // PoolApportionment is one immutable division of pool cost lines over the house jobs: the PhysicalCostBasis v1
@@ -646,6 +728,9 @@ type ConsolCostPool struct {
 	Apportionments     []PoolApportionment
 	Previews           []PoolPreview
 	Closures           []PoolClosure
+	// Attributions say, per cost line apportioned, what its latest apportionment leaves out of the shares (FIN V2.93).
+	// A former share is told by PHY's basis, which the query reads as it reads WorkUnits.
+	Attributions []LineAttributions
 	// InWork is true while PHY reads a container of the consolidation in rework (FIN V2.91): the pool is frozen, and
 	// the last submitted apportionment in Apportionments is the one that stands, in work. WorkUnits are the containers.
 	InWork    bool
@@ -679,6 +764,17 @@ type ConsolProfit struct {
 	Retained        kernel.Money // kept on the consolidation (RETAINED): the consolidation's own cost
 	Unapportioned   kernel.Money
 	Houses          []HouseProfit
+	// Since FIN V2.93, per cost line and in total (functional currency): the houses' re-routing losses, the exception
+	// costs (ExceptionsPending those whose party is not established, which are part of Exceptions), what is still to be
+	// allocated, and the former shares pending finance's confirmation, which are in no house's cost. The costs are
+	// conserved: Pooled = Apportioned + Retained + Losses + Exceptions + ToAllocated + FormerSharesPending +
+	// Unapportioned.
+	Lines               []LineAttributions
+	Losses              kernel.Money
+	Exceptions          kernel.Money
+	ExceptionsPending   kernel.Money
+	ToAllocated         kernel.Money
+	FormerSharesPending kernel.Money
 	// InWork is true while PHY reads a container of the consolidation in rework: what the houses bear is the last
 	// submitted apportionment, in work. WorkUnits are the containers.
 	InWork    bool
