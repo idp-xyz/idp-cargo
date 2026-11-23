@@ -66,6 +66,10 @@ func (m *Module) GetPhysicalCostBasis(ctx context.Context, q api.GetPhysicalCost
 		e := h.Entry
 		house := api.HouseCostBasis{ShipmentID: string(h.ShipmentID), MembershipRevision: h.MembershipRevision,
 			Packs: e.Scope.Packs, GrossWeight: e.Scope.GrossWeight, Volume: e.Scope.Volume}
+		if h.Unloaded {
+			unit, asker := reworkOf(executions, string(h.Reversal.ExecutionID), h.Reversal.No)
+			house.UnloadedBy = api.HouseUnloadedBy{ExecutionID: string(h.Reversal.ExecutionID), ReworkNo: h.Reversal.No, UnitNo: unit, AskedBy: asker}
+		}
 		var weight domain.WeightSum
 		var volume domain.VolumeSum
 		for _, r := range executions {
@@ -147,19 +151,26 @@ func formerHouse(f application.FormerHouse, executions []application.ExecutionRe
 	default:
 		return out
 	}
+	out.ReworkUnitNo, out.ReworkAskedBy = reworkOf(executions, out.ReworkExecutionID, out.ReworkNo)
+	return out
+}
+
+// reworkOf is the unit and the asker of a rework of an execution of the consolidation (a stuffing given up is among the
+// executions), empty when the execution or the rework is not found.
+func reworkOf(executions []application.ExecutionRead, execution string, no int) (unit int, askedBy string) {
 	for _, r := range executions {
 		st := r.Execution.State()
-		if string(st.ExecutionID) != out.ReworkExecutionID {
+		if string(st.ExecutionID) != execution {
 			continue
 		}
-		out.ReworkUnitNo = st.LoadUnitNo
+		unit = st.LoadUnitNo
 		for _, w := range st.Reworks {
-			if w.No == out.ReworkNo {
-				out.ReworkAskedBy = w.AskedBy
+			if w.No == no {
+				askedBy = w.AskedBy
 			}
 		}
 	}
-	return out
+	return unit, askedBy
 }
 
 // packingListDigest is the SHA-256, in hexadecimal, of the canonical text of a unit's packing list: the three lines
