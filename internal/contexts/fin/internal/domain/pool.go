@@ -1146,90 +1146,119 @@ func (p *ConsolCostPool) Close(basis CostBasis, by string, at time.Time) error {
 	if err := p.open(by, at); err != nil {
 		return err
 	}
-	houses := slices.Clone(basis.Houses)
-	slices.SortFunc(houses, func(a, b HouseFacts) int { return cmpString(a.ShipmentID, b.ShipmentID) })
+	houses, gone := housesInOrder(basis)
 	if basis.ConsolidationID != p.state.ConsolidationID {
 		return fmt.Errorf("%w: PHY answered consolidation %s for %s", ErrInvalid, basis.ConsolidationID, p.state.ConsolidationID)
 	}
 	if err := inWork(basis); err != nil {
 		return err
 	}
-	gone := basis.State == "CANCELLED" || len(houses) == 0
 	for _, l := range p.state.Lines {
-		c := p.consumed[l.No]
-		status := p.LineStatus(l.No)
-		switch {
-		case status != StatusMatched && status != StatusReleased:
-			return fmt.Errorf("%w: cost line %d is %s", ErrPoolNotClosable, l.No, status)
-		case c.Held:
-			return fmt.Errorf("%w: a creditor invoice matched to cost line %d is disputed or awaits a variance approval", ErrPoolNotClosable, l.No)
+		if _, err := p.accrualRefusal(l); err != nil {
+			return err
 		}
-		cost, local := p.LineCost(l.No)
-		a, la, ok := p.SharesOfLine(l.No)
-		switch {
-		case !ok && (cost != 0 || local != 0):
-			return fmt.Errorf("%w: cost line %d is not apportioned", ErrPoolNotClosable, l.No)
-		case !ok:
-			continue
-		case la.Amount != cost || la.Local != local:
-			return fmt.Errorf("%w: cost line %d was apportioned at %d (%d local); its final cost is %d (%d local)", ErrPoolNotClosable, l.No, la.Amount,
-				la.Local, cost, local)
-		case la.ToAllocate != 0 || la.ToAllocateLocal != 0:
-			return fmt.Errorf("%w: cost line %d has %d to be allocated, as no house of the consolidation is live; add cargo and apportion the line again, or "+
-				"attribute it as a loss or an exception cost of a house that left, or cancel the consolidation and retain it", ErrPoolNotClosable, l.No, la.ToAllocate)
-		case len(formerSharesOf(la, basis)) > 0:
-			return fmt.Errorf("%w: cost line %d holds a former share of house %s that left the consolidation and that nobody has attributed; attribute it by "+
-				"apportioning the line again with its loss and its exception cost", ErrPoolNotClosable, l.No, formerSharesOf(la, basis)[0].ShipmentID)
-		case la.Method == MethodRetained && !gone && (cost != 0 || local != 0):
-			return fmt.Errorf("%w: cost line %d is retained on the consolidation while PHY reports houses on it", ErrPoolNotClosable, l.No)
-		case cost == 0 && local == 0, gone:
-			continue // every share is zero, or no basis is left to compare
-		case a.Stage != BasisActual || len(la.Shares) != len(houses) || !usedLoaded(la.Shares, houses):
-			return fmt.Errorf("%w: cost line %d is not apportioned on the current loaded basis", ErrPoolNotClosable, l.No)
-		}
-		var taking []HouseFacts // the houses the apportionment used
-		for i, h := range houses {
-			if la.Shares[i].ShipmentID != h.ShipmentID {
-				return fmt.Errorf("%w: cost line %d is not apportioned on the current loaded basis (house %s)", ErrPoolNotClosable, l.No, h.ShipmentID)
-			}
-			if la.Shares[i].Used {
-				taking = append(taking, h)
-			}
-		}
-		var quantities []int64
-		var unit string
-		if la.Method == MethodRevenue {
-			// A house the jobs do not answer cannot be compared, and counts as changed. No command reaches this: a used share
-			// is on an open job, and the commit trigger check_job_pool_shares_at_commit (fin/000012) refuses cancelling a job
-			// that holds a current used share, so the open jobs of the houses that take part are always there. It is kept as
-			// a safeguard, so that a close never passes a house it could not compare.
-			for _, s := range la.Shares {
-				if now, known := p.revenue[s.ShipmentID]; s.Used && (!known || s.Quantity != now[l.ChargeCode] || s.Unit != UnitRevenueMinor) {
-					return fmt.Errorf("%w: cost line %d: the houses' revenue under charge code %s has changed since it was apportioned (house %s); "+
-						"apportion it again", ErrPoolNotClosable, l.No, l.ChargeCode, s.ShipmentID)
-				}
-			}
-		} else if la.Method != MethodManual {
-			var err error
-			if quantities, unit, err = methodQuantities(la.Method, p.state.Mode, BasisActual, taking, basis.LoadUnits); err != nil {
-				return fmt.Errorf("%w: cost line %d: %w", ErrPoolNotClosable, l.No, err)
-			}
-		}
-		k := 0 // the next house used
-		for _, s := range la.Shares {
-			if !s.Used {
-				continue // compared for its presence only
-			}
-			if quantities != nil && (s.Quantity != quantities[k] || s.Unit != unit) {
-				return fmt.Errorf("%w: cost line %d is not apportioned on the current loaded basis (house %s)", ErrPoolNotClosable, l.No, s.ShipmentID)
-			}
-			k++
+		if _, err := p.lineRefusal(l, basis, houses, gone); err != nil {
+			return err
 		}
 	}
 	c := PoolClosure{No: len(p.state.Closures) + 1, By: by, At: at.UTC()}
 	p.state.Closures, p.state.State = append(p.state.Closures, c), PoolClosed
 	p.record(eventPoolClosed, at, c.No)
 	return nil
+}
+
+// accrualRefusal is what the close would refuse a cost line for in its accrual: it is not matched final or released, or
+// an invoice matched to it is disputed or awaits a variance approval. It answers the kind of what it found
+// (COST_NOT_FINAL or INVOICE_HELD, as PendingItems names them) with the close's own error, and nothing when the line
+// passes. Close and PendingItems both read the line through it, as they do through lineRefusal.
+func (p *ConsolCostPool) accrualRefusal(l PoolCostLine) (string, error) {
+	status := p.LineStatus(l.No)
+	switch {
+	case status != StatusMatched && status != StatusReleased:
+		return pendingCostNotFinal, fmt.Errorf("%w: cost line %d is %s", ErrPoolNotClosable, l.No, status)
+	case p.consumed[l.No].Held:
+		return pendingInvoiceHeld, fmt.Errorf("%w: a creditor invoice matched to cost line %d is disputed or awaits a variance approval", ErrPoolNotClosable, l.No)
+	}
+	return "", nil
+}
+
+// housesInOrder is the basis's live houses in shipment order, and whether the close has no basis to compare: PHY
+// cancelled the consolidation or no house is left.
+func housesInOrder(basis CostBasis) ([]HouseFacts, bool) {
+	houses := slices.Clone(basis.Houses)
+	slices.SortFunc(houses, func(a, b HouseFacts) int { return cmpString(a.ShipmentID, b.ShipmentID) })
+	return houses, basis.State == "CANCELLED" || len(houses) == 0
+}
+
+// lineRefusal is what the close would refuse a cost line for, apart from its accrual and its creditor invoices: the
+// first of a line that is not apportioned (or apportioned at another cost), an amount still to be allocated, a former
+// share nobody attributed, and a line that is not on the current loaded basis (houses is the basis's live houses in
+// shipment order, gone that PHY cancelled the consolidation or no house is left). It answers the kind of what it found
+// (one of the pending kinds of PendingItems) with the close's own error, and nothing when the line passes. Close and
+// PendingItems both read the line through it, so that the list never says what the close would not.
+func (p *ConsolCostPool) lineRefusal(l PoolCostLine, basis CostBasis, houses []HouseFacts, gone bool) (string, error) {
+	cost, local := p.LineCost(l.No)
+	a, la, ok := p.SharesOfLine(l.No)
+	switch {
+	case !ok && (cost != 0 || local != 0):
+		return pendingLineNotApportioned, fmt.Errorf("%w: cost line %d is not apportioned", ErrPoolNotClosable, l.No)
+	case !ok:
+		return "", nil
+	case la.Amount != cost || la.Local != local:
+		return pendingLineNotApportioned, fmt.Errorf("%w: cost line %d was apportioned at %d (%d local); its final cost is %d (%d local)", ErrPoolNotClosable, l.No, la.Amount,
+			la.Local, cost, local)
+	case la.ToAllocate != 0 || la.ToAllocateLocal != 0:
+		return pendingToBeAllocated, fmt.Errorf("%w: cost line %d has %d to be allocated, as no house of the consolidation is live; add cargo and apportion the line again, or "+
+			"attribute it as a loss or an exception cost of a house that left, or cancel the consolidation and retain it", ErrPoolNotClosable, l.No, la.ToAllocate)
+	case len(formerSharesOf(la, basis)) > 0:
+		return pendingFormerShare, fmt.Errorf("%w: cost line %d holds a former share of house %s that left the consolidation and that nobody has attributed; attribute it by "+
+			"apportioning the line again with its loss and its exception cost", ErrPoolNotClosable, l.No, formerSharesOf(la, basis)[0].ShipmentID)
+	case la.Method == MethodRetained && !gone && (cost != 0 || local != 0):
+		return pendingLineNotOnBasis, fmt.Errorf("%w: cost line %d is retained on the consolidation while PHY reports houses on it", ErrPoolNotClosable, l.No)
+	case cost == 0 && local == 0, gone:
+		return "", nil // every share is zero, or no basis is left to compare
+	case a.Stage != BasisActual || len(la.Shares) != len(houses) || !usedLoaded(la.Shares, houses):
+		return pendingLineNotOnBasis, fmt.Errorf("%w: cost line %d is not apportioned on the current loaded basis", ErrPoolNotClosable, l.No)
+	}
+	var taking []HouseFacts // the houses the apportionment used
+	for i, h := range houses {
+		if la.Shares[i].ShipmentID != h.ShipmentID {
+			return pendingLineNotOnBasis, fmt.Errorf("%w: cost line %d is not apportioned on the current loaded basis (house %s)", ErrPoolNotClosable, l.No, h.ShipmentID)
+		}
+		if la.Shares[i].Used {
+			taking = append(taking, h)
+		}
+	}
+	var quantities []int64
+	var unit string
+	if la.Method == MethodRevenue {
+		// A house the jobs do not answer cannot be compared, and counts as changed. No command reaches this: a used
+		// share is on an open job, and the commit trigger check_job_pool_shares_at_commit (fin/000012) refuses
+		// cancelling a job that holds a current used share, so the open jobs of the houses that take part are always
+		// there. It is kept as a safeguard, so that a close never passes a house it could not compare.
+		for _, s := range la.Shares {
+			if now, known := p.revenue[s.ShipmentID]; s.Used && (!known || s.Quantity != now[l.ChargeCode] || s.Unit != UnitRevenueMinor) {
+				return pendingLineNotOnBasis, fmt.Errorf("%w: cost line %d: the houses' revenue under charge code %s has changed since it was apportioned (house %s); "+
+					"apportion it again", ErrPoolNotClosable, l.No, l.ChargeCode, s.ShipmentID)
+			}
+		}
+	} else if la.Method != MethodManual {
+		var err error
+		if quantities, unit, err = methodQuantities(la.Method, p.state.Mode, BasisActual, taking, basis.LoadUnits); err != nil {
+			return pendingLineNotOnBasis, fmt.Errorf("%w: cost line %d: %w", ErrPoolNotClosable, l.No, err)
+		}
+	}
+	k := 0 // the next house used
+	for _, s := range la.Shares {
+		if !s.Used {
+			continue // compared for its presence only
+		}
+		if quantities != nil && (s.Quantity != quantities[k] || s.Unit != unit) {
+			return pendingLineNotOnBasis, fmt.Errorf("%w: cost line %d is not apportioned on the current loaded basis (house %s)", ErrPoolNotClosable, l.No, s.ShipmentID)
+		}
+		k++
+	}
+	return "", nil
 }
 
 // usedLoaded tells that every house a line's shares used has loaded packs on PHY's current basis (a share is read

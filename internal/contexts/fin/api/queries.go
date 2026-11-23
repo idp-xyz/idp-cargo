@@ -788,6 +788,157 @@ type (
 	GetConsolProfit   struct{ TenantID, ConsolidationID string }
 )
 
+// FIN V2.94: what a cost pool still needs, and what a preview would change before it is submitted.
+
+// Who acts on a pending item, and its kinds, in the order the list gives them.
+const (
+	ActorFinance    = "FINANCE"
+	ActorOperations = "OPERATIONS"
+
+	PendingInWork             = "IN_WORK"
+	PendingFormerSharePending = "FORMER_SHARE_PENDING"
+	PendingToBeAllocated      = "TO_BE_ALLOCATED"
+	PendingExceptionCause     = "EXCEPTION_CAUSE_PENDING"
+	PendingReopenToAttribute  = "REOPEN_TO_ATTRIBUTE"
+	PendingLineNotApportioned = "LINE_NOT_APPORTIONED"
+	PendingLineNotOnBasis     = "LINE_NOT_ON_CURRENT_BASIS"
+	PendingCostNotFinal       = "COST_NOT_FINAL"
+	PendingInvoiceHeld        = "INVOICE_HELD"
+)
+
+// GetConsolCostPoolPendingItems lists what a pool needs. It is read-only and reads the pool and PHY's basis outside any
+// transaction, as the pool's other queries do; when PHY does not answer it fails and lists nothing (an empty list would
+// say that nothing is pending). An unknown pool yields ErrNotFound.
+type GetConsolCostPoolPendingItems struct{ TenantID, PoolID string }
+
+// PoolPendingItem is one pending item of a pool, in the order of the list (by kind, line, house). LineNo, ShipmentID
+// and UnitNo say where it applies (zero or empty when it applies to no line, house or container); Amount and
+// AmountLocal are the amount it concerns in the line's currency and in the functional currency (zero values when it
+// concerns none); Message says what to do next and whom to ask; Actor is FINANCE or OPERATIONS.
+type PoolPendingItem struct {
+	Kind        string
+	LineNo      int
+	ShipmentID  string
+	UnitNo      int
+	Amount      kernel.Money
+	AmountLocal kernel.Money
+	Message     string
+	Actor       string
+}
+
+// GetConsolCostPreviewEffect asks what submitting a stored preview would change. It is read-only, needs no particular
+// person and changes nothing; it reads the pool, PHY's basis and the houses' open jobs outside FIN's transactions. An
+// unknown pool or preview yields ErrNotFound.
+type GetConsolCostPreviewEffect struct {
+	TenantID, PoolID string
+	PreviewNo        int
+}
+
+// PreviewLineEffect is one line of the preview: its cost in force now and in the preview and what the preview divides
+// it into. Conserved says whether the shares, the losses, the exception costs, the amount to be allocated and what is
+// retained sum to the preview's cost, in the line's currency and in the functional currency: a figure shown, not a
+// refusal. CostChanged says that the line's cost now is not the one the preview divided.
+type PreviewLineEffect struct {
+	LineNo      int
+	Method      string
+	Reason      string
+	CostNow     kernel.Money
+	Cost        kernel.Money
+	CostChanged bool
+	Shares      kernel.Money
+	Losses      kernel.Money
+	Exceptions  kernel.Money
+	ToAllocate  kernel.Money
+	// ToAllocateNow is what the line in force now has to be allocated, to compare with ToAllocate (the preview's).
+	ToAllocateNow kernel.Money
+	Retained      kernel.Money
+	Conserved     bool
+}
+
+// PreviewHouseEffect is one house's amount on one line: in force now (kind SHARE, FORMER_SHARE_PENDING, LOSS or NONE)
+// and in the preview (SHARE, LOSS or NONE), the difference, and the change to the house's job profit if the preview is
+// submitted, in the functional currency: a share or a loss lowers the profit by its amount, a former share pending is
+// not in it, so attributing it a loss lowers it by the loss and attributing it nothing leaves it.
+type PreviewHouseEffect struct {
+	LineNo          int
+	ShipmentID      string
+	JobID           string
+	Live            bool
+	Former          bool
+	NowKind         string
+	Now             kernel.Money
+	NowLocal        kernel.Money
+	PreviewKind     string
+	Preview         kernel.Money
+	PreviewLocal    kernel.Money
+	Difference      kernel.Money
+	DifferenceLocal kernel.Money
+	ProfitChange    kernel.Money
+}
+
+// PreviewHouseTotal is the change to one house's job profit over every line of the preview.
+type PreviewHouseTotal struct {
+	ShipmentID   string
+	JobID        string
+	ProfitChange kernel.Money
+}
+
+// PreviewExceptionEffect is the exception cost of one party on one line before and after, in the line's currency and in
+// the functional currency (party PENDING: the cause is not established yet).
+type PreviewExceptionEffect struct {
+	LineNo      int
+	Party       string
+	Before      kernel.Money
+	After       kernel.Money
+	BeforeLocal kernel.Money
+	AfterLocal  kernel.Money
+}
+
+// PreviewReason is why a house's figure changes: how and when its place in the consolidation ended and the operator's
+// reason (PHY's former house), and what the preview's attribution says (party, reference, voucher, reason, and whether
+// it only carries an attribution in force).
+type PreviewReason struct {
+	LineNo          int
+	ShipmentID      string
+	Former          bool
+	End             string // DETACHED, TRANSFERRED or SHIPMENT_CANCELLED
+	EndReason       string
+	EndedBy         string
+	EndedAt         time.Time
+	TransferredTo   string
+	Attributed      bool
+	Party           string
+	PartyReference  string
+	Voucher         string
+	AttributionNote string
+	Carried         bool
+}
+
+// PreviewEffect is what submitting a stored preview would change against the apportionment in force of each of its
+// lines. Current is whether the submission would accept the preview now (the facts it was computed on are unchanged)
+// and Changes names what differs when it is not (up to five facts, then "and N more"); a preview already submitted
+// (SubmittedAs, the apportionment that took it) is not Current and has no Changes. InWork says that PHY reads a
+// container in rework, which a submission refuses. The other refusals of a submission are not told here.
+type PreviewEffect struct {
+	PreviewNo   int
+	Stage       string
+	PreviewedBy string
+	PreviewedAt time.Time
+	SubmittedAs int
+	Current     bool
+	Changes     []string
+	InWork      bool
+	// PoolClosed says that the pool is CLOSED, which a submission refuses: the preview is not Current, and WayOut says
+	// what to do first (reopen the pool with a reason).
+	PoolClosed  bool
+	WayOut      string
+	Lines       []PreviewLineEffect
+	Houses      []PreviewHouseEffect
+	HouseTotals []PreviewHouseTotal
+	Exceptions  []PreviewExceptionEffect
+	Reasons     []PreviewReason
+}
+
 // Queries is FIN's read side. Unknown policies, jobs, accounts, profiles and notes yield ErrNotFound.
 type Queries interface {
 	GetFinancePolicy(ctx context.Context, q GetFinancePolicy) (FinancePolicy, error)
@@ -805,6 +956,8 @@ type Queries interface {
 	GetDebtorStatement(ctx context.Context, q GetDebtorStatement) (DebtorStatement, error)
 	GetConsolCostPool(ctx context.Context, q GetConsolCostPool) (ConsolCostPool, error)
 	GetConsolProfit(ctx context.Context, q GetConsolProfit) (ConsolProfit, error)
+	GetConsolCostPoolPendingItems(ctx context.Context, q GetConsolCostPoolPendingItems) ([]PoolPendingItem, error)
+	GetConsolCostPreviewEffect(ctx context.Context, q GetConsolCostPreviewEffect) (PreviewEffect, error)
 	GetCreditorInvoice(ctx context.Context, q GetCreditorInvoice) (CreditorInvoice, error)
 	ListCreditorInvoices(ctx context.Context, q ListCreditorInvoices) ([]CreditorInvoice, error)
 	ListOpenAccruals(ctx context.Context, q ListOpenAccruals) ([]OpenAccrual, error)

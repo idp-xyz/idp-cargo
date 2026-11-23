@@ -62,15 +62,20 @@ func inWork(basis CostBasis) error {
 	}
 	var names []string
 	for _, no := range units {
-		name := fmt.Sprintf("load unit %d", no)
-		for _, l := range basis.PackingLists {
-			if l.UnitNo == no && l.ExecutionID != "" {
-				name += fmt.Sprintf(" (stuffing %s)", l.ExecutionID)
-			}
-		}
-		names = append(names, name)
+		names = append(names, unitName(basis, no))
 	}
 	return fmt.Errorf("%w: %s in rework", ErrPoolInWork, strings.Join(names, ", "))
+}
+
+// unitName names a load unit of the basis for a message, with its stuffing when PHY gives it a packing list.
+func unitName(basis CostBasis, no int) string {
+	name := fmt.Sprintf("load unit %d", no)
+	for _, l := range basis.PackingLists {
+		if l.UnitNo == no && l.ExecutionID != "" {
+			name += fmt.Sprintf(" (stuffing %s)", l.ExecutionID)
+		}
+	}
+	return name
 }
 
 // Preview computes an apportionment of the named lines as Apportion did before V2.91, against PHY's cost basis and the
