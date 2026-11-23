@@ -106,6 +106,10 @@ type House struct {
 	ShipmentID         phy.ShipmentID
 	MembershipRevision int64
 	Entry              phy.Entry
+	// Reversal is, when Unloaded, the latest rework that unloaded the house according to the reversal lines PHY entered
+	// since the house's entry began. Only the cost basis reads it (V2.95).
+	Reversal phy.ReworkRef
+	Unloaded bool
 }
 
 // FormerHouse is a house whose latest entry in a consolidation ended by a detach, a transfer or the shipment's

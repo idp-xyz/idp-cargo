@@ -188,8 +188,13 @@ func (r Reads) CostBasis(ctx context.Context, tenant phy.TenantID, id phy.Consol
 		if executions, err = r.Executions.ByConsolidation(txCtx, tenant, id); err != nil {
 			return err
 		}
-		for _, h := range houses {
+		for i, h := range houses {
 			if lots[h.ShipmentID], err = r.Lots.ByShipment(txCtx, tenant, h.ShipmentID); err != nil {
+				return err
+			}
+			// The rework that last unloaded a live house since its entry began, by the reads that name it for a house
+			// that left (V2.95): in the same snapshot.
+			if houses[i].Reversal, houses[i].Unloaded, err = r.Executions.HouseReworkSince(txCtx, tenant, id, h.ShipmentID, h.Entry.EnteredAt); err != nil {
 				return err
 			}
 		}

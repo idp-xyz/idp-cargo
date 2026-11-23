@@ -807,9 +807,24 @@ type HouseCostBasis struct {
 	LoadedGrossWeight  kernel.Quantity
 	LoadedVolume       kernel.Quantity
 	LastLoadedAt       time.Time // business time of the latest live load line
+	// UnloadedBy is the rework that last unloaded the house from a container of this consolidation since its latest
+	// entry began (V2.95), read in the basis's snapshot with the reversal lines that name the rework of a former house.
+	// It is the zero value (ReworkNo 0) when no rework unloaded it. It says nothing of where the house is loaded now: a
+	// house unloaded and loaded again in another container has it and has Units. It is part of no digest and does not
+	// change Revision.
+	UnloadedBy HouseUnloadedBy
 	// Units is what of the house is loaded in each load unit, in unit order: one entry for every unit whose stuffing
 	// holds live packs of the house. A house loaded only by tenders has none.
 	Units []HouseUnitLoad
+}
+
+// HouseUnloadedBy is a rework that unloaded a live house: the stuffing (ExecutionID), its number, the unit of the
+// stuffing and who asked for it, the last three empty when the stuffing is not found among the consolidation's.
+type HouseUnloadedBy struct {
+	ExecutionID string
+	ReworkNo    int
+	UnitNo      int
+	AskedBy     string
 }
 
 // HouseUnitLoad is what of a house is loaded in one load unit: the live packs of its lines in the unit's stuffing, with
