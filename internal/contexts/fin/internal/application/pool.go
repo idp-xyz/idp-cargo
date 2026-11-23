@@ -300,3 +300,26 @@ func (d Deps) SubmitPoolApportionment(ctx context.Context, c Command, previewNo 
 		return Receipt{Version: len(pool.State().Apportionments)}, nil
 	})
 }
+
+// ReadOpenJobs is OpenJobsFor without its locks, for a query: the OPEN job of the legal entity of each shipment that
+// has one, and the revenue by charge code at the estimate rate of each (FreightJob.EstimatedRevenue). It runs in the
+// caller's read-only transaction. What it answers is what a submission would read again when nothing changes in
+// between.
+func (d Deps) ReadOpenJobs(ctx context.Context, tenant fin.TenantID, legalEntity string, shipments []string) (map[string]string, map[string]map[string]int64, error) {
+	if d.Jobs == nil {
+		return nil, nil, ErrMissingDependency
+	}
+	jobs, revenue := map[string]string{}, map[string]map[string]int64{}
+	for _, shipment := range shipments {
+		list, _, err := d.Jobs.ForShipment(ctx, tenant, shipment)
+		if err != nil {
+			return nil, nil, err
+		}
+		for _, j := range list {
+			if st := j.State(); st.LegalEntityID == legalEntity && st.State == fin.JobOpen {
+				jobs[shipment], revenue[shipment] = st.JobID, j.EstimatedRevenue()
+			}
+		}
+	}
+	return jobs, revenue, nil
+}
