@@ -1060,9 +1060,11 @@ type FinSettingsChange struct {
 	Version      int
 	InForceAt    time.Time
 	AutoApproved bool
-	CancelledBy  string
-	CancelledAt  time.Time
-	CancelReason string
+	// RiskAcknowledgement is the written acknowledgement of a single administrator who approved their own loosening.
+	RiskAcknowledgement string
+	CancelledBy         string
+	CancelledAt         time.Time
+	CancelReason        string
 	// CancelledRole is the permission the canceller acted under: CONFIGURER (ConfigureSettings) or APPROVER (ApproveSettings).
 	CancelledRole string
 }
@@ -1105,6 +1107,8 @@ type FinReferenceItem struct {
 
 // FinSettingsCatalogue is the catalogue, and the same as a Markdown table (for the manual). Reference lists E1 to E4.
 type FinSettingsCatalogue struct {
+	// Version names the catalogue's content (its items, their values in order and defaults, scopes and controls).
+	Version   string
 	Items     []FinSettingItem
 	Reference []FinReferenceItem
 	Table     string
@@ -1353,8 +1357,83 @@ type Queries interface {
 	GetFinSettings(ctx context.Context, q GetFinSettings) (FinSettings, error)
 	ListFinSettingsChanges(ctx context.Context, q ListFinSettingsChanges) ([]FinSettingsChange, error)
 	GetFinSettingsCatalogue(ctx context.Context, q GetFinSettingsCatalogue) (FinSettingsCatalogue, error)
+	GetFinExceptionReport(ctx context.Context, q GetFinExceptionReport) (FinExceptionReport, error)
 	GetFinSettingsChangeImpact(ctx context.Context, q GetFinSettingsChangeImpact) (FinSettingsChangeImpact, error)
 	ListJobProfits(ctx context.Context, q ListJobProfits) (JobProfitPage, error)
 	GetCostReviewRequest(ctx context.Context, q GetCostReviewRequest) (CostReviewRequest, error)
 	ListCostReviewRequests(ctx context.Context, q ListCostReviewRequests) (CostReviewPage, error)
+}
+
+// GetFinExceptionReport is FIN's part of the exception report of a tenant for the period From (included) to To
+// (excluded): the approved legal-entity exceptions looser than the company and the items in force now looser than the
+// standard profile, with who proposed and who approved each, the loosenings that a single administrator approved
+// themselves with their acknowledgements and the declarations, the actors who proposed or approved a change set in the
+// period, and what each actor submitted or confirmed in FIN in it. Read-only; the actor needs the permission
+// ApproveSettings, granted by name only.
+type GetFinExceptionReport struct {
+	TenantID string
+	ActorID  string
+	From     time.Time
+	To       time.Time
+}
+
+// FinExceptionLine is an entry of a scope looser than the company's value (an exception) or than the standard profile's.
+type FinExceptionLine struct {
+	ScopeKind string
+	ScopeID   string
+	Key       string
+	Value     string
+	// ThresholdMinor is the parameter of the value, in the legal entity's functional currency.
+	ThresholdMinor *int64
+	// ThanValue is the company's value for an exception, the standard profile's for a looser item.
+	ThanValue  string
+	ChangeID   string
+	ProposedBy string
+	ApprovedBy string
+}
+
+// FinSelfApproval is a loosening that its own proposer approved as the single administrator.
+type FinSelfApproval struct {
+	ChangeID        string
+	ApprovedBy      string
+	ApprovedAt      time.Time
+	Acknowledgement string
+	Entries         []FinSettingEntryView
+}
+
+// FinSettingsChanger is an actor who proposed or approved change sets in the period.
+type FinSettingsChanger struct {
+	ActorID  string
+	Proposed int
+	Approved int
+}
+
+// FinActorWork is what an actor did in FIN in the period: the apportionments of consolidation cost pools they
+// submitted, and of those the ones that state an attribution of their own, which is to confirm it.
+type FinActorWork struct {
+	ActorID   string
+	Submitted int
+	Confirmed int
+}
+
+// FinSingleAdministratorDeclaration is a declaration of a single administrator.
+type FinSingleAdministratorDeclaration struct {
+	OnboardingID string
+	ProposedBy   string
+	ConfirmedBy  string
+	DeclaredAt   time.Time
+}
+
+// FinExceptionReport is FIN's part of the exception report.
+type FinExceptionReport struct {
+	TenantID           string
+	From               time.Time
+	To                 time.Time
+	AsOf               time.Time
+	Exceptions         []FinExceptionLine
+	LooserThanStandard []FinExceptionLine
+	SelfApproved       []FinSelfApproval
+	Declarations       []FinSingleAdministratorDeclaration
+	Changers           []FinSettingsChanger
+	Work               []FinActorWork
 }

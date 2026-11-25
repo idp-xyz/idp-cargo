@@ -2,6 +2,7 @@ package application
 
 import (
 	"fmt"
+	"time"
 
 	fin "go.idp.xyz/idp-cargo/internal/contexts/fin/internal/domain"
 	"go.idp.xyz/idp-cargo/internal/foundation/settings"
@@ -17,6 +18,7 @@ const (
 	eventSettingsApproved  = "FinSettingsChangeApproved.v1"
 	eventSettingsCancelled = "FinSettingsChangeCancelled.v1"
 	eventSettingsRefused   = "FinSettingsChangeRefused.v1"
+	eventDeclared          = "FinSingleAdministratorDeclared.v1"
 )
 
 // Keys, and the values the rules of the cross-item check and the later steps name.
@@ -171,3 +173,8 @@ func SettingsRefused(tenant fin.TenantID, id string, c settings.Cancellation) *S
 
 func (s *SettingsEvents) Pending() []fin.Event { return append([]fin.Event(nil), s.events...) }
 func (s *SettingsEvents) Acknowledge()         { s.events = nil }
+
+// SingleAdministratorDeclared is the event of a declaration, with the onboarding as its subject.
+func SingleAdministratorDeclared(tenant fin.TenantID, onboarding string, at time.Time) *SettingsEvents {
+	return &SettingsEvents{events: []fin.Event{{Type: eventDeclared, At: at.UTC(), TenantID: tenant, SubjectID: onboarding}}}
+}

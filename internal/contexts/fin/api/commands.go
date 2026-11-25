@@ -771,11 +771,30 @@ type ProposeFinSettingsChange struct {
 // (SETTINGS_SAME_ACTOR: have another approver approve it) and needs the permission ApproveSettings, granted by name
 // only. The change set takes effect at its effective time, or at the approval when that is later. Receipt.Version is
 // the settings version it made.
+//
+// A tenant whose onboarding declared a single administrator (DeclareFinSingleAdministrator) may have a loosening
+// approved by its own proposer, but only with a written risk acknowledgement of 1 to 2000 characters in
+// RiskAcknowledgement (SETTINGS_ACKNOWLEDGEMENT: give it); the acknowledgement is stored with the approval and listed in
+// the exception report. Another approver gives none, and without the declaration the proposer is refused as before.
 type ApproveFinSettingsChange struct {
-	CommandID string
-	TenantID  string
-	ActorID   string
-	ChangeID  string
+	CommandID           string
+	TenantID            string
+	ActorID             string
+	ChangeID            string
+	RiskAcknowledgement string `json:",omitempty"`
+}
+
+// DeclareFinSingleAdministrator records that the tenant declared a single administrator in the onboarding OnboardingID,
+// proposed by ProposedBy and confirmed by ActorID, the customer's owner (two different people). It is the platform's
+// onboarding that calls it, once the owner has confirmed; it needs the permission DeclareSingleAdministrator, granted by
+// name only and not by ConfigureSettings, so that a configurer alone cannot make it. It is recorded once for each
+// onboarding, never withdrawn, and idempotent by command id. Receipt.SubjectID is the onboarding.
+type DeclareFinSingleAdministrator struct {
+	CommandID    string
+	TenantID     string
+	ActorID      string
+	OnboardingID string
+	ProposedBy   string
 }
 
 // RefuseFinSettingsChange is an approver's refusal of a change set that waits for approval, with a reason: it is
@@ -894,6 +913,7 @@ type Commands interface {
 	ApproveFinSettingsChange(ctx context.Context, cmd ApproveFinSettingsChange) (Receipt, error)
 	CancelFinSettingsChange(ctx context.Context, cmd CancelFinSettingsChange) (Receipt, error)
 	RefuseFinSettingsChange(ctx context.Context, cmd RefuseFinSettingsChange) (Receipt, error)
+	DeclareFinSingleAdministrator(ctx context.Context, cmd DeclareFinSingleAdministrator) (Receipt, error)
 	RequestCostReview(ctx context.Context, cmd RequestCostReview) (Receipt, error)
 	ResolveCostReview(ctx context.Context, cmd ResolveCostReview) (Receipt, error)
 }
@@ -960,6 +980,8 @@ const (
 	// controls work, or approve it.
 	ActionConfigureSettings = "ConfigureSettings"
 	ActionApproveSettings   = "ApproveSettings"
+	// ActionDeclareSingleAdministrator (V2.102) is granted by name only too; the platform's onboarding holds it.
+	ActionDeclareSingleAdministrator = "DeclareSingleAdministrator"
 
 	// ReadProfit reads the profit queries and the cost review requests; RequestCostReview and ResolveCostReview are the
 	// two commands of the cost review. "fin:*" grants all three: none changes an amount or how a control works, and the

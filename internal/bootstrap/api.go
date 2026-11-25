@@ -8,6 +8,7 @@ import (
 	"time"
 
 	finapi "go.idp.xyz/idp-cargo/internal/contexts/fin/api"
+	orgapi "go.idp.xyz/idp-cargo/internal/contexts/org/api"
 	seaapi "go.idp.xyz/idp-cargo/internal/contexts/sea/api"
 	"go.idp.xyz/idp-cargo/internal/foundation/identity"
 	transport "go.idp.xyz/idp-cargo/internal/transport/http"
@@ -104,7 +105,14 @@ func (permissions) AuthorizeRoleApproval(ctx context.Context, tenant, actor, _, 
 	return identity.Authorize(ctx, "org", tenant, actor, "ApproveRole")
 }
 
+// AuthorizePartyAction covers ORG's party actions. The two actions of customer onboarding (V2.102), "org:ProposeOnboarding"
+// (the implementation consultant's proposal) and "org:ConfirmOnboarding" (the customer's owner's confirmation, which also
+// records what each module made of it), are granted by name only: "org:*" and "*" grant neither, so that a general
+// grant never lets a person choose how a customer's controls are set or confirm that choice.
 func (permissions) AuthorizePartyAction(ctx context.Context, tenant, actor, action, _ string) error {
+	if action == orgapi.ActionProposeOnboarding || action == orgapi.ActionConfirmOnboarding {
+		return identity.AuthorizeNamed(ctx, "org", tenant, actor, action)
+	}
 	return identity.Authorize(ctx, "org", tenant, actor, action)
 }
 
@@ -139,7 +147,7 @@ func (permissions) AuthorizeBookingAction(ctx context.Context, tenant, actor, ac
 func (permissions) AuthorizeSeaAction(ctx context.Context, tenant, actor, action, _ string) error {
 	switch action {
 	case seaapi.ActionReadVgmSignatory, seaapi.ActionReadVgmSignatoryLog, seaapi.ActionConfigureSettings, seaapi.ActionApproveSettings,
-		seaapi.ActionSuperviseCarrierConflicts:
+		seaapi.ActionSuperviseCarrierConflicts, seaapi.ActionDeclareSingleAdministrator:
 		return identity.AuthorizeNamed(ctx, "sea", tenant, actor, action)
 	}
 	return identity.Authorize(ctx, "sea", tenant, actor, action)
@@ -148,9 +156,9 @@ func (permissions) AuthorizeSeaAction(ctx context.Context, tenant, actor, action
 // AuthorizeFinAction covers FIN's commands. The two actions of the settings, "fin:ConfigureSettings" (propose and
 // cancel a change) and "fin:ApproveSettings" (approve one), are granted by name only: "fin:*" and "*" grant neither, so
 // that a general grant never lets a person change how FIN's controls work or approve the change, as with a VGM
-// signatory's name above. That the approver is not the proposer is FIN's own rule, not a permission.
+// signatory's name above; so is "fin:DeclareSingleAdministrator" (V2.102), which only the platform's onboarding holds. That the approver is not the proposer is FIN's own rule, not a permission.
 func (permissions) AuthorizeFinAction(ctx context.Context, tenant, actor, action, _ string) error {
-	if action == finapi.ActionConfigureSettings || action == finapi.ActionApproveSettings {
+	if action == finapi.ActionConfigureSettings || action == finapi.ActionApproveSettings || action == finapi.ActionDeclareSingleAdministrator {
 		return identity.AuthorizeNamed(ctx, "fin", tenant, actor, action)
 	}
 	return identity.Authorize(ctx, "fin", tenant, actor, action)

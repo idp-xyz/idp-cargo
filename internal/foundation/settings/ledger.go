@@ -38,6 +38,7 @@ const (
 	ErrClock           kind = "SETTINGS_CLOCK"
 	ErrClockSkew       kind = "SETTINGS_CLOCK_SKEW"
 	ErrRefusedChange   kind = "SETTINGS_REFUSED"
+	ErrAcknowledgement kind = "SETTINGS_ACKNOWLEDGEMENT"
 )
 
 // Refuse is a refusal of the given kind; a context's cross-item Rule answers one of kind ErrRule.
@@ -64,7 +65,14 @@ type Approval struct {
 	Version int
 	InForce time.Time
 	Auto    bool
+	// Acknowledgement is the written risk acknowledgement of a loosening that its own proposer approved, the single
+	// administrator of a tenant that declared one (V2.102); empty for every other approval.
+	Acknowledgement string
 }
+
+// SelfApproved says that the approval is of a loosening by its own proposer, with an acknowledgement, as a single
+// administrator's: not the automatic approval of a change set that only tightens, which has none.
+func (a Approval) SelfApproved() bool { return !a.Auto && a.Acknowledgement != "" }
 
 // Cancellation withdraws a change set before it is in force.
 type Cancellation struct {
@@ -131,6 +139,8 @@ func (c ChangeSet) Status(now time.Time) Status {
 const (
 	MaxEntries = 64
 	MaxReason  = 500
+	// MaxAcknowledgement is the length of a single administrator's risk acknowledgement, in characters.
+	MaxAcknowledgement = 2000
 	// MaxAhead is how far after the proposal a change set may take effect: a change set far ahead sits in every
 	// check of the ones after it.
 	MaxAhead = 366 * 24 * time.Hour
@@ -596,7 +606,22 @@ func (l *Ledger) Propose(cat *Catalogue, p Proposal) (ChangeSet, error) {
 // system's time, with the next version number. The configuration is checked again, since the change sets in force may
 // have moved since the proposal.
 func (l *Ledger) Approve(cat *Catalogue, id, by string, at time.Time) (Approval, error) {
+	return l.ApproveAs(cat, id, by, at, Own{})
+}
+
+// Own is what lets a proposer approve their own change set: the tenant declared a single administrator (the caller
+// reads that from its own records, never from the command) and the approval carries a written risk acknowledgement.
+type Own struct {
+	Declared        bool
+	Acknowledgement string
+}
+
+// ApproveAs is Approve, with the single administrator's way (V2.102): the proposer approves their own loosening only
+// when the tenant declared a single administrator and the approval carries an acknowledgement of 1 to 2000
+// characters. Another approver gives no acknowledgement.
+func (l *Ledger) ApproveAs(cat *Catalogue, id, by string, at time.Time, own Own) (Approval, error) {
 	cs, ok := l.Find(id)
+	ack := strings.TrimSpace(own.Acknowledgement)
 	switch {
 	case !ok:
 		return Approval{}, Refuse(ErrUnknownChange, "there is no change set %s; list the tenant's change sets (ListFinSettingsChanges) for the IDs", id)
@@ -606,13 +631,27 @@ func (l *Ledger) Approve(cat *Catalogue, id, by string, at time.Time) (Approval,
 		return Approval{}, Refuse(ErrAlreadyApproved, "change set %s is approved already (version %d); there is nothing more to do", id, cs.Approval.Version)
 	case strings.TrimSpace(by) == "" || len(by) > 128 || at.IsZero() || at.Before(cs.At):
 		return Approval{}, Refuse(ErrInvalid, "an approval names its actor (1 to 128 bytes) and a time not before the proposal; try the command again")
-	case by == cs.By:
+	case by != cs.By && ack != "":
+		return Approval{}, Refuse(ErrAcknowledgement, "change set %s was proposed by %s; a risk acknowledgement is for a single administrator approving their own "+
+			"proposal only, so leave it out", id, cs.By)
+	case by == cs.By && !own.Declared && ack != "":
+		return Approval{}, Refuse(ErrSameActor, "change set %s was proposed by %s, who may not approve it, and this tenant has not declared a single administrator "+
+			"(the customer's owner declares one when confirming an onboarding); have another approver approve it", id, by)
+	case by == cs.By && !own.Declared:
 		return Approval{}, Refuse(ErrSameActor, "change set %s was proposed by %s, who may not approve it; have another approver approve it", id, by)
+	case by == cs.By && utf8.RuneCountInString(ack) < 1:
+		return Approval{}, Refuse(ErrAcknowledgement, "this tenant declared a single administrator, who may approve their own loosening (change set %s) with a "+
+			"written risk acknowledgement of 1 to %d characters; give it, or have another approver approve the change set", id, MaxAcknowledgement)
+	case by == cs.By && utf8.RuneCountInString(ack) > MaxAcknowledgement:
+		return Approval{}, Refuse(ErrAcknowledgement, "the risk acknowledgement is 1 to %d characters; shorten it", MaxAcknowledgement)
 	}
 	if err := l.clockBehind(at); err != nil {
 		return Approval{}, err
 	}
 	a := Approval{By: by, At: at, Version: l.nextVersion(), InForce: cs.Effective}
+	if by == cs.By {
+		a.Acknowledgement = ack
+	}
 	if at.After(a.InForce) {
 		a.InForce = at
 	}

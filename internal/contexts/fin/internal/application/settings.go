@@ -148,6 +148,13 @@ func (d Deps) settingsChange(ctx context.Context, c Command) (*settings.Ledger, 
 
 // ApproveSettings approves a change set that waits for a second person: the approver is not its proposer.
 func (d Deps) ApproveSettings(ctx context.Context, c Command) (Receipt, error) {
+	return d.ApproveSettingsAs(ctx, c, "")
+}
+
+// ApproveSettingsAs is ApproveSettings with the single administrator's way (V2.102): the proposer of a loosening
+// approves it themselves, when the tenant declared a single administrator (read here, under the settings lock, from
+// FIN's own records) and the approval carries a risk acknowledgement.
+func (d Deps) ApproveSettingsAs(ctx context.Context, c Command, acknowledgement string) (Receipt, error) {
 	if d.Settings == nil {
 		return Receipt{}, ErrMissingDependency
 	}
@@ -160,7 +167,11 @@ func (d Deps) ApproveSettings(ctx context.Context, c Command) (Receipt, error) {
 		if err != nil {
 			return Receipt{}, nil, err
 		}
-		a, err := ledger.Approve(FinSettingsCatalogue(), c.Subject, c.Scope.ActorID, now)
+		declared, err := d.Settings.DeclarationsForWrite(txCtx, c.Scope.TenantID)
+		if err != nil {
+			return Receipt{}, nil, err
+		}
+		a, err := ledger.ApproveAs(FinSettingsCatalogue(), c.Subject, c.Scope.ActorID, now, settings.Own{Declared: len(declared) > 0, Acknowledgement: acknowledgement})
 		if err != nil {
 			return Receipt{}, nil, err
 		}
@@ -353,4 +364,61 @@ func ruleSettingsFrom(cfg settings.Config, version int) (fin.RuleSettings, error
 		rules.F1Threshold = *param
 	}
 	return rules, nil
+}
+
+// DeclareSingleAdministrator records that the tenant declared a single administrator in an onboarding, proposed by one
+// person and confirmed by another (the command's actor, the customer's owner), at FIN's clock under the settings lock.
+func (d Deps) DeclareSingleAdministrator(ctx context.Context, c Command, proposedBy string) (Receipt, error) {
+	if d.Settings == nil {
+		return Receipt{}, ErrMissingDependency
+	}
+	hash, _, stored, replayed, err := d.begin(ctx, c)
+	if err != nil || replayed {
+		return stored, err
+	}
+	return d.writeSettings(ctx, c, hash, func(txCtx context.Context, now time.Time) (Receipt, aggregate, error) {
+		if strings.TrimSpace(c.Subject) == "" || strings.TrimSpace(proposedBy) == "" || proposedBy == c.Scope.ActorID {
+			return Receipt{}, nil, fmt.Errorf("%w: a declaration names its onboarding and two different people, the consultant who proposed it and the owner who "+
+				"confirmed it; the platform's onboarding makes it, so ask its owners if you see this", fin.ErrInvalid)
+		}
+		declaration := settings.Declaration{OnboardingID: c.Subject, ProposedBy: proposedBy, ConfirmedBy: c.Scope.ActorID, At: now}
+		if err := d.Settings.InsertDeclaration(txCtx, c.Scope.TenantID, declaration); err != nil {
+			return Receipt{}, nil, err
+		}
+		return Receipt{SubjectID: c.Subject, NewRevision: 1}, SingleAdministratorDeclared(c.Scope.TenantID, c.Subject, now), nil
+	})
+}
+
+// ExceptionReportRead is FIN's part of the exception report, read in one snapshot: the ledger's report, the
+// declarations, and who did FIN's own work (submitted apportionments, confirmed attributions) in the period.
+type ExceptionReportRead struct {
+	At           time.Time
+	Report       settings.Report
+	Declarations []settings.Declaration
+	Work         []ActorWork
+}
+
+// ExceptionReport reads the tenant's ledger, declarations and work in one snapshot and answers the report for the
+// period from (included) to to (excluded), the exceptions and the items looser than the standard profile as of now.
+func (d Deps) ExceptionReport(ctx context.Context, tenant fin.TenantID, from, to time.Time) (ExceptionReportRead, error) {
+	if d.Settings == nil || d.Clock == nil {
+		return ExceptionReportRead{}, ErrMissingDependency
+	}
+	if tenant == "" || from.IsZero() || to.IsZero() || !to.After(from) {
+		return ExceptionReportRead{}, fmt.Errorf("%w: the report asks for a tenant and a period, from before to", ErrInvalidQuery)
+	}
+	out := ExceptionReportRead{At: d.Clock.Now().UTC().Truncate(time.Microsecond)}
+	err := d.Reader(ctx, func(txCtx context.Context) error {
+		ledger, err := d.Settings.Read(txCtx, tenant)
+		if err != nil {
+			return err
+		}
+		out.Report = ledger.ExceptionReport(FinSettingsCatalogue(), out.At, from.UTC(), to.UTC())
+		if out.Declarations, err = d.Settings.Declarations(txCtx, tenant); err != nil {
+			return err
+		}
+		out.Work, err = d.Settings.WorkActors(txCtx, tenant, from.UTC(), to.UTC())
+		return err
+	})
+	return out, err
 }

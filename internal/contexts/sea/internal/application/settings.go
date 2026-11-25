@@ -33,6 +33,11 @@ type SettingsStore interface {
 	InsertChange(ctx context.Context, tenant sea.TenantID, c settings.ChangeSet) error
 	InsertApproval(ctx context.Context, tenant sea.TenantID, id string, a settings.Approval) error
 	InsertCancellation(ctx context.Context, tenant sea.TenantID, id string, c settings.Cancellation) error
+	// Declarations lists the declarations of a single administrator in a query's snapshot, DeclarationsForWrite in a write
+	// transaction (under the settings lock); InsertDeclaration records one.
+	Declarations(ctx context.Context, tenant sea.TenantID) ([]settings.Declaration, error)
+	DeclarationsForWrite(ctx context.Context, tenant sea.TenantID) ([]settings.Declaration, error)
+	InsertDeclaration(ctx context.Context, tenant sea.TenantID, d settings.Declaration) error
 	// KnowsLegalEntity says whether SEA knows the legal entity: it has an HBL series or a movement.
 	KnowsLegalEntity(ctx context.Context, tenant sea.TenantID, legalEntity string) (bool, error)
 	// LegalEntities lists the legal entities SEA knows, in the order of their IDs.
@@ -193,6 +198,13 @@ func (d Deps) settingsChange(ctx context.Context, c Command) (*settings.Ledger, 
 
 // ApproveSettings approves a change set that waits for a second person: the approver is not its proposer.
 func (d Deps) ApproveSettings(ctx context.Context, c Command) (Receipt, error) {
+	return d.ApproveSettingsAs(ctx, c, "")
+}
+
+// ApproveSettingsAs is ApproveSettings with the single administrator's way (V2.102): the proposer of a loosening
+// approves it themselves, when the tenant declared a single administrator (read here, under the settings lock, from
+// SEA's own records) and the approval carries a risk acknowledgement.
+func (d Deps) ApproveSettingsAs(ctx context.Context, c Command, acknowledgement string) (Receipt, error) {
 	if d.Settings == nil {
 		return Receipt{}, ErrMissingDependency
 	}
@@ -205,7 +217,11 @@ func (d Deps) ApproveSettings(ctx context.Context, c Command) (Receipt, error) {
 		if err != nil {
 			return Receipt{}, nil, err
 		}
-		a, err := ledger.Approve(SeaSettingsCatalogue(), c.Subject, c.Scope.ActorID, now)
+		declared, err := d.Settings.DeclarationsForWrite(txCtx, c.Scope.TenantID)
+		if err != nil {
+			return Receipt{}, nil, err
+		}
+		a, err := ledger.ApproveAs(SeaSettingsCatalogue(), c.Subject, c.Scope.ActorID, now, settings.Own{Declared: len(declared) > 0, Acknowledgement: acknowledgement})
 		if err != nil {
 			return Receipt{}, nil, err
 		}
@@ -491,4 +507,56 @@ func (r Reads) openConflicts(txCtx context.Context, tenant sea.TenantID, legalEn
 		}
 	}
 	return out, nil
+}
+
+// DeclareSingleAdministrator records that the tenant declared a single administrator in an onboarding, proposed by one
+// person and confirmed by another (the command's actor, the customer's owner), at SEA's clock under the settings lock.
+func (d Deps) DeclareSingleAdministrator(ctx context.Context, c Command, proposedBy string) (Receipt, error) {
+	if d.Settings == nil {
+		return Receipt{}, ErrMissingDependency
+	}
+	hash, _, stored, replayed, err := d.begin(ctx, c)
+	if err != nil || replayed {
+		return stored, err
+	}
+	return d.writeSettings(ctx, c, hash, func(txCtx context.Context, now time.Time) (Receipt, aggregate, error) {
+		if strings.TrimSpace(c.Subject) == "" || strings.TrimSpace(proposedBy) == "" || proposedBy == c.Scope.ActorID {
+			return Receipt{}, nil, fmt.Errorf("%w: a declaration names its onboarding and two different people, the consultant who proposed it and the owner who "+
+				"confirmed it; the platform's onboarding makes it, so ask its owners if you see this", sea.ErrInvalidChange)
+		}
+		d1 := settings.Declaration{OnboardingID: c.Subject, ProposedBy: proposedBy, ConfirmedBy: c.Scope.ActorID, At: now}
+		if err := d.Settings.InsertDeclaration(txCtx, c.Scope.TenantID, d1); err != nil {
+			return Receipt{}, nil, err
+		}
+		return Receipt{SubjectID: c.Subject, NewRevision: 1}, SingleAdministratorDeclared(c.Scope.TenantID, c.Subject, now), nil
+	})
+}
+
+// ExceptionReportRead is SEA's part of the exception report, read in one snapshot.
+type ExceptionReportRead struct {
+	At           time.Time
+	Report       settings.Report
+	Declarations []settings.Declaration
+}
+
+// ExceptionReport reads the tenant's ledger and declarations in one snapshot and answers the report for the period
+// from (included) to to (excluded), the exceptions and the items looser than the standard profile as of now.
+func (r Reads) ExceptionReport(ctx context.Context, tenant sea.TenantID, from, to time.Time) (ExceptionReportRead, error) {
+	if r.Settings == nil || r.Clock == nil {
+		return ExceptionReportRead{}, ErrMissingDependency
+	}
+	if tenant == "" || from.IsZero() || to.IsZero() || !to.After(from) {
+		return ExceptionReportRead{}, fmt.Errorf("%w: the report asks for a tenant and a period, from before to", ErrInvalidQuery)
+	}
+	out := ExceptionReportRead{At: r.Clock.Now().UTC().Truncate(time.Microsecond)}
+	err := r.Tx.WithinTransaction(ctx, func(txCtx context.Context) error {
+		ledger, err := r.Settings.Read(txCtx, tenant)
+		if err != nil {
+			return err
+		}
+		out.Report = ledger.ExceptionReport(SeaSettingsCatalogue(), out.At, from.UTC(), to.UTC())
+		out.Declarations, err = r.Settings.Declarations(txCtx, tenant)
+		return err
+	})
+	return out, err
 }

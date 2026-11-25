@@ -397,6 +397,21 @@ type SettingsStore interface {
 	InsertChange(ctx context.Context, tenant fin.TenantID, c settings.ChangeSet) error
 	InsertApproval(ctx context.Context, tenant fin.TenantID, id string, a settings.Approval) error
 	InsertCancellation(ctx context.Context, tenant fin.TenantID, id string, c settings.Cancellation) error
+	// Declarations lists the declarations of a single administrator in a query's snapshot, DeclarationsForWrite in a write
+	// transaction (under the settings lock); InsertDeclaration records one.
+	Declarations(ctx context.Context, tenant fin.TenantID) ([]settings.Declaration, error)
+	DeclarationsForWrite(ctx context.Context, tenant fin.TenantID) ([]settings.Declaration, error)
+	InsertDeclaration(ctx context.Context, tenant fin.TenantID, d settings.Declaration) error
+	// WorkActors lists who submitted apportionments and stated attributions in a period (the exception report).
+	WorkActors(ctx context.Context, tenant fin.TenantID, from, to time.Time) ([]ActorWork, error)
+}
+
+// ActorWork is what an actor did in FIN in a period: the apportionments they submitted, and of those the ones that state
+// an attribution of their own, which is to confirm it.
+type ActorWork struct {
+	Actor     string
+	Submitted int
+	Confirmed int
 }
 
 // Deps are the ports every FIN command uses.

@@ -51,7 +51,7 @@ func (s SettingsStore) LockShared(ctx context.Context, tenant sea.TenantID) erro
 
 func readSettings(ctx context.Context, q bentopg.Querier, tenant sea.TenantID) (*settings.Ledger, error) {
 	rows, err := q.Query(ctx, `SELECT c.change_id,c.reason,c.proposed_by,c.proposed_at,c.effective_at,c.loosening,
-        a.approved_by,a.approved_at,a.version_no,a.in_force_at,a.auto, x.cancelled_by,x.cancelled_at,x.reason,x.kind,x.cancelled_role
+        a.approved_by,a.approved_at,a.version_no,a.in_force_at,a.auto,a.risk_acknowledgement, x.cancelled_by,x.cancelled_at,x.reason,x.kind,x.cancelled_role
       FROM cargo_sea.settings_change c
       LEFT JOIN cargo_sea.settings_approval a ON a.tenant_id=c.tenant_id AND a.change_id=c.change_id
       LEFT JOIN cargo_sea.settings_cancellation x ON x.tenant_id=c.tenant_id AND x.change_id=c.change_id
@@ -63,17 +63,20 @@ func readSettings(ctx context.Context, q bentopg.Querier, tenant sea.TenantID) (
 	var sets []settings.ChangeSet
 	for rows.Next() {
 		var c settings.ChangeSet
-		var approvedBy, cancelledBy, cancelReason, cancelKind, cancelRole *string
+		var approvedBy, acknowledgement, cancelledBy, cancelReason, cancelKind, cancelRole *string
 		var approvedAt, inForce, cancelledAt *time.Time
 		var version *int
 		var auto *bool
-		if err = rows.Scan(&c.ID, &c.Reason, &c.By, &c.At, &c.Effective, &c.Loosening, &approvedBy, &approvedAt, &version, &inForce, &auto,
+		if err = rows.Scan(&c.ID, &c.Reason, &c.By, &c.At, &c.Effective, &c.Loosening, &approvedBy, &approvedAt, &version, &inForce, &auto, &acknowledgement,
 			&cancelledBy, &cancelledAt, &cancelReason, &cancelKind, &cancelRole); err != nil {
 			return nil, err
 		}
 		c.At, c.Effective = utc(c.At), utc(c.Effective)
 		if approvedBy != nil {
 			c.Approval = &settings.Approval{By: *approvedBy, At: utc(*approvedAt), Version: *version, InForce: utc(*inForce), Auto: *auto}
+			if acknowledgement != nil {
+				c.Approval.Acknowledgement = *acknowledgement
+			}
 		}
 		if cancelledBy != nil {
 			c.Cancellation = &settings.Cancellation{By: *cancelledBy, At: utc(*cancelledAt), Reason: *cancelReason, Refused: *cancelKind == "REFUSED", Role: *cancelRole}
@@ -163,10 +166,14 @@ func (s SettingsStore) InsertApproval(ctx context.Context, tenant sea.TenantID, 
 	if err != nil {
 		return err
 	}
+	var acknowledgement *string
+	if a.Acknowledgement != "" {
+		acknowledgement = &a.Acknowledgement
+	}
 	tag, err := q.Exec(ctx, `INSERT INTO cargo_sea.settings_approval (tenant_id,change_id,proposed_by,proposed_at,effective_at,loosening,approved_by,
-        approved_at,version_no,in_force_at,auto)
-      SELECT tenant_id,change_id,proposed_by,proposed_at,effective_at,loosening,$3,$4,$5,$6,$7 FROM cargo_sea.settings_change
-      WHERE tenant_id=$1 AND change_id=$2`, string(tenant), id, a.By, a.At, a.Version, a.InForce, a.Auto)
+        approved_at,version_no,in_force_at,auto,risk_acknowledgement)
+      SELECT tenant_id,change_id,proposed_by,proposed_at,effective_at,loosening,$3,$4,$5,$6,$7,$8 FROM cargo_sea.settings_change
+      WHERE tenant_id=$1 AND change_id=$2`, string(tenant), id, a.By, a.At, a.Version, a.InForce, a.Auto, acknowledgement)
 	if err == nil && tag.RowsAffected() != 1 {
 		return fmt.Errorf("%w: settings change set %s", bentorepo.ErrNotFound, id)
 	}
@@ -252,4 +259,56 @@ func (s SettingsStore) OpenMovements(ctx context.Context, tenant sea.TenantID, l
 		out = append(out, sea.MovementID(id))
 	}
 	return out, rows.Err()
+}
+
+// Declarations lists the tenant's declarations of a single administrator, in the order recorded. Called in a write
+// transaction (RequireExecutor) it is read under the settings lock the command holds; a query reads its snapshot.
+func (s SettingsStore) Declarations(ctx context.Context, tenant sea.TenantID) ([]settings.Declaration, error) {
+	q, err := s.DB.ReadExecutor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return readDeclarations(ctx, q, tenant)
+}
+
+func (s SettingsStore) DeclarationsForWrite(ctx context.Context, tenant sea.TenantID) ([]settings.Declaration, error) {
+	q, err := s.DB.RequireExecutor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return readDeclarations(ctx, q, tenant)
+}
+
+func readDeclarations(ctx context.Context, q bentopg.Querier, tenant sea.TenantID) ([]settings.Declaration, error) {
+	rows, err := q.Query(ctx, `SELECT onboarding_id,proposed_by,confirmed_by,declared_at FROM cargo_sea.single_administrator WHERE tenant_id=$1
+      ORDER BY declared_at, onboarding_id`, string(tenant))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []settings.Declaration
+	for rows.Next() {
+		var d settings.Declaration
+		if err = rows.Scan(&d.OnboardingID, &d.ProposedBy, &d.ConfirmedBy, &d.At); err != nil {
+			return nil, err
+		}
+		d.At = utc(d.At)
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+// InsertDeclaration records a declaration of a single administrator.
+func (s SettingsStore) InsertDeclaration(ctx context.Context, tenant sea.TenantID, d settings.Declaration) error {
+	q, err := s.DB.RequireExecutor(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = q.Exec(ctx, `INSERT INTO cargo_sea.single_administrator (tenant_id,onboarding_id,proposed_by,confirmed_by,declared_at) VALUES ($1,$2,$3,$4,$5)`,
+		string(tenant), d.OnboardingID, d.ProposedBy, d.ConfirmedBy, d.At)
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		return fmt.Errorf("%w: the declaration of onboarding %s", bentorepo.ErrAlreadyExists, d.OnboardingID)
+	}
+	return err
 }
