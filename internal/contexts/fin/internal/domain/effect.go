@@ -105,6 +105,11 @@ type ReasonEffect struct {
 	Voucher         string
 	AttributionNote string
 	Carried         bool
+	// ByDefault says that nobody stated the attribution: F8 DEFAULT_TO_REMAINING made it (since V2.98). ByRatio says that
+	// it is carried with its loss and exception cost scaled by F9 KEEP_RATIO. Says tells in a sentence what that does.
+	ByDefault bool
+	ByRatio   bool
+	Says      string
 }
 
 // HouseTotal is the change to one house's job profit over every line of the preview, in the functional currency.
@@ -288,6 +293,8 @@ func (p *ConsolCostPool) houseEffects(houses []HouseEffect, reasons []ReasonEffe
 		for _, x := range nl.Attributions {
 			if x.ShipmentID == shipment {
 				r.Attributed, r.Party, r.PartyReference, r.Voucher, r.AttributionNote, r.Carried = true, x.Party, x.PartyReference, x.Voucher, x.Reason, x.Carried
+				r.ByDefault, r.ByRatio = x.ByDefault, x.ByRatio
+				r.Says = p.attributionSays(nl, x, was)
 			}
 		}
 		if former || r.Attributed {
@@ -295,6 +302,26 @@ func (p *ConsolCostPool) houseEffects(houses []HouseEffect, reasons []ReasonEffe
 		}
 	}
 	return houses, reasons
+}
+
+// attributionSays tells, for an attribution of a preview, which amounts are stated, which are rescaled and which are
+// carried (since V2.98): one made by default, one carried and rescaled by F9 KEEP_RATIO, one carried as it is, and one
+// stated in the preview.
+func (p *ConsolCostPool) attributionSays(nl LineApportionment, x Attribution, was bearing) string {
+	currency := p.state.Lines[nl.LineNo-1].Versions[nl.LineVersion-1].Amount.Currency
+	amounts := fmt.Sprintf("the loss of %s and the exception cost of %s", money(currency, x.Loss), money(currency, x.Exception))
+	switch {
+	case x.ByDefault && was.kind == BearsFormerShare:
+		return fmt.Sprintf("nobody stated it, so F8 DEFAULT_TO_REMAINING attributes it by default: loss 0 and exception cost 0, no party and no voucher, and the former share "+
+			"of %s goes to the cargo that remains (to be allocated when no house is live)", money(currency, was.amount))
+	case x.ByDefault:
+		return "attributed by default (F8 DEFAULT_TO_REMAINING): loss 0 and exception cost 0, no party and no voucher"
+	case x.ByRatio:
+		return fmt.Sprintf("carried and rescaled (F9 KEEP_RATIO): the amounts stated are scaled to the line's cost now, so that %s are these", amounts)
+	case x.Carried:
+		return fmt.Sprintf("carried as it is, nobody states it again and no ratio applies: %s are those in force", amounts)
+	}
+	return fmt.Sprintf("stated in this preview: %s", amounts)
 }
 
 // exceptionEffects are the exception costs of each party on a line before and after.

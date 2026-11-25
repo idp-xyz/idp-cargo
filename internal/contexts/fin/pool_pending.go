@@ -144,7 +144,7 @@ func (m *Module) GetConsolCostPreviewEffect(ctx context.Context, q api.GetConsol
 	for _, r := range e.Reasons {
 		out.Reasons = append(out.Reasons, api.PreviewReason{LineNo: r.LineNo, ShipmentID: r.ShipmentID, Former: r.Former, End: r.End, EndReason: r.EndReason,
 			EndedBy: r.EndedBy, EndedAt: r.EndedAt, TransferredTo: r.TransferredTo, Attributed: r.Attributed, Party: r.Party, PartyReference: r.PartyReference,
-			Voucher: r.Voucher, AttributionNote: r.AttributionNote, Carried: r.Carried})
+			Voucher: r.Voucher, AttributionNote: r.AttributionNote, Carried: r.Carried, ByDefault: r.ByDefault, ByRatio: r.ByRatio, Says: r.Says})
 	}
 	return out, nil
 }

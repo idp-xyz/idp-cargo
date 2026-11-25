@@ -52,6 +52,18 @@ func (m *Module) PreviewConsolCostApportionment(ctx context.Context, cmd api.Pre
 	return receipt(r, err)
 }
 
+func (m *Module) ApportionConsolCostInOneStep(ctx context.Context, cmd api.ApportionConsolCostInOneStep) (api.Receipt, error) {
+	manual := make([]domain.ManualShare, 0, len(cmd.Manual))
+	for _, s := range cmd.Manual {
+		manual = append(manual, domain.ManualShare{ShipmentID: s.ShipmentID, Amount: s.Amount})
+	}
+	r, err := m.deps(cmd.TenantID, cmd.CommandID).ApportionPoolInOneStep(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID,
+		api.ActionApportionConsolCostInOneStep, cmd.PoolID, cmd.ExpectedRevision, cmd.OccurredAt, cmd),
+		application.ApportionAsk{LineNos: append([]int(nil), cmd.LineNos...), Method: cmd.Method, Manual: manual,
+			NotUsed: append([]string(nil), cmd.NotUsed...), AllHouses: cmd.AllHouses, Reason: cmd.Reason})
+	return receipt(r, err)
+}
+
 func (m *Module) SubmitConsolCostApportionment(ctx context.Context, cmd api.SubmitConsolCostApportionment) (api.Receipt, error) {
 	r, err := m.deps(cmd.TenantID, cmd.CommandID).SubmitPoolApportionment(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID,
 		api.ActionSubmitConsolCostApportionment, cmd.PoolID, cmd.ExpectedRevision, cmd.OccurredAt, cmd), cmd.PreviewNo)
@@ -97,7 +109,7 @@ func poolView(p *domain.ConsolCostPool, revision int64) api.ConsolCostPool {
 				lv.Attributions = append(lv.Attributions, api.PoolAttribution{ShipmentID: x.ShipmentID, JobID: x.JobID,
 					Loss: kernel.Money{Currency: currency, Minor: x.Loss}, LossLocal: local(x.LossLocal),
 					Exception: kernel.Money{Currency: currency, Minor: x.Exception}, ExceptionLocal: local(x.ExceptionLocal), Party: x.Party,
-					PartyReference: x.PartyReference, Voucher: x.Voucher, Reason: x.Reason, DepartedAt: x.DepartedAt, Carried: x.Carried})
+					PartyReference: x.PartyReference, Voucher: x.Voucher, Reason: x.Reason, DepartedAt: x.DepartedAt, Carried: x.Carried, ByDefault: x.ByDefault, ByRatio: x.ByRatio})
 			}
 			for _, s := range la.Shares {
 				lv.Shares = append(lv.Shares, api.PoolShare{ShareNo: s.No, ShipmentID: s.ShipmentID, JobID: s.JobID, NotUsed: !s.Used, Quantity: s.Quantity, Unit: s.Unit,

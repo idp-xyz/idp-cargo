@@ -8,8 +8,8 @@ import (
 )
 
 // FIN's settings (step C1a of the configuration of the rules): the catalogue of the first items, the chain of scopes
-// and the rule across items. Since V2.97 FIN's rules read F1, F2, F3, F6 and F7 (RuleSettingsOf); F4, F8 and F9 are
-// read by nothing yet.
+// and the rule across items. Since V2.97 FIN's rules read F1, F2, F3, F6 and F7 (RuleSettingsOf), and since V2.98 F4, F8
+// and F9 too.
 
 // Events of the settings, with the change set as subject; an approval carries the version it made as Version.
 const (
@@ -32,7 +32,7 @@ const (
 
 	F1ThresholdValue    = fin.F1AboveThreshold
 	F3OnlyWhenAmount    = fin.F3OnlyWhenAmountMoves
-	F8DefaultToRemained = "DEFAULT_TO_REMAINING"
+	F8DefaultToRemained = fin.F8DefaultToRemaining
 )
 
 // FinHierarchy is FIN's chain of scopes: a legal entity, then the tenant. A branch and a transport mode would be added

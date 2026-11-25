@@ -105,6 +105,8 @@ type (
 		Reason          *string   `json:"reason"`
 		DepartedAt      time.Time `json:"departed_at"`
 		Carried         bool      `json:"carried"`
+		ByDefault       bool      `json:"by_default"`
+		ByRatio         bool      `json:"by_ratio"`
 	}
 	// figureLine and figureShare are a preview's figures as stored: one JSON array of the lines it divided.
 	figureLine struct {
@@ -291,12 +293,14 @@ func scanPool(row pgx.Row, tenant fin.TenantID) (*fin.ConsolCostPool, int64, err
 
 func attributionOf(x attributionRow) fin.Attribution {
 	return fin.Attribution{ShipmentID: x.ShipmentID, JobID: x.JobID, Loss: x.Loss, LossLocal: x.LossLocal, Exception: x.Exception, ExceptionLocal: x.ExceptionLocal,
-		Party: deref(x.Party), PartyReference: deref(x.PartyReference), Voucher: x.Voucher, Reason: deref(x.Reason), DepartedAt: utc(x.DepartedAt), Carried: x.Carried}
+		Party: deref(x.Party), PartyReference: deref(x.PartyReference), Voucher: x.Voucher, Reason: deref(x.Reason), DepartedAt: utc(x.DepartedAt), Carried: x.Carried,
+		ByDefault: x.ByDefault, ByRatio: x.ByRatio}
 }
 
 func rowOfAttribution(x fin.Attribution) attributionRow {
 	return attributionRow{ShipmentID: x.ShipmentID, JobID: x.JobID, Loss: x.Loss, LossLocal: x.LossLocal, Exception: x.Exception, ExceptionLocal: x.ExceptionLocal,
-		Party: orNullString(x.Party), PartyReference: orNullString(x.PartyReference), Voucher: x.Voucher, Reason: orNullString(x.Reason), DepartedAt: x.DepartedAt, Carried: x.Carried}
+		Party: orNullString(x.Party), PartyReference: orNullString(x.PartyReference), Voucher: x.Voucher, Reason: orNullString(x.Reason), DepartedAt: x.DepartedAt, Carried: x.Carried,
+		ByDefault: x.ByDefault, ByRatio: x.ByRatio}
 }
 
 func orNullString(s string) *string {
@@ -493,9 +497,9 @@ func writePool(ctx context.Context, q bentopg.Executor, p *fin.ConsolCostPool) e
 			}
 			for _, x := range la.Attributions {
 				if err := exec(`INSERT INTO cargo_fin.pool_apportionment_attribution (tenant_id,pool_id,apportionment_no,line_no,shipment_id,job_id,loss_minor,
-                    loss_local_minor,exception_minor,exception_local_minor,party,party_reference,voucher,reason,departed_at,carried)
-                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`, a.No, la.LineNo, x.ShipmentID, x.JobID, x.Loss, x.LossLocal, x.Exception,
-					x.ExceptionLocal, orNull(x.Party), orNull(x.PartyReference), x.Voucher, orNull(x.Reason), x.DepartedAt, x.Carried); err != nil {
+                    loss_local_minor,exception_minor,exception_local_minor,party,party_reference,voucher,reason,departed_at,carried,by_default,by_ratio)
+                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`, a.No, la.LineNo, x.ShipmentID, x.JobID, x.Loss, x.LossLocal, x.Exception,
+					x.ExceptionLocal, orNull(x.Party), orNull(x.PartyReference), x.Voucher, orNull(x.Reason), x.DepartedAt, x.Carried, x.ByDefault, x.ByRatio); err != nil {
 					return err
 				}
 			}

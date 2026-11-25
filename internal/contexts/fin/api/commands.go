@@ -667,6 +667,34 @@ type PreviewConsolCostApportionment struct {
 	OccurredAt   time.Time
 }
 
+// ApportionConsolCostInOneStep is a preview and its submission in one command (since FIN V2.98), allowed while the
+// legal entity's setting F4 is ONE_STEP_WITHOUT_OPENED_OR_LEFT. It takes the input of a preview without attributions
+// (lines, method, manual shares, houses left out, all houses, reason) and, in one transaction, reads PHY's basis, locks
+// the jobs, reads the policy, the revenue of a line by REVENUE and the settings, makes the checks of a preview and of a
+// submission, and writes an apportionment that names no preview, with the settings version in force and ActorID as its
+// submitter. Nothing is stored as a preview. It carries the attributions in force as a submission would (F9 included)
+// and states none. The receipt's Version is the apportionment's number, and ConsolCostsApportioned.v1, which names the
+// apportionment's number and no preview, is its event, as for a submission. It is refused with FIN_ONE_STEP_REFUSED,
+// naming the reason and the way out (preview the lines and submit the preview), while F4 does not allow it, while the
+// pool holds a former share pending finance's confirmation, while a line apportioned has not been apportioned from a
+// preview since a rework ended, and while a carried attribution has to be stated again (F9 RECONFIRM, or KEEP_RATIO
+// with a cost not above 0); with FIN_POOL_IN_WORK while a container is in rework; and with FIN_CONFIRMER_ASKED_REWORK
+// as a submission is. Its action is authorized as the other actions of the pool are.
+type ApportionConsolCostInOneStep struct {
+	CommandID        string
+	TenantID         string
+	ActorID          string
+	PoolID           string
+	ExpectedRevision int64
+	LineNos          []int
+	Method           string
+	Manual           []ManualShare
+	NotUsed          []string `json:",omitempty"` // left out of the request hash when empty, as in a preview
+	AllHouses        bool     `json:",omitempty"` // likewise when false
+	Reason           string
+	OccurredAt       time.Time
+}
+
 // SubmitConsolCostApportionment writes the apportionment of a preview (PreviewNo, the receipt's Version of the preview
 // command), as ApportionConsolCosts wrote one until FIN V2.91, linked to the preview; its receipt's Version is the
 // apportionment's number and ConsolCostsApportioned.v1 is its event. FIN reads PHY's basis and the pool again and
@@ -803,6 +831,7 @@ type Commands interface {
 	ReviseConsolCost(ctx context.Context, cmd ReviseConsolCost) (Receipt, error)
 	PreviewConsolCostApportionment(ctx context.Context, cmd PreviewConsolCostApportionment) (Receipt, error)
 	SubmitConsolCostApportionment(ctx context.Context, cmd SubmitConsolCostApportionment) (Receipt, error)
+	ApportionConsolCostInOneStep(ctx context.Context, cmd ApportionConsolCostInOneStep) (Receipt, error)
 	SetCostVarianceThreshold(ctx context.Context, cmd SetCostVarianceThreshold) (Receipt, error)
 	RecordCreditorInvoice(ctx context.Context, cmd RecordCreditorInvoice) (Receipt, error)
 	MatchCreditorInvoice(ctx context.Context, cmd MatchCreditorInvoice) (Receipt, error)
@@ -860,6 +889,7 @@ const (
 	ActionReviseConsolCost               = "ReviseConsolCost"
 	ActionPreviewConsolCostApportionment = "PreviewConsolCostApportionment"
 	ActionSubmitConsolCostApportionment  = "SubmitConsolCostApportionment"
+	ActionApportionConsolCostInOneStep   = "ApportionConsolCostInOneStep"
 
 	ActionSetCostVarianceThreshold      = "SetCostVarianceThreshold"
 	ActionRecordCreditorInvoice         = "RecordCreditorInvoice"

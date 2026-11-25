@@ -226,6 +226,20 @@ func apportionsByRevenue(pool *fin.ConsolCostPool, in ApportionAsk) bool {
 // the pool's legal entity are read inside the transaction (F3 decides which attributions need a voucher) and the
 // preview records their version, which its fingerprint holds.
 func (d Deps) PreviewPoolApportionment(ctx context.Context, c Command, in ApportionAsk) (Receipt, error) {
+	return d.apportionPool(ctx, c, in, false)
+}
+
+// ApportionPoolInOneStep makes the apportionment of a preview and its submission in one command (since V2.98, F4
+// ONE_STEP_WITHOUT_OPENED_OR_LEFT): the reads are those of a preview and of a submission together, in one transaction,
+// with the same locks in the same order (PHY's basis first, then the jobs in job id order, the policy, the revenue of a
+// line by REVENUE, and the settings in force), and it writes the apportionment, with no preview. The ask states no
+// attribution. The receipt's Version is the apportionment's number.
+func (d Deps) ApportionPoolInOneStep(ctx context.Context, c Command, in ApportionAsk) (Receipt, error) {
+	in.Attributions = nil
+	return d.apportionPool(ctx, c, in, true)
+}
+
+func (d Deps) apportionPool(ctx context.Context, c Command, in ApportionAsk, oneStep bool) (Receipt, error) {
 	if d.Physical == nil {
 		return Receipt{}, ErrMissingDependency
 	}
@@ -257,6 +271,13 @@ func (d Deps) PreviewPoolApportionment(ctx context.Context, c Command, in Apport
 		}
 		input := fin.ApportionInput{LineNos: in.LineNos, Method: in.Method, Manual: in.Manual, NotUsed: in.NotUsed, AllHouses: in.AllHouses, Reason: in.Reason, Jobs: jobs,
 			Revenue: revenue, Attributions: in.Attributions, Settings: rules}
+		if oneStep {
+			if err := pool.ApportionInOneStep(input, basis, c.Scope.ActorID, c.OccurredAt); err != nil {
+				return Receipt{}, err
+			}
+			pool.Stamp(at) // the apportionment is stamped with the time its settings were read at
+			return Receipt{Version: len(pool.State().Apportionments)}, nil
+		}
 		if err := pool.Preview(input, basis, c.Scope.ActorID, c.OccurredAt); err != nil {
 			return Receipt{}, err
 		}

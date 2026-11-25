@@ -3,6 +3,7 @@ package domain
 import (
 	"fmt"
 	"maps"
+	"math/big"
 	"slices"
 	"strings"
 	"time"
@@ -40,6 +41,10 @@ var (
 	ErrJobBearsPoolCost     = fmt.Errorf("fin: FIN_JOB_BEARS_POOL_COST: a freight job that bears a share or a re-routing loss of a consol cost pool is not cancelled")
 	ErrAttributionMissing   = fmt.Errorf("fin: FIN_ATTRIBUTION_MISSING: a line holds a former share of a house that left and nobody has stated who bears it")
 	ErrAttributionConfirmer = fmt.Errorf("fin: FIN_ATTRIBUTION_CONFIRMER: the person who asked for the rework that unloaded a house, or who ended its place in the consolidation, does not confirm who bears its former share; another finance user submits")
+	// ErrAttributionReconfirm is a carried attribution that cannot be carried as it is (since V2.98): F9 RECONFIRM asks for
+	// it to be stated again because its line's cost changed, or F9 KEEP_RATIO cannot scale it because the line's cost
+	// then or now is not above 0, or the amounts carried no longer fit the cost.
+	ErrAttributionReconfirm = fmt.Errorf("fin: FIN_ATTRIBUTION_RECONFIRM: an attribution carried from an earlier apportionment of the line cannot be carried as it is, because the line's cost has changed; state it again in the preview of the line")
 )
 
 // voucherNeeded tells whether an attribution needs a voucher: every one does, except under F3 ONLY_WHEN_AMOUNT_MOVES
@@ -83,7 +88,9 @@ type AttributionInput struct {
 // the line's currency and in the functional currency (the line's local cost divided by the same largest remainder as
 // the shares, in proportion to the amounts in the line's currency), the voucher and the reason, the job that bears the
 // loss and the house's departure as its business date. Carried is true for one an earlier apportionment of the line
-// stated that this one carries forward unchanged.
+// stated that this one carries forward. ByDefault is true for one nobody stated, which F8 DEFAULT_TO_REMAINING made for
+// a house that held a former share (loss 0, exception cost 0, no party, no voucher; since V2.98). ByRatio is true for a
+// carried one whose loss and exception cost F9 KEEP_RATIO scaled to the line's cost (since V2.98), never for one stated.
 type Attribution struct {
 	ShipmentID     string
 	JobID          string
@@ -97,6 +104,8 @@ type Attribution struct {
 	Reason         string
 	DepartedAt     time.Time
 	Carried        bool
+	ByDefault      bool
+	ByRatio        bool
 }
 
 // FormerShare is a former house's used share on a line's apportionment in force: pending finance's confirmation.
@@ -161,6 +170,83 @@ func (p *ConsolCostPool) HousesToAttribute(basis CostBasis) []string {
 	return slices.Sorted(maps.Keys(held))
 }
 
+// alsoReconfirm is an error that is an ErrAttributionReconfirm too and keeps its own text: carried amounts that no
+// longer fit the cost of their line are an invalid attribution, and one that has to be stated again.
+type alsoReconfirm struct{ error }
+
+func (e alsoReconfirm) Unwrap() error { return e.error }
+
+func (alsoReconfirm) Is(target error) bool { return target == ErrAttributionReconfirm }
+
+// stating is where an attribution in force was stated: the line's cost then, in its currency and in the functional
+// currency, and the attribution as it was stated.
+type stating struct {
+	amount, local int64
+	row           Attribution
+}
+
+// statingOf finds where the attribution in force of a house on a line was stated: the latest apportionment of the line
+// that holds the house's attribution not carried, reached through the apportionments that carried it. If a link of that
+// chain is missing (no command writes one; a raw write could), the attribution in force is read as stated by the
+// apportionment in force.
+func (p *ConsolCostPool) statingOf(lineNo int, shipment string, inForce LineApportionment, held Attribution) stating {
+	for i := len(p.state.Apportionments) - 1; i >= 0; i-- {
+		for _, la := range p.state.Apportionments[i].Lines {
+			if la.LineNo != lineNo {
+				continue
+			}
+			k := slices.IndexFunc(la.Attributions, func(x Attribution) bool { return x.ShipmentID == shipment })
+			switch {
+			case k < 0:
+				return stating{inForce.Amount, inForce.Local, held}
+			case !la.Attributions[k].Carried:
+				return stating{la.Amount, la.Local, la.Attributions[k]}
+			}
+		}
+	}
+	return stating{inForce.Amount, inForce.Local, held}
+}
+
+// carry is what an apportionment of a line takes of an attribution in force that nobody states again (F9, since
+// V2.98). Whatever the setting, an attribution is carried while the line's cost, in its currency and in the functional
+// currency, is what it was when the attribution was stated. When the cost changed, KEEP_AMOUNT carries its amounts as
+// they are; KEEP_RATIO takes the loss and the exception cost each as the amount stated times the line's cost now over
+// its cost then, to the nearest minor unit (a half away from zero), always from the apportionment that stated it and
+// never from an earlier rescale, so that a line back at its cost then gives the amounts stated; RECONFIRM refuses. The
+// local amounts are divided by the caller as for any attribution.
+func (p *ConsolCostPool) carry(rules RuleSettings, lineNo int, currency kernel.CurrencyCode, held Attribution, then stating, changed bool, cost, local int64) (Attribution, error) {
+	// the mark of a rescale belongs to the apportionment that rescales: a row carried by amount is not marked, whatever it was
+	held.Carried, held.ByRatio = true, false
+	functional := p.state.FunctionalCurrency
+	switch {
+	case rules.F9 == F9Reconfirm && changed:
+		return Attribution{}, fmt.Errorf("%w: the cost of line %d was %s (%s local) when the attribution of house %s was stated and is %s (%s local) now, and F9 RECONFIRM asks for "+
+			"it to be confirmed again: state the attribution of house %s on line %d again in the preview of the line (a restatement equal to the one in force needs no reason, "+
+			"and is a confirmation like any other)", ErrAttributionReconfirm, lineNo, money(currency, then.amount), money(functional, then.local), held.ShipmentID,
+			money(currency, cost), money(functional, local), held.ShipmentID, lineNo)
+	case rules.F9 == F9KeepRatio && changed && (then.amount <= 0 || cost <= 0):
+		return Attribution{}, fmt.Errorf("%w: the cost of line %d was %s when the attribution of house %s was stated and is %s now, and F9 KEEP_RATIO needs a cost above 0 on both: "+
+			"state the attribution of house %s on line %d again in the preview of the line", ErrAttributionReconfirm, lineNo, money(currency, then.amount), held.ShipmentID,
+			money(currency, cost), held.ShipmentID, lineNo)
+	case rules.F9 == F9KeepRatio:
+		held.Loss, held.Exception, held.ByRatio = then.row.Loss, then.row.Exception, changed
+		if changed {
+			held.Loss, held.Exception = scaled(then.row.Loss, then.amount, cost), scaled(then.row.Exception, then.amount, cost)
+		}
+	}
+	return held, nil
+}
+
+// scaled is amount times now over then, to the nearest whole unit, a half away from zero (amount is not below 0, then
+// and now are above it).
+func scaled(amount, then, now int64) int64 {
+	q, r := new(big.Int).QuoRem(new(big.Int).Mul(big.NewInt(amount), big.NewInt(now)), big.NewInt(then), new(big.Int))
+	if r.Lsh(r, 1).Cmp(big.NewInt(then)) >= 0 {
+		q.Add(q, big.NewInt(1))
+	}
+	return q.Int64()
+}
+
 // lineAttributions is what a preview gives a line: the attributions it carries and the cost left after them, in the
 // line's currency and in the functional currency.
 type lineAttributions struct {
@@ -171,11 +257,13 @@ type lineAttributions struct {
 
 // attribute reads the attributions of the lines of a preview. For each house that left the consolidation and holds a
 // former share on the line, or an attribution in force on it, the attribution stated for it is taken; with none stated
-// the one in force is carried forward unchanged, and with none in force either the preview is refused. A stated
-// attribution equal to the one in force is the one in force (carried). An attribution in force of a house PHY does not
-// list as a former house any more (it is attached again) is not carried: the house takes its share of the line as the
-// others do. What remains of the line's cost after the losses and the exception costs is the remainder; the local
-// amounts divide the line's local cost over the remainder and each loss and exception cost by largest remainder.
+// the one in force is carried forward (since V2.98 as F9 says when the line's cost changed since it was stated), and
+// with none in force either the preview is refused, or under F8 DEFAULT_TO_REMAINING the house is attributed nothing by
+// default. A stated attribution equal to the one in force is the one in force (carried), except under F9 RECONFIRM on a
+// line whose cost changed, where it is recorded as stated. An attribution in force of a house PHY does not list as a
+// former house any more (it is attached again) is not carried: the house takes its share of the line as the others do.
+// What remains of the line's cost after the losses and the exception costs is the remainder; the local amounts divide
+// the line's local cost over the remainder and each loss and exception cost by largest remainder.
 func (p *ConsolCostPool) attribute(in ApportionInput, basis CostBasis, lineNos []int) (map[int]lineAttributions, error) {
 	stated := map[int]map[string]AttributionInput{}
 	for _, a := range in.Attributions {
@@ -230,12 +318,39 @@ func (p *ConsolCostPool) attribute(in ApportionInput, basis CostBasis, lineNos [
 			share, owes := pending[f.ShipmentID]
 			held, has := inForce[f.ShipmentID]
 			a, isStated := stated[no][f.ShipmentID]
-			switch {
-			case !owes && !has:
+			if !owes && !has {
 				continue
+			}
+			var then stating
+			var changed bool
+			if has {
+				then = p.statingOf(no, f.ShipmentID, la, held)
+				changed = cost != then.amount || local != then.local
+			}
+			equal := isStated && has && a.Loss == held.Loss && a.Exception == held.Exception && a.Party == held.Party &&
+				a.PartyReference == held.PartyReference && a.Voucher == held.Voucher
+			// a statement equal to the attribution in force is the one in force, carried; only under F9 RECONFIRM, once the
+			// line's cost has changed, it is recorded as stated, a confirmation that is not a correction
+			restated := equal && changed && in.Settings.F9 == F9Reconfirm
+			if equal && !restated {
+				isStated = false
+			}
+			switch {
 			case !isStated && has:
-				held.Carried, carried = true, true
-				rows = append(rows, held)
+				row, err := p.carry(in.Settings, no, currency, held, then, changed, cost, local)
+				if err != nil {
+					return nil, err
+				}
+				carried = true
+				rows = append(rows, row)
+			case !isStated && in.Settings.F8 == F8DefaultToRemaining && !voucherNeeded(in.Settings, AttributionInput{}):
+				// nobody stated it and none is in force: the house bears nothing and its whole former share goes to the cargo
+				// that remains (or is to be allocated when no house is live)
+				row := Attribution{ShipmentID: f.ShipmentID, JobID: share.JobID, DepartedAt: f.EndedAt.UTC(), ByDefault: true}
+				if job := in.Jobs[f.ShipmentID]; job != "" {
+					row.JobID = job
+				}
+				rows = append(rows, row)
 			case !isStated:
 				return nil, fmt.Errorf("%w: line %d holds a former share of house %s of %d %s (the loss it would bear by default, for reference); state who bears it: the house's loss and the consolidation's exception cost, with a voucher, in the preview of the line",
 					ErrAttributionMissing, no, f.ShipmentID, share.Amount, currency)
@@ -244,19 +359,15 @@ func (p *ConsolCostPool) attribute(in ApportionInput, basis CostBasis, lineNos [
 					PartyReference: a.PartyReference, Voucher: a.Voucher, Reason: a.Reason, DepartedAt: f.EndedAt.UTC()}
 				if has {
 					row.JobID = held.JobID
-					if a.Loss == held.Loss && a.Exception == held.Exception && a.Party == held.Party && a.PartyReference == held.PartyReference &&
-						a.Voucher == held.Voucher {
-						held.Carried, carried = true, true
-						rows = append(rows, held)
-						continue
-					}
-					if !text(a.Reason) {
-						return nil, fmt.Errorf("%w: the attribution of house %s on line %d replaces a different one in force; a correction states its reason", ErrInvalid,
-							f.ShipmentID, no)
-					}
-					if !text(a.Voucher) { // a correction changes who bears an amount that was recorded with a voucher
-						return nil, fmt.Errorf("%w: the attribution of house %s on line %d replaces a different one in force; a correction states its reason and its voucher "+
-							"(F3 does not excuse it)", ErrInvalid, f.ShipmentID, no)
+					if !restated {
+						if !text(a.Reason) {
+							return nil, fmt.Errorf("%w: the attribution of house %s on line %d replaces a different one in force; a correction states its reason", ErrInvalid,
+								f.ShipmentID, no)
+						}
+						if !text(a.Voucher) { // a correction changes who bears an amount that was recorded with a voucher
+							return nil, fmt.Errorf("%w: the attribution of house %s on line %d replaces a different one in force; a correction states its reason and its voucher "+
+								"(F3 does not excuse it)", ErrInvalid, f.ShipmentID, no)
+						}
 					}
 				}
 				if job := in.Jobs[f.ShipmentID]; job != "" {
@@ -273,8 +384,8 @@ func (p *ConsolCostPool) attribute(in ApportionInput, basis CostBasis, lineNos [
 		}
 		if taken > cost {
 			if carried {
-				return nil, fmt.Errorf("%w: the attributions of line %d (losses and exception costs of %d) exceed its cost of %d %s now; state them again", ErrInvalid, no,
-					taken, cost, currency)
+				return nil, alsoReconfirm{fmt.Errorf("%w: the attributions of line %d (losses and exception costs of %d) exceed its cost of %d %s now; state them again", ErrInvalid, no,
+					taken, cost, currency)}
 			}
 			return nil, fmt.Errorf("%w: the losses and exception costs of line %d (%d) exceed its cost of %d %s", ErrInvalid, no, taken, cost, currency)
 		}
@@ -315,6 +426,9 @@ func (p *ConsolCostPool) attributionsConfirmedBy(rules RuleSettings, basis CostB
 			if rules.F1 == F1AboveThreshold {
 				key = fmt.Sprintf("%s/%d", a.ShipmentID, la.LineNo)
 			}
+			// a carried attribution needs no confirmer, a rescale by F9 KEEP_RATIO included: it is the configured arithmetic applied to
+			// a confirmed attribution, nobody chooses its amount (as with an amount carried under KEEP_AMOUNT), and the lever on it is
+			// the revision of the line's cost, a command of its own
 			if a.Carried || !former || seen[key] {
 				continue
 			}

@@ -356,13 +356,15 @@ func rawShare(no, share int, shipment, job string, used bool, amount int64) stri
             local_minor) VALUES ($1,'P-U',%d,1,%d,'%s','%s',%v,%d,%s,%d,%d)`, no, share, shipment, job, used, quantity, unit, amount, amount)
 }
 
+// rawAttribution is carried: since fin/000019 an apportionment that names no preview, as these raw ones, states no
+// attribution.
 func rawAttribution(no int, shipment, job string, loss, lossLocal, exception, exceptionLocal int64, party string) string {
 	p := "NULL"
 	if party != "" {
 		p = "'" + party + "'"
 	}
 	return fmt.Sprintf(`INSERT INTO cargo_fin.pool_apportionment_attribution (tenant_id,pool_id,apportionment_no,line_no,shipment_id,job_id,loss_minor,loss_local_minor,
-            exception_minor,exception_local_minor,party,voucher,departed_at,carried) VALUES ($1,'P-U',%d,1,'%s','%s',%d,%d,%d,%d,%s,'CLAIM-9',now(),false)`, no, shipment, job, loss,
+            exception_minor,exception_local_minor,party,voucher,departed_at,carried) VALUES ($1,'P-U',%d,1,'%s','%s',%d,%d,%d,%d,%s,'CLAIM-9',now(),true)`, no, shipment, job, loss,
 		lossLocal, exception, exceptionLocal, p)
 }
 

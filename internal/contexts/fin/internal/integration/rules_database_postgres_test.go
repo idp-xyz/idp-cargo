@@ -17,14 +17,14 @@ import (
 // is in force, the thresholds, who is barred), written past FIN on the application role.
 
 // rawVoucher is an attribution of SH-C to apportionment 2, line 1, with a voucher as SQL text (NULL or a quoted
-// string).
+// string). It is carried: since fin/000019 an apportionment that names no preview, as this raw one, states no attribution.
 func rawVoucher(voucher string, loss, exception int64) string {
 	party := "NULL"
 	if exception > 0 {
 		party = "'CARRIER'"
 	}
 	return fmt.Sprintf(`INSERT INTO cargo_fin.pool_apportionment_attribution (tenant_id,pool_id,apportionment_no,line_no,shipment_id,job_id,loss_minor,loss_local_minor,
-            exception_minor,exception_local_minor,party,voucher,departed_at,carried) VALUES ($1,'P-U',2,1,'SH-C','JOB-C',%d,%d,%d,%d,%s,%s,now(),false)`,
+            exception_minor,exception_local_minor,party,voucher,departed_at,carried) VALUES ($1,'P-U',2,1,'SH-C','JOB-C',%d,%d,%d,%d,%s,%s,now(),true)`,
 		loss, loss, exception, exception, party, voucher)
 }
 
