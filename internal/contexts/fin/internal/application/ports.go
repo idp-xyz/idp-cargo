@@ -451,6 +451,8 @@ type Deps struct {
 	Settings SettingsStore
 	// CostReviews holds the cost review requests and their resolutions (FIN V2.99).
 	CostReviews CostReviewStore
+	// AfterTheFact holds the marks of the weeks reviewed and reads the weekly list (FIN V2.102, batch B).
+	AfterTheFact AfterTheFactStore
 }
 
 // Command is what every FIN command carries: Subject is the legal entity, the job, <legal entity>/<debtor> or the

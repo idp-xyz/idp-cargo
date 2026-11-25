@@ -858,6 +858,22 @@ type ResolveCostReview struct {
 	Note      string
 }
 
+// MarkAfterTheFactReviewed marks a legal entity's ISO week (YYYY-Www, Monday 00:00 to Monday 00:00 UTC by the
+// apportionments' system time) reviewed, with a note of 1 to 2000 characters (FIN V2.102, batch B). It records the size
+// and the digest of the week's list as it is then, so that a list that changes later is visible in
+// GetAfterTheFactReview. The reviewer is neither the submitter nor the previewer of any line of that list
+// (FIN_AFTER_THE_FACT_REVIEWER: another person reviews), the week is reviewed once (FIN_AFTER_THE_FACT_REVIEWED) and
+// only once it has begun (FIN_AFTER_THE_FACT_WEEK_NOT_BEGUN). The receipt's SubjectID is "<legal entity>/<week>", its
+// NewRevision 1 and its Version the list's size. It needs the permission ReviewAfterTheFact, granted by name only.
+type MarkAfterTheFactReviewed struct {
+	CommandID     string
+	TenantID      string
+	ActorID       string
+	LegalEntityID string
+	Week          string
+	Note          string
+}
+
 // Commands is FIN's command entry point.
 type Commands interface {
 	OpenFinancePolicy(ctx context.Context, cmd OpenFinancePolicy) (Receipt, error)
@@ -916,6 +932,7 @@ type Commands interface {
 	DeclareFinSingleAdministrator(ctx context.Context, cmd DeclareFinSingleAdministrator) (Receipt, error)
 	RequestCostReview(ctx context.Context, cmd RequestCostReview) (Receipt, error)
 	ResolveCostReview(ctx context.Context, cmd ResolveCostReview) (Receipt, error)
+	MarkAfterTheFactReviewed(ctx context.Context, cmd MarkAfterTheFactReviewed) (Receipt, error)
 }
 
 // Actions an Authorizer decides on: the command names.
@@ -989,6 +1006,12 @@ const (
 	ActionReadProfit        = "ReadProfit"
 	ActionRequestCostReview = "RequestCostReview"
 	ActionResolveCostReview = "ResolveCostReview"
+
+	// ReviewAfterTheFact marks a week of the after-the-fact review list reviewed (FIN V2.102, batch B). It is granted by
+	// name only: "fin:*" and "*" do not include it, so that a general grant never lets a person sign off the weekly
+	// compensation of the LEAN profile. That the reviewer is neither the submitter nor the previewer of a line of the
+	// week is the domain's rule, not a permission. The list itself is read with ReadProfit.
+	ActionReviewAfterTheFact = "ReviewAfterTheFact"
 )
 
 // Authorizer decides whether a verified actor may perform an action on a subject.

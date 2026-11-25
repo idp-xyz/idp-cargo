@@ -1362,6 +1362,88 @@ type Queries interface {
 	ListJobProfits(ctx context.Context, q ListJobProfits) (JobProfitPage, error)
 	GetCostReviewRequest(ctx context.Context, q GetCostReviewRequest) (CostReviewRequest, error)
 	ListCostReviewRequests(ctx context.Context, q ListCostReviewRequests) (CostReviewPage, error)
+	GetAfterTheFactReview(ctx context.Context, q GetAfterTheFactReview) (AfterTheFactPage, error)
+}
+
+// Reasons an attribution is on the after-the-fact review list (FIN V2.102, batch B). NO_SECOND_PERSON: the person who
+// submitted the apportionment is the person who previewed it. NO_VOUCHER: the attribution has no voucher (F3
+// ONLY_WHEN_AMOUNT_MOVES allows it when no amount moves, and F8 makes one by default). MADE_BY_DEFAULT: nobody stated
+// it; F8 DEFAULT_TO_REMAINING gave the whole former share to the cargo that remains.
+const (
+	ReviewReasonNoSecondPerson = "NO_SECOND_PERSON"
+	ReviewReasonNoVoucher      = "NO_VOUCHER"
+	ReviewReasonMadeByDefault  = "MADE_BY_DEFAULT"
+)
+
+// GetAfterTheFactReview lists, in pages, every attribution of a legal entity confirmed in an ISO week (YYYY-Www, from
+// Monday 00:00 UTC to the next Monday 00:00 UTC, by the apportionments' system time) that has no second person, no
+// voucher or was made by default, and answers whether the week is reviewed (FIN V2.102, batch B). It is read-only.
+// Limit is 1 to 500 and After the NextAfter of the page before. An attribution an apportionment only carries forward
+// is not listed again: it was listed in the week that stated it. The actor needs ReadProfit.
+//
+// What the records tell: "no second person" is that the submitter of the apportionment and its previewer are one
+// person. FIN does not record who asked for the rework that unloaded a house or who ended its place, so a submitter who
+// is that person is not told as such: the line names the submitter and the previewer, and the reader compares them with
+// PHY's record.
+type GetAfterTheFactReview struct {
+	TenantID      string
+	ActorID       string
+	LegalEntityID string
+	Week          string
+	Limit         int
+	After         string
+}
+
+// AfterTheFactLine is one attribution of the list: the pool and its consolidation, the line, the house and its job, the
+// apportionment that confirmed it and when (the system time that puts it in the week), the amounts it put on the house's
+// job (the loss) and on the consolidation (the exception cost, with who is responsible), each in the line's currency and
+// in the functional currency, who submitted the apportionment and who previewed it, and why it is listed (Reasons, in
+// the order NO_SECOND_PERSON, NO_VOUCHER, MADE_BY_DEFAULT). Voucher is empty when there is none.
+type AfterTheFactLine struct {
+	PoolID          string
+	ConsolidationID string
+	LineNo          int
+	ShipmentID      string
+	JobID           string
+	ApportionmentNo int
+	PreviewNo       int
+	EnteredAt       time.Time
+	Loss            kernel.Money
+	LossLocal       kernel.Money
+	Exception       kernel.Money
+	ExceptionLocal  kernel.Money
+	Party           string
+	Voucher         string
+	SubmittedBy     string
+	PreviewedBy     string
+	Reasons         []string
+}
+
+// AfterTheFactReviewMark says whether the week is reviewed and, if it is, by whom and when, the note and the size and
+// digest of the list at that time, with the size and digest of the whole list now and whether they match: a list that
+// changed after its review (an attribution recorded later in the same week) does not.
+type AfterTheFactReviewMark struct {
+	Reviewed      bool
+	ReviewedBy    string
+	ReviewedAt    time.Time
+	Note          string
+	ListSize      int
+	ListDigest    string
+	CurrentSize   int
+	CurrentDigest string
+	Matches       bool
+}
+
+// AfterTheFactPage is a page of the list, read in one snapshot, with the week's review. NextAfter is the After of the
+// next page, empty after the last.
+type AfterTheFactPage struct {
+	LegalEntityID string
+	Week          string
+	WeekStart     time.Time
+	WeekEnd       time.Time
+	Lines         []AfterTheFactLine
+	NextAfter     string
+	Review        AfterTheFactReviewMark
 }
 
 // GetFinExceptionReport is FIN's part of the exception report of a tenant for the period From (included) to To
