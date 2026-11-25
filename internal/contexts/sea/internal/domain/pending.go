@@ -369,15 +369,15 @@ func (m *Movement) sealItems(v VisitState, p Stuffing, resealed, only bool, add 
 		// only the carrier says it was loaded: SEA's records and the report conflict, which the operator may release
 		for _, c := range m.carrierLoadingFacts(v, p, only) {
 			if _, done := v.released(c, p); !done {
-				add(PendGatedBeforeReseal, conflictMessage(v, p, c, only))
+				add(PendGatedBeforeReseal, conflictMessage(v, p, c, only, whoReleases(m.s1)))
 				break
 			}
 		}
 	}
 }
 
-// conflictMessage says what conflicts and the ways out.
-func conflictMessage(v VisitState, p Stuffing, c CarrierFact, only bool) string {
+// conflictMessage says what conflicts, the ways out and who may release it (whoReleases).
+func conflictMessage(v VisitState, p Stuffing, c CarrierFact, only bool, who string) string {
 	names := "naming this container"
 	if c.ContainerNumber == "" && only {
 		names = "naming no container, while this is the movement's only live container"
@@ -387,8 +387,8 @@ func conflictMessage(v VisitState, p Stuffing, c CarrierFact, only bool) string 
 		records = "SEA has it gated in and taken back out before then, and no loading of it"
 	}
 	return fmt.Sprintf("container %s: the carrier's report of a loading at %s (%s) is dated before PHY sealed it again (%s), while %s; "+
-		"once checked, release the conflict with a reason (AcceptCarrierLoadingConflict); if the container was in fact loaded, it is handled outside the system",
-		v.Number, c.OccurredAt.UTC().Format(time.RFC3339), names, p.SealedAt.UTC().Format(time.RFC3339), records)
+		"once checked, release the conflict with a reason (AcceptCarrierLoadingConflict); %s; if the container was in fact loaded, it is handled outside the system",
+		v.Number, c.OccurredAt.UTC().Format(time.RFC3339), names, p.SealedAt.UTC().Format(time.RFC3339), records, who)
 }
 
 // releasedWarnings are the warnings of the carrier's loading reports against p that an operator released: who, when and

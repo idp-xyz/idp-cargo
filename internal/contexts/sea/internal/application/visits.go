@@ -398,7 +398,9 @@ func (d Deps) signatoryScope(ctx context.Context, c Command) error {
 // AcceptCarrierLoadingConflict releases the conflict between SEA's records and a carrier's loading report that the
 // visit's pending item reports. It runs as any visit command: the command id, the visit, then the movement are locked
 // (a finalize of the same movement waits for it or is waited for), and the movement's live containers are counted as
-// they stand in the transaction. Nothing of the movement is written.
+// they stand in the transaction. Nothing of the movement is written. It reads SEA's settings of the movement's legal
+// entity (V2.100): under S1 SUPERVISOR_ONLY the actor needs the permission SuperviseCarrierConflicts as well, and the
+// release records the settings version and the value of S1 it was decided under.
 func (d Deps) AcceptCarrierLoadingConflict(ctx context.Context, c Command, reason string) (Receipt, error) {
 	return d.ChangeVisit(ctx, c, func(txCtx context.Context, v *sea.Visit) (int, error) {
 		st := v.State()
@@ -420,6 +422,21 @@ func (d Deps) AcceptCarrierLoadingConflict(ctx context.Context, c Command, reaso
 				live++
 			}
 		}
-		return 0, v.AcceptCarrierLoadingConflict(mv, live, reason, c.Scope.ActorID, c.OccurredAt)
+		// the settings of the movement's legal entity are read last, so that the lock they take in shared mode is held
+		// as briefly as the transaction allows; a settings command takes it first and no lock of a visit or a movement
+		rules, err := d.DecisionSettings(txCtx, st.TenantID, mv.State().LegalEntityID)
+		if err != nil {
+			return 0, err
+		}
+		supervisor := false
+		if rules.S1 == sea.S1SupervisorOnly {
+			supervisor = d.Auth.RequireSeaAction(txCtx, c.Scope, ActionSuperviseCarrierConflicts, c.Subject) == nil
+		}
+		return 0, v.AcceptCarrierLoadingConflictUnder(mv, live, reason, c.Scope.ActorID, c.OccurredAt, rules, supervisor)
 	})
 }
+
+// ActionSuperviseCarrierConflicts is the permission that the release of a carrier's contradiction needs besides
+// AcceptCarrierLoadingConflict under S1 SUPERVISOR_ONLY (api.ActionSuperviseCarrierConflicts, which a test of the
+// module holds equal to this). The subject is the visit.
+const ActionSuperviseCarrierConflicts Action = "SuperviseCarrierConflicts"

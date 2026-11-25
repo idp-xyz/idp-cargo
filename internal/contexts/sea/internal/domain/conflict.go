@@ -20,10 +20,15 @@ type ConflictRelease struct {
 	By          string
 	At          time.Time
 	EnteredAt   time.Time
+	// SettingsVersion and S1 are the version of SEA's settings and the value of S1 the release was decided under
+	// (V2.100); S1 is empty, and the version 0, for a release made without the settings.
+	SettingsVersion int
+	S1              string
 }
 
 func (r ConflictRelease) valid() bool {
-	return r.FactNo >= 1 && text(r.PHYSeal) && !r.PHYSealedAt.IsZero() && text(r.Reason) && !blank(r.By) && !r.At.IsZero()
+	return r.FactNo >= 1 && text(r.PHYSeal) && !r.PHYSealedAt.IsZero() && text(r.Reason) && !blank(r.By) && !r.At.IsZero() &&
+		r.SettingsVersion >= 0 && validS1(r.S1)
 }
 
 // releases reports whether the release is of this report against this seal of PHY's, by the seal's letters and digits
@@ -81,6 +86,14 @@ func (m *Movement) carrierConflict(v VisitState, only bool) (CarrierFact, Stuffi
 // required; the release is kept with who and when, and the item then reads as a warning. The published facts do not
 // change.
 func (v *Visit) AcceptCarrierLoadingConflict(m *Movement, live int, reason, by string, at time.Time) error {
+	return v.AcceptCarrierLoadingConflictUnder(m, live, reason, by, at, RuleSettings{}, false)
+}
+
+// AcceptCarrierLoadingConflictUnder is AcceptCarrierLoadingConflict under SEA's settings of the movement's legal entity
+// (V2.100): the release records the version and the value of S1 and is entered at the time they were read at. Under S1
+// SUPERVISOR_ONLY it is refused unless supervisor says the actor holds the permission SuperviseCarrierConflicts; the
+// way out is that a supervisor releases it. Under WITH_REASON, and with the zero RuleSettings, nobody is asked for it.
+func (v *Visit) AcceptCarrierLoadingConflictUnder(m *Movement, live int, reason, by string, at time.Time, rules RuleSettings, supervisor bool) error {
 	st := v.State()
 	if st.Status == VisitReleased || st.Status == VisitAssigned {
 		return ErrInvalidTransition
@@ -95,10 +108,15 @@ func (v *Visit) AcceptCarrierLoadingConflict(m *Movement, live int, reason, by s
 	if !ok {
 		return fmt.Errorf("%w: the container has no unreleased conflict with a carrier's loading report to release (the report may be released already, or the item may be raised by the container's own events)", ErrInvalidChange)
 	}
+	if rules.S1 == S1SupervisorOnly && !supervisor {
+		return fmt.Errorf("%w: S1 is SUPERVISOR_ONLY for the movement's legal entity, so only a supervisor releases a conflict with a carrier's loading report; "+
+			"ask a holder of SuperviseCarrierConflicts (and AcceptCarrierLoadingConflict) to release it", ErrNotSupervisor)
+	}
 	if err := v.changeable(by, at); err != nil {
 		return err
 	}
-	r := ConflictRelease{No: len(v.state.Releases) + 1, FactNo: fact.No, PHYSeal: p.Seal, PHYSealedAt: p.SealedAt.UTC(), Reason: reason, By: by, At: at.UTC()}
+	r := ConflictRelease{No: len(v.state.Releases) + 1, FactNo: fact.No, PHYSeal: p.Seal, PHYSealedAt: p.SealedAt.UTC(), Reason: reason, By: by, At: at.UTC(),
+		EnteredAt: rules.At.UTC(), SettingsVersion: rules.Version, S1: rules.S1}
 	v.state.Releases = append(v.state.Releases, r)
 	v.pending = append(v.pending, Event{Type: eventConflictReleased, At: at.UTC(), TenantID: v.state.TenantID, SubjectID: string(v.state.VisitID),
 		ConsolidationID: v.state.ConsolidationID, MovementID: string(v.state.MovementID), ReleaseNo: r.No})
