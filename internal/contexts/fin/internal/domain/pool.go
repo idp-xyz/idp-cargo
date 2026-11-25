@@ -1162,6 +1162,18 @@ func (p *ConsolCostPool) CloseUnder(rules RuleSettings, basis CostBasis, by stri
 	if err := p.open(by, at); err != nil {
 		return err
 	}
+	if err := p.closeRefusal(rules, basis); err != nil {
+		return err
+	}
+	c := PoolClosure{No: len(p.state.Closures) + 1, By: by, At: at.UTC(), SettingsVersion: rules.Version}
+	p.state.Closures, p.state.State = append(p.state.Closures, c), PoolClosed
+	p.record(eventPoolClosed, at, c.No)
+	return nil
+}
+
+// closeRefusal is what CloseUnder checks of the pool and PHY's basis, apart from who closes and when: nil when the pool
+// could be closed now under the settings.
+func (p *ConsolCostPool) closeRefusal(rules RuleSettings, basis CostBasis) error {
 	houses, gone := housesInOrder(basis)
 	if basis.ConsolidationID != p.state.ConsolidationID {
 		return fmt.Errorf("%w: PHY answered consolidation %s for %s", ErrInvalid, basis.ConsolidationID, p.state.ConsolidationID)
@@ -1180,9 +1192,6 @@ func (p *ConsolCostPool) CloseUnder(rules RuleSettings, basis CostBasis, by stri
 			return err
 		}
 	}
-	c := PoolClosure{No: len(p.state.Closures) + 1, By: by, At: at.UTC(), SettingsVersion: rules.Version}
-	p.state.Closures, p.state.State = append(p.state.Closures, c), PoolClosed
-	p.record(eventPoolClosed, at, c.No)
 	return nil
 }
 

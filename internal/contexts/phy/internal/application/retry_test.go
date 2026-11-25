@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"math"
+	"net"
 	"slices"
 	"testing"
 	"time"
@@ -167,6 +169,47 @@ func TestTheWaitBetweenAttemptsEndsWithTheContext(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestAFailedAttemptAnswersTheContextsErrorWhenItEnded: the attempt ends the context itself, as a cancellation that
+// reaches the driver while it writes does, and then fails with the driver's network error, which carries neither
+// context.Canceled nor context.DeadlineExceeded. The command is answered the context's error, after one attempt, and
+// not the network error. A failed attempt of a context that has not ended keeps its own error.
+func TestAFailedAttemptAnswersTheContextsErrorWhenItEnded(t *testing.T) {
+	networkErrors := map[string]error{
+		"net.OpError": &net.OpError{Op: "write", Net: "tcp", Err: errors.New("i/o timeout")},
+		"closed pipe": fmt.Errorf("write failed: %w", io.ErrClosedPipe),
+	}
+	for name, network := range networkErrors {
+		for how, want := range map[string]error{"cancelled": context.Canceled, "expired": context.DeadlineExceeded} {
+			t.Run(name+", "+how, func(t *testing.T) {
+				d, _ := newStage()
+				ctx, cancel := context.WithCancel(context.Background())
+				if how == "expired" {
+					ctx, cancel = context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+				}
+				defer cancel()
+				calls := 0
+				_, err := d.retrying(ctx, func() (Receipt, error) {
+					calls++
+					cancel()
+					<-ctx.Done()
+					return Receipt{}, network
+				})
+				if calls != 1 || !errors.Is(err, want) || errors.Is(err, network) {
+					t.Fatalf("%d attempts: %v, want %v after 1 attempt", calls, err, want)
+				}
+			})
+		}
+	}
+	t.Run("a live context keeps the attempt's error", func(t *testing.T) {
+		d, _ := newStage()
+		network := &net.OpError{Op: "write", Net: "tcp", Err: errors.New("i/o timeout")}
+		_, err := d.retrying(context.Background(), func() (Receipt, error) { return Receipt{}, network })
+		if !errors.Is(err, network) {
+			t.Fatalf("%v, want the network error", err)
+		}
+	})
 }
 
 // TestTheRetryWaitsLongerEachTime: the waits double, each with up to its own length added: from a first wait of 1 ms

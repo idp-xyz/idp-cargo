@@ -308,6 +308,11 @@ func (d Deps) rulesAt(ctx context.Context, tenant fin.TenantID, legalEntity stri
 	if err != nil {
 		return fin.RuleSettings{}, err
 	}
+	return ruleSettingsFrom(cfg, version)
+}
+
+// ruleSettingsFrom is what the rules read of a resolved configuration.
+func ruleSettingsFrom(cfg settings.Config, version int) (fin.RuleSettings, error) {
 	rules := fin.RuleSettings{Version: version, F1: cfg[SettingF1].Value, F2: cfg[SettingF2].Value, F3: cfg[SettingF3].Value, F4: cfg[SettingF4].Value,
 		F6: cfg[SettingF6].Value, F7: cfg[SettingF7].Value, F8: cfg[SettingF8].Value, F9: cfg[SettingF9].Value}
 	if rules.F1 == F1ThresholdValue {

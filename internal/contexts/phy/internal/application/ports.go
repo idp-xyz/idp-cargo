@@ -446,8 +446,11 @@ const (
 // transaction has rolled back before attempt returns, and Tx.WithinTransaction has returned its connection, so nothing
 // is held while it waits, and nothing it wrote is left behind, for it wrote nothing that a rollback keeps. It makes at
 // most Deps.Attempts attempts, waits between them as Deps.Backoff says, ends the wait when ctx ends (with ctx's error)
-// and answers the conflict of the last attempt as before. Any other error, a stale revision (a plain phy.ErrConflict)
-// included, ends it at once: the caller's data is stale and a retry would apply the command to a state it did not see.
+// and answers the conflict of the last attempt as before. An attempt that fails after ctx has ended answers ctx's error
+// whatever the attempt's own error is: a cancellation that reaches the driver while it writes makes it close the
+// connection and answer a network error that does not carry context.Canceled or context.DeadlineExceeded.
+// Any other error, a stale revision (a plain phy.ErrConflict) included, ends it at once: the caller's data is stale and
+// a retry would apply the command to a state it did not see.
 func (d Deps) retrying(ctx context.Context, attempt func() (Receipt, error)) (Receipt, error) {
 	attempts, wait := d.Attempts, d.Backoff
 	if attempts == 0 {
@@ -465,6 +468,9 @@ func (d Deps) retrying(ctx context.Context, attempt func() (Receipt, error)) (Re
 	}
 	for n := 1; ; n++ {
 		receipt, err := attempt()
+		if err != nil && ctx.Err() != nil {
+			return Receipt{}, ctx.Err()
+		}
 		if err == nil || !errors.Is(err, phy.ErrRetryable) || n >= attempts {
 			return receipt, err
 		}

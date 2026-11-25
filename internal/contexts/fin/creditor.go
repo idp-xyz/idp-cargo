@@ -18,6 +18,21 @@ func (m *Module) SetCostVarianceThreshold(ctx context.Context, cmd api.SetCostVa
 	return receipt(r, err)
 }
 
+// ApproveCostVarianceThreshold approves the cost variance threshold version that waits, as ApproveSettings: the
+// command carries no business time, FIN records its own clock.
+func (m *Module) ApproveCostVarianceThreshold(ctx context.Context, cmd api.ApproveCostVarianceThreshold) (api.Receipt, error) {
+	r, err := m.deps(cmd.TenantID, cmd.CommandID).ApproveVarianceThreshold(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID,
+		api.ActionApproveSettings, cmd.LegalEntityID, cmd.ExpectedRevision, m.clock.Now(), cmd), cmd.Version)
+	return receipt(r, err)
+}
+
+// RefuseCostVarianceThreshold refuses the version that waits, with a reason, as ApproveSettings.
+func (m *Module) RefuseCostVarianceThreshold(ctx context.Context, cmd api.RefuseCostVarianceThreshold) (api.Receipt, error) {
+	r, err := m.deps(cmd.TenantID, cmd.CommandID).RefuseVarianceThreshold(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID,
+		api.ActionApproveSettings, cmd.LegalEntityID, cmd.ExpectedRevision, m.clock.Now(), cmd), cmd.Version, cmd.Reason)
+	return receipt(r, err)
+}
+
 func (m *Module) RecordCreditorInvoice(ctx context.Context, cmd api.RecordCreditorInvoice) (api.Receipt, error) {
 	dated, err := domain.ParseDate(cmd.InvoiceDate)
 	if err != nil {

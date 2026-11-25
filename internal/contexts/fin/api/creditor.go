@@ -42,7 +42,11 @@ const (
 // SetCostVarianceThreshold records the next version of a legal entity's cost variance threshold (OD-9 B): a final
 // match whose variance against its accrual, in the functional currency, is beyond the greater of Amount (minor units of
 // the functional currency, from 0) and RateBP basis points (0 to 10000) of the accrual's local amount needs approval.
-// Without a threshold every variance does. A version is in force from OccurredAt; the next is not set earlier.
+// Without a threshold every variance does. Since V2.100 a version is stamped with FIN's clock, never with OccurredAt
+// (which stays the business time of the command, and the next version's is not before it): one that is not looser than
+// the version in force (its amount and its rate are not higher; the first is always looser) is in force at once, and a
+// looser one waits, as FIN_THRESHOLD_PROPOSED says to any other setting, for ApproveCostVarianceThreshold by another
+// person, or RefuseCostVarianceThreshold.
 type SetCostVarianceThreshold struct {
 	CommandID        string
 	TenantID         string
@@ -52,6 +56,34 @@ type SetCostVarianceThreshold struct {
 	Amount           int64
 	RateBP           int
 	OccurredAt       time.Time
+}
+
+// ApproveCostVarianceThreshold approves the version of a legal entity's cost variance threshold that waits for
+// approval,
+// which is the one named (Version, the receipt's Version of SetCostVarianceThreshold). A version looser than the one in
+// force (a higher amount or a higher rate; the first is always looser) takes effect only so: from FIN's clock at the
+// approval, never from a business time. The approver is not the setter (FIN_THRESHOLD_APPROVAL: have another approver
+// do it) and needs the permission ApproveSettings, granted by name only. ExpectedRevision is the policy's. The command
+// carries no business time.
+type ApproveCostVarianceThreshold struct {
+	CommandID        string
+	TenantID         string
+	ActorID          string
+	LegalEntityID    string
+	ExpectedRevision int64
+	Version          int
+}
+
+// RefuseCostVarianceThreshold refuses the version that waits for approval with a reason; it never takes effect, and a
+// new version may be set. The same actor and permission rules as ApproveCostVarianceThreshold apply.
+type RefuseCostVarianceThreshold struct {
+	CommandID        string
+	TenantID         string
+	ActorID          string
+	LegalEntityID    string
+	ExpectedRevision int64
+	Version          int
+	Reason           string
 }
 
 // CreditorInvoiceLine is a line of a supplier's invoice: a charge code, the supplier's reference (a MAWB, container or
@@ -316,6 +348,17 @@ type VarianceThreshold struct {
 	RateBP  int
 	SetBy   string
 	SetAt   time.Time
+	// since V2.100: ProposedAt is FIN's clock when it was set (zero for a version written before); Status PROPOSED
+	// (waits), APPROVED or REFUSED; DecidedBy and DecidedAt, with Automatic when its setter approved it because it is
+	// not looser; InForceAt, FIN's clock from when an approved version is in force; the reason of a refusal.
+	ProposedAt   time.Time
+	Looser       bool
+	Status       string
+	DecidedBy    string
+	DecidedAt    time.Time
+	Automatic    bool
+	InForceAt    time.Time
+	RefuseReason string
 }
 
 // PoolClosure is one closing of a pool, reopened at most once with a reason.

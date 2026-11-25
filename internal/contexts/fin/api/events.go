@@ -49,7 +49,9 @@ const (
 	// Creditor invoice events have the invoice as subject and its creditor; CreditorInvoiceMatched's Version is the
 	// number of matches, the dispute events' the dispute. SettlementDisputed of FinanceEvent v1 is
 	// CreditorInvoiceDisputed.
-	CostVarianceThresholdSet       = "CostVarianceThresholdSet.v1" // subject the legal entity; Version the threshold
+	CostVarianceThresholdSet       = "CostVarianceThresholdSet.v1"      // subject the legal entity; Version the threshold
+	CostVarianceThresholdApproved  = "CostVarianceThresholdApproved.v1" // subject the legal entity; Version the threshold
+	CostVarianceThresholdRefused   = "CostVarianceThresholdRefused.v1"
 	CreditorInvoiceRecorded        = "CreditorInvoiceRecorded.v1"
 	CreditorInvoiceMatched         = "CreditorInvoiceMatched.v1"
 	CostVarianceApproved           = "CostVarianceApproved.v1"

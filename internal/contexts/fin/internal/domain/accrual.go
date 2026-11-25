@@ -29,19 +29,21 @@ const (
 )
 
 var (
-	ErrMatchCurrency    = fmt.Errorf("fin: FIN_MATCH_CURRENCY: the accrual is in another currency than the creditor invoice; revise the accrual into the invoice's currency first")
-	ErrMatchCreditor    = fmt.Errorf("fin: FIN_MATCH_CREDITOR: the accrual names another creditor than the invoice's")
-	ErrMatchTarget      = fmt.Errorf("fin: FIN_MATCH_TARGET: not an accrual of an open job or pool of the invoice's legal entity")
-	ErrAccrualClosed    = fmt.Errorf("fin: FIN_ACCRUAL_CLOSED: the accrual is matched with a final match or released; it takes no further match or revision")
-	ErrMatchExceeds     = fmt.Errorf("fin: FIN_MATCH_EXCEEDS: a match that is not final consumes no more than the accrual has open; mark it final or revise the accrual")
-	ErrMatchIncomplete  = fmt.Errorf("fin: FIN_MATCH_INCOMPLETE: every line of the creditor invoice is matched in full, each accrual once")
-	ErrMatchChargeCode  = fmt.Errorf("fin: FIN_MATCH_CHARGE_CODE: a match to an accrual of another charge code needs a reason")
-	ErrInvoiceNumber    = fmt.Errorf("fin: FIN_SUPPLIER_INVOICE_USED: a creditor invoice of the legal entity and creditor not cancelled has this supplier invoice number")
-	ErrVarianceApproval = fmt.Errorf("fin: FIN_VARIANCE_APPROVAL: the variance needs approval by another person than the one who matched, or by one allowed to approve their own")
-	ErrAccrualMatched   = fmt.Errorf("fin: FIN_ACCRUAL_MATCHED: creditor invoices consume more of the accrual than the change would leave; cancel or dispute them first")
-	ErrPoolNotClosable  = fmt.Errorf("fin: FIN_POOL_NOT_CLOSABLE: every cost line is matched with a final match or released, by invoices not disputed and approved where needed, and apportioned on the current loaded basis at its final cost")
-	ErrTargetClosed     = fmt.Errorf("fin: FIN_TARGET_CLOSED: an accrual the creditor invoice matched belongs to a pool or job that is not open; reopen it first")
-	ErrFinalBehind      = fmt.Errorf("fin: FIN_FINAL_MATCH_BEHIND: another creditor invoice closed an accrual this one matched in part, and its variance counted this one; dispute and cancel that invoice first, then match it again")
+	ErrMatchCurrency     = fmt.Errorf("fin: FIN_MATCH_CURRENCY: the accrual is in another currency than the creditor invoice; revise the accrual into the invoice's currency first")
+	ErrMatchCreditor     = fmt.Errorf("fin: FIN_MATCH_CREDITOR: the accrual names another creditor than the invoice's")
+	ErrMatchTarget       = fmt.Errorf("fin: FIN_MATCH_TARGET: not an accrual of an open job or pool of the invoice's legal entity")
+	ErrAccrualClosed     = fmt.Errorf("fin: FIN_ACCRUAL_CLOSED: the accrual is matched with a final match or released; it takes no further match or revision")
+	ErrMatchExceeds      = fmt.Errorf("fin: FIN_MATCH_EXCEEDS: a match that is not final consumes no more than the accrual has open; mark it final or revise the accrual")
+	ErrMatchIncomplete   = fmt.Errorf("fin: FIN_MATCH_INCOMPLETE: every line of the creditor invoice is matched in full, each accrual once")
+	ErrMatchChargeCode   = fmt.Errorf("fin: FIN_MATCH_CHARGE_CODE: a match to an accrual of another charge code needs a reason")
+	ErrInvoiceNumber     = fmt.Errorf("fin: FIN_SUPPLIER_INVOICE_USED: a creditor invoice of the legal entity and creditor not cancelled has this supplier invoice number")
+	ErrVarianceApproval  = fmt.Errorf("fin: FIN_VARIANCE_APPROVAL: the variance needs approval by another person than the one who matched, or by one allowed to approve their own")
+	ErrAccrualMatched    = fmt.Errorf("fin: FIN_ACCRUAL_MATCHED: creditor invoices consume more of the accrual than the change would leave; cancel or dispute them first")
+	ErrPoolNotClosable   = fmt.Errorf("fin: FIN_POOL_NOT_CLOSABLE: every cost line is matched with a final match or released, by invoices not disputed and approved where needed, and apportioned on the current loaded basis at its final cost")
+	ErrTargetClosed      = fmt.Errorf("fin: FIN_TARGET_CLOSED: an accrual the creditor invoice matched belongs to a pool or job that is not open; reopen it first")
+	ErrThresholdProposed = fmt.Errorf("fin: FIN_THRESHOLD_PROPOSED: a looser cost variance threshold waits for approval; wait for it, or have an approver other than its setter refuse it (RefuseCostVarianceThreshold), then set again")
+	ErrThresholdApproval = fmt.Errorf("fin: FIN_THRESHOLD_APPROVAL: the setter of a looser cost variance threshold neither approves nor refuses it; have another holder of ApproveSettings do it")
+	ErrFinalBehind       = fmt.Errorf("fin: FIN_FINAL_MATCH_BEHIND: another creditor invoice closed an accrual this one matched in part, and its variance counted this one; dispute and cancel that invoice first, then match it again")
 )
 
 // Consumption is what the live matches of creditor invoices not cancelled consumed of one accrual: the amount in the
@@ -132,14 +134,35 @@ func (k TargetKey) String() string { return fmt.Sprintf("%s %s line %d", k.Kind,
 // VarianceThreshold is a version of a legal entity's cost variance threshold (OD-9 B): a final match whose variance
 // against the accrual, in the functional currency, is beyond the greater of Amount and RateBP basis points of the
 // accrual's local amount needs approval. Without a threshold every variance does.
+//
+// Since V2.100 a version is proposed at FIN's clock (ProposedAt) and is in force only once approved, from InForceAt, a
+// system time. A version that is not looser than the one in force is approved at once (Auto); a looser one waits for
+// an approver other than its setter. At stays the business time of the setting command, as every record of FIN keeps
+// one; nothing decides by it except that a version is not set before the latest one's At or before an invoice matched.
+// A version written before V2.100 reads as approved by its setter at At, with no ProposedAt.
 type VarianceThreshold struct {
-	No        int
-	Amount    int64
-	RateBP    int
-	By        string
-	At        time.Time
-	EnteredAt time.Time
+	No           int
+	Amount       int64
+	RateBP       int
+	By           string
+	At           time.Time
+	EnteredAt    time.Time
+	ProposedAt   time.Time
+	Looser       bool
+	State        string
+	DecidedBy    string
+	DecidedAt    time.Time
+	InForceAt    time.Time
+	Auto         bool
+	RefuseReason string
 }
+
+// States of a threshold version.
+const (
+	ThresholdProposed = "PROPOSED"
+	ThresholdApproved = "APPROVED"
+	ThresholdRefused  = "REFUSED"
+)
 
 // Exceeded reports whether a variance needs approval under the threshold (nil: none set, so any variance does).
 func Exceeded(t *VarianceThreshold, variance, accrualLocal int64) bool {

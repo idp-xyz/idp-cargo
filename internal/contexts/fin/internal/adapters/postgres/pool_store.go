@@ -368,6 +368,30 @@ func (s PoolStore) ForConsolidation(ctx context.Context, tenant fin.TenantID, co
 	return out, revisions, rows.Err()
 }
 
+// OpenPools lists the tenant's open pools in pool id order.
+func (s PoolStore) OpenPools(ctx context.Context, tenant fin.TenantID) ([]*fin.ConsolCostPool, []int64, error) {
+	q, err := s.DB.ReadExecutor(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	rows, err := q.Query(ctx, `SELECT `+poolColumns+poolChildren()+` FROM cargo_fin.consol_cost_pool p WHERE p.tenant_id=$1 AND p.state='OPEN' ORDER BY p.pool_id`,
+		string(tenant))
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	var out []*fin.ConsolCostPool
+	var revisions []int64
+	for rows.Next() {
+		p, revision, err := scanPool(rows, tenant)
+		if err != nil {
+			return nil, nil, err
+		}
+		out, revisions = append(out, p), append(revisions, revision)
+	}
+	return out, revisions, rows.Err()
+}
+
 func (s PoolStore) Insert(ctx context.Context, p *fin.ConsolCostPool) (int64, error) {
 	q, err := s.DB.RequireExecutor(ctx)
 	if err != nil {

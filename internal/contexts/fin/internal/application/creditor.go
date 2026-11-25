@@ -46,10 +46,28 @@ func (d Deps) SetVarianceThreshold(ctx context.Context, c Command, amount int64,
 			return 0, fmt.Errorf("%w: an invoice of the legal entity was matched at %s; a threshold is set after it", fin.ErrInvalid,
 				latest.Format(time.RFC3339))
 		}
-		if err := p.SetVarianceThreshold(amount, rateBP, c.Scope.ActorID, c.OccurredAt); err != nil {
+		// FIN's clock, read under the policy's lock, stamps the version and is when it is in force from (since V2.100)
+		if err := p.ProposeVarianceThreshold(amount, rateBP, c.Scope.ActorID, c.OccurredAt, d.Clock.Now().UTC().Truncate(time.Microsecond)); err != nil {
 			return 0, err
 		}
 		return len(p.State().Thresholds), nil
+	})
+}
+
+// ApproveVarianceThreshold approves the version of the legal entity's cost variance threshold that waits for approval
+// (the one named), by a person other than its setter; it is in force from FIN's clock, read under the policy's lock.
+// The permission is ApproveSettings, asked by the caller.
+func (d Deps) ApproveVarianceThreshold(ctx context.Context, c Command, version int) (Receipt, error) {
+	return d.changePolicy(ctx, c, func(_ context.Context, p *fin.FinancePolicy) (int, error) {
+		return version, p.ApproveVarianceThreshold(version, c.Scope.ActorID, d.Clock.Now().UTC().Truncate(time.Microsecond))
+	})
+}
+
+// RefuseVarianceThreshold refuses the version that waits for approval, with a reason, by a person other than its
+// setter.
+func (d Deps) RefuseVarianceThreshold(ctx context.Context, c Command, version int, reason string) (Receipt, error) {
+	return d.changePolicy(ctx, c, func(_ context.Context, p *fin.FinancePolicy) (int, error) {
+		return version, p.RefuseVarianceThreshold(version, reason, c.Scope.ActorID, d.Clock.Now().UTC().Truncate(time.Microsecond))
 	})
 }
 
@@ -147,7 +165,10 @@ func (d Deps) MatchCreditorInvoice(ctx context.Context, c Command, items []fin.M
 		if err != nil {
 			return 0, err
 		}
-		if err = inv.Match(items, targets, p, c.Scope.ActorID, c.OccurredAt); err != nil {
+		// FIN's clock, read after the policy's lock: a threshold approved at the same moment is in force for this match
+		// or
+		// not, and the invoice records the version it used (since V2.100)
+		if err = inv.MatchAt(items, targets, p, c.Scope.ActorID, c.OccurredAt, d.Clock.Now().UTC().Truncate(time.Microsecond)); err != nil {
 			return 0, err
 		}
 		return len(inv.State().Matches), nil

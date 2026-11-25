@@ -299,7 +299,10 @@ func TestACancelledOrExpiredContextEndsTheWait(t *testing.T) {
 				start := time.Now()
 				go func() { done <- c.run(ctx, s, deps, c.current(s)) }()
 				if how == "cancelled" {
-					waitUntil(t, "the first attempt", func() bool { return log.attempts() >= 1 })
+					// Cancel once the first attempt's transaction has ended (the replay check's transaction is the
+					// first to end), so that the cancellation never reaches the driver while it writes: the error of
+					// a cancelled write is a network error (see TestAFailedAttemptAnswersTheContextsErrorWhenItEnded).
+					waitUntil(t, "the first attempt", func() bool { return log.attempts() >= 1 && log.ended() >= 2 })
 					cancel()
 				}
 				err := <-done
