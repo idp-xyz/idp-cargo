@@ -131,20 +131,23 @@ type PolicyState struct {
 type FinancePolicy struct {
 	state   PolicyState
 	stored  int
-	taxes   int   // tax treatments stored
-	series  int   // series stored
-	limits  int   // variance thresholds stored
-	ended   []int // entries ended since the policy was loaded
+	taxes   int          // tax treatments stored
+	series  int          // series stored
+	limits  int          // variance thresholds stored
+	decided map[int]bool // thresholds whose decision is stored
+	ended   []int        // entries ended since the policy was loaded
 	pending []Event
 }
 
 const (
-	eventPolicyOpened     = "FinancePolicyOpened.v1"
-	eventRateRecorded     = "ExchangeRateRecorded.v1"
-	eventRateEnded        = "ExchangeRateEnded.v1"
-	eventTaxSet           = "ChargeTaxTreatmentSet.v1"
-	eventSeriesRegistered = "InvoiceSeriesRegistered.v1"
-	eventThresholdSet     = "CostVarianceThresholdSet.v1"
+	eventPolicyOpened      = "FinancePolicyOpened.v1"
+	eventRateRecorded      = "ExchangeRateRecorded.v1"
+	eventRateEnded         = "ExchangeRateEnded.v1"
+	eventTaxSet            = "ChargeTaxTreatmentSet.v1"
+	eventSeriesRegistered  = "InvoiceSeriesRegistered.v1"
+	eventThresholdSet      = "CostVarianceThresholdSet.v1"
+	eventThresholdApproved = "CostVarianceThresholdApproved.v1"
+	eventThresholdRefused  = "CostVarianceThresholdRefused.v1"
 )
 
 // OpenPolicy opens a legal entity's policy with its functional currency, whose minor digits the kernel must know,
@@ -279,34 +282,143 @@ func (p *FinancePolicy) SeriesOf(kind string) (Series, bool) {
 	return Series{}, false
 }
 
-// SetVarianceThreshold records the next version of the legal entity's cost variance threshold (OD-9 B): an amount in
-// the functional currency, from zero, and a rate of the accrual's local amount, from 0 to 10000 basis points. A final
-// match whose variance is beyond the greater of the two needs approval. A version is in force from its time until the
-// next one, which is not set earlier.
+// SetVarianceThreshold is ProposeVarianceThreshold with one time, as the business and the system time.
 func (p *FinancePolicy) SetVarianceThreshold(amount int64, rateBP int, by string, at time.Time) error {
+	return p.ProposeVarianceThreshold(amount, rateBP, by, at, at)
+}
+
+// ProposeVarianceThreshold records the next version of the legal entity's cost variance threshold (OD-9 B): an amount
+// in the functional currency, from zero, and a rate of the accrual's local amount, from 0 to 10000 basis points. A
+// final match whose variance is beyond the greater of the two needs approval. at is the command's business time and now
+// FIN's clock, read under the policy's lock. A version is looser than the one in force at now when its amount or its
+// rate is higher, and the first is always looser. One that is not looser is approved at once, by its setter as the
+// system; a looser one is proposed and takes effect when another person approves it (since V2.100). While a version is
+// proposed no other is set.
+func (p *FinancePolicy) ProposeVarianceThreshold(amount int64, rateBP int, by string, at, now time.Time) error {
+	ts := p.state.Thresholds
 	switch {
-	case amount < 0 || amount > MaxAmount || rateBP < 0 || rateBP > 10_000 || blank(by) || at.IsZero():
+	case amount < 0 || amount > MaxAmount || rateBP < 0 || rateBP > 10_000 || blank(by) || at.IsZero() || now.IsZero():
 		return fmt.Errorf("%w: a threshold is an amount of 0 to %d minor units and a rate of 0 to 10000 basis points", ErrInvalid, MaxAmount)
-	case len(p.state.Thresholds) > 0 && at.Before(p.state.Thresholds[len(p.state.Thresholds)-1].At):
+	case len(ts) > 0 && at.Before(ts[len(ts)-1].At):
 		return fmt.Errorf("%w: a threshold is not set before the one in force", ErrInvalid)
+	case now.Before(p.latestThresholdTime()):
+		return fmt.Errorf("%w: FIN's clock is behind the latest threshold record (%s); synchronise the clocks of FIN's servers and try the command again", ErrInvalid, p.latestThresholdTime().Format(time.RFC3339))
 	}
-	t := VarianceThreshold{No: len(p.state.Thresholds) + 1, Amount: amount, RateBP: rateBP, By: by, At: at.UTC()}
+	for _, t := range ts {
+		if t.State == ThresholdProposed {
+			return fmt.Errorf("%w: version %d, proposed by %s", ErrThresholdProposed, t.No, t.By)
+		}
+	}
+	inForce := p.ThresholdAt(now)
+	t := VarianceThreshold{No: len(ts) + 1, Amount: amount, RateBP: rateBP, By: by, At: at.UTC(), ProposedAt: now.UTC(), State: ThresholdProposed,
+		Looser: inForce == nil || amount > inForce.Amount || rateBP > inForce.RateBP}
+	p.record(eventThresholdSet, now, t.No)
+	if !t.Looser {
+		t.State, t.DecidedBy, t.DecidedAt, t.InForceAt, t.Auto = ThresholdApproved, by, now.UTC(), now.UTC(), true
+		p.record(eventThresholdApproved, now, t.No)
+	}
 	p.state.Thresholds = append(p.state.Thresholds, t)
-	p.record(eventThresholdSet, at, t.No)
 	return nil
 }
 
-// ThresholdAt returns the cost variance threshold in force at an instant: the latest version set at or before it, or
-// nil when none was (then every variance needs approval).
+// latestThresholdTime is the latest system time the thresholds record (zero for versions written before V2.100).
+func (p *FinancePolicy) latestThresholdTime() time.Time {
+	var latest time.Time
+	for _, t := range p.state.Thresholds {
+		if t.ProposedAt.IsZero() {
+			continue
+		}
+		for _, x := range []time.Time{t.ProposedAt, t.DecidedAt} {
+			if x.After(latest) {
+				latest = x
+			}
+		}
+	}
+	return latest
+}
+
+// LatestApprovalAt is the latest time an approved version written since V2.100 is in force from (zero when none): a
+// match is not timed before it, whatever the clock reads.
+func (p *FinancePolicy) LatestApprovalAt() time.Time {
+	var latest time.Time
+	for _, t := range p.state.Thresholds {
+		if t.State == ThresholdApproved && !t.ProposedAt.IsZero() && t.InForceAt.After(latest) {
+			latest = t.InForceAt
+		}
+	}
+	return latest
+}
+
+// proposedThreshold finds the version that waits for approval, which must be the one the caller named.
+func (p *FinancePolicy) proposedThreshold(no int, by string, now time.Time) (*VarianceThreshold, error) {
+	var found *VarianceThreshold
+	for i := range p.state.Thresholds {
+		if p.state.Thresholds[i].State == ThresholdProposed {
+			found = &p.state.Thresholds[i]
+		}
+	}
+	switch {
+	case blank(by) || now.IsZero():
+		return nil, fmt.Errorf("%w: a decision names its actor", ErrInvalid)
+	case found == nil:
+		return nil, fmt.Errorf("%w: no cost variance threshold waits for approval; set one (SetCostVarianceThreshold)", ErrInvalidTransition)
+	case found.No != no:
+		return nil, fmt.Errorf("%w: version %d is the one that waits for approval, not version %d", ErrInvalidTransition, found.No, no)
+	case found.By == by:
+		return nil, fmt.Errorf("%w: version %d was set by %s", ErrThresholdApproval, no, by)
+	case now.Before(p.latestThresholdTime()):
+		return nil, fmt.Errorf("%w: FIN's clock is behind the latest threshold record (%s); synchronise the clocks of FIN's servers and try the command again", ErrInvalid, p.latestThresholdTime().Format(time.RFC3339))
+	}
+	return found, nil
+}
+
+// ApproveVarianceThreshold approves the proposed version, which is the one named, by a person other than its setter,
+// at FIN's clock now: it is in force from now.
+func (p *FinancePolicy) ApproveVarianceThreshold(no int, by string, now time.Time) error {
+	t, err := p.proposedThreshold(no, by, now)
+	if err != nil {
+		return err
+	}
+	t.State, t.DecidedBy, t.DecidedAt, t.InForceAt = ThresholdApproved, by, now.UTC(), now.UTC()
+	p.record(eventThresholdApproved, now, no)
+	return nil
+}
+
+// RefuseVarianceThreshold refuses the proposed version, which is the one named, with a reason, by a person other than
+// its setter; it never takes effect.
+func (p *FinancePolicy) RefuseVarianceThreshold(no int, reason, by string, now time.Time) error {
+	if !text(reason) {
+		return fmt.Errorf("%w: a refusal has a reason", ErrInvalid)
+	}
+	t, err := p.proposedThreshold(no, by, now)
+	if err != nil {
+		return err
+	}
+	t.State, t.DecidedBy, t.DecidedAt, t.RefuseReason = ThresholdRefused, by, now.UTC(), reason
+	p.record(eventThresholdRefused, now, no)
+	return nil
+}
+
+// ThresholdAt returns the cost variance threshold in force at a system time: the latest approved version in force by
+// then, or nil when none was (then every variance needs approval).
 func (p *FinancePolicy) ThresholdAt(at time.Time) *VarianceThreshold {
 	var found *VarianceThreshold
 	for i := range p.state.Thresholds {
-		if !p.state.Thresholds[i].At.After(at) {
-			t := p.state.Thresholds[i]
+		if t := p.state.Thresholds[i]; t.State == ThresholdApproved && !t.InForceAt.After(at) {
 			found = &t
 		}
 	}
 	return found
+}
+
+// ProposedThreshold returns the version that waits for approval, or nil.
+func (p *FinancePolicy) ProposedThreshold() *VarianceThreshold {
+	for i := range p.state.Thresholds {
+		if t := p.state.Thresholds[i]; t.State == ThresholdProposed {
+			return &t
+		}
+	}
+	return nil
 }
 
 // Local converts an amount into the functional currency at the rate of the type in force at an instant; an amount
@@ -386,7 +498,9 @@ func RestorePolicy(st PolicyState) (*FinancePolicy, error) {
 			return nil, fmt.Errorf("%w: tax treatment %d", ErrInvalid, i+1)
 		}
 	}
-	return &FinancePolicy{state: st, stored: len(st.Rates), taxes: len(st.Taxes), series: len(st.Series), limits: len(st.Thresholds)}, nil
+	p := &FinancePolicy{state: st, stored: len(st.Rates), taxes: len(st.Taxes), series: len(st.Series), limits: len(st.Thresholds)}
+	p.markDecided()
+	return p, nil
 }
 
 func (p *FinancePolicy) State() PolicyState {
@@ -394,6 +508,26 @@ func (p *FinancePolicy) State() PolicyState {
 	st.Rates, st.Taxes, st.Series = append([]RateEntry(nil), st.Rates...), append([]TaxTreatment(nil), st.Taxes...), append([]Series(nil), st.Series...)
 	st.Thresholds = append([]VarianceThreshold(nil), st.Thresholds...)
 	return st
+}
+
+// AddedDecisions returns the versions decided (approved or refused) whose decision is not stored yet.
+func (p *FinancePolicy) AddedDecisions() []VarianceThreshold {
+	var out []VarianceThreshold
+	for _, t := range p.state.Thresholds {
+		if t.State != ThresholdProposed && !p.decided[t.No] {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+func (p *FinancePolicy) markDecided() {
+	p.decided = map[int]bool{}
+	for _, t := range p.state.Thresholds {
+		if t.State != ThresholdProposed {
+			p.decided[t.No] = true
+		}
+	}
 }
 
 // AddedThresholds returns the variance thresholds set since the policy was loaded.
@@ -432,4 +566,5 @@ func (p *FinancePolicy) EndedRates() []RateEntry {
 func (p *FinancePolicy) Acknowledge() {
 	p.pending, p.stored, p.ended, p.taxes, p.series = nil, len(p.state.Rates), nil, len(p.state.Taxes), len(p.state.Series)
 	p.limits = len(p.state.Thresholds)
+	p.markDecided()
 }

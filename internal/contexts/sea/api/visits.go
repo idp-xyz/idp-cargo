@@ -58,6 +58,14 @@ type RecordContainerSeal struct {
 // movement is OPEN, on a container that has such an item; an item raised by the container's own loading or by its
 // gate-in with no return cannot be released this way. The receipt names the release (ReleaseNo). The published facts
 // do not change.
+//
+// Since V2.100 the release reads SEA's settings of the movement's legal entity (S1, in one transaction, under the
+// tenant's settings lock in shared mode): under SUPERVISOR_ONLY the actor needs the permission
+// SuperviseCarrierConflicts as well, granted by name only, and without it the release is refused (ErrUnauthorized) with
+// the way out, that a supervisor releases it; under WITH_REASON, the standard, nothing more is asked. The release
+// records the settings version and the value of S1 it was decided under (CarrierConflictRelease), and a release made
+// before a change of S1 keeps its validity. The final declaration (FinalizeOceanDocFacts) is held back by an unreleased
+// conflict under both values; it reads no settings.
 type AcceptCarrierLoadingConflict struct {
 	CommandID        string
 	TenantID         string
@@ -242,6 +250,10 @@ type CarrierConflictRelease struct {
 	Reason      string
 	RecordedBy  string
 	RecordedAt  time.Time
+	// SettingsVersion is the version of SEA's settings the release was decided under and S1 the value of S1 it gave
+	// (S1SupervisorOnly or S1WithReason); 0 and empty for a release made before V2.100.
+	SettingsVersion int
+	S1              string
 }
 
 // ContainerVisit is a container visit with its seals, latest first.

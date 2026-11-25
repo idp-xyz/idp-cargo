@@ -122,5 +122,9 @@ func (m *Module) GetFinSettingsCatalogue(context.Context, api.GetFinSettingsCata
 		}
 		out.Items = append(out.Items, item)
 	}
+	for _, r := range cat.Reference {
+		out.Reference = append(out.Reference, api.FinReferenceItem{Key: r.Key, TitleZH: r.TitleZH, TitleEN: r.TitleEN, Governs: r.Governs, ChangedBy: r.ChangedBy,
+			NeedsApproval: r.Approval, ApprovalNote: r.ApprovalNote})
+	}
 	return out, nil
 }

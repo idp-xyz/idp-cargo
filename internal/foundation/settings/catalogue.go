@@ -96,10 +96,23 @@ type Config map[string]Setting
 // Rule is a rule across items: it answers an error naming the items and the way out when a configuration breaks it.
 type Rule func(Config) error
 
-// Catalogue is a context's items, its cross-item rules and its scope hierarchy.
+// Reference is a fact a context keeps with its own history and lists in the catalogue, though the settings commands do
+// not change it (the design's E1 to E4): what it governs, where it is changed, and whether a change needs approval.
+type Reference struct {
+	Key              string
+	TitleZH, TitleEN string
+	Governs          string
+	ChangedBy        string
+	Approval         bool
+	ApprovalNote     string
+}
+
+// Catalogue is a context's items, its cross-item rules and its scope hierarchy; Reference lists the reference data the
+// context keeps elsewhere.
 type Catalogue struct {
 	Context   string
 	Items     []Item
+	Reference []Reference
 	Rules     []Rule
 	Hierarchy Hierarchy
 }
@@ -176,6 +189,17 @@ func (c *Catalogue) Table() string {
 		}
 		fmt.Fprintf(&b, "| %s | %s / %s | %s | %s | %s | %s |\n", it.Key, it.TitleEN, it.TitleZH, strings.Join(values, "; "),
 			strings.Join(it.Kinds, ", "), control, it.Explanation)
+	}
+	if len(c.Reference) > 0 {
+		b.WriteString("\nReference data, kept in the context's own records and not changed by the settings commands:\n\n" +
+			"| Key | Title | Governs | Changed by | Needs approval |\n|---|---|---|---|---|\n")
+		for _, r := range c.Reference {
+			approval := "no"
+			if r.Approval {
+				approval = "yes"
+			}
+			fmt.Fprintf(&b, "| %s | %s / %s | %s | %s | %s: %s |\n", r.Key, r.TitleEN, r.TitleZH, r.Governs, r.ChangedBy, approval, r.ApprovalNote)
+		}
 	}
 	return b.String()
 }

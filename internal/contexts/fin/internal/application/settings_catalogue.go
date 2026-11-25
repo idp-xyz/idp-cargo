@@ -57,11 +57,11 @@ func finItem(key, zh, en string, control bool, explanation string, def string, v
 // FinSettingsCatalogue is the catalogue of FIN's settings: the items of the design's section 5 that concern the
 // apportionment of a consolidation's costs, from strict to loose, the standard profile's value as the default. All are
 // internal controls: each relaxes a check that another person or a voucher makes. The finance policy (E1 to E4) is
-// brought under the mechanism in step C1c.
+// listed as reference data (V2.100).
 func FinSettingsCatalogue() *settings.Catalogue {
 	threshold := &settings.Param{Name: "threshold", TitleZH: "金额阈值（本币）", TitleEN: "amount threshold (functional currency)",
 		Kinds: []string{settings.KindLegalEntity}, LooserWhenHigher: true}
-	c := &settings.Catalogue{Context: "fin", Hierarchy: FinHierarchy, Rules: []settings.Rule{f8NeedsF3}, Items: []settings.Item{
+	c := &settings.Catalogue{Context: "fin", Hierarchy: FinHierarchy, Rules: []settings.Rule{f8NeedsF3}, Reference: finReference, Items: []settings.Item{
 		finItem(SettingF1, "职责分离", "Segregation of duties", true,
 			"Whether the person who asked for a container to be opened, or who removed or transferred the house, may confirm the attribution of its former share, and whether the person who asked for a rework may submit the first apportionment of a line after it; both rules are governed by this item. Under a threshold the first rule measures the line's local cost, because that submission redistributes the whole line, and the second the former share of each attribution.",
 			"NOT_ALLOWED",
@@ -106,6 +106,29 @@ func FinSettingsCatalogue() *settings.Catalogue {
 			settings.Value{ID: "KEEP_AMOUNT", TitleZH: "按原金额沿用", TitleEN: "keep the amount"}),
 	}}
 	return c
+}
+
+// finReference is E1 to E4 of the design, the finance policy FIN keeps for each legal entity with its own history:
+// listed in the catalogue, changed by their own commands and not by the settings commands. Only E1's loosening needs a
+// second person (since V2.100); a tax treatment, a rate and a series are facts with a period of their own, and a new
+// one starts after the last.
+var finReference = []settings.Reference{
+	{Key: "fin.E1", TitleZH: "成本差异阈值", TitleEN: "Cost variance threshold",
+		Governs:   "the variance of a final match against its accrual, beyond which the invoice waits for approval",
+		ChangedBy: "SetCostVarianceThreshold, ApproveCostVarianceThreshold and RefuseCostVarianceThreshold, in the legal entity's finance policy",
+		Approval:  true, ApprovalNote: "a looser version (a higher amount or rate, or the first) takes effect when another holder of ApproveSettings approves it"},
+	{Key: "fin.E2", TitleZH: "各费用代码的税务处理", TitleEN: "Tax treatment of charge codes",
+		Governs:   "whether a charge code is exempt, a pass-through disbursement or taxable, and at what rate",
+		ChangedBy: "SetChargeTaxTreatment, in the legal entity's finance policy",
+		Approval:  false, ApprovalNote: "a treatment is a fact in force from a date; a new version starts after the last"},
+	{Key: "fin.E3", TitleZH: "汇率", TitleEN: "Exchange rates",
+		Governs:   "the rate each currency is converted into the functional currency at, by type and period",
+		ChangedBy: "RecordExchangeRate and EndExchangeRate, in the legal entity's finance policy",
+		Approval:  false, ApprovalNote: "a rate is a fact with its own period and source; a rate used is not changed"},
+	{Key: "fin.E4", TitleZH: "发票号段", TitleEN: "Invoice number series",
+		Governs:   "the template and first number of the debit notes' and credit notes' numbers",
+		ChangedBy: "RegisterInvoiceSeries, in the legal entity's finance policy",
+		Approval:  false, ApprovalNote: "a series is registered once and its numbers are never reused"},
 }
 
 // f8NeedsF3 is the rule across F8 and F3: defaulting a missing attribution to the remaining cargo only with a voucher

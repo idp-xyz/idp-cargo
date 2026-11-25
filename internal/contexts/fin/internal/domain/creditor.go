@@ -267,6 +267,13 @@ type MatchPolicy interface {
 // one closes the accrual and carries the variance. Each match converts at the ACCOUNTING rate in force (OD-5 B). A
 // final variance beyond the threshold in force needs approval.
 func (c *CreditorInvoice) Match(items []MatchItem, targets []AccrualTarget, policy MatchPolicy, by string, at time.Time) error {
+	return c.MatchAt(items, targets, policy, by, at, at)
+}
+
+// MatchAt is Match with the system time the threshold in force is read at (since V2.100): FIN's clock, read after the
+// policy's lock was taken, so that a threshold approved at the same moment is either in force for the match or not, and
+// the invoice records the version it used. at is still the business time the rates and the record are read at.
+func (c *CreditorInvoice) MatchAt(items []MatchItem, targets []AccrualTarget, policy MatchPolicy, by string, at, systemAt time.Time) error {
 	if err := c.change(by, at); err != nil {
 		return err
 	}
@@ -283,7 +290,7 @@ func (c *CreditorInvoice) Match(items []MatchItem, targets []AccrualTarget, poli
 	}
 	seen := map[TargetKey]bool{}
 	perLine := make([]int64, len(st.Lines))
-	threshold := policy.ThresholdAt(at)
+	threshold := policy.ThresholdAt(systemAt)
 	var matches []Match
 	required := false
 	for _, it := range items {
@@ -338,7 +345,7 @@ func (c *CreditorInvoice) Match(items []MatchItem, targets []AccrualTarget, poli
 		matches[i].No = i + 1
 	}
 	st.Matches, st.State, st.MatchedBy, st.MatchedAt, st.ApprovalRequired = matches, CreditorMatched, by, at.UTC(), required
-	st.ThresholdNo = 0
+	st.MatchEnteredAt, st.ThresholdNo = systemAt.UTC(), 0
 	if threshold != nil {
 		st.ThresholdNo = threshold.No
 	}

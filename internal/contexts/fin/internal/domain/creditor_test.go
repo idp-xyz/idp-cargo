@@ -212,6 +212,9 @@ func TestVarianceThreshold(t *testing.T) {
 	if err := p.SetVarianceThreshold(10_000, 100, "acct-1", hour(3)); err != nil {
 		t.Fatal(err)
 	}
+	if err := p.ApproveVarianceThreshold(1, "ctrl-1", hour(3)); err != nil { // the first version is looser: another person approves it
+		t.Fatal(err)
+	}
 	if err := p.SetVarianceThreshold(5_000, 50, "acct-1", hour(2)); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("a threshold set before the one in force: %v", err)
 	}

@@ -46,11 +46,63 @@ func (d Deps) SetVarianceThreshold(ctx context.Context, c Command, amount int64,
 			return 0, fmt.Errorf("%w: an invoice of the legal entity was matched at %s; a threshold is set after it", fin.ErrInvalid,
 				latest.Format(time.RFC3339))
 		}
-		if err := p.SetVarianceThreshold(amount, rateBP, c.Scope.ActorID, c.OccurredAt); err != nil {
+		// FIN's clock, read under the policy's lock, stamps the version and is when it is in force from (since V2.100);
+		// never before the latest match, so that a lagging server does not date a version before a match already made
+		now, err := d.recordTime(txCtx, c, p)
+		if err != nil {
+			return 0, err
+		}
+		if err := p.ProposeVarianceThreshold(amount, rateBP, c.Scope.ActorID, c.OccurredAt, now); err != nil {
 			return 0, err
 		}
 		return len(p.State().Thresholds), nil
 	})
+}
+
+// recordTime is the system time a threshold set or approved is stamped with: FIN's clock, read under the policy's lock
+// (which a match holds in share mode), and never before the system time of the latest match of the legal entity, so
+// that a clock behind a match that has committed does not put a version in force before it.
+func (d Deps) recordTime(ctx context.Context, c Command, _ *fin.FinancePolicy) (time.Time, error) {
+	if d.Creditors == nil {
+		return time.Time{}, ErrMissingDependency
+	}
+	now := d.Clock.Now().UTC().Truncate(time.Microsecond)
+	latest, err := d.Creditors.LatestMatchEntered(ctx, c.Scope.TenantID, c.Subject)
+	if err == nil && latest.After(now) {
+		now = latest
+	}
+	return now, err
+}
+
+// ApproveVarianceThreshold approves the version of the legal entity's cost variance threshold that waits for approval
+// (the one named), by a person other than its setter; it is in force from FIN's clock, read under the policy's lock.
+// The permission is ApproveSettings, asked by the caller.
+func (d Deps) ApproveVarianceThreshold(ctx context.Context, c Command, version int) (Receipt, error) {
+	return d.changePolicy(ctx, c, func(txCtx context.Context, p *fin.FinancePolicy) (int, error) {
+		now, err := d.recordTime(txCtx, c, p)
+		if err != nil {
+			return 0, err
+		}
+		return version, p.ApproveVarianceThreshold(version, c.Scope.ActorID, now)
+	})
+}
+
+// RefuseVarianceThreshold refuses the version that waits for approval, with a reason, by a person other
+// than its setter.
+func (d Deps) RefuseVarianceThreshold(ctx context.Context, c Command, version int, reason string) (Receipt, error) {
+	return d.changePolicy(ctx, c, func(_ context.Context, p *fin.FinancePolicy) (int, error) {
+		return version, p.RefuseVarianceThreshold(version, reason, c.Scope.ActorID, d.Clock.Now().UTC().Truncate(time.Microsecond))
+	})
+}
+
+// matchTime is the system time a match is read at: FIN's clock, and never before the latest approval of a threshold in
+// force, so that a clock behind a decision that has committed does not make the match read an older threshold.
+func matchTime(now time.Time, p *fin.FinancePolicy) time.Time {
+	now = now.UTC().Truncate(time.Microsecond)
+	if latest := p.LatestApprovalAt(); latest.After(now) {
+		return latest
+	}
+	return now
 }
 
 // RecordCreditorInvoice records a supplier's invoice to a legal entity with a finance policy: ORG confirms the creditor
@@ -147,7 +199,10 @@ func (d Deps) MatchCreditorInvoice(ctx context.Context, c Command, items []fin.M
 		if err != nil {
 			return 0, err
 		}
-		if err = inv.Match(items, targets, p, c.Scope.ActorID, c.OccurredAt); err != nil {
+		// FIN's clock, read after the policy's lock: a threshold approved at the same moment is in force for this match
+		// or
+		// not, and the invoice records the version it used (since V2.100)
+		if err = inv.MatchAt(items, targets, p, c.Scope.ActorID, c.OccurredAt, matchTime(d.Clock.Now(), p)); err != nil {
 			return 0, err
 		}
 		return len(inv.State().Matches), nil

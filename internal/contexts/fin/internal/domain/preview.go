@@ -174,41 +174,9 @@ func (p *ConsolCostPool) ApportionInOneStep(in ApportionInput, basis CostBasis, 
 	if err := p.open(by, at); err != nil {
 		return err
 	}
-	const way = "preview the lines and submit the preview"
-	switch {
-	case in.Settings.F4 != F4OneStep:
-		return fmt.Errorf("%w: F4 is not ONE_STEP_WITHOUT_OPENED_OR_LEFT, so every apportionment is previewed and then submitted: %s, or ask a configurer to set F4", ErrOneStepRefused, way)
-	case len(in.Attributions) > 0:
-		return fmt.Errorf("%w: a one-step apportionment states no attribution: %s to state one", ErrInvalid, way)
-	}
-	if err := inWork(basis); err != nil {
-		return err
-	}
-	if held := p.FormerShares(basis); len(held) > 0 {
-		var houses []string
-		for _, f := range held {
-			houses = append(houses, fmt.Sprintf("house %s on line %d", f.Share.ShipmentID, f.LineNo))
-		}
-		return fmt.Errorf("%w: the pool holds a former share pending finance's confirmation (%s): %s, stating who bears it", ErrOneStepRefused, strings.Join(houses, ", "), way)
-	}
-	if missing := p.reworksNotCarried(basis); len(missing) > 0 {
-		return fmt.Errorf("%w: the first apportionment of a line after a rework is previewed and submitted by another person (%s): %s", ErrOneStepRefused,
-			strings.Join(missing, "; "), way)
-	}
-	a, err := p.apportionment(in, basis, by, at)
-	if errors.Is(err, ErrAttributionReconfirm) {
-		return fmt.Errorf("%w: a one-step apportionment carries the attributions in force and states none: %w; %s, stating the attribution again", ErrOneStepRefused, err, way)
-	}
+	a, err := p.oneStepRefusal(in, basis, by, at)
 	if err != nil {
 		return err
-	}
-	for _, la := range a.Lines {
-		for _, x := range la.Attributions {
-			if x.Loss > 0 && in.Jobs[x.ShipmentID] != x.JobID {
-				return fmt.Errorf("%w: house %s bears a loss on line %d and its job %s is not open; open the job or state the attribution again in a preview", ErrPoolJobMissing,
-					x.ShipmentID, la.LineNo, x.JobID)
-			}
-		}
 	}
 	if asked := p.reworksAskedByUnder(in.Settings, basis, by, a.Lines); len(asked) > 0 {
 		return fmt.Errorf("%w: %s asked for %s", ErrConfirmer, by, strings.Join(asked, ", "))
@@ -217,6 +185,48 @@ func (p *ConsolCostPool) ApportionInOneStep(in ApportionInput, basis CostBasis, 
 	p.state.Apportionments = append(p.state.Apportionments, a)
 	p.record(eventPoolApportioned, at, a.No)
 	return nil
+}
+
+// oneStepRefusal is what a one-step apportionment checks of the pool and PHY's basis, apart from who asks: it answers
+// the apportionment it would write, or the refusal.
+func (p *ConsolCostPool) oneStepRefusal(in ApportionInput, basis CostBasis, by string, at time.Time) (Apportionment, error) {
+	const way = "preview the lines and submit the preview"
+	switch {
+	case in.Settings.F4 != F4OneStep:
+		return Apportionment{}, fmt.Errorf("%w: F4 is not ONE_STEP_WITHOUT_OPENED_OR_LEFT, so every apportionment is previewed and then submitted: %s, or ask a configurer to set F4", ErrOneStepRefused, way)
+	case len(in.Attributions) > 0:
+		return Apportionment{}, fmt.Errorf("%w: a one-step apportionment states no attribution: %s to state one", ErrInvalid, way)
+	}
+	if err := inWork(basis); err != nil {
+		return Apportionment{}, err
+	}
+	if held := p.FormerShares(basis); len(held) > 0 {
+		var houses []string
+		for _, f := range held {
+			houses = append(houses, fmt.Sprintf("house %s on line %d", f.Share.ShipmentID, f.LineNo))
+		}
+		return Apportionment{}, fmt.Errorf("%w: the pool holds a former share pending finance's confirmation (%s): %s, stating who bears it", ErrOneStepRefused, strings.Join(houses, ", "), way)
+	}
+	if missing := p.reworksNotCarried(basis); len(missing) > 0 {
+		return Apportionment{}, fmt.Errorf("%w: the first apportionment of a line after a rework is previewed and submitted by another person (%s): %s", ErrOneStepRefused,
+			strings.Join(missing, "; "), way)
+	}
+	a, err := p.apportionment(in, basis, by, at)
+	if errors.Is(err, ErrAttributionReconfirm) {
+		return Apportionment{}, fmt.Errorf("%w: a one-step apportionment carries the attributions in force and states none: %w; %s, stating the attribution again", ErrOneStepRefused, err, way)
+	}
+	if err != nil {
+		return Apportionment{}, err
+	}
+	for _, la := range a.Lines {
+		for _, x := range la.Attributions {
+			if x.Loss > 0 && in.Jobs[x.ShipmentID] != x.JobID {
+				return Apportionment{}, fmt.Errorf("%w: house %s bears a loss on line %d and its job %s is not open; open the job or state the attribution again in a preview", ErrPoolJobMissing,
+					x.ShipmentID, la.LineNo, x.JobID)
+			}
+		}
+	}
+	return a, nil
 }
 
 // reworksAskedBy names the reworks of the basis's containers that have ended and that the person asked for, each with

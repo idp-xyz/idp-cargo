@@ -178,6 +178,11 @@ func laterOf(a, b time.Time) time.Time {
 	return a
 }
 
+// Latest is the latest time recorded in the ledger: a proposal, an approval or a cancellation (zero when it is empty).
+// A decision that reads the settings is not timed before it, so that it reads what is already committed even when its
+// own clock is behind.
+func (l *Ledger) Latest() time.Time { return l.latest() }
+
 // clockBehind refuses a time before the latest recorded: history is written forwards, so that what the ledger answered
 // for a moment in the past does not change.
 func (l *Ledger) clockBehind(at time.Time) error {

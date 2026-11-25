@@ -27,6 +27,7 @@ import (
 	"go.idp.xyz/idp-cargo/internal/contexts/sea/internal/domain"
 	"go.idp.xyz/idp-cargo/internal/foundation/bento"
 	"go.idp.xyz/idp-cargo/internal/foundation/numbering"
+	"go.idp.xyz/idp-cargo/internal/foundation/settings"
 	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
@@ -427,6 +428,12 @@ func (m *Module) GetPendingItems(ctx context.Context, q api.GetPendingItems) ([]
 	if err != nil {
 		return nil, classify(err)
 	}
+	// the item of a conflict says who may release it under the S1 in force for the movement's legal entity
+	in, err := m.reads(q.TenantID).SettingsAt(ctx, domain.TenantID(q.TenantID), settings.Scope{Kind: settings.KindLegalEntity, ID: read.Movement.State().LegalEntityID}, time.Time{})
+	if err != nil {
+		return nil, classify(err)
+	}
+	read.Movement.ReadUnder(in.Config[application.SettingS1].Value)
 	var visits []domain.VisitState
 	for _, v := range read.Visits {
 		visits = append(visits, v.Visit.State())
@@ -613,7 +620,7 @@ func visitView(v *domain.Visit, revision int64) api.ContainerVisit {
 	for i := len(st.Releases) - 1; i >= 0; i-- {
 		r := st.Releases[i]
 		out.Releases = append(out.Releases, api.CarrierConflictRelease{ReleaseNo: r.No, FactNo: r.FactNo, PHYSeal: r.PHYSeal, PHYSealedAt: r.PHYSealedAt,
-			Reason: r.Reason, RecordedBy: r.By, RecordedAt: r.At})
+			Reason: r.Reason, RecordedBy: r.By, RecordedAt: r.At, SettingsVersion: r.SettingsVersion, S1: r.S1})
 	}
 	for i := len(st.Events) - 1; i >= 0; i-- {
 		e := st.Events[i]
@@ -625,7 +632,8 @@ func visitView(v *domain.Visit, revision int64) api.ContainerVisit {
 
 func (m *Module) reads(tenant string) application.Reads {
 	return application.Reads{Tx: bento.TenantTransactor{DB: m.db, Tenant: tenant}, Movements: postgres.MovementStore{DB: m.db},
-		Visits: postgres.VisitStore{DB: m.db}, Series: postgres.SeriesStore{DB: m.db}, Numbers: m.numbers, Register: postgres.Register{DB: m.db}}
+		Visits: postgres.VisitStore{DB: m.db}, Series: postgres.SeriesStore{DB: m.db}, Numbers: m.numbers, Register: postgres.Register{DB: m.db},
+		Settings: postgres.SettingsStore{DB: m.db}, Clock: m.clock}
 }
 
 func (m *Module) deps(tenant, commandID string) application.Deps {
@@ -643,6 +651,7 @@ func (m *Module) deps(tenant, commandID string) application.Deps {
 		Window:    m.window,
 		Bookings:  m.bookings,
 		Plans:     m.plans,
+		Settings:  postgres.SettingsStore{DB: m.db},
 	}
 }
 
@@ -658,10 +667,14 @@ func receipt(r application.Receipt, err error) (api.Receipt, error) {
 		return api.Receipt{}, classify(err)
 	}
 	out := api.Receipt{CommandID: r.CommandID, NewRevision: r.NewRevision, EntryNo: r.EntryNo, HBL: r.HBL, BillNo: r.BillNo, SealNo: r.SealNo,
-		AssertionNo: r.AssertionNo, EventNo: r.EventNo, ReleaseNo: r.ReleaseNo, FactsVersion: r.FactsVersion, FactNo: r.FactNo}
-	if r.Kind == "ContainerVisit" {
+		AssertionNo: r.AssertionNo, EventNo: r.EventNo, ReleaseNo: r.ReleaseNo, FactsVersion: r.FactsVersion, FactNo: r.FactNo,
+		SettingsVersion: r.SettingsVersion, Notice: r.Notice}
+	switch r.Kind {
+	case "ContainerVisit":
 		out.VisitID = r.SubjectID
-	} else {
+	case "SeaSettings":
+		out.ChangeID = r.SubjectID
+	default:
 		out.MovementID = r.SubjectID
 	}
 	return out, nil
@@ -679,11 +692,11 @@ func classify(err error) error {
 	switch {
 	case errors.Is(err, application.ErrUnauthenticated):
 		kind = api.ErrUnauthenticated
-	case errors.Is(err, application.ErrUnauthorized), errors.Is(err, bento.ErrTenantScopeConflict):
+	case errors.Is(err, application.ErrUnauthorized), errors.Is(err, domain.ErrNotSupervisor), errors.Is(err, bento.ErrTenantScopeConflict):
 		kind = api.ErrUnauthorized
 	case errors.Is(err, application.ErrIdempotencyConflict):
 		kind = api.ErrIdempotencyConflict
-	case errors.Is(err, domain.ErrConflict), errors.Is(err, bentorepo.ErrConflict), errors.Is(err, bentorepo.ErrAlreadyExists), postgres.Conflict(err):
+	case errors.Is(err, domain.ErrConflict), errors.Is(err, settings.ErrDuplicate), errors.Is(err, bentorepo.ErrConflict), errors.Is(err, bentorepo.ErrAlreadyExists), postgres.Conflict(err):
 		kind = api.ErrConflict
 	case errors.Is(err, bentorepo.ErrNotFound):
 		kind = api.ErrNotFound
@@ -697,7 +710,7 @@ func classify(err error) error {
 		errors.Is(err, application.ErrUnknownBooking), errors.Is(err, application.ErrUnknownShipment), errors.Is(err, application.ErrNoSeries),
 		errors.Is(err, application.ErrHBLInUse), errors.Is(err, application.ErrHBLDiffers), errors.Is(err, application.ErrMasterBillInUse),
 		errors.Is(err, application.ErrContainerInUse), errors.Is(err, application.ErrUnitHasContainer), errors.Is(err, application.ErrContainersAssigned),
-		errors.Is(err, kernel.ErrOutsideRecordWindow):
+		errors.Is(err, application.ErrUnknownLegalEntity), errors.Is(err, settings.ErrRefused), errors.Is(err, kernel.ErrOutsideRecordWindow):
 		kind = api.ErrRejected
 	default:
 		return err

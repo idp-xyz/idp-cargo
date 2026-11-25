@@ -34,6 +34,7 @@ var (
 	ErrHBLInUse            = errors.New("sea application: the HBL number belongs to another shipment of the legal entity")
 	ErrHBLDiffers          = errors.New("sea application: the shipment has another HBL number, which moves with it")
 	ErrMasterBillInUse     = errors.New("sea application: the number is the current master bill reference of another movement of the tenant")
+	ErrUnknownLegalEntity  = errors.New("sea application: SEA does not know the legal entity")
 )
 
 // Scope is the verified caller of a command.
@@ -61,6 +62,10 @@ type Receipt struct {
 	FactNo       int // the carrier fact a RecordOceanCarrierFact wrote
 	FactsVersion int // the OceanDocFacts version a FinalizeOceanDocFacts published
 	RequestHash  string
+	// SettingsVersion is the version an approval of SEA's settings made; Notice is what a settings proposal says
+	// besides its receipt, the same on a replay.
+	SettingsVersion int
+	Notice          string
 }
 
 type TxRunner interface {
@@ -153,6 +158,7 @@ type Deps struct {
 	Window    kernel.RecordWindow
 	Bookings  Bookings
 	Plans     Plans
+	Settings  SettingsStore
 }
 
 // Command is what every SEA command states; Payload is the command as the caller sent it.
@@ -265,10 +271,23 @@ type commandLocker interface {
 // first, so that the same command sent twice at once (a client retrying before the first answer) commits once: the
 // other waits, finds the receipt and answers it.
 func (d Deps) write(ctx context.Context, c Command, hash, kind string, mutate func(context.Context) (Receipt, []aggregate, error)) (Receipt, error) {
+	return d.writeAfter(ctx, c, hash, kind, nil, mutate)
+}
+
+// writeAfter is write for a command that takes a lock of its own first (first): a settings command holds the tenant's
+// settings lock before it looks for its receipt, so that a second copy of it that waited for the first answers the
+// receipt, as a replay does. It then holds no lock on the command id: the settings lock already serialises the
+// commands of the tenant, and a second lock on the id could meet another command's in the opposite order.
+func (d Deps) writeAfter(ctx context.Context, c Command, hash, kind string, first func(context.Context) error,
+	mutate func(context.Context) (Receipt, []aggregate, error)) (Receipt, error) {
 	var result Receipt
 	var changed []aggregate
 	err := d.Tx.WithinTransaction(ctx, func(txCtx context.Context) error {
-		if l, ok := d.Receipts.(commandLocker); ok {
+		if first != nil {
+			if err := first(txCtx); err != nil {
+				return err
+			}
+		} else if l, ok := d.Receipts.(commandLocker); ok {
 			if err := l.Lock(txCtx, c.Scope.TenantID, c.CommandID); err != nil {
 				return err
 			}

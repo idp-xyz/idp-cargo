@@ -131,9 +131,15 @@ func (permissions) AuthorizeBookingAction(ctx context.Context, tenant, actor, ac
 // AuthorizeSeaAction covers SEA's commands and the two reads SEA itself authorizes: a VGM signatory's name
 // ("sea:ReadVgmSignatory") and the log of those reads ("sea:ReadVgmSignatoryAccess"). Those two are granted by name
 // only: "sea:Read", "sea:*" and "*" grant neither, so that a general grant never includes a person's name kept
-// apart (the owner's decision of 2026-11-18, with P4, P6 and P7).
+// apart (the owner's decision of 2026-11-18, with P4, P6 and P7). So are the three of SEA's settings (V2.100):
+// "sea:ConfigureSettings" (propose and cancel a change), "sea:ApproveSettings" (approve one) and
+// "sea:SuperviseCarrierConflicts" (release a carrier's contradiction under S1 SUPERVISOR_ONLY), so that a general grant
+// never lets a person change how SEA's controls work, approve the change or release as a supervisor. That the approver
+// is not the proposer is SEA's own rule, not a permission.
 func (permissions) AuthorizeSeaAction(ctx context.Context, tenant, actor, action, _ string) error {
-	if action == seaapi.ActionReadVgmSignatory || action == seaapi.ActionReadVgmSignatoryLog {
+	switch action {
+	case seaapi.ActionReadVgmSignatory, seaapi.ActionReadVgmSignatoryLog, seaapi.ActionConfigureSettings, seaapi.ActionApproveSettings,
+		seaapi.ActionSuperviseCarrierConflicts:
 		return identity.AuthorizeNamed(ctx, "sea", tenant, actor, action)
 	}
 	return identity.Authorize(ctx, "sea", tenant, actor, action)

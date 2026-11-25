@@ -62,6 +62,11 @@ type FinancePolicy struct {
 	TaxTreatments      []ChargeTaxTreatment
 	Series             []InvoiceSeries
 	VarianceThresholds []VarianceThreshold
+	// InForceThreshold is the version in force now (FIN's clock), 0 when none; ProposedThreshold the version
+	// that waits for approval, 0 when none (both since V2.100). The versions above hold who set each, when, and
+	// how it was decided.
+	InForceThreshold  int
+	ProposedThreshold int
 }
 
 // Job kinds and states.
@@ -1085,10 +1090,24 @@ type FinSettingItem struct {
 	Explanation     string
 }
 
-// FinSettingsCatalogue is the catalogue, and the same as a Markdown table (for the manual).
+// FinReferenceItem is a fact FIN keeps in the finance policy with its own history (E1 to E4), listed in the catalogue
+// though the settings commands do not change it: what it governs, the commands that change it, and whether a change
+// needs a second person (ApprovalNote says which).
+type FinReferenceItem struct {
+	Key           string
+	TitleZH       string
+	TitleEN       string
+	Governs       string
+	ChangedBy     string
+	NeedsApproval bool
+	ApprovalNote  string
+}
+
+// FinSettingsCatalogue is the catalogue, and the same as a Markdown table (for the manual). Reference lists E1 to E4.
 type FinSettingsCatalogue struct {
-	Items []FinSettingItem
-	Table string
+	Items     []FinSettingItem
+	Reference []FinReferenceItem
+	Table     string
 }
 
 // ListJobProfits lists the profit of the freight jobs of a legal entity that are not cancelled, in job id order, in
@@ -1188,6 +1207,127 @@ type CostReviewPage struct {
 	NextAfter string
 }
 
+// GetFinSettingsChangeImpact tells, before a change of FIN's settings takes effect, what would behave differently if it
+// were in force now, compared with what is in force now (FIN V2.100). Name ChangeID, a change set that is proposed or
+// approved and not in force yet, or Entries as a proposal would state them (checked as a proposal is; nothing is
+// proposed), not both. It is read in one read-only snapshot of FIN's rows (PHY's basis of each open pool just before
+// it) and changes nothing. The actor needs ReadProfit, ConfigureSettings or ApproveSettings, any one of them, as
+// whoever proposes or approves a change has to see what it does before deciding; the job profits (F6) are given only to
+// a holder of ReadProfit, and the others are told how many jobs' profit would change (JobsChanged), without amounts.
+type GetFinSettingsChangeImpact struct {
+	TenantID string
+	ActorID  string
+	ChangeID string
+	Entries  []FinSettingEntry
+}
+
+// FinItemChange is an item of a legal entity's settings that would change, from a value to another; the thresholds are
+// in the legal entity's functional currency.
+type FinItemChange struct {
+	Key           string
+	From, To      string
+	FromThreshold *kernel.Money
+	ToThreshold   *kernel.Money
+}
+
+// FinImpactEntity is a legal entity whose resolved settings differ.
+type FinImpactEntity struct {
+	LegalEntityID string
+	Changes       []FinItemChange
+}
+
+// FinImpactPreview is an unsubmitted preview of an open pool that would become stale: its settings version is the
+// tenant's, so every one of them does. Preview again and submit the new preview.
+type FinImpactPreview struct {
+	PoolID, LegalEntityID string
+	PreviewNo             int
+	PreviewedBy           string
+	PreviewedAt           time.Time
+	SettingsVersion       int
+}
+
+// FinImpactClose is an open pool whose close would become refused (Now ALLOWED, After REFUSED) or allowed, with the
+// refusal of the one that is refused (F7).
+type FinImpactClose struct {
+	PoolID, LegalEntityID string
+	Now, After            string
+	Refusal               string
+}
+
+// FinImpactJob is a job whose profit would change, now and after, with the basis each is told on (F6).
+type FinImpactJob struct {
+	JobID, ShipmentID, LegalEntityID string
+	ProfitNow, ProfitAfter           kernel.Money
+	BasisNow, BasisAfter             string
+}
+
+// FinImpactDefault is a line whose pending former shares of Houses would be defaulted to the cargo that remains (Change
+// WOULD_BE_DEFAULTED), or would stop being defaulted and be refused until attributed (WOULD_STOP_BEING_DEFAULTED) (F8).
+type FinImpactDefault struct {
+	PoolID, LegalEntityID string
+	LineNo                int
+	Houses                []string
+	Change                string
+}
+
+// FinImpactCarriedHouse is the amounts of a carried attribution in the line's currency, now and after; AfterKnown is
+// false when it would have to be stated again.
+type FinImpactCarriedHouse struct {
+	ShipmentID                string
+	LossNow, ExceptionNow     kernel.Money
+	LossAfter, ExceptionAfter kernel.Money
+	AfterKnown                bool
+}
+
+// FinImpactCarried is a line whose carried attributions are told differently when its cost has changed (F9): Now and
+// After are KEPT, RESCALED or STATE_AGAIN.
+type FinImpactCarried struct {
+	PoolID, LegalEntityID string
+	LineNo                int
+	Now, After            string
+	Houses                []FinImpactCarriedHouse
+}
+
+// FinImpactOneStep is a pool that would become able (Change BECOMES_POSSIBLE) or unable (BECOMES_REFUSED) to be
+// apportioned in one step, with the refusal of the one that is refused (F4).
+type FinImpactOneStep struct {
+	PoolID, LegalEntityID string
+	Change                string
+	Refusal               string
+}
+
+// FinImpactCheck is a rule that the submission of an unsubmitted preview would check differently, without saying who
+// submits: Rule is F1, F2 or F3, Now and After how it is checked, LineNo and ShipmentID where it applies.
+type FinImpactCheck struct {
+	PoolID, LegalEntityID string
+	PreviewNo             int
+	Rule                  string
+	LineNo                int
+	ShipmentID            string
+	Now, After, Note      string
+}
+
+// FinSettingsChangeImpact is the answer: what would behave differently if the change were in force at AsOf, with the
+// settings version now and after. NotAssessed lists the open pools of a legal entity that changes that were opened
+// after PHY's bases were read: ask again.
+type FinSettingsChangeImpact struct {
+	TenantID      string
+	ChangeID      string
+	AsOf          time.Time
+	VersionNow    int
+	VersionAfter  int
+	Entities      []FinImpactEntity
+	StalePreviews []FinImpactPreview
+	Closes        []FinImpactClose
+	JobsChanged   int            // how many jobs' profit would change (F6), told to every caller
+	Jobs          []FinImpactJob // those jobs with the profit figures, only for a caller who holds ReadProfit
+	Defaults      []FinImpactDefault
+	Carried       []FinImpactCarried
+	OneStep       []FinImpactOneStep
+	Checks        []FinImpactCheck
+	NotAssessed   []string
+}
+
 // Queries is FIN's read side. Unknown policies, jobs, accounts, profiles and notes yield ErrNotFound.
 type Queries interface {
 	GetFinancePolicy(ctx context.Context, q GetFinancePolicy) (FinancePolicy, error)
@@ -1218,6 +1358,7 @@ type Queries interface {
 	GetFinSettings(ctx context.Context, q GetFinSettings) (FinSettings, error)
 	ListFinSettingsChanges(ctx context.Context, q ListFinSettingsChanges) ([]FinSettingsChange, error)
 	GetFinSettingsCatalogue(ctx context.Context, q GetFinSettingsCatalogue) (FinSettingsCatalogue, error)
+	GetFinSettingsChangeImpact(ctx context.Context, q GetFinSettingsChangeImpact) (FinSettingsChangeImpact, error)
 	ListJobProfits(ctx context.Context, q ListJobProfits) (JobProfitPage, error)
 	GetCostReviewRequest(ctx context.Context, q GetCostReviewRequest) (CostReviewRequest, error)
 	GetJobLegalEntity(ctx context.Context, q GetJobLegalEntity) (string, error)
