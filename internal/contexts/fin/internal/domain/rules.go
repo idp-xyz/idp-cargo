@@ -6,30 +6,38 @@ import (
 	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
-// FIN V2.97: the settings FIN's rules read (step C1b-1 of the configuration of the rules). The application reads the
-// settings in force for the pool's legal entity inside the command's transaction and hands the domain what the rules
-// need, as RuleSettings; the domain does not know the ledger. The zero value is the standard profile, the rules as
-// V2.96 had them, so that a pool with no settings set behaves as before. The values are those of FIN's catalogue.
+// FIN V2.97: the settings FIN's rules read (step C1b-1 of the configuration of the rules); V2.98 adds F4, F8 and F9
+// (step C1b-2). The application reads the settings in force for the pool's legal entity inside the command's
+// transaction and hands the domain what the rules need, as RuleSettings; the domain does not know the ledger. The zero
+// value is the standard profile, the rules as V2.96 had them, so that a pool with no settings set behaves as before.
+// The values are those of FIN's catalogue.
 const (
 	F1Unrestricted          = "UNRESTRICTED"
 	F1AboveThreshold        = "NOT_ABOVE_THRESHOLD"
 	F2SubmitterAndPreviewer = "SUBMITTER_AND_PREVIEWER"
 	F3OnlyWhenAmountMoves   = "ONLY_WHEN_AMOUNT_MOVES"
+	F4OneStep               = "ONE_STEP_WITHOUT_OPENED_OR_LEFT"
 	F6IncludedMarked        = "INCLUDED_MARKED"
 	F7Blocks                = "BLOCKS"
+	F8DefaultToRemaining    = "DEFAULT_TO_REMAINING"
+	F9KeepRatio             = "KEEP_RATIO"
+	F9Reconfirm             = "RECONFIRM"
 )
 
 // RuleSettings is what the rules of a pool read of the settings of its legal entity: the version in force (0 when no
 // change set is in force), F1 with its threshold in the functional currency's minor units (read only under
-// NOT_ABOVE_THRESHOLD), F2, F3, F6 and F7. An empty value is the item's default.
+// NOT_ABOVE_THRESHOLD), F2, F3, F4, F6, F7, F8 and F9. An empty value is the item's default.
 type RuleSettings struct {
 	Version     int
 	F1          string
 	F1Threshold int64
 	F2          string
 	F3          string
+	F4          string
 	F6          string
 	F7          string
+	F8          string
+	F9          string
 }
 
 // confirmer is a person the confirmation rules are checked for, with how a refusal names them.

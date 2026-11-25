@@ -93,6 +93,7 @@ var (
 	ErrPoolInWork       = fmt.Errorf("fin: FIN_POOL_IN_WORK: a container of the consolidation is being reworked, so the pool is frozen: no apportionment is previewed or submitted and the pool is not closed; wait for PHY to seal the container again or to give its stuffing up, then preview again")
 	ErrPreviewStale     = fmt.Errorf("fin: FIN_PREVIEW_STALE: what the preview was computed on has changed since; preview again and submit the new preview")
 	ErrPreviewSubmitted = fmt.Errorf("fin: FIN_PREVIEW_SUBMITTED: the preview was submitted already, and a preview is submitted once; preview again to submit another apportionment")
+	ErrOneStepRefused   = fmt.Errorf("fin: FIN_ONE_STEP_REFUSED: the apportionment is not made in one step; preview it and submit the preview")
 	ErrConfirmer        = fmt.Errorf("fin: FIN_CONFIRMER_ASKED_REWORK: the apportionment after a rework is not submitted by the person who asked for the rework; another finance user submits it, one who did not ask for an ended rework of these lines that is not yet carried")
 )
 

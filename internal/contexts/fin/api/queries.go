@@ -614,7 +614,9 @@ type PoolShare struct {
 // the house's own job bears and the consolidation's exception cost with the party responsible for it (empty when it is
 // 0), each in the line's currency and in the functional currency (together with the shares and the amount to be
 // allocated they make up the line's cost); the voucher and the reason; the house's departure as the business date; and
-// whether the apportionment only carries forward what an earlier one stated.
+// whether the apportionment only carries forward what an earlier one stated. ByDefault says that nobody stated it:
+// F8 DEFAULT_TO_REMAINING made it, with no loss, no exception cost, no party and no voucher (since FIN V2.98). ByRatio
+// says that it is carried with its loss and exception cost scaled to its line's cost by F9 KEEP_RATIO (likewise).
 type PoolAttribution struct {
 	ShipmentID     string
 	JobID          string
@@ -628,6 +630,8 @@ type PoolAttribution struct {
 	Reason         string
 	DepartedAt     time.Time
 	Carried        bool
+	ByDefault      bool
+	ByRatio        bool
 }
 
 // ApportionedLine is one line's shares under an apportionment, at the line version it divided, and the line's cost it
@@ -921,7 +925,8 @@ type PreviewExceptionEffect struct {
 
 // PreviewReason is why a house's figure changes: how and when its place in the consolidation ended and the operator's
 // reason (PHY's former house), and what the preview's attribution says (party, reference, voucher, reason, and whether
-// it only carries an attribution in force).
+// it only carries an attribution in force). Since FIN V2.98 ByDefault says that nobody stated the attribution and F8
+// DEFAULT_TO_REMAINING made it, ByRatio that it is carried scaled by F9 KEEP_RATIO, and Says what that does.
 type PreviewReason struct {
 	LineNo          int
 	ShipmentID      string
@@ -937,6 +942,9 @@ type PreviewReason struct {
 	Voucher         string
 	AttributionNote string
 	Carried         bool
+	ByDefault       bool
+	ByRatio         bool
+	Says            string
 }
 
 // PreviewEffect is what submitting a stored preview would change against the apportionment in force of each of its

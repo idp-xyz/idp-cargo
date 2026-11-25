@@ -109,7 +109,7 @@ func (p *ConsolCostPool) PendingItemsUnder(rules RuleSettings, basis CostBasis) 
 			out = append(out, item)
 		case pendingFormerShare:
 			for _, s := range formerSharesOf(la, basis) {
-				out = append(out, p.formerShareItem(item, s, basis, closed, after))
+				out = append(out, p.formerShareItem(rules, item, s, basis, closed, after))
 			}
 		case pendingLineNotApportioned, pendingLineNotOnBasis:
 			if closed || len(working) > 0 {
@@ -160,8 +160,9 @@ func (p *ConsolCostPool) PendingItemsUnder(rules RuleSettings, basis CostBasis) 
 
 // formerShareItem is the item of one former share not attributed: FORMER_SHARE_PENDING in an open pool, and in a closed
 // one REOPEN_TO_ATTRIBUTE. The message names who cannot confirm the attribution: the person who asked for the rework
-// that unloaded the house and the one who ended its place in the consolidation (as the submission refuses them).
-func (p *ConsolCostPool) formerShareItem(base PendingItem, s Share, basis CostBasis, closed bool, after string) PendingItem {
+// that unloaded the house and the one who ended its place in the consolidation (as the submission refuses them). Under
+// F8 DEFAULT_TO_REMAINING (since V2.98) it says what a preview that states nothing for the house will do.
+func (p *ConsolCostPool) formerShareItem(rules RuleSettings, base PendingItem, s Share, basis CostBasis, closed bool, after string) PendingItem {
 	f, _ := basis.Former(s.ShipmentID)
 	base.ShipmentID, base.Amount, base.Local = s.ShipmentID, s.Amount, s.Local
 	who := "Whoever ended its place in the consolidation (" + f.EndedBy + ")"
@@ -176,6 +177,11 @@ func (p *ConsolCostPool) formerShareItem(base PendingItem, s Share, basis CostBa
 	}
 	base.Message = fmt.Sprintf("house %s left the consolidation (%s) and holds a former share of %s on line %d, which is the loss it bears unless it is "+
 		"attributed otherwise; to attribute it, %s%s (FINANCE). %s cannot submit it.", s.ShipmentID, f.End, money(base.Currency, s.Amount), base.LineNo, after, way, who)
+	if rules.F8 == F8DefaultToRemaining {
+		base.Message += fmt.Sprintf(" Under F8 DEFAULT_TO_REMAINING a preview of the line that states nothing for house %s attributes it by default: loss 0 and exception "+
+			"cost 0, no party and no voucher, so its whole former share goes to the cargo that remains (to be allocated if no house is live); the bars of F1 and F2 "+
+			"apply to it as to a stated attribution.", s.ShipmentID)
+	}
 	return base
 }
 

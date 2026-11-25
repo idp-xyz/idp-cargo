@@ -48,7 +48,8 @@ func (c fixedClock) Now() time.Time {
 func TestTheRuleSettingsNamesAreTheCataloguesValues(t *testing.T) {
 	cat := FinSettingsCatalogue()
 	for _, c := range []struct{ key, value string }{{SettingF1, fin.F1Unrestricted}, {SettingF1, fin.F1AboveThreshold}, {SettingF2, fin.F2SubmitterAndPreviewer},
-		{SettingF3, fin.F3OnlyWhenAmountMoves}, {SettingF6, fin.F6IncludedMarked}, {SettingF7, fin.F7Blocks}} {
+		{SettingF3, fin.F3OnlyWhenAmountMoves}, {SettingF4, fin.F4OneStep}, {SettingF6, fin.F6IncludedMarked}, {SettingF7, fin.F7Blocks},
+		{SettingF8, fin.F8DefaultToRemaining}, {SettingF9, fin.F9KeepRatio}, {SettingF9, fin.F9Reconfirm}} {
 		it, ok := cat.Item(c.key)
 		if !ok {
 			t.Fatalf("%s is not in the catalogue", c.key)
@@ -97,7 +98,8 @@ func TestRuleSettingsOfReadsTheScopeChainAtTheClockWithTheVersion(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := fin.RuleSettings{Version: got.Version, F1: F1ThresholdValue, F1Threshold: 30_000, F2: fin.F2SubmitterAndPreviewer, F7: fin.F7Blocks, F3: "EVERY_ATTRIBUTION", F6: "SEPARATE"}
+	want := fin.RuleSettings{Version: got.Version, F1: F1ThresholdValue, F1Threshold: 30_000, F2: fin.F2SubmitterAndPreviewer, F7: fin.F7Blocks, F3: "EVERY_ATTRIBUTION", F6: "SEPARATE",
+		F4: "ALL_PREVIEWED", F8: "REJECT_WITH_DEFAULT", F9: "KEEP_AMOUNT"}
 	if got != want || got.Version == 0 {
 		t.Fatalf("now: %+v, want %+v", got, want)
 	}
@@ -146,5 +148,34 @@ func TestAThresholdValueWithNoAmountIsNotReadAsZero(t *testing.T) {
 	d := Deps{Settings: ledgerStore{ledger: ledger}, Clock: fixedClock{now: at.Add(time.Hour)}}
 	if _, err := d.RuleSettingsOf(context.Background(), "t1", "LE1"); !errors.Is(err, fin.ErrInvalid) || !strings.Contains(err.Error(), "has no threshold") {
 		t.Fatalf("%v", err)
+	}
+}
+
+// FIN V2.98: F4, F8 and F9 are read from the scope chain too, each with its default, and a value set for the legal entity
+// is the one handed to the rules.
+func TestRuleSettingsOfReadsF4F8AndF9(t *testing.T) {
+	cat := FinSettingsCatalogue()
+	le := settings.Scope{Kind: settings.KindLegalEntity, ID: "LE1"}
+	t0 := time.Date(2026, 11, 25, 8, 0, 0, 0, time.UTC)
+	cs, err := settings.NewLedger(nil).Propose(cat, settings.Proposal{ID: "a", By: "ann", At: t0, Effective: t0, Reason: "r", Entries: []settings.Entry{
+		{Scope: le, Key: SettingF3, Value: F3OnlyWhenAmount}, {Scope: le, Key: SettingF4, Value: fin.F4OneStep}, {Scope: le, Key: SettingF8, Value: fin.F8DefaultToRemaining},
+		{Scope: le, Key: SettingF9, Value: fin.F9Reconfirm}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ledger := settings.NewLedger([]settings.ChangeSet{cs})
+	a, err := ledger.Approve(cat, "a", "bob", t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs.Approval = &a
+	d := Deps{Settings: ledgerStore{ledger: settings.NewLedger([]settings.ChangeSet{cs})}, Clock: fixedClock{now: t0.Add(time.Hour)}}
+	got, err := d.RuleSettingsOf(context.Background(), "t1", "LE1")
+	if err != nil || got.F4 != fin.F4OneStep || got.F8 != fin.F8DefaultToRemaining || got.F9 != fin.F9Reconfirm || got.F3 != F3OnlyWhenAmount {
+		t.Fatalf("set: %+v %v", got, err)
+	}
+	other, err := d.RuleSettingsOf(context.Background(), "t1", "LE2")
+	if err != nil || other.F4 != "ALL_PREVIEWED" || other.F8 != "REJECT_WITH_DEFAULT" || other.F9 != "KEEP_AMOUNT" {
+		t.Fatalf("the defaults: %+v %v", other, err)
 	}
 }

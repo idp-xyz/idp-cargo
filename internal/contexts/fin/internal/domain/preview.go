@@ -3,6 +3,7 @@ package domain
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -158,6 +159,66 @@ func (p *ConsolCostPool) Submit(previewNo int, in SubmitInput, by string, at tim
 	return nil
 }
 
+// ApportionInOneStep is a preview and its submission in one command (since V2.98, F4 ONE_STEP_WITHOUT_OPENED_OR_LEFT):
+// it computes the apportionment as Preview does, against PHY's basis and the pool as they are now, and writes it as an
+// apportionment that names no preview, by the person who asks, with the settings version it read. Nothing is stored as
+// a preview. It carries the attributions in force as a submission would, F9 included, and states none of its own. It is
+// refused unless F4 allows it, and while PHY reads a container of the consolidation in REWORK; while the pool holds a
+// former share pending finance's confirmation on any line; while a line of the pool that is apportioned has not been
+// apportioned, from a preview, since a rework that PHY reads as ended; and while a line holds a carried attribution
+// that F9 asks to be stated again or cannot scale. Each refusal says the way out, which is to preview and submit (or,
+// for F4, to have a configurer set it). The submitter is checked as a submission checks them (F1): the person who asked
+// for an ended rework does not make the first apportionment of a line after it, which for a line not apportioned yet
+// is the only rule of the rework that applies. No attribution is stated, so none is new for the other check.
+func (p *ConsolCostPool) ApportionInOneStep(in ApportionInput, basis CostBasis, by string, at time.Time) error {
+	if err := p.open(by, at); err != nil {
+		return err
+	}
+	const way = "preview the lines and submit the preview"
+	switch {
+	case in.Settings.F4 != F4OneStep:
+		return fmt.Errorf("%w: F4 is not ONE_STEP_WITHOUT_OPENED_OR_LEFT, so every apportionment is previewed and then submitted: %s, or ask a configurer to set F4", ErrOneStepRefused, way)
+	case len(in.Attributions) > 0:
+		return fmt.Errorf("%w: a one-step apportionment states no attribution: %s to state one", ErrInvalid, way)
+	}
+	if err := inWork(basis); err != nil {
+		return err
+	}
+	if held := p.FormerShares(basis); len(held) > 0 {
+		var houses []string
+		for _, f := range held {
+			houses = append(houses, fmt.Sprintf("house %s on line %d", f.Share.ShipmentID, f.LineNo))
+		}
+		return fmt.Errorf("%w: the pool holds a former share pending finance's confirmation (%s): %s, stating who bears it", ErrOneStepRefused, strings.Join(houses, ", "), way)
+	}
+	if missing := p.reworksNotCarried(basis); len(missing) > 0 {
+		return fmt.Errorf("%w: the first apportionment of a line after a rework is previewed and submitted by another person (%s): %s", ErrOneStepRefused,
+			strings.Join(missing, "; "), way)
+	}
+	a, err := p.apportionment(in, basis, by, at)
+	if errors.Is(err, ErrAttributionReconfirm) {
+		return fmt.Errorf("%w: a one-step apportionment carries the attributions in force and states none: %w; %s, stating the attribution again", ErrOneStepRefused, err, way)
+	}
+	if err != nil {
+		return err
+	}
+	for _, la := range a.Lines {
+		for _, x := range la.Attributions {
+			if x.Loss > 0 && in.Jobs[x.ShipmentID] != x.JobID {
+				return fmt.Errorf("%w: house %s bears a loss on line %d and its job %s is not open; open the job or state the attribution again in a preview", ErrPoolJobMissing,
+					x.ShipmentID, la.LineNo, x.JobID)
+			}
+		}
+	}
+	if asked := p.reworksAskedByUnder(in.Settings, basis, by, a.Lines); len(asked) > 0 {
+		return fmt.Errorf("%w: %s asked for %s", ErrConfirmer, by, strings.Join(asked, ", "))
+	}
+	a.SettingsVersion = in.Settings.Version
+	p.state.Apportionments = append(p.state.Apportionments, a)
+	p.record(eventPoolApportioned, at, a.No)
+	return nil
+}
+
 // reworksAskedBy names the reworks of the basis's containers that have ended and that the person asked for, each with
 // the lines of the preview it is not carried for. A rework is carried for a line when an earlier submitted
 // apportionment divided that line from a preview whose fingerprint read the rework as ended: another person's
@@ -170,6 +231,49 @@ func (p *ConsolCostPool) reworksAskedBy(basis CostBasis, by string, lines []Line
 // reworksAskedByUnder is reworksAskedBy under F1: with UNRESTRICTED no rework bars the person, and with
 // NOT_ABOVE_THRESHOLD a rework bars the person only for the lines whose local cost is above the threshold.
 func (p *ConsolCostPool) reworksAskedByUnder(rules RuleSettings, basis CostBasis, by string, lines []LineApportionment) []string {
+	carried := p.carriedReworks()
+	var out []string
+	endedReworks(basis, func(unit int, execution, kind string, r ReworkFacts) {
+		if r.AskedBy != by {
+			return
+		}
+		var missing []string
+		for _, la := range lines {
+			if _, local := p.LineCost(la.LineNo); !carried[reworkKey(unit, execution, r)][la.LineNo] && rules.bars(local) {
+				missing = append(missing, fmt.Sprint(la.LineNo)+rules.aboveNote(p.state.FunctionalCurrency, local))
+			}
+		}
+		if len(missing) > 0 {
+			out = append(out, fmt.Sprintf("rework %d of load unit %d (%s%s), which ended %s, for line %s", r.No, unit, kind, execution, r.End, strings.Join(missing, ", ")))
+		}
+	})
+	return out
+}
+
+// reworksNotCarried names the reworks of the basis's containers that have ended and that no earlier submitted
+// apportionment has carried for a line of the pool that is apportioned, each with its lines: a line apportioned from a
+// preview since a rework ended has it carried. A line not apportioned yet has nothing to be redistributed by a rework,
+// and the person who asked for the rework is kept from its first apportionment by reworksAskedByUnder.
+func (p *ConsolCostPool) reworksNotCarried(basis CostBasis) []string {
+	carried := p.carriedReworks()
+	var out []string
+	endedReworks(basis, func(unit int, execution, kind string, r ReworkFacts) {
+		var missing []string
+		for _, l := range p.state.Lines {
+			if _, _, apportioned := p.SharesOfLine(l.No); apportioned && !carried[reworkKey(unit, execution, r)][l.No] {
+				missing = append(missing, fmt.Sprint(l.No))
+			}
+		}
+		if len(missing) > 0 {
+			out = append(out, fmt.Sprintf("rework %d of load unit %d (%s%s), which ended %s, for line %s", r.No, unit, kind, execution, r.End, strings.Join(missing, ", ")))
+		}
+	})
+	return out
+}
+
+// carriedReworks are the reworks, by their fingerprint key, that a submitted apportionment carried as ended for each of
+// its lines: the preview it names read the rework as ended.
+func (p *ConsolCostPool) carriedReworks() map[string]map[int]bool {
 	carried := map[string]map[int]bool{}
 	for _, a := range p.state.Apportionments {
 		if a.PreviewNo < 1 {
@@ -187,31 +291,25 @@ func (p *ConsolCostPool) reworksAskedByUnder(rules RuleSettings, basis CostBasis
 			}
 		}
 	}
-	var out []string
-	check := func(unit int, execution, kind string, reworks []ReworkFacts) {
+	return carried
+}
+
+// endedReworks calls do for each rework of the basis's containers that has ended, with the load unit, the stuffing and
+// what kind of stuffing it is for a message.
+func endedReworks(basis CostBasis, do func(unit int, execution, kind string, r ReworkFacts)) {
+	each := func(unit int, execution, kind string, reworks []ReworkFacts) {
 		for _, r := range reworks {
-			if r.End == "" || r.AskedBy != by {
-				continue
-			}
-			var missing []string
-			for _, la := range lines {
-				if _, local := p.LineCost(la.LineNo); !carried[reworkKey(unit, execution, r)][la.LineNo] && rules.bars(local) {
-					missing = append(missing, fmt.Sprint(la.LineNo)+rules.aboveNote(p.state.FunctionalCurrency, local))
-				}
-			}
-			if len(missing) > 0 {
-				out = append(out, fmt.Sprintf("rework %d of load unit %d (%s%s), which ended %s, for line %s", r.No, unit, kind, execution, r.End,
-					strings.Join(missing, ", ")))
+			if r.End != "" {
+				do(unit, execution, kind, r)
 			}
 		}
 	}
 	for _, l := range basis.PackingLists {
-		check(l.UnitNo, l.ExecutionID, "stuffing ", l.Reworks)
+		each(l.UnitNo, l.ExecutionID, "stuffing ", l.Reworks)
 	}
 	for _, g := range basis.GivenUpStuffings {
-		check(g.UnitNo, g.ExecutionID, "given-up stuffing ", g.Reworks)
+		each(g.UnitNo, g.ExecutionID, "given-up stuffing ", g.Reworks)
 	}
-	return out
 }
 
 // reworkKey is the fingerprint's key of a rework: the same for a stuffing with a packing list and for one given up, so
