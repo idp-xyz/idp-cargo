@@ -32,6 +32,7 @@ import (
 	rateapi "go.idp.xyz/idp-cargo/internal/contexts/rate/api"
 	"go.idp.xyz/idp-cargo/internal/foundation/bento"
 	"go.idp.xyz/idp-cargo/internal/foundation/numbering"
+	"go.idp.xyz/idp-cargo/internal/foundation/settings"
 	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
@@ -47,13 +48,20 @@ type Module struct {
 	documents application.Documents
 	physical  application.Physical
 	auth      api.Authorizer
-	clock     bento.SystemClock
+	clock     clock
 	window    kernel.RecordWindow
 	numbers   *numbering.Sequences
 }
 
 // Option configures a Module.
 type Option func(*Module)
+
+// clock is what FIN reads the time from.
+type clock interface{ Now() time.Time }
+
+// WithClock replaces the system clock FIN stamps its commands with; it exists to show, in tests, what happens when this
+// server's clock differs from the database's.
+func WithClock(c interface{ Now() time.Time }) Option { return func(m *Module) { m.clock = c } }
 
 // WithRecordWindow sets how far a command's business time may lie before the time FIN records it (T1).
 func WithRecordWindow(w kernel.RecordWindow) Option { return func(m *Module) { m.window = w } }
@@ -83,7 +91,7 @@ func New(db *bentopg.DB, org orgacl.ORG, rate RATE, ful fulapi.CostDriverQueries
 		return nil, err
 	}
 	m := &Module{db: db, outbox: outbox, shipments: fulacl.Shipments{FUL: ful}, pricing: rateacl.Pricing{RATE: rate}, rating: rateacl.Rating{RATE: rate}, directory: orgacl.Directory{ORG: org},
-		documents: docacl.Documents{DOC: doc}, physical: phyacl.Physical{PHY: phy}, auth: auth, window: kernel.DefaultRecordWindow}
+		documents: docacl.Documents{DOC: doc}, physical: phyacl.Physical{PHY: phy}, auth: auth, window: kernel.DefaultRecordWindow, clock: bento.SystemClock{}}
 	if m.numbers, err = numbering.NewSequences(db, "cargo_fin"); err != nil {
 		return nil, err
 	}
@@ -800,6 +808,7 @@ func (m *Module) deps(tenant, commandID string) application.Deps {
 		Creditors:      postgres.CreditorStore{DB: m.db},
 		Payments:       postgres.PaymentStore{DB: m.db},
 		Fapiao:         postgres.FapiaoStore{DB: m.db},
+		Settings:       postgres.SettingsStore{DB: m.db},
 	}
 }
 
@@ -807,7 +816,7 @@ func receipt(r application.Receipt, err error) (api.Receipt, error) {
 	if err != nil {
 		return api.Receipt{}, classify(err)
 	}
-	return api.Receipt{CommandID: r.CommandID, SubjectID: r.SubjectID, NewRevision: r.NewRevision, Version: r.Version, Number: r.Number}, nil
+	return api.Receipt{CommandID: r.CommandID, SubjectID: r.SubjectID, NewRevision: r.NewRevision, Version: r.Version, Number: r.Number, Notice: r.Notice}, nil
 }
 
 type authorizer struct{ api.Authorizer }
@@ -826,7 +835,7 @@ func classify(err error) error {
 		kind = api.ErrUnauthorized
 	case errors.Is(err, application.ErrIdempotencyConflict):
 		kind = api.ErrIdempotencyConflict
-	case errors.Is(err, domain.ErrConflict), errors.Is(err, bentorepo.ErrConflict), errors.Is(err, bentorepo.ErrAlreadyExists), postgres.Conflict(err):
+	case errors.Is(err, domain.ErrConflict), errors.Is(err, settings.ErrDuplicate), errors.Is(err, bentorepo.ErrConflict), errors.Is(err, bentorepo.ErrAlreadyExists), postgres.Conflict(err):
 		kind = api.ErrConflict
 	case errors.Is(err, bentorepo.ErrNotFound):
 		kind = api.ErrNotFound
@@ -847,7 +856,8 @@ func classify(err error) error {
 		errors.Is(err, domain.ErrAccrualMatched), errors.Is(err, domain.ErrPoolNotClosable), errors.Is(err, domain.ErrTargetClosed), errors.Is(err, domain.ErrPoolInWork),
 		errors.Is(err, domain.ErrPreviewStale), errors.Is(err, domain.ErrPreviewSubmitted), errors.Is(err, domain.ErrConfirmer), errors.Is(err, domain.ErrAttributionMissing), errors.Is(err, domain.ErrJobBearsPoolCost), errors.Is(err, domain.ErrAttributionConfirmer),
 		errors.Is(err, domain.ErrFinalBehind), errors.Is(err, domain.ErrNotPayable), errors.Is(err, domain.ErrInvoicePaid),
-		errors.Is(err, domain.ErrFapiaoCovers), errors.Is(err, domain.ErrFapiaoNumber), errors.Is(err, domain.ErrNotFapiaoable):
+		errors.Is(err, domain.ErrFapiaoCovers), errors.Is(err, domain.ErrFapiaoNumber), errors.Is(err, domain.ErrNotFapiaoable),
+		errors.Is(err, settings.ErrRefused):
 		kind = api.ErrRejected
 	default:
 		return err

@@ -704,6 +704,73 @@ type Receipt struct {
 	NewRevision int64
 	Version     int
 	Number      string
+	// Notice is what a command says besides its receipt, the same on a replay: a settings proposal that tightens the
+	// company names the legal entities whose own values stay looser as approved exceptions.
+	Notice string
+}
+
+// FinSettingEntry is one value proposed for one setting in one scope: the company (ScopeKind TENANT, no ScopeID) or a
+// legal entity (LEGAL_ENTITY and its ID). Threshold is the parameter of the value that asks for one (F1
+// NOT_ABOVE_THRESHOLD): an amount in the legal entity's functional currency, which is refused in another currency.
+type FinSettingEntry struct {
+	ScopeKind string
+	ScopeID   string
+	Key       string
+	Value     string
+	Threshold *kernel.Money
+}
+
+// ProposeFinSettingsChange proposes the entries together, with a reason, as the change set ChangeID (the command's
+// subject; Receipt.SubjectID). The proposal is recorded at FIN's clock, never at a business time; EffectiveAt is when
+// it is to take effect, not before now (zero: at once). A change set that only tightens or keeps is approved on the
+// spot (Receipt.Version is the settings version it made); one that loosens a value, or sets a legal entity's value
+// looser than the company's, waits for ApproveFinSettingsChange by another actor. The configuration it would make is
+// checked as a whole, each legal entity named must have a finance policy, and the actor needs the permission
+// ConfigureSettings, granted by name only. Receipt.NewRevision is the records of the change set: 1, or 2 when it was
+// approved on the spot.
+type ProposeFinSettingsChange struct {
+	CommandID   string
+	TenantID    string
+	ActorID     string
+	ChangeID    string
+	Entries     []FinSettingEntry
+	Reason      string
+	EffectiveAt time.Time
+}
+
+// ApproveFinSettingsChange approves a change set that waits for a second person. The approver is not the proposer
+// (SETTINGS_SAME_ACTOR: have another approver approve it) and needs the permission ApproveSettings, granted by name
+// only. The change set takes effect at its effective time, or at the approval when that is later. Receipt.Version is
+// the settings version it made.
+type ApproveFinSettingsChange struct {
+	CommandID string
+	TenantID  string
+	ActorID   string
+	ChangeID  string
+}
+
+// RefuseFinSettingsChange is an approver's refusal of a change set that waits for approval, with a reason: it is
+// recorded as a cancellation of kind refused, status REFUSED, and cannot be approved. A change set approved already is
+// cancelled instead (CancelFinSettingsChange) while it is not in force. It needs the permission ApproveSettings,
+// granted by name only.
+type RefuseFinSettingsChange struct {
+	CommandID string
+	TenantID  string
+	ActorID   string
+	ChangeID  string
+	Reason    string
+}
+
+// CancelFinSettingsChange cancels a change set that is not in force yet, proposed or approved with a time to come, with
+// a reason. One in force cannot be cancelled: a rollback is a new change set. It needs the permission
+// ConfigureSettings or the permission ApproveSettings (so that an approver can clear a far-off change set that stands in
+// the way); the role it was cancelled in is recorded.
+type CancelFinSettingsChange struct {
+	CommandID string
+	TenantID  string
+	ActorID   string
+	ChangeID  string
+	Reason    string
 }
 
 // Commands is FIN's command entry point.
@@ -754,6 +821,10 @@ type Commands interface {
 	RecordFapiaoIssued(ctx context.Context, cmd RecordFapiaoIssued) (Receipt, error)
 	RecordFapiaoFailed(ctx context.Context, cmd RecordFapiaoFailed) (Receipt, error)
 	RecordRedLetter(ctx context.Context, cmd RecordRedLetter) (Receipt, error)
+	ProposeFinSettingsChange(ctx context.Context, cmd ProposeFinSettingsChange) (Receipt, error)
+	ApproveFinSettingsChange(ctx context.Context, cmd ApproveFinSettingsChange) (Receipt, error)
+	CancelFinSettingsChange(ctx context.Context, cmd CancelFinSettingsChange) (Receipt, error)
+	RefuseFinSettingsChange(ctx context.Context, cmd RefuseFinSettingsChange) (Receipt, error)
 }
 
 // Actions an Authorizer decides on: the command names.
@@ -811,6 +882,12 @@ const (
 	ActionRecordFapiaoIssued = "RecordFapiaoIssued"
 	ActionRecordFapiaoFailed = "RecordFapiaoFailed"
 	ActionRecordRedLetter    = "RecordRedLetter"
+
+	// ConfigureSettings proposes and cancels a change of FIN's settings; ApproveSettings approves one. Both are granted
+	// by name only: "fin:*" and "*" do not include them, so that a general grant never lets a person change how the
+	// controls work, or approve it.
+	ActionConfigureSettings = "ConfigureSettings"
+	ActionApproveSettings   = "ApproveSettings"
 )
 
 // Authorizer decides whether a verified actor may perform an action on a subject.

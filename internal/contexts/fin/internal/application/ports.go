@@ -14,6 +14,7 @@ import (
 	"time"
 
 	fin "go.idp.xyz/idp-cargo/internal/contexts/fin/internal/domain"
+	"go.idp.xyz/idp-cargo/internal/foundation/settings"
 	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
@@ -44,6 +45,9 @@ type Receipt struct {
 	NewRevision int64
 	Version     int
 	Number      string // the number of a note issued
+	// Notice is what a command answers besides its receipt, kept with it so that a replay answers the same (a settings
+	// proposal that tightens the company lists the legal entities whose own, looser values stay).
+	Notice      string
 	RequestHash string
 }
 
@@ -365,6 +369,20 @@ type FapiaoStore interface {
 	OfDebtor(ctx context.Context, tenant fin.TenantID, legalEntity, debtor string) ([]*fin.FapiaoRecord, []int64, error)
 }
 
+// SettingsStore keeps a tenant's settings change sets, their approvals and their cancellations. Lock takes the tenant's
+// settings lock until the transaction ends: every command that changes or reads a tenant's change sets to decide takes
+// it first, so that what a command checks is what it commits against. Load reads the ledger in the command's
+// transaction, Read in a query's snapshot. The rows are only inserted.
+type SettingsStore interface {
+	Lock(ctx context.Context, tenant fin.TenantID) error
+	Load(ctx context.Context, tenant fin.TenantID) (*settings.Ledger, error)
+	Read(ctx context.Context, tenant fin.TenantID) (*settings.Ledger, error)
+	// InsertChange writes a proposal with its entries and, when it only tightens, its approval.
+	InsertChange(ctx context.Context, tenant fin.TenantID, c settings.ChangeSet) error
+	InsertApproval(ctx context.Context, tenant fin.TenantID, id string, a settings.Approval) error
+	InsertCancellation(ctx context.Context, tenant fin.TenantID, id string, c settings.Cancellation) error
+}
+
 // Deps are the ports every FIN command uses.
 type Deps struct {
 	Tx TxRunner
@@ -398,6 +416,8 @@ type Deps struct {
 	Payments CreditorPaymentStore
 	// Fapiao holds fapiao records (FIN V0.7); credit notes check it under their job's lock.
 	Fapiao FapiaoStore
+	// Settings holds the change sets of FIN's settings (FIN V2.96).
+	Settings SettingsStore
 }
 
 // Command is what every FIN command carries: Subject is the legal entity, the job, <legal entity>/<debtor> or the
@@ -462,9 +482,22 @@ type aggregate interface {
 
 // write commits mutate's aggregate, its Outbox events and the receipt in one transaction.
 func (d Deps) write(ctx context.Context, c Command, hash, kind string, mutate func(context.Context) (Receipt, aggregate, error)) (Receipt, error) {
+	return d.writeAfter(ctx, c, hash, kind, nil, mutate)
+}
+
+// writeAfter is write with a first step in the transaction, before the command's receipt is looked for: the settings'
+// commands take their tenant's lock there, so that a second copy of a command waits for the first and then answers its
+// receipt, as a replay does.
+func (d Deps) writeAfter(ctx context.Context, c Command, hash, kind string, first func(context.Context) error,
+	mutate func(context.Context) (Receipt, aggregate, error)) (Receipt, error) {
 	var result Receipt
 	var changed aggregate
 	err := d.Tx.WithinTransaction(ctx, func(txCtx context.Context) error {
+		if first != nil {
+			if err := first(txCtx); err != nil {
+				return err
+			}
+		}
 		r, ok, err := d.Receipts.Find(txCtx, c.Scope.TenantID, c.CommandID)
 		if err != nil {
 			return err
