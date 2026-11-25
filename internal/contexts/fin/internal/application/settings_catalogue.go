@@ -8,7 +8,8 @@ import (
 )
 
 // FIN's settings (step C1a of the configuration of the rules): the catalogue of the first items, the chain of scopes
-// and the rule across items. FIN's rules do not read the settings yet.
+// and the rule across items. Since V2.97 FIN's rules read F1, F2, F3, F6 and F7 (RuleSettingsOf); F4, F8 and F9 are
+// read by nothing yet.
 
 // Events of the settings, with the change set as subject; an approval carries the version it made as Version.
 const (
@@ -29,8 +30,8 @@ const (
 	SettingF8 = "fin.F8"
 	SettingF9 = "fin.F9"
 
-	F1ThresholdValue    = "NOT_ABOVE_THRESHOLD"
-	F3OnlyWhenAmount    = "ONLY_WHEN_AMOUNT_MOVES"
+	F1ThresholdValue    = fin.F1AboveThreshold
+	F3OnlyWhenAmount    = fin.F3OnlyWhenAmountMoves
 	F8DefaultToRemained = "DEFAULT_TO_REMAINING"
 )
 
@@ -62,7 +63,7 @@ func FinSettingsCatalogue() *settings.Catalogue {
 		Kinds: []string{settings.KindLegalEntity}, LooserWhenHigher: true}
 	c := &settings.Catalogue{Context: "fin", Hierarchy: FinHierarchy, Rules: []settings.Rule{f8NeedsF3}, Items: []settings.Item{
 		finItem(SettingF1, "职责分离", "Segregation of duties", true,
-			"Whether the person who asked for a container to be opened, or who removed or transferred the house, may confirm the attribution of its former share.",
+			"Whether the person who asked for a container to be opened, or who removed or transferred the house, may confirm the attribution of its former share, and whether the person who asked for a rework may submit the first apportionment of a line after it; both rules are governed by this item. Under a threshold the first rule measures the line's local cost, because that submission redistributes the whole line, and the second the former share of each attribution.",
 			"NOT_ALLOWED",
 			settings.Value{ID: "NOT_ALLOWED", TitleZH: "不能", TitleEN: "may not"},
 			settings.Value{ID: F1ThresholdValue, TitleZH: "金额超过阈值时不能", TitleEN: "may not above a threshold", Param: threshold},

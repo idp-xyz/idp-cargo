@@ -66,7 +66,7 @@ func poolView(p *domain.ConsolCostPool, revision int64) api.ConsolCostPool {
 		OpenedBy: st.OpenedBy, OpenedAt: st.OpenedAt}
 	for _, c := range st.Closures {
 		out.Closures = append(out.Closures, api.PoolClosure{ClosureNo: c.No, ClosedBy: c.By, ClosedAt: c.At, ReopenedBy: c.ReopenedBy,
-			ReopenReason: c.ReopenReason, ReopenedAt: c.ReopenedAt})
+			ReopenReason: c.ReopenReason, ReopenedAt: c.ReopenedAt, SettingsVersion: c.SettingsVersion})
 	}
 	for _, l := range st.Lines {
 		currency := l.Versions[len(l.Versions)-1].Amount.Currency
@@ -111,11 +111,11 @@ func poolView(p *domain.ConsolCostPool, revision int64) api.ConsolCostPool {
 	for _, a := range st.Apportionments {
 		submitted[a.PreviewNo] = a.No
 		out.Apportionments = append(out.Apportionments, api.PoolApportionment{ApportionmentNo: a.No, BasisRevision: a.BasisRevision, Stage: a.Stage, By: a.By,
-			At: a.At, EnteredAt: a.EnteredAt, Lines: linesOf(a.Lines), PreviewNo: a.PreviewNo})
+			At: a.At, EnteredAt: a.EnteredAt, Lines: linesOf(a.Lines), PreviewNo: a.PreviewNo, SettingsVersion: a.SettingsVersion})
 	}
 	for _, v := range st.Previews {
 		out.Previews = append(out.Previews, api.PoolPreview{PreviewNo: v.No, BasisRevision: v.BasisRevision, Stage: v.Stage, By: v.By, At: v.At, EnteredAt: v.EnteredAt,
-			Lines: linesOf(v.Lines), FingerprintSHA256: v.FingerprintSHA256, SubmittedAs: submitted[v.No]})
+			Lines: linesOf(v.Lines), FingerprintSHA256: v.FingerprintSHA256, SubmittedAs: submitted[v.No], SettingsVersion: v.SettingsVersion})
 	}
 	return out
 }
@@ -216,6 +216,7 @@ func (m *Module) GetConsolCostPool(ctx context.Context, q api.GetConsolCostPool)
 func (m *Module) GetConsolProfit(ctx context.Context, q api.GetConsolProfit) (api.ConsolProfit, error) {
 	d := m.deps(q.TenantID, "")
 	var pool *domain.ConsolCostPool
+	var rules domain.RuleSettings
 	err := d.Reader(ctx, func(txCtx context.Context) error {
 		pools, _, err := d.Pools.ForConsolidation(txCtx, domain.TenantID(q.TenantID), q.ConsolidationID)
 		if err != nil {
@@ -230,7 +231,9 @@ func (m *Module) GetConsolProfit(ctx context.Context, q api.GetConsolProfit) (ap
 			return err
 		}
 		pool.Matched(consumed)
-		return nil
+		// the settings are read in the snapshot of the pool, so that the profit is told on one state of both
+		rules, err = d.RuleSettingsOf(txCtx, domain.TenantID(q.TenantID), pool.State().LegalEntityID)
+		return err
 	})
 	if err != nil {
 		return api.ConsolProfit{}, classify(err)
@@ -243,11 +246,13 @@ func (m *Module) GetConsolProfit(ctx context.Context, q api.GetConsolProfit) (ap
 	err = d.Reader(ctx, func(txCtx context.Context) error {
 		st := pool.State()
 		local := func(n int64) kernel.Money { return kernel.Money{Currency: st.FunctionalCurrency, Minor: n} }
-		out = api.ConsolProfit{ConsolidationID: q.ConsolidationID, PoolID: st.PoolID, LegalEntityID: st.LegalEntityID, State: st.State}
+		out = api.ConsolProfit{ConsolidationID: q.ConsolidationID, PoolID: st.PoolID, LegalEntityID: st.LegalEntityID, State: st.State,
+			ProfitBasis: profitBasis(rules), SettingsVersion: rules.Version}
 		var pooled, matched, apportioned, retained, losses, exceptions, pending, toAllocated, former int64
 		type house struct {
-			jobID string
-			pool  int64
+			jobID   string
+			pool    int64
+			pending int64 // a former share pending, counted in pool under F6 INCLUDED_MARKED
 		}
 		byShipment := map[string]*house{}
 		for _, l := range st.Lines {
@@ -281,7 +286,11 @@ func (m *Module) GetConsolProfit(ctx context.Context, q api.GetConsolProfit) (ap
 					byShipment[s.ShipmentID] = &house{jobID: s.JobID} // a house the lines name is listed, bearing cost or not
 				}
 				if _, left := basis.Former(s.ShipmentID); left && s.Used && s.Amount > 0 {
-					former += s.Local // pending finance's confirmation: in no house's cost
+					former += s.Local // pending finance's confirmation: in no house's cost, unless F6 is INCLUDED_MARKED
+					if rules.F6 == domain.F6IncludedMarked {
+						byShipment[s.ShipmentID].pool += s.Local
+						byShipment[s.ShipmentID].pending += s.Local
+					}
 					continue
 				}
 				if s.Used { // a house left out carries nothing of the line
@@ -308,7 +317,7 @@ func (m *Module) GetConsolProfit(ctx context.Context, q api.GetConsolProfit) (ap
 			}
 			p := j.Profit()
 			out.Houses = append(out.Houses, api.HouseProfit{ShipmentID: shipment, JobID: h.jobID, Revenue: local(p.Revenue), Invoiced: local(p.Invoiced),
-				Cost: local(p.Cost), PoolCost: local(h.pool), Profit: local(p.Revenue - p.Cost - h.pool)})
+				Cost: local(p.Cost), PoolCost: local(h.pool), Profit: local(p.Revenue - p.Cost - h.pool), PendingInProfit: local(h.pending)})
 		}
 		return nil
 	})
@@ -320,13 +329,22 @@ func (m *Module) GetConsolProfit(ctx context.Context, q api.GetConsolProfit) (ap
 	return out, nil
 }
 
-// poolShareViews shows a job's pool shares, by pool and line.
-func poolShareViews(shares []application.PoolShare, currency kernel.CurrencyCode) ([]api.JobPoolShare, int64) {
+// profitBasis names the basis a profit view is told on, from F6: SEPARATE or INCLUDED_MARKED.
+func profitBasis(rules domain.RuleSettings) string {
+	if rules.F6 == domain.F6IncludedMarked {
+		return domain.F6IncludedMarked
+	}
+	return "SEPARATE"
+}
+
+// poolShareViews shows a job's pool shares, by pool and line; pending marks former shares awaiting finance's
+// confirmation.
+func poolShareViews(shares []application.PoolShare, currency kernel.CurrencyCode, pending bool) ([]api.JobPoolShare, int64) {
 	var out []api.JobPoolShare
 	var total int64
 	for _, s := range shares {
 		out = append(out, api.JobPoolShare{PoolID: s.PoolID, LineNo: s.LineNo, LineVersion: s.LineVersion, ChargeCode: s.ChargeCode, Method: s.Method,
-			Stage: s.Stage, Quantity: s.Quantity, Unit: s.Unit, Amount: s.Amount, Local: kernel.Money{Currency: currency, Minor: s.Local}})
+			Stage: s.Stage, Quantity: s.Quantity, Unit: s.Unit, Amount: s.Amount, Local: kernel.Money{Currency: currency, Minor: s.Local}, Pending: pending})
 		total += s.Local
 	}
 	slices.SortStableFunc(out, func(a, b api.JobPoolShare) int {

@@ -28,15 +28,20 @@ func shipmentsToRead(basis domain.CostBasis) []string {
 // not attributed, an amount to be allocated, an exception cost whose party is pending, a closed pool that holds a
 // former share, and the lines the close would refuse as not apportioned or not on the current basis. It reads PHY's
 // basis as GetConsolCostPool does, and fails when PHY does not answer: the list cannot be told, and an empty one would
-// say that nothing is pending.
+// say that nothing is pending. Since V2.97 it reads the settings in force for the pool's legal entity: the item of an
+// exception cost whose party is pending says whether F7 holds the close back.
 func (m *Module) GetConsolCostPoolPendingItems(ctx context.Context, q api.GetConsolCostPoolPendingItems) ([]api.PoolPendingItem, error) {
 	d := m.deps(q.TenantID, "")
 	if d.Physical == nil {
 		return nil, classify(application.ErrMissingDependency)
 	}
 	var p *domain.ConsolCostPool
+	var rules domain.RuleSettings
 	err := d.Reader(ctx, func(txCtx context.Context) (err error) {
-		p, _, err = readPool(txCtx, d, q.TenantID, q.PoolID)
+		if p, _, err = readPool(txCtx, d, q.TenantID, q.PoolID); err != nil {
+			return err
+		}
+		rules, err = d.RuleSettingsOf(txCtx, domain.TenantID(q.TenantID), p.State().LegalEntityID)
 		return err
 	})
 	if err != nil {
@@ -59,7 +64,7 @@ func (m *Module) GetConsolCostPoolPendingItems(ctx context.Context, q api.GetCon
 		p.HouseRevenue(revenue)
 	}
 	out := []api.PoolPendingItem{}
-	for _, it := range p.PendingItems(basis) {
+	for _, it := range p.PendingItemsUnder(rules, basis) {
 		item := api.PoolPendingItem{Kind: it.Kind, LineNo: it.LineNo, ShipmentID: it.ShipmentID, UnitNo: it.UnitNo, Message: it.Message, Actor: it.Actor}
 		if it.Currency != "" {
 			item.Amount = kernel.Money{Currency: it.Currency, Minor: it.Amount}
@@ -80,8 +85,12 @@ func (m *Module) GetConsolCostPreviewEffect(ctx context.Context, q api.GetConsol
 		return api.PreviewEffect{}, classify(application.ErrMissingDependency)
 	}
 	var p *domain.ConsolCostPool
+	var rules domain.RuleSettings
 	err := d.Reader(ctx, func(txCtx context.Context) (err error) {
-		p, _, err = readPool(txCtx, d, q.TenantID, q.PoolID)
+		if p, _, err = readPool(txCtx, d, q.TenantID, q.PoolID); err != nil {
+			return err
+		}
+		rules, err = d.RuleSettingsOf(txCtx, domain.TenantID(q.TenantID), p.State().LegalEntityID)
 		return err
 	})
 	if err != nil {
@@ -95,7 +104,7 @@ func (m *Module) GetConsolCostPreviewEffect(ctx context.Context, q api.GetConsol
 	if err != nil {
 		return api.PreviewEffect{}, classify(err)
 	}
-	in := domain.SubmitInput{Basis: basis}
+	in := domain.SubmitInput{Basis: basis, Settings: rules}
 	err = d.Reader(ctx, func(txCtx context.Context) (err error) {
 		in.Jobs, in.Revenue, err = d.ReadOpenJobs(txCtx, domain.TenantID(q.TenantID), st.LegalEntityID, shipmentsToRead(basis))
 		return err

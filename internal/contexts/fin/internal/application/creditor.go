@@ -238,7 +238,9 @@ func (d Deps) ReleasePoolAccrual(ctx context.Context, c Command, lineNo, expecte
 // a line whose latest apportionment is by REVENUE also locks the houses' jobs, in job id order after the pool and
 // before the policy as PreviewPoolApportionment does, and reads their revenue for the comparison; any other pool takes
 // the locks and reads what it always did. The jobs are also locked and read when the REVENUE line's final cost is zero
-// or the consolidation is gone, where Close compares nothing: more locks than needed, never a wrong result.
+// or the consolidation is gone, where Close compares nothing: more locks than needed, never a wrong result. Since V2.97
+// it reads the settings in force for the pool's legal entity inside the transaction: F7 decides whether a pending cause
+// holds the close back, and the closure records the version.
 func (d Deps) ClosePool(ctx context.Context, c Command) (Receipt, error) {
 	if d.Physical == nil {
 		return Receipt{}, ErrMissingDependency
@@ -262,10 +264,15 @@ func (d Deps) ClosePool(ctx context.Context, c Command) (Receipt, error) {
 		revenue, err := d.houseRevenue(txCtx, c.Scope.TenantID, jobs)
 		pool.HouseRevenue(revenue)
 		return err
-	}, func(_ context.Context, pool *fin.ConsolCostPool, _ *fin.FinancePolicy) (Receipt, error) {
-		if err := pool.Close(basis, c.Scope.ActorID, c.OccurredAt); err != nil {
+	}, func(txCtx context.Context, pool *fin.ConsolCostPool, _ *fin.FinancePolicy) (Receipt, error) {
+		rules, at, err := d.DecisionSettings(txCtx, c.Scope.TenantID, pool.State().LegalEntityID)
+		if err != nil {
 			return Receipt{}, err
 		}
+		if err = pool.CloseUnder(rules, basis, c.Scope.ActorID, c.OccurredAt); err != nil {
+			return Receipt{}, err
+		}
+		pool.Stamp(at) // the closure is stamped with the time its settings were read at
 		return Receipt{Version: len(pool.State().Closures)}, nil
 	})
 }

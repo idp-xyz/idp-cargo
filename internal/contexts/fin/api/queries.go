@@ -198,6 +198,9 @@ type JobPoolShare struct {
 	Unit        string
 	Amount      kernel.Money
 	Local       kernel.Money
+	// Pending is true for a former share pending finance's confirmation (FIN V2.97): it is in FormerShares, and under
+	// F6 INCLUDED_MARKED also in the job's PoolCost and Profit.
+	Pending bool
 }
 
 // JobProfit is a job's economics in the functional currency: revenue from the latest sell sides, billed ones at their
@@ -224,6 +227,13 @@ type JobProfit struct {
 	ReroutingLoss       kernel.Money
 	FormerShares        []JobPoolShare
 	FormerSharesPending kernel.Money
+	// Since FIN V2.97, the basis the profit is told on, from the legal entity's setting F6: SEPARATE (a former share
+	// pending is in neither PoolCost nor Profit) or INCLUDED_MARKED (it is in both, and PendingInProfit is the part of
+	// them that is pending; zero under SEPARATE). Figures under the two bases are not to be compared. SettingsVersion
+	// is the version of the settings the answer was read under.
+	ProfitBasis     string
+	PendingInProfit kernel.Money
+	SettingsVersion int
 }
 
 // JobReroutingLoss is a re-routing loss a job bears on a pool's cost line, with its voucher and the house's departure.
@@ -687,6 +697,9 @@ type PoolApportionment struct {
 	EnteredAt       time.Time
 	Lines           []ApportionedLine
 	PreviewNo       int // the preview it was submitted from (FIN V2.91); 0 on one made before
+	// SettingsVersion is the version of FIN's settings in force when it was submitted, the same as its preview's (FIN
+	// V2.97); 0 when no change set was in force, and on one made before.
+	SettingsVersion int
 }
 
 // PoolPreview is one preview of an apportionment (FIN V2.91): the figures it computed, the basis revision and stage it
@@ -703,6 +716,9 @@ type PoolPreview struct {
 	Lines             []ApportionedLine
 	FingerprintSHA256 string
 	SubmittedAs       int
+	// SettingsVersion is the version of FIN's settings the preview was made under, which its fingerprint holds (FIN
+	// V2.97); 0 when no change set was in force, and on one made before.
+	SettingsVersion int
 }
 
 // WorkUnit is a container of a consolidation that PHY reads in rework.
@@ -747,6 +763,9 @@ type HouseProfit struct {
 	Cost       kernel.Money
 	PoolCost   kernel.Money
 	Profit     kernel.Money
+	// PendingInProfit is the part of PoolCost, and so of Profit, that is a former share pending finance's confirmation
+	// (FIN V2.97, F6 INCLUDED_MARKED); zero under SEPARATE.
+	PendingInProfit kernel.Money
 }
 
 // ConsolProfit is a consolidation's economics under its pool's legal entity, in the functional currency: the pooled
@@ -775,6 +794,12 @@ type ConsolProfit struct {
 	ExceptionsPending   kernel.Money
 	ToAllocated         kernel.Money
 	FormerSharesPending kernel.Money
+	// Since FIN V2.97: the basis the houses' profit is told on, from the legal entity's setting F6 (SEPARATE, or
+	// INCLUDED_MARKED, under which a former share pending is in its house's PoolCost and Profit and marked in
+	// HouseProfit.PendingInProfit), and the version of the settings the answer was read under. Figures under the two
+	// bases are not to be compared.
+	ProfitBasis     string
+	SettingsVersion int
 	// InWork is true while PHY reads a container of the consolidation in rework: what the houses bear is the last
 	// submitted apportionment, in work. WorkUnits are the containers.
 	InWork    bool

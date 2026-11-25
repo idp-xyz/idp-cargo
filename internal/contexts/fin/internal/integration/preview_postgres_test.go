@@ -474,8 +474,8 @@ func TestPreviewsPastFINOnPostgres(t *testing.T) {
 	// an apportionment as the preview 1 reads it, with the changes the cases make; 'now()' is after the preview's own
 	// date
 	insertApportionment := func(no int, preview any, stage string, basis int, made string) string {
-		return fmt.Sprintf(`INSERT INTO cargo_fin.pool_apportionment (tenant_id,pool_id,apportionment_no,basis_revision,stage,made_by,made_at,entered_at,preview_no)
-            VALUES ($1,'P-U',%d,%d,'%s','x',%s,now(),%v)`, no, basis, stage, made, preview)
+		return fmt.Sprintf(`INSERT INTO cargo_fin.pool_apportionment (tenant_id,pool_id,apportionment_no,basis_revision,stage,made_by,made_at,entered_at,preview_no,settings_version)
+            VALUES ($1,'P-U',%d,%d,'%s','x',%s,now(),%v,0)`, no, basis, stage, made, preview)
 	}
 	// the lines and shares of preview 1 (CHARGEABLE, SH-A 60,000, SH-B 40,000, SH-C not used), with an amount changed
 	// in the cases

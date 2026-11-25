@@ -326,6 +326,9 @@ type PoolClosure struct {
 	ReopenedBy   string
 	ReopenReason string
 	ReopenedAt   time.Time
+	// SettingsVersion is the version of FIN's settings in force at the close (FIN V2.97); 0 when no change set was in
+	// force, and on one made before.
+	SettingsVersion int
 }
 
 // GetCreditorInvoice asks for an invoice. ListCreditorInvoices lists a legal entity's invoices in the order dated, of
