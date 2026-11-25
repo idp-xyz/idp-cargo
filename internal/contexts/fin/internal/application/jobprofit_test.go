@@ -68,3 +68,36 @@ func TestTheRefusalOfACancelNamesEveryHolding(t *testing.T) {
 		t.Fatalf("only the closed pool needs reopening: %q", m)
 	}
 }
+
+func TestTheProfitVersionIsEqualForEqualSourcesAndFiguresAndChangesWithAny(t *testing.T) {
+	base := func() (int64, map[string]int64, JobProfitFigures) {
+		return 4, map[string]int64{"P-1": 2, "P-2": 5}, JobProfitFigures{Currency: "CNY", Revenue: 1000, Cost: 1200, PoolCost: 300, Profit: -500, Basis: "SEPARATE",
+			SettingsVersion: 2, ByCode: []fin.CodeProfit{{ChargeCode: "OCEAN_FREIGHT", Revenue: 1000, Cost: 1200, Profit: -200}}}
+	}
+	r, pools, f := base()
+	want := ProfitVersion("JOB-1", r, pools, f)
+	r2, pools2, f2 := base()
+	if got := ProfitVersion("JOB-1", r2, pools2, f2); got != want || len(want) != 64 {
+		t.Fatalf("equal sources and figures: %s and %s", got, want)
+	}
+	for name, change := range map[string]func(*int64, map[string]int64, *JobProfitFigures){
+		"the job's revision":    func(r *int64, _ map[string]int64, _ *JobProfitFigures) { *r++ },
+		"a pool's revision":     func(_ *int64, p map[string]int64, _ *JobProfitFigures) { p["P-2"]++ },
+		"a pool the job joined": func(_ *int64, p map[string]int64, _ *JobProfitFigures) { p["P-3"] = 1 },
+		"the settings version":  func(_ *int64, _ map[string]int64, f *JobProfitFigures) { f.SettingsVersion++ },
+		"the revenue":           func(_ *int64, _ map[string]int64, f *JobProfitFigures) { f.Revenue++ },
+		"the profit":            func(_ *int64, _ map[string]int64, f *JobProfitFigures) { f.Profit++ },
+		"the basis":             func(_ *int64, _ map[string]int64, f *JobProfitFigures) { f.Basis = "INCLUDED_MARKED" },
+		"the pending former":    func(_ *int64, _ map[string]int64, f *JobProfitFigures) { f.FormerPending++ },
+		"a charge code":         func(_ *int64, _ map[string]int64, f *JobProfitFigures) { f.ByCode[0].Cost++ },
+	} {
+		r, pools, f := base()
+		change(&r, pools, &f)
+		if got := ProfitVersion("JOB-1", r, pools, f); got == want {
+			t.Errorf("a change of %s leaves the version", name)
+		}
+	}
+	if ProfitVersion("JOB-2", r, pools, f) == want {
+		t.Error("another job has the version")
+	}
+}

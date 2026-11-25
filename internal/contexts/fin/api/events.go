@@ -73,6 +73,10 @@ const (
 	FinSettingsChangeApproved  = "FinSettingsChangeApproved.v1"
 	FinSettingsChangeCancelled = "FinSettingsChangeCancelled.v1"
 	FinSettingsChangeRefused   = "FinSettingsChangeRefused.v1"
+
+	// Cost review events have the request (CRR-<n>) as subject, its number as Version, and the job and shipment.
+	CostReviewRequested = "CostReviewRequested.v1"
+	CostReviewResolved  = "CostReviewResolved.v1"
 )
 
 // EventPayload is the JSON payload of every FIN event: identifiers and versions only, never amounts, names or tax

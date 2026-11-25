@@ -565,11 +565,20 @@ func (s JobStore) Read(ctx context.Context, tenant fin.TenantID, id string) (*fi
 }
 
 func (s JobStore) list(ctx context.Context, tenant fin.TenantID, where string, args ...any) ([]*fin.FreightJob, []int64, error) {
+	return s.listOrdered(ctx, tenant, where, "j.opened_at, j.job_id", args...)
+}
+
+// PageOf lists the legal entity's jobs that are not cancelled in job id order, after one job, at most limit.
+func (s JobStore) PageOf(ctx context.Context, tenant fin.TenantID, legalEntity, after string, limit int) ([]*fin.FreightJob, []int64, error) {
+	return s.listOrdered(ctx, tenant, `j.legal_entity_id=$2 AND j.state<>'CANCELLED' AND j.job_id > $3 `, "j.job_id LIMIT "+strconv.Itoa(limit), legalEntity, after)
+}
+
+func (s JobStore) listOrdered(ctx context.Context, tenant fin.TenantID, where, order string, args ...any) ([]*fin.FreightJob, []int64, error) {
 	q, err := s.DB.ReadExecutor(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
-	rows, err := q.Query(ctx, `SELECT `+jobColumns+jobChildren()+` FROM cargo_fin.freight_job j WHERE j.tenant_id=$1 AND `+where+` ORDER BY j.opened_at, j.job_id`,
+	rows, err := q.Query(ctx, `SELECT `+jobColumns+jobChildren()+` FROM cargo_fin.freight_job j WHERE j.tenant_id=$1 AND `+where+` ORDER BY `+order,
 		append([]any{string(tenant)}, args...)...)
 	if err != nil {
 		return nil, nil, err

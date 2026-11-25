@@ -2,6 +2,11 @@ package application
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"slices"
+	"strings"
 
 	fin "go.idp.xyz/idp-cargo/internal/contexts/fin/internal/domain"
 )
@@ -62,4 +67,65 @@ func (d Deps) FormerBases(ctx context.Context, tenant fin.TenantID, shares []Poo
 		bases[s.ConsolidationID] = b
 	}
 	return bases, nil
+}
+
+// JobProfitFigures are the figures of a job's profit that the profit version covers (FIN V2.99), in the functional
+// currency: PoolCost is what the job bears of the pools, with a former share pending in it under F6 INCLUDED_MARKED.
+type JobProfitFigures struct {
+	Currency        string
+	Revenue         int64
+	Invoiced        int64
+	Cost            int64
+	Matched         int64
+	Accrued         int64
+	PoolCost        int64
+	Profit          int64
+	PendingInProfit int64
+	FormerPending   int64
+	ReroutingLoss   int64
+	ByCode          []fin.CodeProfit
+	Basis           string
+	SettingsVersion int
+	// Version is the profit version: see ProfitVersion.
+	Version string
+}
+
+// ProfitOf computes a job's profit as GetJobProfit tells it, from the job, its revision, the settings in force for its
+// legal entity, what it bears of the pools (costs, with PHY's former houses told apart) and the revision of each pool
+// it has a share in, and its profit version.
+func ProfitOf(j *fin.FreightJob, revision int64, rules fin.RuleSettings, costs JobPoolCosts, poolRevisions map[string]int64) JobProfitFigures {
+	p := j.Profit()
+	var pendingIn int64 // under F6 INCLUDED_MARKED the former shares pending are counted in the profit, marked
+	basis := "SEPARATE"
+	if rules.F6 == fin.F6IncludedMarked {
+		pendingIn, basis = costs.FormerTotal, fin.F6IncludedMarked
+	}
+	f := JobProfitFigures{Currency: string(p.Currency), Revenue: p.Revenue, Invoiced: p.Invoiced, Cost: p.Cost, Matched: p.Matched, Accrued: p.Accrued,
+		PoolCost: costs.Cost + pendingIn, Profit: p.Profit - costs.Cost - pendingIn, PendingInProfit: pendingIn, FormerPending: costs.FormerTotal,
+		ReroutingLoss: costs.LossTotal, ByCode: p.Lines, Basis: basis, SettingsVersion: rules.Version}
+	f.Version = ProfitVersion(j.State().JobID, revision, poolRevisions, f)
+	return f
+}
+
+// ProfitVersion is the profit version of a job: the SHA-256, in hex, of a text of one fact to a line, sorted: what the
+// profit is computed from (the job's revision, the revision of each pool the job has a share in, the settings version)
+// and the figures. Equal figures from the same sources give the same version, and a change of any of them another.
+// Clients compare versions for equality only.
+func ProfitVersion(job string, revision int64, poolRevisions map[string]int64, f JobProfitFigures) string {
+	lines := []string{
+		"job=" + job, fmt.Sprintf("job.revision=%d", revision), fmt.Sprintf("settings.version=%d", f.SettingsVersion), "currency=" + f.Currency,
+		"basis=" + f.Basis, fmt.Sprintf("revenue=%d", f.Revenue), fmt.Sprintf("invoiced=%d", f.Invoiced), fmt.Sprintf("cost=%d", f.Cost),
+		fmt.Sprintf("cost.matched=%d", f.Matched), fmt.Sprintf("cost.accrued=%d", f.Accrued), fmt.Sprintf("pool.cost=%d", f.PoolCost),
+		fmt.Sprintf("profit=%d", f.Profit), fmt.Sprintf("pending.in.profit=%d", f.PendingInProfit), fmt.Sprintf("former.pending=%d", f.FormerPending),
+		fmt.Sprintf("rerouting.loss=%d", f.ReroutingLoss),
+	}
+	for pool, rev := range poolRevisions {
+		lines = append(lines, fmt.Sprintf("pool.revision.%q=%d", pool, rev))
+	}
+	for _, c := range f.ByCode {
+		lines = append(lines, fmt.Sprintf("code.%q=%d/%d/%d", c.ChargeCode, c.Revenue, c.Cost, c.Profit))
+	}
+	slices.Sort(lines)
+	sum := sha256.Sum256([]byte(strings.Join(lines, "\n")))
+	return hex.EncodeToString(sum[:])
 }
