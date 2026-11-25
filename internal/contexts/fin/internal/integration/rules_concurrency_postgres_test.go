@@ -54,8 +54,15 @@ func holdSettingsLock(t *testing.T, tenant, statement string) (pid int, release 
 	return pid, release
 }
 
+// settingsLockRows is the part of a query on pg_locks that keeps the rows of one tenant's settings lock in this database:
+// an advisory lock's key is split in classid (the high 32 bits) and objid (the low 32 bits) with objsubid 1, and $1 is the
+// tenant. Other databases, other tenants and other advisory locks, which parallel test packages hold at the same time, are
+// not among them.
+const settingsLockRows = `locktype = 'advisory' AND objsubid = 1 AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+        AND ((classid::bigint << 32) | objid::bigint) = hashtextextended('cargo_fin.settings/' || $1::text, 0)`
+
 // waitingInTheSettingsLock counts the sessions that wait for the tenant's settings lock.
-func waitingInTheSettingsLock(t *testing.T) int {
+func waitingInTheSettingsLock(t *testing.T, tenant string) int {
 	t.Helper()
 	conn, err := pgx.Connect(context.Background(), os.Getenv("IDP_CARGO_POSTGRES_DSN"))
 	if err != nil {
@@ -63,11 +70,35 @@ func waitingInTheSettingsLock(t *testing.T) int {
 	}
 	defer conn.Close(context.Background())
 	var n int
-	if err = conn.QueryRow(context.Background(), `SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
-        WHERE l.locktype = 'advisory' AND NOT l.granted AND a.query LIKE '%cargo_fin.settings/%'`).Scan(&n); err != nil {
+	if err = conn.QueryRow(context.Background(), `SELECT count(*) FROM pg_locks WHERE NOT granted AND `+settingsLockRows, tenant).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	return n
+}
+
+// holdOtherLocks holds, on a connection of its own until the test ends, the settings lock of thirty other tenants in shared
+// mode and an advisory share lock that is none of FIN's, as other packages' tests do while they run in parallel: a query
+// that does not tell this tenant's lock from them picks another session.
+func holdOtherLocks(t *testing.T) {
+	t.Helper()
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, os.Getenv("IDP_CARGO_POSTGRES_DSN"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback(ctx); conn.Close(ctx) })
+	for i := 0; i < 30; i++ {
+		if _, err = tx.Exec(ctx, finpg.SettingsLockSharedSQL, fmt.Sprintf("another-tenant-%d", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock_shared(424242)`); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // The review's case. F1 is UNRESTRICTED (version 1) and ops-2 previews the attribution of SH-C under it. A tightening
@@ -77,6 +108,7 @@ func waitingInTheSettingsLock(t *testing.T) int {
 // asker's.
 func TestASubmissionWaitsForASettingsChangeAndReadsItsVersionOnPostgres(t *testing.T) {
 	u := formerWorld(t)
+	holdOtherLocks(t)
 	u.depart()
 	free := u.configure(time0, le("fin.F1", "UNRESTRICTED"))
 	pre := u.must(u.module.PreviewConsolCostApportionment(u.ctx, u.attributeCmd("preview-1", "ops-2", 6, statementOf("C", 5_000, 10_000, api.PartyWarehouse))))
@@ -97,7 +129,7 @@ func TestASubmissionWaitsForASettingsChangeAndReadsItsVersionOnPostgres(t *testi
 		submitted, submitErr = u.submit("submit-1", "ops-1", int(pre.Version), 6)
 	}()
 	waitBlockedBy(t, pid, 2)
-	if n := waitingInTheSettingsLock(t); n != 2 {
+	if n := waitingInTheSettingsLock(t, u.tenant); n != 2 {
 		t.Fatalf("%d sessions wait in the settings lock, want 2", n)
 	}
 	release()
@@ -147,6 +179,7 @@ func (c *hookClock) Now() time.Time {
 func TestASettingsChangeWaitsForADecisionAndIsStampedAfterItOnPostgres(t *testing.T) {
 	for _, decision := range []string{"preview", "submission", "close"} {
 		u := formerWorld(t)
+		holdOtherLocks(t)
 		u.depart()
 		statement := statementOf("C", 5_000, 10_000, api.PartyWarehouse)
 		pre := u.must(u.module.PreviewConsolCostApportionment(u.ctx, u.attributeCmd("preview-1", "ops-2", 6, statement)))
@@ -159,6 +192,11 @@ func TestASettingsChangeWaitsForADecisionAndIsStampedAfterItOnPostgres(t *testin
 		if err != nil {
 			t.Fatal(err)
 		}
+		// the clock is let go when the test ends, however it ends (registered after the world's cleanups, so it runs before them): a
+		// failed assertion must not leave the decision stopped, which would hold the connection pool's close until the timeout
+		var letGoOnce sync.Once
+		release := func() { letGoOnce.Do(func() { close(clock.proceed) }) }
+		t.Cleanup(release)
 		var wg sync.WaitGroup
 		var decisionErr, proposeErr error
 		wg.Add(1)
@@ -186,7 +224,7 @@ func TestASettingsChangeWaitsForADecisionAndIsStampedAfterItOnPostgres(t *testin
 		}
 		var holder int
 		var mode string
-		if err = conn.QueryRow(u.ctx, `SELECT pid, mode FROM pg_locks WHERE locktype = 'advisory' AND granted AND mode = 'ShareLock'`).Scan(&holder, &mode); err != nil {
+		if err = conn.QueryRow(u.ctx, `SELECT pid, mode FROM pg_locks WHERE granted AND mode = 'ShareLock' AND `+settingsLockRows, u.tenant).Scan(&holder, &mode); err != nil {
 			t.Fatalf("%s holds the settings lock: %d %s %v", decision, holder, mode, err)
 		}
 		conn.Close(u.ctx)
@@ -198,7 +236,7 @@ func TestASettingsChangeWaitsForADecisionAndIsStampedAfterItOnPostgres(t *testin
 		}()
 		waitBlockedBy(t, holder, 1)
 		letGo := time.Now().UTC()
-		close(clock.proceed)
+		release()
 		wg.Wait()
 		if decisionErr != nil || proposeErr != nil {
 			t.Fatalf("%s: %v; the tightening: %v", decision, decisionErr, proposeErr)
