@@ -202,6 +202,9 @@ type Movement struct {
 	retired []int // stored master bills that left CURRENT since the movement was loaded, by index
 	ended   []int // stored entries ended since the movement was loaded, by index
 	pending []Event
+	// s1 is the value of S1 the pending items are read under (ReadUnder); empty when they are read
+	// without the settings.
+	s1 string
 }
 
 // Event carries identifiers only. Its subject is a movement, a legal entity (series) or a container visit, whose
@@ -222,6 +225,7 @@ type Event struct {
 	ReleaseNo       int
 	FactNo          int
 	FactsVersion    int
+	SettingsVersion int
 	BookingID       string
 	CapacityVersion int
 	Reason          string

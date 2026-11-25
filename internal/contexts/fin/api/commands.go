@@ -870,6 +870,8 @@ type Commands interface {
 	SubmitConsolCostApportionment(ctx context.Context, cmd SubmitConsolCostApportionment) (Receipt, error)
 	ApportionConsolCostInOneStep(ctx context.Context, cmd ApportionConsolCostInOneStep) (Receipt, error)
 	SetCostVarianceThreshold(ctx context.Context, cmd SetCostVarianceThreshold) (Receipt, error)
+	ApproveCostVarianceThreshold(ctx context.Context, cmd ApproveCostVarianceThreshold) (Receipt, error)
+	RefuseCostVarianceThreshold(ctx context.Context, cmd RefuseCostVarianceThreshold) (Receipt, error)
 	RecordCreditorInvoice(ctx context.Context, cmd RecordCreditorInvoice) (Receipt, error)
 	MatchCreditorInvoice(ctx context.Context, cmd MatchCreditorInvoice) (Receipt, error)
 	ApproveCostVariance(ctx context.Context, cmd ApproveCostVariance) (Receipt, error)

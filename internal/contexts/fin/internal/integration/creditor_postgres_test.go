@@ -118,6 +118,8 @@ func creditorWorld(t *testing.T) ap {
 		ValidUntil: a.at.AddDate(0, 1, 0), Source: "monthly rate 2026-11", OccurredAt: a.hours(0)}))
 	a.must(a.module.SetCostVarianceThreshold(ctx, api.SetCostVarianceThreshold{CommandID: "threshold", TenantID: a.tenant, ActorID: "acct-1",
 		LegalEntityID: "LE", ExpectedRevision: 3, Amount: 10_000, RateBP: 100, OccurredAt: a.hours(0)}))
+	a.must(a.module.ApproveCostVarianceThreshold(ctx, api.ApproveCostVarianceThreshold{CommandID: "threshold-approve", TenantID: a.tenant, ActorID: "ctrl-1",
+		LegalEntityID: "LE", ExpectedRevision: 4, Version: 1})) // the first version is looser: another person approves it
 	for _, j := range []struct{ job, shipment string }{{"JOB-A", "SH-A"}, {"JOB-B", "SH-B"}} {
 		a.must(a.module.OpenFreightJob(ctx, api.OpenFreightJob{CommandID: "open-" + j.job, TenantID: a.tenant, ActorID: "fin-1", JobID: j.job,
 			ShipmentID: j.shipment, OccurredAt: a.hours(1)}))
@@ -619,6 +621,8 @@ func TestReviewFindingsOnPostgres(t *testing.T) {
 	a.must(f.module.MatchCreditorInvoice(ctx, a.match("CI-T1", "ap-1", 5, onJob("JOB-A", 1, 1, 170_000, true))))
 	a.rejected("a threshold dated before a matching", threshold("threshold-back", 3, 50_000), "a threshold is set after it")
 	a.must(api.Receipt{}, threshold("threshold-2", 6, 50_000))
+	a.must(f.module.ApproveCostVarianceThreshold(ctx, api.ApproveCostVarianceThreshold{CommandID: "approve-threshold-2", TenantID: f.tenant, ActorID: "ctrl-1",
+		LegalEntityID: "LE", ExpectedRevision: policyRevision(), Version: 2})) // a higher amount is looser: another person approves it
 	a.must(f.module.ApproveCostVariance(ctx, api.ApproveCostVariance{CommandID: "approve-t1", TenantID: f.tenant, ActorID: "ctrl-1", InvoiceID: "CI-T1",
 		ExpectedRevision: a.invoice("CI-T1").Revision, Reason: "waiting time", OccurredAt: a.hours(7)}))
 	if t1 := a.invoice("CI-T1"); t1.ThresholdVersion != 1 || t1.AwaitingApproval {

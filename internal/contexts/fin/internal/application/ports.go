@@ -66,6 +66,9 @@ type PolicyStore interface {
 	Shared(ctx context.Context, tenant fin.TenantID, legalEntity string) (*fin.FinancePolicy, bool, error)
 	Insert(context.Context, *fin.FinancePolicy) (int64, error)
 	Save(context.Context, *fin.FinancePolicy, int64) (int64, error)
+	// LegalEntities lists the legal entities of the tenant that have a policy, in id order, with their functional
+	// currencies (read in a query's snapshot).
+	LegalEntities(ctx context.Context, tenant fin.TenantID) (map[string]string, error)
 }
 
 // JobStore loads and writes freight jobs; Load locks the job row.
@@ -303,6 +306,8 @@ type PoolStore interface {
 	// HoldingsOfJob lists what stops a job from being cancelled: its used shares and its losses under each pool line's
 	// latest apportionment, with whether the pool is closed.
 	HoldingsOfJob(ctx context.Context, tenant fin.TenantID, job string) ([]PoolHolding, error)
+	// OpenPools lists the tenant's open pools in pool id order, with their revisions (read in a query's snapshot).
+	OpenPools(ctx context.Context, tenant fin.TenantID) ([]*fin.ConsolCostPool, []int64, error)
 	// RevisionsOf answers the revision of each of the pools named.
 	RevisionsOf(ctx context.Context, tenant fin.TenantID, pools []string) (map[string]int64, error)
 }
@@ -327,6 +332,9 @@ type CreditorInvoiceStore interface {
 	OpenAccruals(ctx context.Context, tenant fin.TenantID, legalEntity, creditor string) ([]fin.AccrualTarget, error)
 	// LatestMatch answers when an invoice of the legal entity was last matched (zero when none was).
 	LatestMatch(ctx context.Context, tenant fin.TenantID, legalEntity string) (time.Time, error)
+	// LatestMatchEntered answers the system time of the legal entity's latest match (match_entered_at), zero when none
+	// was: a threshold set or approved is not stamped before it (V2.100).
+	LatestMatchEntered(ctx context.Context, tenant fin.TenantID, legalEntity string) (time.Time, error)
 }
 
 // PaidAllocation is a live allocation of a creditor payment to an invoice, in the invoice's currency.

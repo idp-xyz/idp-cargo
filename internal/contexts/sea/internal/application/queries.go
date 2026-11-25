@@ -15,6 +15,8 @@ type Reads struct {
 	Series    SeriesStore
 	Numbers   Numbers
 	Register  HBLRegister
+	Settings  SettingsStore
+	Clock     Clock
 }
 
 // MovementRead is a movement as read, with its revision and its container visits in the order they were assigned.

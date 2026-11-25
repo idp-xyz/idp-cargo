@@ -43,6 +43,7 @@ type EventPayload struct {
 	ReleaseNo       int    `json:"release_no,omitempty"`
 	FactNo          int    `json:"fact_no,omitempty"`
 	FactsVersion    int    `json:"facts_version,omitempty"`
+	SettingsVersion int    `json:"settings_version,omitempty"`
 	BookingID       string `json:"booking_id,omitempty"`
 	CapacityVersion int    `json:"capacity_version,omitempty"`
 	Reason          string `json:"reason,omitempty"`

@@ -322,7 +322,14 @@ func (m *Module) GetFinancePolicy(ctx context.Context, q api.GetFinancePolicy) (
 	}
 	for _, t := range st.Thresholds {
 		out.VarianceThresholds = append(out.VarianceThresholds, api.VarianceThreshold{Version: t.No,
-			Amount: kernel.Money{Currency: st.FunctionalCurrency, Minor: t.Amount}, RateBP: t.RateBP, SetBy: t.By, SetAt: t.At})
+			Amount: kernel.Money{Currency: st.FunctionalCurrency, Minor: t.Amount}, RateBP: t.RateBP, SetBy: t.By, SetAt: t.At, ProposedAt: t.ProposedAt,
+			Looser: t.Looser, Status: t.State, DecidedBy: t.DecidedBy, DecidedAt: t.DecidedAt, Automatic: t.Auto, InForceAt: t.InForceAt, RefuseReason: t.RefuseReason})
+	}
+	if t := p.ThresholdAt(m.clock.Now().UTC().Truncate(time.Microsecond)); t != nil {
+		out.InForceThreshold = t.No
+	}
+	if t := p.ProposedThreshold(); t != nil {
+		out.ProposedThreshold = t.No
 	}
 	return out, nil
 }
@@ -850,6 +857,11 @@ func (a authorizer) RequireFinAction(ctx context.Context, s application.Scope, a
 
 // classify wraps known FIN, kernel and Bento causes in their api error kind and passes anything else through.
 func classify(err error) error {
+	if cause, skewed := postgres.ClockSkew(err); skewed {
+		return classify(settings.Refuse(settings.ErrClockSkew, "a time that the clock of FIN's application server gave is not within a minute of the clock of the "+
+			"database, or is before a record already written (%s); synchronise the clocks of FIN's servers and the database's (for example with NTP), "+
+			"then try the command again", cause))
+	}
 	var kind error
 	switch {
 	case errors.Is(err, application.ErrUnauthenticated):
@@ -876,7 +888,7 @@ func classify(err error) error {
 		errors.Is(err, domain.ErrMatchCurrency), errors.Is(err, domain.ErrMatchCreditor), errors.Is(err, domain.ErrMatchTarget),
 		errors.Is(err, domain.ErrAccrualClosed), errors.Is(err, domain.ErrMatchExceeds), errors.Is(err, domain.ErrMatchIncomplete),
 		errors.Is(err, domain.ErrMatchChargeCode), errors.Is(err, domain.ErrInvoiceNumber), errors.Is(err, domain.ErrVarianceApproval),
-		errors.Is(err, domain.ErrAccrualMatched), errors.Is(err, domain.ErrPoolNotClosable), errors.Is(err, domain.ErrTargetClosed), errors.Is(err, domain.ErrPoolInWork),
+		errors.Is(err, domain.ErrThresholdProposed), errors.Is(err, domain.ErrThresholdApproval), errors.Is(err, domain.ErrAccrualMatched), errors.Is(err, domain.ErrPoolNotClosable), errors.Is(err, domain.ErrTargetClosed), errors.Is(err, domain.ErrPoolInWork),
 		errors.Is(err, domain.ErrPreviewStale), errors.Is(err, domain.ErrPreviewSubmitted), errors.Is(err, domain.ErrConfirmer), errors.Is(err, domain.ErrAttributionMissing), errors.Is(err, domain.ErrJobBearsPoolCost), errors.Is(err, domain.ErrAttributionConfirmer), errors.Is(err, domain.ErrAttributionReconfirm), errors.Is(err, domain.ErrOneStepRefused),
 		errors.Is(err, domain.ErrFinalBehind), errors.Is(err, domain.ErrNotPayable), errors.Is(err, domain.ErrInvoicePaid),
 		errors.Is(err, domain.ErrReviewJobNotOpen), errors.Is(err, domain.ErrReviewNotLoss), errors.Is(err, domain.ErrReviewStale), errors.Is(err, domain.ErrReviewOpen),

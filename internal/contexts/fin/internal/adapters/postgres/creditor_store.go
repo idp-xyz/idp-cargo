@@ -416,6 +416,18 @@ func (s CreditorStore) LatestMatch(ctx context.Context, tenant fin.TenantID, leg
 	return utc(deref(latest)), err
 }
 
+// LatestMatchEntered answers the system time of the legal entity's latest match (zero when none was).
+func (s CreditorStore) LatestMatchEntered(ctx context.Context, tenant fin.TenantID, legalEntity string) (time.Time, error) {
+	q, err := s.DB.ReadExecutor(ctx)
+	if err != nil {
+		return time.Time{}, err
+	}
+	var latest *time.Time
+	err = q.QueryRow(ctx, `SELECT max(match_entered_at) FROM cargo_fin.creditor_invoice WHERE tenant_id = $1 AND legal_entity_id = $2`, string(tenant),
+		legalEntity).Scan(&latest)
+	return utc(deref(latest)), err
+}
+
 // OpenAccruals lists the accruals of a legal entity's open jobs and pools still expecting an invoice (ACCRUED or
 // PARTLY_MATCHED), naming the creditor or none when creditor is not empty.
 func (s CreditorStore) OpenAccruals(ctx context.Context, tenant fin.TenantID, legalEntity, creditor string) ([]fin.AccrualTarget, error) {

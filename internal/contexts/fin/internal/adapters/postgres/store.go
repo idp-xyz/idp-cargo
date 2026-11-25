@@ -93,6 +93,19 @@ type thresholdRow struct {
 	By        string    `json:"set_by"`
 	At        time.Time `json:"set_at"`
 	EnteredAt time.Time `json:"entered_at"`
+	// since V2.100: NULL for a version written before it
+	ProposedAt *time.Time `json:"proposed_at"`
+	Looser     *bool      `json:"looser"`
+}
+
+type thresholdDecisionRow struct {
+	No        int        `json:"threshold_no"`
+	Kind      string     `json:"kind"`
+	By        string     `json:"decided_by"`
+	At        time.Time  `json:"decided_at"`
+	InForceAt *time.Time `json:"in_force_at"`
+	Auto      bool       `json:"auto"`
+	Reason    *string    `json:"reason"`
 }
 
 type seriesRow struct {
@@ -120,13 +133,14 @@ func readPolicy(ctx context.Context, q bentopg.Querier, tenant fin.TenantID, le,
 	st := fin.PolicyState{TenantID: tenant, LegalEntityID: le}
 	var currency string
 	var revision int64
-	var rates, taxes, series, thresholds []byte
+	var rates, taxes, series, thresholds, decisions []byte
 	key := "c.tenant_id=p.tenant_id AND c.legal_entity_id=p.legal_entity_id"
 	err := q.QueryRow(ctx, `SELECT p.functional_currency,p.book_code,p.opened_by,p.opened_at,p.entered_at,p.revision,`+
 		children("exchange_rate_entry", key, "c.entry_no")+`,`+children("charge_tax_treatment", key, "c.version_no")+`,`+
-		children("invoice_series", key, "c.kind")+`,`+children("cost_variance_threshold", key, "c.threshold_no")+`
+		children("invoice_series", key, "c.kind")+`,`+children("cost_variance_threshold", key, "c.threshold_no")+`,`+
+		children("cost_variance_threshold_decision", key, "c.threshold_no")+`
       FROM cargo_fin.finance_policy p WHERE p.tenant_id=$1 AND p.legal_entity_id=$2`, string(tenant), le).Scan(&currency, &st.BookCode, &st.OpenedBy,
-		&st.OpenedAt, &st.EnteredAt, &revision, &rates, &taxes, &series, &thresholds)
+		&st.OpenedAt, &st.EnteredAt, &revision, &rates, &taxes, &series, &thresholds, &decisions)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, 0, fmt.Errorf("%w: finance policy %s", bentorepo.ErrNotFound, le)
 	}
@@ -137,12 +151,24 @@ func readPolicy(ctx context.Context, q bentopg.Querier, tenant fin.TenantID, le,
 	var tr []taxRow
 	var sr []seriesRow
 	var hr []thresholdRow
-	if err = errors.Join(json.Unmarshal(rates, &rr), json.Unmarshal(taxes, &tr), json.Unmarshal(series, &sr), json.Unmarshal(thresholds, &hr)); err != nil {
+	var dr []thresholdDecisionRow
+	if err = errors.Join(json.Unmarshal(rates, &rr), json.Unmarshal(taxes, &tr), json.Unmarshal(series, &sr), json.Unmarshal(thresholds, &hr),
+		json.Unmarshal(decisions, &dr)); err != nil {
 		return nil, 0, err
 	}
 	for _, h := range hr {
-		st.Thresholds = append(st.Thresholds, fin.VarianceThreshold{No: h.No, Amount: h.Amount, RateBP: h.RateBP, By: h.By, At: utc(h.At),
-			EnteredAt: utc(h.EnteredAt)})
+		t := fin.VarianceThreshold{No: h.No, Amount: h.Amount, RateBP: h.RateBP, By: h.By, At: utc(h.At), EnteredAt: utc(h.EnteredAt),
+			ProposedAt: utc(deref(h.ProposedAt)), Looser: deref(h.Looser), State: fin.ThresholdProposed}
+		for _, d := range dr {
+			if d.No != h.No {
+				continue
+			}
+			t.State, t.DecidedBy, t.DecidedAt, t.InForceAt, t.Auto = fin.ThresholdApproved, d.By, utc(d.At), utc(deref(d.InForceAt)), d.Auto
+			if d.Kind == "REFUSED" {
+				t.State, t.RefuseReason = fin.ThresholdRefused, deref(d.Reason)
+			}
+		}
+		st.Thresholds = append(st.Thresholds, t)
 	}
 	for _, t := range tr {
 		from, err := fin.ParseDate(t.EffectiveFrom)
@@ -201,6 +227,28 @@ func (s PolicyStore) Shared(ctx context.Context, tenant fin.TenantID, le string)
 		return nil, false, nil
 	}
 	return p, err == nil, err
+}
+
+// LegalEntities lists the legal entities with a policy and their functional currencies.
+func (s PolicyStore) LegalEntities(ctx context.Context, tenant fin.TenantID) (map[string]string, error) {
+	q, err := s.DB.ReadExecutor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := q.Query(ctx, `SELECT legal_entity_id, functional_currency FROM cargo_fin.finance_policy WHERE tenant_id=$1 ORDER BY legal_entity_id`, string(tenant))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var id, currency string
+		if err = rows.Scan(&id, &currency); err != nil {
+			return nil, err
+		}
+		out[id] = currency
+	}
+	return out, rows.Err()
 }
 
 func (s PolicyStore) Insert(ctx context.Context, p *fin.FinancePolicy) (int64, error) {
@@ -267,7 +315,20 @@ func writeRates(ctx context.Context, q bentopg.Executor, p *fin.FinancePolicy) e
 	}
 	for _, t := range p.AddedThresholds() {
 		if _, err := q.Exec(ctx, `INSERT INTO cargo_fin.cost_variance_threshold (tenant_id,legal_entity_id,threshold_no,amount_minor,rate_bp,set_by,set_at,
-            entered_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, string(st.TenantID), st.LegalEntityID, t.No, t.Amount, t.RateBP, t.By, t.At, t.EnteredAt); err != nil {
+            entered_at,proposed_at,looser) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, string(st.TenantID), st.LegalEntityID, t.No, t.Amount, t.RateBP, t.By,
+			t.At, t.EnteredAt, t.ProposedAt, t.Looser); err != nil {
+			return err
+		}
+	}
+	for _, t := range p.AddedDecisions() {
+		kind, reason := "APPROVED", any(nil)
+		var inForce any = t.InForceAt
+		if t.State == fin.ThresholdRefused {
+			kind, reason, inForce = "REFUSED", t.RefuseReason, nil
+		}
+		if _, err := q.Exec(ctx, `INSERT INTO cargo_fin.cost_variance_threshold_decision (tenant_id,legal_entity_id,threshold_no,kind,decided_by,decided_at,
+            in_force_at,auto,reason) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, string(st.TenantID), st.LegalEntityID, t.No, kind, t.DecidedBy, t.DecidedAt, inForce,
+			t.Auto, reason); err != nil {
 			return err
 		}
 	}
@@ -1474,4 +1535,20 @@ func TaxInUse(err error) bool {
 func RateInUse(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "23514" && pgErr.ConstraintName == "exchange_rate_entry_in_use"
+}
+
+// ClockSkew reports whether the database refused a time that FIN's clock gave a threshold, a decision or a match (since
+// V2.100): outside a minute of the database's clock, or before a record already written. It answers the database's own
+// words for the cause. The way out is the same: synchronise the clocks of FIN's servers.
+func ClockSkew(err error) (string, bool) {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "23514" {
+		return "", false
+	}
+	switch pgErr.ConstraintName {
+	case "cost_variance_time_window", "cost_variance_time_monotone", "cost_variance_decision_after_proposal", "creditor_match_time_window",
+		"creditor_match_time_monotone":
+		return pgErr.Message, true
+	}
+	return "", false
 }
