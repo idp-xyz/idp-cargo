@@ -81,13 +81,28 @@ func NewVerifier(pemBytes []byte, audience, gatewayID string) (*Verifier, error)
 	}
 	v := &Verifier{keys: map[string]*ecdsa.PublicKey{}, audience: audience, issuer: issuerPrefix + gatewayID, now: time.Now, seen: map[string]int64{}}
 	for rest := pemBytes; ; {
-		var block *pem.Block
-		if block, rest = pem.Decode(rest); block == nil {
+		// nothing but blanks may stand outside the PEM blocks: pem.Decode skips what comes before a block, and a truncated
+		// block reads as none, so each is looked for here; no message prints what the file holds
+		at := bytes.Index(rest, []byte("-----BEGIN"))
+		if at < 0 {
+			if len(bytes.TrimSpace(rest)) != 0 {
+				return nil, errors.New("mcp: the public key file holds something besides PEM blocks, or a block that is cut short")
+			}
 			break
+		}
+		if len(bytes.TrimSpace(rest[:at])) != 0 {
+			return nil, errors.New("mcp: the public key file holds something outside its PEM blocks")
+		}
+		var block *pem.Block
+		if block, rest = pem.Decode(rest[at:]); block == nil {
+			return nil, errors.New("mcp: the public key file holds a PEM block that does not read")
+		}
+		if block.Type != "PUBLIC KEY" {
+			return nil, errors.New("mcp: a PEM block of the public key file is not a PUBLIC KEY")
 		}
 		k, err := x509.ParsePKIXPublicKey(block.Bytes)
 		if err != nil {
-			return nil, fmt.Errorf("mcp: not a PKIX public key: %w", err)
+			return nil, errors.New("mcp: a PEM block of the public key file is not a PKIX public key")
 		}
 		pub, ok := k.(*ecdsa.PublicKey)
 		if !ok || pub.Curve != elliptic.P256() {

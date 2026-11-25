@@ -181,6 +181,7 @@ func (v *server) guard(next sdk.MethodHandler) sdk.MethodHandler {
 				defer done()
 				if a, denied := v.policy.resolve(subject); denied != nil {
 					refusal = &failure{"not_allowed", msgNotAllowed}
+					attrs = append(attrs, "cause", strings.TrimPrefix(denied.Error(), errDenied.Error()+": "))
 				} else {
 					ctx = context.WithValue(ctx, accessKey{}, a)
 					ctx = identity.WithPrincipal(ctx, identity.Principal{TenantID: a.tenant, ActorID: a.actor, Permissions: a.permissions,
@@ -293,7 +294,8 @@ func (v *server) jobEntity(ctx context.Context, tool string, a access, jobID str
 		return "", v.failed(tool, err)
 	}
 	if !a.sees(entity) {
-		return "", &failure{"not_found", msgNotFound}
+		// told as a missing job; the audit line says "hidden", so that probing shows
+		return "", &failure{"hidden", msgNotFound}
 	}
 	return entity, nil
 }

@@ -90,7 +90,7 @@ func LoadMCPConfig(path string) (MCPConfig, error) {
 func (c MCPConfig) validate() error {
 	u, err := url.Parse(c.Audience)
 	switch {
-	case err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" ||
+	case err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.Contains(c.Audience, "#") ||
 		!strings.HasSuffix(u.Path, "/mcp"):
 		return errors.New("bootstrap: the audience is the endpoint exactly as it is registered in idp-mcp: an http or https URL ending in /mcp")
 	case !gatewayID.MatchString(c.GatewayID):

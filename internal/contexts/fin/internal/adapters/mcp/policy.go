@@ -133,16 +133,26 @@ type access struct {
 // sees reports whether the caller may see the legal entity.
 func (a access) sees(entity string) bool { return a.all || a.entities[entity] }
 
-// errDenied is every refusal of the policy; the caller is told only that it is not allowed.
+// errDenied is every refusal of the policy; the caller is told only that it is not allowed, and the log names the cause.
 var errDenied = errors.New("the caller is not allowed")
+
+// The causes, for the audit line of a refused caller.
+var (
+	errUnknownTenant = fmt.Errorf("%w: the gateway tenant is not in the policy", errDenied)
+	errSubjectForm   = fmt.Errorf("%w: the subject is not of the form FIN takes for an actor", errDenied)
+	errNoGrant       = fmt.Errorf("%w: no role of the member grants fin:ReadProfit", errDenied)
+)
 
 // resolve maps the member to CargoPai's tenant, the actor FIN will see (the subject of the assertion), the union of the
 // permissions of the roles the policy names and the union of their legal entities. A tenant or a role the policy does
 // not name adds nothing; a member with no role that adds a permission is refused.
 func (p Policy) resolve(s Subject) (access, error) {
 	t, ok := p.Tenants[s.Tenant]
-	if !ok || !tenantID.MatchString(s.ID) {
-		return access{}, errDenied
+	switch {
+	case !ok:
+		return access{}, errUnknownTenant
+	case !tenantID.MatchString(s.ID):
+		return access{}, errSubjectForm
 	}
 	a := access{tenant: t.CargoTenant, actor: s.ID, entities: map[string]bool{}}
 	for _, role := range s.Roles {
@@ -161,7 +171,7 @@ func (p Policy) resolve(s Subject) (access, error) {
 		}
 	}
 	if !slices.Contains(a.permissions, PermissionReadProfit) {
-		return access{}, errDenied
+		return access{}, errNoGrant
 	}
 	return a, nil
 }

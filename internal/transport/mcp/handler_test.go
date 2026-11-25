@@ -289,6 +289,43 @@ func TestARepeatedKeyCannotCarryArgumentsTheAssertionDoesNotCover(t *testing.T) 
 	}
 }
 
+// signedRaw sends a tools/call whose assertion is made for the arguments {"n":"a"} and whose params are written as rest says
+// (what follows "_meta" in the params, up to the closing brace of the params).
+func (r *rig) signedRaw(rest string) reply {
+	p := mcptest.Params(map[string]any{"name": "probe", "arguments": map[string]any{"n": "a"}})
+	a := r.signer.Assertion(alice, "tools/call", p)
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28",` +
+		`"io.modelcontextprotocol/clientCapabilities":{},"io.idp.telos/caller-assertion":"` + a + `"},` + rest + `}}`
+	return r.post("tools/call", "probe", []byte(body))
+}
+
+// What the SDK's own JSON reader takes for the tool's name and arguments is what the digest covers, or the call is refused:
+// the cases are the reviewer's (keys in another case, escapes, invalid UTF-8, surrogates, big numbers).
+func TestTheSDKsReaderTakesWhatTheDigestCovers(t *testing.T) {
+	refused := map[string]string{
+		"a Name variant":       `"name":"probe","Name":"zzz","arguments":{"n":"a"}`,
+		"an Arguments variant": `"name":"probe","arguments":{"n":"a"},"Arguments":{"n":"second"}`,
+		"an N variant":         `"name":"probe","arguments":{"n":"a","N":"y"}`,
+	}
+	allowed := map[string]string{
+		"plain":       `"name":"probe","arguments":{"n":"a"}`,
+		"escaped key": `"na\u006de":"probe","arguments":{"n":"a"}`,
+		"spaced":      ` "name" : "probe" , "arguments" : { "n" : "a" } `,
+	}
+	for name, rest := range refused {
+		r := newRig(t)
+		if got := r.signedRaw(rest); got.code == 200 && !strings.Contains(got.body, "n=a") || r.ran.Load() > 0 && !strings.Contains(got.body, "n=a") {
+			t.Errorf("%s: the tool ran on what the digest does not cover: %d %s", name, got.code, got.body)
+		}
+	}
+	for name, rest := range allowed {
+		r := newRig(t)
+		if got := r.signedRaw(rest); got.code != 200 || !strings.Contains(got.body, "n=a") {
+			t.Errorf("%s: %d %s", name, got.code, got.body)
+		}
+	}
+}
+
 type zeros struct{}
 
 func (zeros) Read(p []byte) (int, error) {
@@ -320,6 +357,25 @@ func TestTheVerifierNeedsAValidP256PublicKey(t *testing.T) {
 			t.Errorf("%s: the verifier was made", name)
 		}
 	}
+	// the file is read strictly: nothing but blanks outside the blocks, and each block a P-256 public key
+	trunc := second.PublicPEM()
+	trunc = trunc[:len(trunc)/2]
+	for name, content := range map[string][]byte{
+		"garbage before a block": append([]byte("junk\n"), good.PublicPEM()...),
+		"garbage after a block":  append(good.PublicPEM(), []byte("junk\n")...),
+		"a truncated second key": append(good.PublicPEM(), trunc...),
+		"garbage between":        append(append(good.PublicPEM(), []byte("junk\n")...), second.PublicPEM()...),
+	} {
+		_, err := mcp.NewVerifier(content, audience, "g1")
+		if err == nil {
+			t.Errorf("%s: the verifier was made", name)
+		} else if strings.Contains(err.Error(), "junk") || strings.Contains(err.Error(), "BEGIN") {
+			t.Errorf("%s: the message prints the file: %v", name, err)
+		}
+	}
+	if _, err := mcp.NewVerifier(append(append([]byte("\n  "), good.PublicPEM()...), []byte("\n\n ")...), audience, "g1"); err != nil {
+		t.Errorf("blanks around a block: %v", err)
+	}
 	v, err := mcp.NewVerifier(append(good.PublicPEM(), second.PublicPEM()...), audience, "g1")
 	if err != nil {
 		t.Fatal(err)
@@ -327,5 +383,29 @@ func TestTheVerifierNeedsAValidP256PublicKey(t *testing.T) {
 	ids := v.KeyIDs()
 	if len(ids) != 2 || !(ids[0] == good.KeyID() || ids[1] == good.KeyID()) || !(ids[0] == second.KeyID() || ids[1] == second.KeyID()) || ids[0] >= ids[1] {
 		t.Fatalf("kids %v, want %s and %s sorted", ids, good.KeyID(), second.KeyID())
+	}
+}
+
+// A forged request with a valid jti but the wrong digest must not burn the jti for the genuine call.
+func TestAForgedRequestDoesNotBurnTheJtiOfTheGenuineCall(t *testing.T) {
+	r := newRig(t)
+	signed := map[string]any{"name": "probe", "arguments": map[string]any{"n": "genuine"}}
+	assertion := r.signer.Assertion(alice, "tools/call", mcptest.Params(signed))
+	forged := mcptest.Body(1, "tools/call", map[string]any{"name": "probe", "arguments": map[string]any{"n": "forged"}}, assertion)
+	if got := r.post("tools/call", "probe", forged); got.code != http.StatusForbidden || r.ran.Load() != 0 {
+		t.Fatalf("the forged request: %d", got.code)
+	}
+	genuine := mcptest.Body(2, "tools/call", signed, assertion)
+	if got := r.post("tools/call", "probe", genuine); got.code != 200 || !strings.Contains(text(t, got), "n=genuine") {
+		t.Fatalf("the genuine call after the forged one: %d %s", got.code, got.body)
+	}
+}
+
+// The 403 answers the request's own id, so that a client can match it.
+func TestTheRefusalEchoesTheRequestID(t *testing.T) {
+	r := newRig(t)
+	got := r.post("tools/call", "probe", mcptest.Body(77, "tools/call", map[string]any{"name": "probe", "arguments": map[string]any{"n": "a"}}, ""))
+	if got.code != 403 || got.json["id"] != float64(77) {
+		t.Fatalf("%d %s", got.code, got.body)
 	}
 }

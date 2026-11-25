@@ -120,3 +120,25 @@ func TestSplitRequestTakesOneCallAndNothingElse(t *testing.T) {
 		t.Errorf("a call without an id or params: %+v %v", got, err)
 	}
 }
+
+// A body that encoding/json and the SDK's reader read differently is refused by sameReading.
+func TestSameReadingRefusesWhatTheTwoReadersTakeDifferently(t *testing.T) {
+	for name, body := range map[string]string{
+		"names differ":     `{"method":"tools/call","params":{"name":"probe","Name":"zzz"}}`,
+		"arguments differ": `{"method":"tools/call","params":{"name":"p","arguments":{"n":"a"},"Arguments":{"n":"b"}}}`,
+		"method differs":   `{"method":"tools/call","Method":"tools/list","params":{"name":"p"}}`,
+	} {
+		msg, err := splitRequest([]byte(body))
+		if err != nil {
+			continue // refused earlier still
+		}
+		if err := sameReading([]byte(body), msg); err == nil {
+			t.Errorf("%s: both readers agreed", name)
+		}
+	}
+	body := `{"method":"tools/call","params":{"name":"p","arguments":{"n":"a"}}}`
+	msg, _ := splitRequest([]byte(body))
+	if err := sameReading([]byte(body), msg); err != nil {
+		t.Errorf("a plain call: %v", err)
+	}
+}

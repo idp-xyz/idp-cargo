@@ -45,6 +45,24 @@ func (r *rig) listed() (tools []map[string]any, raw json.RawMessage) {
 // The digest is idp-mcp's canonical digest of the "tools" array of the tools/list result.
 const pinnedCatalogueDigest = "sha256:737616495fa3f18b9cb4a31a685ce67a893243ce60978aa27f339d15a1ad16d3"
 
+// pinnedGatewayDigest is the same catalogue in the gateway's own form, idp-mcp's release.Catalog.Digest over
+// {tools, prompts, resources, resourceTemplates} (nil slices empty): the value an operator compares with the target's
+// snapshotDigest. It is computed here with the same canonical JSON, over the tools as listed and three empty lists.
+const pinnedGatewayDigest = "sha256:e9e09cce5005e0705147680702c9306720822d0616d684d21d91ed99297d15ab"
+
+func TestTheCatalogueIsPinnedInTheGatewaysForm(t *testing.T) {
+	r := newRig(t, &fakeFIN{})
+	_, raw := r.listed()
+	wrapped := []byte(`{"tools":` + string(raw) + `,"prompts":[],"resources":[],"resourceTemplates":[]}`)
+	sum, err := digestOf(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum != pinnedGatewayDigest {
+		t.Fatalf("the gateway's catalog digest is %s, pinned %s", sum, pinnedGatewayDigest)
+	}
+}
+
 func TestTheCatalogueIsPinned(t *testing.T) {
 	r := newRig(t, &fakeFIN{})
 	_, raw := r.listed()

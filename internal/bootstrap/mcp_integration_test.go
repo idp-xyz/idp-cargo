@@ -317,6 +317,9 @@ func TestMCPFinToolsOnPostgres(t *testing.T) {
 			t.Fatalf("%s as the wide role: %s", tool, got.raw)
 		}
 	}
+	if n := strings.Count(logs.String(), "outcome=hidden"); n != 2 {
+		t.Fatalf("the log has %d lines for a job of a legal entity the caller may not see, want 2", n)
+	}
 	// a role the policy does not name, a tenant it does not name, and a member without roles have nothing
 	for _, who := range []mcptransport.Caller{{Subject: "x", Tenant: "gw-a", Roles: []string{"unknown"}}, {Subject: "x", Tenant: "gw-unknown", Roles: []string{"analyst"}},
 		{Subject: "x", Tenant: "gw-a", Roles: []string{}}} {

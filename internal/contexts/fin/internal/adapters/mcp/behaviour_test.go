@@ -595,7 +595,7 @@ func TestOneLogLinePerCallWithNoArgumentsAndNoAmounts(t *testing.T) {
 	}
 	sum := sha256.Sum256([]byte("gw\x00alice"))
 	short := hex.EncodeToString(sum[:4])
-	for i, want := range []struct{ tool, outcome string }{{"get_job_profit", "not_found"}, {"list_loss_jobs", "not_allowed"}, {"list_loss_jobs", "ok"},
+	for i, want := range []struct{ tool, outcome string }{{"get_job_profit", "hidden"}, {"list_loss_jobs", "not_allowed"}, {"list_loss_jobs", "ok"},
 		{"list_job_cost_reviews", "invalid_input"}, {"get_job_profit", "not_allowed"}} {
 		l := lines[i]
 		for _, part := range []string{"tool=" + want.tool, "outcome=" + want.outcome, "duration_ms=", "caller="} {
@@ -603,7 +603,7 @@ func TestOneLogLinePerCallWithNoArgumentsAndNoAmounts(t *testing.T) {
 				t.Errorf("line %d lacks %s: %s", i, part, l)
 			}
 		}
-		allowed := map[string]bool{"time": true, "level": true, "msg": true, "tool": true, "outcome": true, "duration_ms": true, "caller": true, "client": true, "actor": true}
+		allowed := map[string]bool{"time": true, "level": true, "msg": true, "tool": true, "outcome": true, "duration_ms": true, "caller": true, "client": true, "actor": true, "cause": true}
 		for _, field := range logFields(l) {
 			if !allowed[field] {
 				t.Errorf("line %d has the attribute %q, which is not one of the tool, the outcome, the time, the caller's hash, the client and the actor: %s", i, field, l)

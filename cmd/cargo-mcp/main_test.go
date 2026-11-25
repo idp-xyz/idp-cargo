@@ -55,7 +55,7 @@ func TestRun(t *testing.T) {
 		"an unknown flag":              {[]string{"-config", "x", "-no-verify"}, dsn, "flag provided but not defined"},
 		"an argument":                  {[]string{"-config", "x", "serve"}, dsn, "unexpected arguments"},
 		"an absent configuration":      {[]string{"-config", filepath.Join(t.TempDir(), "absent.json")}, dsn, "no such file"},
-		"a public key that is not PEM": {[]string{"-config", config(t, []byte("nope"), good)}, dsn, "no public key"},
+		"a public key that is not PEM": {[]string{"-config", config(t, []byte("nope"), good)}, dsn, "PEM blocks"},
 		"a short cursor key":           {[]string{"-config", config(t, nil, base64.StdEncoding.EncodeToString([]byte("short")))}, dsn, "32 bytes"},
 		"no database":                  {[]string{"-config", config(t, nil, good)}, nil, "IDP_CARGO_POSTGRES_DSN"},
 	} {

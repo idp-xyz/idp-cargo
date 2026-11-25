@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
+	segjson "github.com/segmentio/encoding/json"
 )
 
 // maxBody is the largest request body: the gateway's requests are small (the assertion is 8 KiB at most).
@@ -75,8 +76,55 @@ func (v *Verifier) Require(next http.Handler, logger *slog.Logger) http.Handler 
 				"error": map[string]any{"code": -32600, "message": ErrAssertion.Error()}})
 			return
 		}
+		if err := sameReading(body, msg); err != nil {
+			logger.Warn("request refused", "method", msg.method, "reason", err.Error(), "remote", r.RemoteAddr)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
 		next.ServeHTTP(w, r.WithContext(WithCaller(r.Context(), caller)))
 	})
+}
+
+// sameReading reads the body a second time with the JSON library the SDK reads it with (v1.7.0 uses
+// github.com/segmentio/encoding/json), into the shape the SDK reads a call into, and refuses a body in which the method,
+// the tool's name or its arguments (as canonical JSON) are not what this middleware verified. The digest covers what
+// encoding/json read; this is what ties it to what the SDK will run.
+func sameReading(body []byte, msg request) error {
+	var sdkRead struct {
+		Method string `json:"method"`
+		Params struct {
+			Name      string          `json:"name"`
+			Arguments json.RawMessage `json:"arguments"`
+		} `json:"params"`
+	}
+	if err := segjson.Unmarshal(body, &sdkRead); err != nil {
+		return errors.New("the SDK's reader does not take the body: " + err.Error())
+	}
+	if sdkRead.Method != msg.method {
+		return errors.New("the SDK's reader takes another method")
+	}
+	if msg.method != "tools/call" {
+		return nil
+	}
+	var name string
+	_ = json.Unmarshal(msg.params["name"], &name)
+	if sdkRead.Params.Name != name {
+		return errors.New("the SDK's reader takes another tool name")
+	}
+	canon := func(raw json.RawMessage) string {
+		if len(bytes.TrimSpace(raw)) == 0 {
+			raw = json.RawMessage("null")
+		}
+		c, err := Canonical(raw)
+		if err != nil {
+			return "!" + err.Error()
+		}
+		return string(c)
+	}
+	if canon(sdkRead.Params.Arguments) != canon(msg.params["arguments"]) {
+		return errors.New("the SDK's reader takes other arguments")
+	}
+	return nil
 }
 
 type request struct {
