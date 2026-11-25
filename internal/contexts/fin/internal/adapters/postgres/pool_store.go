@@ -64,6 +64,8 @@ type (
 		At            time.Time `json:"made_at"`
 		EnteredAt     time.Time `json:"entered_at"`
 		PreviewNo     *int      `json:"preview_no"`
+		// SettingsVersion is NULL on a row written before V2.97
+		SettingsVersion *int `json:"settings_version"`
 	}
 	previewRow struct {
 		No                int             `json:"preview_no"`
@@ -75,6 +77,7 @@ type (
 		By                string          `json:"made_by"`
 		At                time.Time       `json:"made_at"`
 		EnteredAt         time.Time       `json:"entered_at"`
+		SettingsVersion   *int            `json:"settings_version"`
 	}
 	apportionedLineRow struct {
 		ApportionmentNo int     `json:"apportionment_no"`
@@ -135,6 +138,7 @@ type (
 		ReopenReason    *string    `json:"reopen_reason"`
 		ReopenedAt      *time.Time `json:"reopened_at"`
 		ReopenEnteredAt *time.Time `json:"reopen_entered_at"`
+		SettingsVersion *int       `json:"settings_version"`
 	}
 	shareRow struct {
 		ApportionmentNo int    `json:"apportionment_no"`
@@ -186,7 +190,8 @@ func scanPool(row pgx.Row, tenant fin.TenantID) (*fin.ConsolCostPool, int64, err
 	}
 	for _, c := range cr {
 		st.Closures = append(st.Closures, fin.PoolClosure{No: c.No, By: c.By, At: utc(c.At), EnteredAt: utc(c.EnteredAt), ReopenedBy: deref(c.ReopenedBy),
-			ReopenReason: deref(c.ReopenReason), ReopenedAt: utc(deref(c.ReopenedAt)), ReopenEnteredAt: utc(deref(c.ReopenEnteredAt))})
+			ReopenReason: deref(c.ReopenReason), ReopenedAt: utc(deref(c.ReopenedAt)), ReopenEnteredAt: utc(deref(c.ReopenEnteredAt)),
+			SettingsVersion: deref(c.SettingsVersion)})
 	}
 	st.FunctionalCurrency, st.OpenedAt, st.EnteredAt = kernel.CurrencyCode(currency), st.OpenedAt.UTC(), st.EnteredAt.UTC()
 	for _, l := range lr {
@@ -208,7 +213,7 @@ func scanPool(row pgx.Row, tenant fin.TenantID) (*fin.ConsolCostPool, int64, err
 	}
 	for _, a := range ar {
 		st.Apportionments = append(st.Apportionments, fin.Apportionment{No: a.No, BasisRevision: a.BasisRevision, Stage: a.Stage, By: a.By, At: utc(a.At),
-			EnteredAt: utc(a.EnteredAt), PreviewNo: deref(a.PreviewNo)})
+			EnteredAt: utc(a.EnteredAt), PreviewNo: deref(a.PreviewNo), SettingsVersion: deref(a.SettingsVersion)})
 	}
 	for _, v := range pr {
 		var figures []figureLine
@@ -216,7 +221,7 @@ func scanPool(row pgx.Row, tenant fin.TenantID) (*fin.ConsolCostPool, int64, err
 			return nil, 0, err
 		}
 		preview := fin.ApportionmentPreview{No: v.No, BasisRevision: v.BasisRevision, Stage: v.Stage, By: v.By, At: utc(v.At), EnteredAt: utc(v.EnteredAt),
-			Fingerprint: v.Fingerprint, FingerprintSHA256: v.FingerprintSHA256}
+			Fingerprint: v.Fingerprint, FingerprintSHA256: v.FingerprintSHA256, SettingsVersion: deref(v.SettingsVersion)}
 		for _, f := range figures {
 			la := fin.LineApportionment{LineNo: f.LineNo, LineVersion: f.LineVersion, Method: f.Method, Reason: f.Reason, Amount: f.Amount, Local: f.Local,
 				ToAllocate: f.ToAllocate, ToAllocateLocal: f.ToAllocateLocal}
@@ -461,8 +466,8 @@ func writePool(ctx context.Context, q bentopg.Executor, p *fin.ConsolCostPool) e
 			return err
 		}
 		if err = exec(`INSERT INTO cargo_fin.pool_apportionment_preview (tenant_id,pool_id,preview_no,basis_revision,stage,figures,fingerprint,fingerprint_sha256,
-            made_by,made_at,entered_at) VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9,$10,$11)`, v.No, v.BasisRevision, v.Stage, string(blob), v.Fingerprint,
-			v.FingerprintSHA256, v.By, v.At, v.EnteredAt); err != nil {
+            made_by,made_at,entered_at,settings_version) VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9,$10,$11,$12)`, v.No, v.BasisRevision, v.Stage, string(blob),
+			v.Fingerprint, v.FingerprintSHA256, v.By, v.At, v.EnteredAt, v.SettingsVersion); err != nil {
 			return err
 		}
 	}
@@ -471,8 +476,8 @@ func writePool(ctx context.Context, q bentopg.Executor, p *fin.ConsolCostPool) e
 		if a.PreviewNo != 0 {
 			preview = a.PreviewNo
 		}
-		err := exec(`INSERT INTO cargo_fin.pool_apportionment (tenant_id,pool_id,apportionment_no,basis_revision,stage,made_by,made_at,entered_at,preview_no)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, a.No, a.BasisRevision, a.Stage, a.By, a.At, a.EnteredAt, preview)
+		err := exec(`INSERT INTO cargo_fin.pool_apportionment (tenant_id,pool_id,apportionment_no,basis_revision,stage,made_by,made_at,entered_at,preview_no,
+            settings_version) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, a.No, a.BasisRevision, a.Stage, a.By, a.At, a.EnteredAt, preview, a.SettingsVersion)
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "pool_apportionment_one_per_preview" {
 			return fmt.Errorf("%w: preview %d of pool %s was submitted already", fin.ErrPreviewSubmitted, a.PreviewNo, st.PoolID)
@@ -506,8 +511,8 @@ func writePool(ctx context.Context, q bentopg.Executor, p *fin.ConsolCostPool) e
 	closures, reopened := p.AddedClosures()
 	for _, c := range closures {
 		if err := exec(`INSERT INTO cargo_fin.consol_cost_pool_closure (tenant_id,pool_id,closure_no,closed_by,closed_at,entered_at,reopened_by,reopen_reason,
-            reopened_at,reopen_entered_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, c.No, c.By, c.At, c.EnteredAt, orNull(c.ReopenedBy), orNull(c.ReopenReason),
-			orNull(c.ReopenedAt), orNull(c.ReopenEnteredAt)); err != nil {
+            reopened_at,reopen_entered_at,settings_version) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, c.No, c.By, c.At, c.EnteredAt, orNull(c.ReopenedBy),
+			orNull(c.ReopenReason), orNull(c.ReopenedAt), orNull(c.ReopenEnteredAt), c.SettingsVersion); err != nil {
 			return err
 		}
 	}

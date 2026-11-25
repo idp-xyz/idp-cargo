@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
 // FIN V2.93: finance attributes a departed house's former share of the original consolidation's costs (step 6b of "a
@@ -39,6 +41,28 @@ var (
 	ErrAttributionMissing   = fmt.Errorf("fin: FIN_ATTRIBUTION_MISSING: a line holds a former share of a house that left and nobody has stated who bears it")
 	ErrAttributionConfirmer = fmt.Errorf("fin: FIN_ATTRIBUTION_CONFIRMER: the person who asked for the rework that unloaded a house, or who ended its place in the consolidation, does not confirm who bears its former share; another finance user submits")
 )
+
+// voucherNeeded tells whether an attribution needs a voucher: every one does, except under F3 ONLY_WHEN_AMOUNT_MOVES
+// one that puts no amount on the house's job or on the consolidation (loss 0 and exception cost 0), which gives the
+// whole former share to the cargo that remains. A voucher given is always checked. A correction, one that replaces a
+// different attribution in force, always needs its voucher, whatever F3 says; attribute checks that where it knows the
+// attribution in force.
+func voucherNeeded(rules RuleSettings, a AttributionInput) bool {
+	return rules.F3 != F3OnlyWhenAmountMoves || a.Loss > 0 || a.Exception > 0
+}
+
+// voucherStated tells whether the voucher of an attribution is as the rules ask: a text, or empty when none is needed.
+func voucherStated(rules RuleSettings, a AttributionInput) bool {
+	return text(a.Voucher) || (a.Voucher == "" && !voucherNeeded(rules, a))
+}
+
+// voucherWayOut is the way out of a refused voucher: state one; and what F3 would not ask for.
+func voucherWayOut(rules RuleSettings, a AttributionInput) string {
+	if voucherNeeded(rules, a) {
+		return "; state a voucher of at most 500 characters"
+	}
+	return "; a voucher given is at most 500 characters (an attribution that moves no amount needs none under F3 ONLY_WHEN_AMOUNT_MOVES)"
+}
 
 // AttributionInput is what finance states for one house that left a consolidation on one cost line, in the line's
 // currency: the house's re-routing loss, the consolidation's exception cost with the party responsible for it (empty
@@ -166,8 +190,8 @@ func (p *ConsolCostPool) attribute(in ApportionInput, basis CostBasis, lineNos [
 		case (a.Exception == 0) != (a.Party == "") || (a.Party != "" && !validParty(a.Party)):
 			return nil, fmt.Errorf("%w: the exception cost of house %s on line %d names who is responsible (CARRIER, WAREHOUSE, OWN_OPERATIONS or PENDING), and only when it is not zero",
 				ErrInvalid, a.ShipmentID, a.LineNo)
-		case !text(a.Voucher) || (a.PartyReference != "" && !text(a.PartyReference)) || (a.Reason != "" && !text(a.Reason)):
-			return nil, fmt.Errorf("%w: the attribution of house %s on line %d names its voucher", ErrInvalid, a.ShipmentID, a.LineNo)
+		case !voucherStated(in.Settings, a) || (a.PartyReference != "" && !text(a.PartyReference)) || (a.Reason != "" && !text(a.Reason)):
+			return nil, fmt.Errorf("%w: the attribution of house %s on line %d names its voucher%s", ErrInvalid, a.ShipmentID, a.LineNo, voucherWayOut(in.Settings, a))
 		}
 		if _, former := basis.Former(a.ShipmentID); !former {
 			return nil, fmt.Errorf("%w: house %s is not a house PHY reports as having left the consolidation", ErrInvalid, a.ShipmentID)
@@ -230,6 +254,10 @@ func (p *ConsolCostPool) attribute(in ApportionInput, basis CostBasis, lineNos [
 						return nil, fmt.Errorf("%w: the attribution of house %s on line %d replaces a different one in force; a correction states its reason", ErrInvalid,
 							f.ShipmentID, no)
 					}
+					if !text(a.Voucher) { // a correction changes who bears an amount that was recorded with a voucher
+						return nil, fmt.Errorf("%w: the attribution of house %s on line %d replaces a different one in force; a correction states its reason and its voucher "+
+							"(F3 does not excuse it)", ErrInvalid, f.ShipmentID, no)
+					}
 				}
 				if job := in.Jobs[f.ShipmentID]; job != "" {
 					row.JobID = job
@@ -274,32 +302,73 @@ func (p *ConsolCostPool) attribute(in ApportionInput, basis CostBasis, lineNos [
 
 // attributionsConfirmedBy names the houses whose new or changed attribution in the lines the person may not confirm:
 // the person who asked for the rework that unloaded the house (whatever the rework's end and where PHY found it), or
-// who ended the house's place in the consolidation. An attribution carried unchanged needs no check.
-func attributionsConfirmedBy(basis CostBasis, by string, lines []LineApportionment) []string {
+// who ended the house's place in the consolidation. An attribution carried unchanged needs no check. Since V2.97 F1
+// decides: under UNRESTRICTED nobody is barred, and under NOT_ABOVE_THRESHOLD the person is barred only on an
+// attribution whose former share, in the functional currency, is above the threshold, each attribution on its own.
+func (p *ConsolCostPool) attributionsConfirmedBy(rules RuleSettings, basis CostBasis, who confirmer, lines []LineApportionment) []string {
 	var out []string
 	seen := map[string]bool{}
 	for _, la := range lines {
 		for _, a := range la.Attributions {
 			f, former := basis.Former(a.ShipmentID)
-			if a.Carried || !former || seen[a.ShipmentID] {
+			key := a.ShipmentID // under a threshold each attribution is read on its own, so a house may be named on more than one line
+			if rules.F1 == F1AboveThreshold {
+				key = fmt.Sprintf("%s/%d", a.ShipmentID, la.LineNo)
+			}
+			if a.Carried || !former || seen[key] {
+				continue
+			}
+			share, found := p.formerShareLocal(la.LineNo, a)
+			if rules.F1 == F1Unrestricted || (found && !rules.bars(share)) { // a share not found bars the person: the amount at risk is not known
 				continue
 			}
 			var why []string
-			if f.ReworkAskedBy != "" && f.ReworkAskedBy == by {
+			if f.ReworkAskedBy != "" && f.ReworkAskedBy == who.name {
 				why = append(why, fmt.Sprintf("asked for rework %d of load unit %d (stuffing %s), which unloaded house %s", f.ReworkNo, f.ReworkUnitNo,
 					f.ReworkExecutionID, a.ShipmentID))
 			}
-			if f.EndedBy != "" && f.EndedBy == by {
+			if f.EndedBy != "" && f.EndedBy == who.name {
 				why = append(why, fmt.Sprintf("ended the place of house %s in the consolidation (%s)", a.ShipmentID, f.End))
 			}
 			if len(why) > 0 {
-				seen[a.ShipmentID] = true
-				out = append(out, fmt.Sprintf("%s %s; the attribution of house %s on line %d is new or changed", by, strings.Join(why, " and "), a.ShipmentID,
-					la.LineNo))
+				seen[key] = true
+				out = append(out, fmt.Sprintf("%s %s; the attribution of house %s on line %d is new or changed%s", who.label, strings.Join(why, " and "),
+					a.ShipmentID, la.LineNo, noteOf(rules, p.state.FunctionalCurrency, share, found)))
 			}
 		}
 	}
 	return out
+}
+
+// formerShareLocal is the former share of a house on a line that an attribution answers, in the functional currency:
+// the share the line's latest apportionment holds for the house, and for an attribution that corrects one in force the
+// share the house held when it left, which is the one the latest apportionment that gave the house a used share
+// recorded. found is false when no apportionment of the line gave the house a used share; then the rules bar the person
+// whatever the threshold, because the amount at risk is not known and a person who may be barred must not pass on a
+// guess. No command reaches that (reasoned, not run: an attribution answers a former share or one in force, and either
+// comes from a used share of an apportionment), so it is the safe answer for a state that should not be.
+func (p *ConsolCostPool) formerShareLocal(lineNo int, a Attribution) (share int64, found bool) {
+	for i := len(p.state.Apportionments) - 1; i >= 0; i-- {
+		for _, la := range p.state.Apportionments[i].Lines {
+			if la.LineNo != lineNo {
+				continue
+			}
+			for _, s := range la.Shares {
+				if s.ShipmentID == a.ShipmentID && s.Used && s.Amount > 0 {
+					return s.Local, true
+				}
+			}
+		}
+	}
+	return 0, false
+}
+
+// noteOf is the note of a refusal that says why a bar applies, when the amount at risk is known.
+func noteOf(rules RuleSettings, currency kernel.CurrencyCode, share int64, found bool) string {
+	if !found {
+		return ""
+	}
+	return rules.aboveNote(currency, share)
 }
 
 func cloneApportionedLine(la LineApportionment) LineApportionment {

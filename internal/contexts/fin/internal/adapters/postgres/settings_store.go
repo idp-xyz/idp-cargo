@@ -17,6 +17,13 @@ import (
 // SettingsLockSQL takes the advisory lock of a tenant's settings ($1 is the tenant) until the transaction ends.
 const SettingsLockSQL = `SELECT pg_advisory_xact_lock(hashtextextended('cargo_fin.settings/' || $1::text, 0))`
 
+// SettingsLockSharedSQL takes the same lock in shared mode until the transaction ends: the FIN commands that read the
+// settings for a rule take it, so that a settings command (which takes it exclusively) waits for them and they wait for
+// it. Lock order: a pool command holds its pool, its houses' jobs and its policy before it takes this lock; a settings
+// command takes this lock first and no lock of a pool, a job or a policy (it reads the policy without a lock), so no
+// cycle.
+const SettingsLockSharedSQL = `SELECT pg_advisory_xact_lock_shared(hashtextextended('cargo_fin.settings/' || $1::text, 0))`
+
 // SettingsStore keeps the change sets of FIN's settings: a proposal with its entries, an approval and a cancellation,
 // each a row of its own that is only inserted.
 type SettingsStore struct{ DB *bentopg.DB }
@@ -29,6 +36,15 @@ func (s SettingsStore) Lock(ctx context.Context, tenant fin.TenantID) error {
 		return err
 	}
 	_, err = q.Exec(ctx, SettingsLockSQL, string(tenant))
+	return err
+}
+
+func (s SettingsStore) LockShared(ctx context.Context, tenant fin.TenantID) error {
+	q, err := s.DB.RequireExecutor(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = q.Exec(ctx, SettingsLockSharedSQL, string(tenant))
 	return err
 }
 
@@ -67,8 +83,15 @@ func readSettings(ctx context.Context, q bentopg.Querier, tenant fin.TenantID) (
 	if err = rows.Err(); err != nil {
 		return nil, err
 	}
+	// only the entries of the change sets read above: a change set committed between the two statements (they run at
+	// READ COMMITTED, and a reader outside the settings lock may meet one) is a later version that this ledger does not
+	// have
+	ids := make([]string, len(sets))
+	for i, c := range sets {
+		ids[i] = c.ID
+	}
 	entries, err := q.Query(ctx, `SELECT change_id,scope_kind,scope_id,item_key,value_id,param_minor FROM cargo_fin.settings_change_entry
-      WHERE tenant_id=$1 ORDER BY change_id, entry_no`, string(tenant))
+      WHERE tenant_id=$1 AND change_id = ANY($2) ORDER BY change_id, entry_no`, string(tenant), ids)
 	if err != nil {
 		return nil, err
 	}

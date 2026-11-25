@@ -375,6 +375,9 @@ type FapiaoStore interface {
 // transaction, Read in a query's snapshot. The rows are only inserted.
 type SettingsStore interface {
 	Lock(ctx context.Context, tenant fin.TenantID) error
+	// LockShared takes the same lock in shared mode: a decision that reads the settings holds it until its transaction
+	// ends.
+	LockShared(ctx context.Context, tenant fin.TenantID) error
 	Load(ctx context.Context, tenant fin.TenantID) (*settings.Ledger, error)
 	Read(ctx context.Context, tenant fin.TenantID) (*settings.Ledger, error)
 	// InsertChange writes a proposal with its entries and, when it only tightens, its approval.

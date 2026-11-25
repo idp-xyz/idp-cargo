@@ -158,7 +158,7 @@ func (p *ConsolCostPool) PreviewEffect(previewNo int, in SubmitInput) (PreviewEf
 		}
 	}
 	if out.SubmittedAs == 0 {
-		changes := fingerprintChanges(v.Fingerprint, p.fingerprint(in.Basis, in.Jobs, in.Revenue, v.Lines))
+		changes := fingerprintChanges(v.Fingerprint, p.fingerprintUnder(in.Settings.Version, in.Basis, in.Jobs, in.Revenue, v.Lines))
 		out.Current, out.Changes = len(changes) == 0, changes
 	}
 	if p.state.State == PoolClosed {

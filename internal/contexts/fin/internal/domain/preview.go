@@ -32,6 +32,9 @@ type ApportionmentPreview struct {
 	Lines             []LineApportionment
 	Fingerprint       string
 	FingerprintSHA256 string
+	// SettingsVersion is the version of FIN's settings the preview was made under (since V2.97; 0 when none was in
+	// force, and for a preview made before V2.97, which the fingerprint then reads the same).
+	SettingsVersion int
 }
 
 // SubmitInput is what a submission reads again before it writes: PHY's cost basis now, the open job of each live house
@@ -40,6 +43,8 @@ type SubmitInput struct {
 	Basis   CostBasis
 	Jobs    map[string]string
 	Revenue map[string]map[string]int64
+	// Settings are the settings in force for the pool's legal entity now (since V2.97).
+	Settings RuleSettings
 }
 
 func cloneLines(lines []LineApportionment) []LineApportionment {
@@ -92,10 +97,10 @@ func (p *ConsolCostPool) Preview(in ApportionInput, basis CostBasis, by string, 
 	if err != nil {
 		return err
 	}
-	text := p.fingerprint(basis, in.Jobs, in.Revenue, a.Lines)
+	text := p.fingerprintUnder(in.Settings.Version, basis, in.Jobs, in.Revenue, a.Lines)
 	sum := sha256.Sum256([]byte(text))
 	p.state.Previews = append(p.state.Previews, ApportionmentPreview{No: len(p.state.Previews) + 1, BasisRevision: a.BasisRevision, Stage: a.Stage, By: by,
-		At: at.UTC(), Lines: a.Lines, Fingerprint: text, FingerprintSHA256: hex.EncodeToString(sum[:])})
+		At: at.UTC(), Lines: a.Lines, Fingerprint: text, FingerprintSHA256: hex.EncodeToString(sum[:]), SettingsVersion: in.Settings.Version})
 	return nil
 }
 
@@ -128,7 +133,7 @@ func (p *ConsolCostPool) Submit(previewNo int, in SubmitInput, by string, at tim
 	if err := inWork(in.Basis); err != nil {
 		return err
 	}
-	if now := p.fingerprint(in.Basis, in.Jobs, in.Revenue, v.Lines); now != v.Fingerprint {
+	if now := p.fingerprintUnder(in.Settings.Version, in.Basis, in.Jobs, in.Revenue, v.Lines); now != v.Fingerprint {
 		return fmt.Errorf("%w: preview %d: %s", ErrPreviewStale, previewNo, strings.Join(fingerprintChanges(v.Fingerprint, now), "; "))
 	}
 	for _, la := range v.Lines {
@@ -138,14 +143,16 @@ func (p *ConsolCostPool) Submit(previewNo int, in SubmitInput, by string, at tim
 			}
 		}
 	}
-	if refused := attributionsConfirmedBy(in.Basis, by, v.Lines); len(refused) > 0 {
-		return fmt.Errorf("%w: %s", ErrAttributionConfirmer, strings.Join(refused, "; "))
-	}
-	if asked := p.reworksAskedBy(in.Basis, by, v.Lines); len(asked) > 0 {
-		return fmt.Errorf("%w: %s asked for %s", ErrConfirmer, by, strings.Join(asked, ", "))
+	for _, who := range in.Settings.confirmers(by, v.By) {
+		if refused := p.attributionsConfirmedBy(in.Settings, in.Basis, who, v.Lines); len(refused) > 0 {
+			return fmt.Errorf("%w: %s%s", ErrAttributionConfirmer, strings.Join(refused, "; "), who.hint)
+		}
+		if asked := p.reworksAskedByUnder(in.Settings, in.Basis, who.name, v.Lines); len(asked) > 0 {
+			return fmt.Errorf("%w: %s asked for %s%s", ErrConfirmer, who.label, strings.Join(asked, ", "), who.hint)
+		}
 	}
 	a := Apportionment{No: len(p.state.Apportionments) + 1, BasisRevision: v.BasisRevision, Stage: v.Stage, By: by, At: at.UTC(), Lines: cloneLines(v.Lines),
-		PreviewNo: previewNo}
+		PreviewNo: previewNo, SettingsVersion: in.Settings.Version}
 	p.state.Apportionments = append(p.state.Apportionments, a)
 	p.record(eventPoolApportioned, at, a.No)
 	return nil
@@ -157,6 +164,12 @@ func (p *ConsolCostPool) Submit(previewNo int, in SubmitInput, by string, at tim
 // apportionment of one line does not confirm the others, and a line recorded after the rework ended is carried by
 // nothing until someone else submits it.
 func (p *ConsolCostPool) reworksAskedBy(basis CostBasis, by string, lines []LineApportionment) []string {
+	return p.reworksAskedByUnder(RuleSettings{}, basis, by, lines)
+}
+
+// reworksAskedByUnder is reworksAskedBy under F1: with UNRESTRICTED no rework bars the person, and with
+// NOT_ABOVE_THRESHOLD a rework bars the person only for the lines whose local cost is above the threshold.
+func (p *ConsolCostPool) reworksAskedByUnder(rules RuleSettings, basis CostBasis, by string, lines []LineApportionment) []string {
 	carried := map[string]map[int]bool{}
 	for _, a := range p.state.Apportionments {
 		if a.PreviewNo < 1 {
@@ -182,8 +195,8 @@ func (p *ConsolCostPool) reworksAskedBy(basis CostBasis, by string, lines []Line
 			}
 			var missing []string
 			for _, la := range lines {
-				if !carried[reworkKey(unit, execution, r)][la.LineNo] {
-					missing = append(missing, fmt.Sprint(la.LineNo))
+				if _, local := p.LineCost(la.LineNo); !carried[reworkKey(unit, execution, r)][la.LineNo] && rules.bars(local) {
+					missing = append(missing, fmt.Sprint(la.LineNo)+rules.aboveNote(p.state.FunctionalCurrency, local))
 				}
 			}
 			if len(missing) > 0 {
@@ -219,7 +232,18 @@ func quantityText(q kernel.Quantity) string { return fmt.Sprintf("%d%s", q.Amoun
 // REVENUE, the revenue of each house that takes part. The people who asked for the reworks are not in it: the confirmer
 // rule reads them from PHY's basis.
 func (p *ConsolCostPool) fingerprint(basis CostBasis, jobs map[string]string, revenue map[string]map[string]int64, lines []LineApportionment) string {
+	return p.fingerprintUnder(0, basis, jobs, revenue, lines)
+}
+
+// fingerprintUnder is fingerprint under a version of FIN's settings (since V2.97): the version is one more fact, so
+// that a preview made under one version is stale under another. With no settings in force (version 0) there is no such
+// fact, and the text is what V2.96 wrote, so that a preview made before V2.97 stays current while no setting is set.
+func (p *ConsolCostPool) fingerprintUnder(settingsVersion int, basis CostBasis, jobs map[string]string, revenue map[string]map[string]int64,
+	lines []LineApportionment) string {
 	facts := map[string]string{"basis": fmt.Sprintf("revision %d", basis.Revision)}
+	if settingsVersion > 0 {
+		facts["settings"] = fmt.Sprintf("version %d", settingsVersion)
+	}
 	for _, u := range basis.LoadUnits {
 		facts[fmt.Sprintf("unit.%d", u.UnitNo)] = fmt.Sprintf("type %q teu %d status %q stuffing %q state %q", u.TypeCode, u.TEUTenths, u.Status, u.ExecutionID,
 			u.ExecutionState)
@@ -311,6 +335,19 @@ func fingerprintChanges(was, now string) []string {
 	for _, k := range ordered {
 		before, had := a[k]
 		after, has := b[k]
+		if k == "settings" { // a version of FIN's settings; none in force is version 0; it is told first
+			was, now := strings.TrimPrefix(before, "version "), strings.TrimPrefix(after, "version ")
+			if !had {
+				was = "0"
+			}
+			if !has {
+				now = "0"
+			}
+			if was != now {
+				out = append([]string{fmt.Sprintf("the settings changed from version %s to %s", was, now)}, out...)
+			}
+			continue
+		}
 		switch {
 		case had && has && before != after:
 			out = append(out, fmt.Sprintf("%s changed from [%s] to [%s]", k, before, after))

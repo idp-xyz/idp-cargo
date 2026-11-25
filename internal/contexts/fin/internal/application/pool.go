@@ -222,7 +222,9 @@ func apportionsByRevenue(pool *fin.ConsolCostPool, in ApportionAsk) bool {
 // PreviewPoolApportionment computes an apportionment of pool cost lines over the house jobs and stores it as a preview:
 // PHY answers the consolidation's basis first (T3); in the transaction FIN locks the houses' jobs in job id order,
 // before the policy, and requires an OPEN job of the pool's legal entity for every live house. A line by REVENUE also
-// reads those jobs' revenue under that lock. Nothing but the preview is written.
+// reads those jobs' revenue under that lock. Nothing but the preview is written. Since V2.97 the settings in force for
+// the pool's legal entity are read inside the transaction (F3 decides which attributions need a voucher) and the
+// preview records their version, which its fingerprint holds.
 func (d Deps) PreviewPoolApportionment(ctx context.Context, c Command, in ApportionAsk) (Receipt, error) {
 	if d.Physical == nil {
 		return Receipt{}, ErrMissingDependency
@@ -248,12 +250,17 @@ func (d Deps) PreviewPoolApportionment(ctx context.Context, c Command, in Apport
 			revenue, err = d.houseRevenue(txCtx, c.Scope.TenantID, jobs)
 		}
 		return err
-	}, func(_ context.Context, pool *fin.ConsolCostPool, _ *fin.FinancePolicy) (Receipt, error) {
+	}, func(txCtx context.Context, pool *fin.ConsolCostPool, _ *fin.FinancePolicy) (Receipt, error) {
+		rules, at, err := d.DecisionSettings(txCtx, c.Scope.TenantID, pool.State().LegalEntityID)
+		if err != nil {
+			return Receipt{}, err
+		}
 		input := fin.ApportionInput{LineNos: in.LineNos, Method: in.Method, Manual: in.Manual, NotUsed: in.NotUsed, AllHouses: in.AllHouses, Reason: in.Reason, Jobs: jobs,
-			Revenue: revenue, Attributions: in.Attributions}
+			Revenue: revenue, Attributions: in.Attributions, Settings: rules}
 		if err := pool.Preview(input, basis, c.Scope.ActorID, c.OccurredAt); err != nil {
 			return Receipt{}, err
 		}
+		pool.Stamp(at) // the preview is stamped with the time its settings were read at
 		return Receipt{Version: len(pool.State().Previews)}, nil
 	})
 }
@@ -273,7 +280,9 @@ func (d Deps) openJobs(ctx context.Context, c Command, pool *fin.ConsolCostPool,
 
 // SubmitPoolApportionment writes the apportionment of a preview: PHY answers the consolidation's basis again first
 // (T3); in the transaction FIN locks the houses' jobs in job id order, before the policy, reads the revenue the preview
-// read when it has a line by REVENUE, and compares what the preview was computed on with what is there now.
+// read when it has a line by REVENUE, and compares what the preview was computed on with what is there now. Since V2.97
+// it reads the settings in force for the pool's legal entity inside the transaction: the version is part of what the
+// preview was computed on, and F1 and F2 decide who may confirm.
 func (d Deps) SubmitPoolApportionment(ctx context.Context, c Command, previewNo int) (Receipt, error) {
 	if d.Physical == nil {
 		return Receipt{}, ErrMissingDependency
@@ -293,10 +302,15 @@ func (d Deps) SubmitPoolApportionment(ctx context.Context, c Command, previewNo 
 			revenue, err = d.houseRevenue(txCtx, c.Scope.TenantID, jobs)
 		}
 		return err
-	}, func(_ context.Context, pool *fin.ConsolCostPool, _ *fin.FinancePolicy) (Receipt, error) {
-		if err := pool.Submit(previewNo, fin.SubmitInput{Basis: basis, Jobs: jobs, Revenue: revenue}, c.Scope.ActorID, c.OccurredAt); err != nil {
+	}, func(txCtx context.Context, pool *fin.ConsolCostPool, _ *fin.FinancePolicy) (Receipt, error) {
+		rules, at, err := d.DecisionSettings(txCtx, c.Scope.TenantID, pool.State().LegalEntityID)
+		if err != nil {
 			return Receipt{}, err
 		}
+		if err = pool.Submit(previewNo, fin.SubmitInput{Basis: basis, Jobs: jobs, Revenue: revenue, Settings: rules}, c.Scope.ActorID, c.OccurredAt); err != nil {
+			return Receipt{}, err
+		}
+		pool.Stamp(at) // the apportionment is stamped with the time its settings were read at
 		return Receipt{Version: len(pool.State().Apportionments)}, nil
 	})
 }

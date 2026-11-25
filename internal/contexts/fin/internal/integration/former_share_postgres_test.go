@@ -565,8 +565,8 @@ func TestAnApportionmentIsWhatItsPreviewComputedOnPostgres(t *testing.T) {
 	}
 	departed := fmt.Sprintf(`(SELECT (x->>'departed_at')::timestamptz FROM cargo_fin.pool_apportionment_preview v, jsonb_array_elements(v.figures) l,
         jsonb_array_elements(l->'attributions') x WHERE v.tenant_id=$1 AND v.pool_id='P-U' AND v.preview_no=%d)`, pn)
-	insert := fmt.Sprintf(`INSERT INTO cargo_fin.pool_apportionment (tenant_id,pool_id,apportionment_no,basis_revision,stage,made_by,made_at,entered_at,preview_no)
-            SELECT $1,'P-U',2,basis_revision,stage,'x',now(),now(),%[1]d FROM cargo_fin.pool_apportionment_preview WHERE tenant_id=$1 AND pool_id='P-U' AND preview_no=%[1]d`, pn)
+	insert := fmt.Sprintf(`INSERT INTO cargo_fin.pool_apportionment (tenant_id,pool_id,apportionment_no,basis_revision,stage,made_by,made_at,entered_at,preview_no,settings_version)
+            SELECT $1,'P-U',2,basis_revision,stage,'x',now(),now(),%[1]d,0 FROM cargo_fin.pool_apportionment_preview WHERE tenant_id=$1 AND pool_id='P-U' AND preview_no=%[1]d`, pn)
 	build := func(shares string, att ...string) string {
 		parts := []string{rawBump, insert,
 			`INSERT INTO cargo_fin.pool_apportionment_line (tenant_id,pool_id,apportionment_no,line_no,line_version,method,amount_minor,local_minor,to_allocate_minor,
@@ -622,8 +622,8 @@ func TestAnApportionmentIsWhatItsPreviewComputedOnPostgres(t *testing.T) {
 	// nothing): refused
 	zero := u.must(u.module.PreviewConsolCostApportionment(u.ctx, u.attributeCmd("preview-zero", "ops-2", 6, statementOf("C", 0, 0, ""))))
 	zn := int(zero.Version)
-	lacking := rawJoin(rawBump, fmt.Sprintf(`INSERT INTO cargo_fin.pool_apportionment (tenant_id,pool_id,apportionment_no,basis_revision,stage,made_by,made_at,entered_at,preview_no)
-            SELECT $1,'P-U',2,basis_revision,stage,'x',now(),now(),%[1]d FROM cargo_fin.pool_apportionment_preview WHERE tenant_id=$1 AND pool_id='P-U' AND preview_no=%[1]d`, zn),
+	lacking := rawJoin(rawBump, fmt.Sprintf(`INSERT INTO cargo_fin.pool_apportionment (tenant_id,pool_id,apportionment_no,basis_revision,stage,made_by,made_at,entered_at,preview_no,settings_version)
+            SELECT $1,'P-U',2,basis_revision,stage,'x',now(),now(),%[1]d,0 FROM cargo_fin.pool_apportionment_preview WHERE tenant_id=$1 AND pool_id='P-U' AND preview_no=%[1]d`, zn),
 		`INSERT INTO cargo_fin.pool_apportionment_line (tenant_id,pool_id,apportionment_no,line_no,line_version,method,amount_minor,local_minor,to_allocate_minor,
             to_allocate_local_minor) VALUES ($1,'P-U',2,1,1,'CHARGEABLE',100000,100000,0,0)`,
 		strings.NewReplacer("1,'GRM',51000,51000", "300000,'GRM',60000,60000", "1,'GRM',34000,34000", "200000,'GRM',40000,40000").Replace(

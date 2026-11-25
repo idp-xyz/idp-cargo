@@ -260,3 +260,62 @@ func (d Deps) SettingsChanges(ctx context.Context, tenant fin.TenantID) ([]setti
 	})
 	return sets, now, err
 }
+
+// RuleSettingsOf reads, for a query (since V2.97), the settings in force for a legal entity at FIN's clock now, with
+// the version in force, in the caller's read-only snapshot: the pool or job the query reads is read in the same
+// snapshot, and the answer says the version of that snapshot. A query takes no lock. A threshold is in the functional
+// currency of the legal entity, as the change set that set it was checked to be given. With no settings store wired the
+// standard profile is answered, version 0.
+func (d Deps) RuleSettingsOf(ctx context.Context, tenant fin.TenantID, legalEntity string) (fin.RuleSettings, error) {
+	if d.Settings == nil {
+		return fin.RuleSettings{}, nil
+	}
+	if d.Clock == nil {
+		return fin.RuleSettings{}, ErrMissingDependency
+	}
+	return d.rulesAt(ctx, tenant, legalEntity, d.Settings.Read, d.Clock.Now().UTC().Truncate(time.Microsecond))
+}
+
+// DecisionSettings reads the settings for a decision that FIN records (a preview, a submission, a close), inside the
+// decision's own transaction: it takes the tenant's settings lock in shared mode, reads FIN's clock after that lock,
+// and reads the ledger as of that time. The time is the system time the decision is stamped with (the caller stamps its
+// records with it), so the version recorded is the version the ledger says was in force at the recorded time: a
+// settings command stamps its time under the exclusive lock, so it is stamped before this time when it committed before
+// the lock was granted and after it when it waited for this transaction. With no settings store wired the standard
+// profile is answered, version 0.
+func (d Deps) DecisionSettings(ctx context.Context, tenant fin.TenantID, legalEntity string) (fin.RuleSettings, time.Time, error) {
+	if d.Clock == nil {
+		return fin.RuleSettings{}, time.Time{}, ErrMissingDependency
+	}
+	if d.Settings == nil {
+		return fin.RuleSettings{}, d.Clock.Now().UTC().Truncate(time.Microsecond), nil
+	}
+	if err := d.Settings.LockShared(ctx, tenant); err != nil {
+		return fin.RuleSettings{}, time.Time{}, err
+	}
+	at := d.Clock.Now().UTC().Truncate(time.Microsecond)
+	rules, err := d.rulesAt(ctx, tenant, legalEntity, d.Settings.Load, at)
+	return rules, at, err
+}
+
+func (d Deps) rulesAt(ctx context.Context, tenant fin.TenantID, legalEntity string, load func(context.Context, fin.TenantID) (*settings.Ledger, error),
+	at time.Time) (fin.RuleSettings, error) {
+	ledger, err := load(ctx, tenant)
+	if err != nil {
+		return fin.RuleSettings{}, err
+	}
+	cfg, version, err := ledger.ConfigAt(FinSettingsCatalogue(), settings.Scope{Kind: settings.KindLegalEntity, ID: legalEntity}, at)
+	if err != nil {
+		return fin.RuleSettings{}, err
+	}
+	rules := fin.RuleSettings{Version: version, F1: cfg[SettingF1].Value, F2: cfg[SettingF2].Value, F3: cfg[SettingF3].Value, F6: cfg[SettingF6].Value,
+		F7: cfg[SettingF7].Value}
+	if rules.F1 == F1ThresholdValue {
+		param := cfg[SettingF1].Param
+		if param == nil { // the ledger refuses a threshold value without its amount; kept so that a rule never reads a missing one as 0
+			return fin.RuleSettings{}, fmt.Errorf("%w: %s %s has no threshold; set the threshold in the legal entity's functional currency", fin.ErrInvalid, SettingF1, F1ThresholdValue)
+		}
+		rules.F1Threshold = *param
+	}
+	return rules, nil
+}

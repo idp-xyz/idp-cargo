@@ -393,8 +393,12 @@ func (m *Module) GetJobProfit(ctx context.Context, q api.GetJobProfit) (api.JobP
 	var revision int64
 	var shares []application.PoolShare
 	var losses []application.PoolLoss
+	var rules domain.RuleSettings
 	err := d.Reader(ctx, func(txCtx context.Context) (err error) {
 		if j, revision, err = readJob(txCtx, d, q.TenantID, q.JobID); err != nil {
+			return err
+		}
+		if rules, err = d.RuleSettingsOf(txCtx, domain.TenantID(q.TenantID), j.State().LegalEntityID); err != nil {
 			return err
 		}
 		if shares, err = d.Pools.SharesOfJob(txCtx, domain.TenantID(q.TenantID), q.JobID); err != nil {
@@ -413,16 +417,21 @@ func (m *Module) GetJobProfit(ctx context.Context, q api.GetJobProfit) (api.JobP
 	costs := application.SplitFormerShares(shares, losses, j.State().ShipmentID, bases)
 	p := j.Profit()
 	money := func(n int64) kernel.Money { return kernel.Money{Currency: p.Currency, Minor: n} }
-	poolShares, _ := poolShareViews(costs.Borne, p.Currency)
-	formerShares, _ := poolShareViews(costs.Former, p.Currency)
+	poolShares, _ := poolShareViews(costs.Borne, p.Currency, false)
+	formerShares, _ := poolShareViews(costs.Former, p.Currency, true)
+	var pendingIn int64 // under F6 INCLUDED_MARKED the former shares pending are counted in the profit, marked
+	if rules.F6 == domain.F6IncludedMarked {
+		pendingIn = costs.FormerTotal
+	}
 	var reroutings []api.JobReroutingLoss
 	for _, l := range costs.Losses {
 		reroutings = append(reroutings, api.JobReroutingLoss{PoolID: l.PoolID, LineNo: l.LineNo, Amount: l.Amount, Local: money(l.Local), Voucher: l.Voucher,
 			DepartedAt: l.DepartedAt})
 	}
 	out := api.JobProfit{JobID: q.JobID, Revision: revision, Revenue: money(p.Revenue), Invoiced: money(p.Invoiced), Cost: money(p.Cost),
-		CostMatched: money(p.Matched), CostAccrued: money(p.Accrued), PoolCost: money(costs.Cost), Profit: money(p.Profit - costs.Cost), PoolShares: poolShares,
-		ReroutingLosses: reroutings, ReroutingLoss: money(costs.LossTotal), FormerShares: formerShares, FormerSharesPending: money(costs.FormerTotal)}
+		CostMatched: money(p.Matched), CostAccrued: money(p.Accrued), PoolCost: money(costs.Cost + pendingIn), Profit: money(p.Profit - costs.Cost - pendingIn),
+		PoolShares: poolShares, ReroutingLosses: reroutings, ReroutingLoss: money(costs.LossTotal), FormerShares: formerShares,
+		FormerSharesPending: money(costs.FormerTotal), ProfitBasis: profitBasis(rules), PendingInProfit: money(pendingIn), SettingsVersion: rules.Version}
 	for _, c := range p.Lines {
 		out.ByCode = append(out.ByCode, api.ChargeCodeProfit{ChargeCode: c.ChargeCode, Revenue: money(c.Revenue), Cost: money(c.Cost), Profit: money(c.Profit)})
 	}

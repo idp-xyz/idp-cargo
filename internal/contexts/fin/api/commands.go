@@ -570,9 +570,10 @@ const (
 
 // AttributionStatement states who bears a house's former share of one cost line (since FIN V2.93), in the line's
 // currency: the house's re-routing loss, which its own job bears, and the consolidation's exception cost with the party
-// responsible for it (empty when Exception is 0) and a free reference. Voucher is required, also when both are 0 (all
-// of the line goes to the cargo that remains); Reason is required when the statement replaces a different attribution
-// in force on the line (a correction).
+// responsible for it (empty when Exception is 0) and a free reference. Voucher is required, except that under F3
+// ONLY_WHEN_AMOUNT_MOVES (since FIN V2.97) an attribution that is not a correction and has both at 0 (all of the line
+// goes to the cargo that remains) has none; Reason and Voucher are both required when the statement replaces a
+// different attribution in force on the line (a correction), whatever F3 says.
 type AttributionStatement struct {
 	LineNo         int
 	ShipmentID     string

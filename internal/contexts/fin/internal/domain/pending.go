@@ -62,6 +62,13 @@ type PendingItem struct {
 // be closed, apart from an exception cost whose party is pending, which does not hold the close back. When the pool has
 // a line by REVENUE the caller sets HouseRevenue first, as the close does.
 func (p *ConsolCostPool) PendingItems(basis CostBasis) []PendingItem {
+	return p.PendingItemsUnder(RuleSettings{}, basis)
+}
+
+// PendingItemsUnder is PendingItems under the settings in force (since V2.97): under F7 BLOCKS an exception cost whose
+// party is pending holds back the close, and its item says so; under DOES_NOT_BLOCK it says it does not. The list is
+// still empty exactly when the pool can be closed, apart from an item of that kind under DOES_NOT_BLOCK.
+func (p *ConsolCostPool) PendingItemsUnder(rules RuleSettings, basis CostBasis) []PendingItem {
 	closed := p.state.State == PoolClosed
 	working := basis.UnitsInRework()
 	var out []PendingItem
@@ -118,24 +125,21 @@ func (p *ConsolCostPool) PendingItems(basis CostBasis) []PendingItem {
 		}
 	}
 	for _, l := range p.state.Lines {
-		_, la, ok := p.SharesOfLine(l.No)
-		if !ok {
-			continue
-		}
 		currency := l.Versions[len(l.Versions)-1].Amount.Currency
-		for _, x := range la.Attributions {
-			if x.Exception == 0 || x.Party != PartyPending {
-				continue
-			}
+		for _, x := range p.pendingCauses(l.No) {
 			way := "preview the line again stating the party for house " + x.ShipmentID + " as a correction, with its reason and a voucher, and submit it"
 			if closed {
 				way = "reopen the pool with a reason (ReopenConsolCostPool), then " + way
 			}
 			way = after + way
+			hold := "this does not hold back the close (F7 DOES_NOT_BLOCK; under F7 BLOCKS it would)"
+			if rules.F7 == F7Blocks {
+				hold = "this holds back the close (F7 BLOCKS) until the party is established"
+			}
 			out = append(out, PendingItem{Kind: pendingExceptionCause, LineNo: l.No, ShipmentID: x.ShipmentID, Currency: currency, Amount: x.Exception,
 				Local: x.ExceptionLocal, Actor: ActorFinance, Message: fmt.Sprintf(
-					"line %d holds an exception cost of %s of house %s whose party is not established (voucher %s): once it is, %s (FINANCE); this does not "+
-						"hold back the close", l.No, money(currency, x.Exception), x.ShipmentID, x.Voucher, way)})
+					"line %d holds an exception cost of %s of house %s whose party is not established (voucher %s): once it is, %s (FINANCE); %s",
+					l.No, money(currency, x.Exception), x.ShipmentID, x.Voucher, way, hold)})
 		}
 	}
 	rank := func(kind string) int { return slices.Index(pendingOrder, kind) }

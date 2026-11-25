@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math/big"
 	"slices"
+	"strings"
 	"time"
 
 	"go.idp.xyz/idp-cargo/internal/kernel"
@@ -310,6 +311,9 @@ type Apportionment struct {
 	Lines         []LineApportionment
 	// PreviewNo is the preview this apportionment was submitted from (since V2.91; 0 on one written before).
 	PreviewNo int
+	// SettingsVersion is the version of FIN's settings in force at the submission (since V2.97; 0 when none was). It is
+	// its preview's, because the preview's fingerprint holds the version.
+	SettingsVersion int
 }
 
 // PoolState is a stored pool, for persistence.
@@ -341,6 +345,8 @@ type PoolClosure struct {
 	ReopenReason    string
 	ReopenedAt      time.Time
 	ReopenEnteredAt time.Time
+	// SettingsVersion is the version of FIN's settings in force at the close (since V2.97; 0 when none was).
+	SettingsVersion int
 }
 
 // ConsolCostPool is the aggregate root of a consolidation's shared costs under one legal entity (UL-08; one pool per
@@ -609,6 +615,9 @@ type ApportionInput struct {
 	// Attributions state, per line and house that left, who bears the house's former share (since V2.93). Jobs also
 	// names the open job of each house that left, which bears its loss.
 	Attributions []AttributionInput
+	// Settings are the settings in force for the pool's legal entity (since V2.97): F3 decides whether an attribution
+	// that moves no amount needs a voucher, and the preview records the version.
+	Settings RuleSettings
 }
 
 // validLineMethod is a method a cost line may carry as its default and an apportionment may name (RETAINED is only
@@ -1139,10 +1148,16 @@ func split(amount int64, quantities []int64) ([]int64, error) {
 // method: a line apportioned by REVENUE at the stage PLANNED must be apportioned again once every house that takes part
 // is loaded before the pool can close. A line that holds a former share of a house that left, which no apportionment
 // has attributed, or an amount still to be allocated, is not closed, whatever PHY reports (since V2.93); an exception
-// cost whose party is PENDING does not stop it. A line whose final cost is zero needs no apportionment (or one of
-// zero). Once PHY cancelled the consolidation or no house is left on it, there is no basis to compare: the latest
-// apportionments at the final costs stand. The pool then takes no change until reopened.
+// cost whose party is PENDING does not stop it unless F7 is BLOCKS (since V2.97). A line whose final cost is zero needs
+// no apportionment (or one of zero). Once PHY cancelled the consolidation or no house is left on it, there is no basis
+// to compare: the latest apportionments at the final costs stand. The pool then takes no change until reopened.
 func (p *ConsolCostPool) Close(basis CostBasis, by string, at time.Time) error {
+	return p.CloseUnder(RuleSettings{}, basis, by, at)
+}
+
+// CloseUnder is Close under the settings in force (since V2.97): F7 BLOCKS refuses the close while an exception cost of
+// party PENDING is in force on a line, and the closure records the version of the settings.
+func (p *ConsolCostPool) CloseUnder(rules RuleSettings, basis CostBasis, by string, at time.Time) error {
 	if err := p.open(by, at); err != nil {
 		return err
 	}
@@ -1160,8 +1175,11 @@ func (p *ConsolCostPool) Close(basis CostBasis, by string, at time.Time) error {
 		if _, err := p.lineRefusal(l, basis, houses, gone); err != nil {
 			return err
 		}
+		if err := p.causeRefusal(rules, l); err != nil {
+			return err
+		}
 	}
-	c := PoolClosure{No: len(p.state.Closures) + 1, By: by, At: at.UTC()}
+	c := PoolClosure{No: len(p.state.Closures) + 1, By: by, At: at.UTC(), SettingsVersion: rules.Version}
 	p.state.Closures, p.state.State = append(p.state.Closures, c), PoolClosed
 	p.record(eventPoolClosed, at, c.No)
 	return nil
@@ -1180,6 +1198,41 @@ func (p *ConsolCostPool) accrualRefusal(l PoolCostLine) (string, error) {
 		return pendingInvoiceHeld, fmt.Errorf("%w: a creditor invoice matched to cost line %d is disputed or awaits a variance approval", ErrPoolNotClosable, l.No)
 	}
 	return "", nil
+}
+
+// causeRefusal is what the close refuses a cost line for under F7 BLOCKS: an exception cost of party PENDING in force
+// on it. It names the line and the way out. Under DOES_NOT_BLOCK the line passes.
+func (p *ConsolCostPool) causeRefusal(rules RuleSettings, l PoolCostLine) error {
+	causes := p.pendingCauses(l.No)
+	if rules.F7 != F7Blocks || len(causes) == 0 {
+		return nil
+	}
+	var held, houses []string
+	for _, x := range causes {
+		held = append(held, fmt.Sprintf("%s of house %s", money(p.lineCurrency(l), x.Exception), x.ShipmentID))
+		houses = append(houses, x.ShipmentID)
+	}
+	return fmt.Errorf("%w: cost line %d holds an exception cost of %s whose party is PENDING, and F7 BLOCKS holds the close back while a cause is "+
+		"pending; establish the party and correct the attribution: preview the line again stating the party for house %s as a correction, with its reason and a "+
+		"voucher, and submit it", ErrPoolNotClosable, l.No, strings.Join(held, ", and of "), strings.Join(houses, ", and for house "))
+}
+
+// pendingCauses are the attributions in force on a line that hold an exception cost whose party is PENDING.
+func (p *ConsolCostPool) pendingCauses(lineNo int) []Attribution {
+	var out []Attribution
+	if _, la, ok := p.SharesOfLine(lineNo); ok {
+		for _, x := range la.Attributions {
+			if x.Exception > 0 && x.Party == PartyPending {
+				out = append(out, x)
+			}
+		}
+	}
+	return out
+}
+
+// lineCurrency is the currency of a cost line's latest version.
+func (p *ConsolCostPool) lineCurrency(l PoolCostLine) kernel.CurrencyCode {
+	return l.Versions[len(l.Versions)-1].Amount.Currency
 }
 
 // housesInOrder is the basis's live houses in shipment order, and whether the close has no basis to compare: PHY
