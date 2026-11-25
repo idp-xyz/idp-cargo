@@ -148,9 +148,12 @@ func (permissions) AuthorizeSeaAction(ctx context.Context, tenant, actor, action
 // AuthorizeFinAction covers FIN's commands. The two actions of the settings, "fin:ConfigureSettings" (propose and
 // cancel a change) and "fin:ApproveSettings" (approve one), are granted by name only: "fin:*" and "*" grant neither, so
 // that a general grant never lets a person change how FIN's controls work or approve the change, as with a VGM
-// signatory's name above. That the approver is not the proposer is FIN's own rule, not a permission.
+// signatory's name above. That the approver is not the proposer is FIN's own rule, not a permission. So is
+// "fin:ReviewAfterTheFact" (V2.102, batch B), which marks a week of the after-the-fact review list reviewed, so that a
+// general grant never lets a person sign off the weekly compensation of the LEAN profile; that the reviewer is neither
+// the submitter nor the previewer of a line of the week is FIN's own rule too.
 func (permissions) AuthorizeFinAction(ctx context.Context, tenant, actor, action, _ string) error {
-	if action == finapi.ActionConfigureSettings || action == finapi.ActionApproveSettings {
+	if action == finapi.ActionConfigureSettings || action == finapi.ActionApproveSettings || action == finapi.ActionReviewAfterTheFact {
 		return identity.AuthorizeNamed(ctx, "fin", tenant, actor, action)
 	}
 	return identity.Authorize(ctx, "fin", tenant, actor, action)

@@ -79,6 +79,9 @@ const (
 	// Cost review events have the request (CRR-<n>) as subject, its number as Version, and the job and shipment.
 	CostReviewRequested = "CostReviewRequested.v1"
 	CostReviewResolved  = "CostReviewResolved.v1"
+
+	// The after-the-fact review of a week has "<legal entity>/<week>" as subject.
+	AfterTheFactReviewed = "AfterTheFactReviewed.v1"
 )
 
 // EventPayload is the JSON payload of every FIN event: identifiers and versions only, never amounts, names or tax
