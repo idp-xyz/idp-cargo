@@ -65,8 +65,8 @@ func TestTheImpactListsTheItemsAndTheStalePreviewsOnPostgres(t *testing.T) {
 		t.Fatalf("an unchanged item: %+v", same.Entities)
 	}
 	nothingElse(t, "an unchanged item", same, 0, 0, 0, 0, 0, 0)
-	// a change for another legal entity does not report this one's pools, and one for the company reports both legal
-	// entities
+	// a change for another legal entity does not report this one's pools, and one for the company reports
+	// both legal entities
 	other := u.impact(api.FinSettingEntry{ScopeKind: "LEGAL_ENTITY", ScopeID: "LE2", Key: "fin.F7", Value: "BLOCKS"})
 	if len(other.Entities) != 1 || other.Entities[0].LegalEntityID != "LE2" {
 		t.Fatalf("a change for LE2: %+v", other.Entities)
@@ -141,8 +141,8 @@ func TestTheImpactOfF6OnTheJobProfitOnPostgres(t *testing.T) {
 	}
 }
 
-// F8: a line that holds a former share nobody attributed would be defaulted to the cargo that remains, or would stop
-// being defaulted.
+// F8: a line that holds a former share nobody attributed would be defaulted to the cargo that remains, or would
+// stop being defaulted.
 func TestTheImpactOfF8OnTheDefaultOnPostgres(t *testing.T) {
 	u := formerWorld(t)
 	u.depart()
@@ -398,6 +398,18 @@ func TestTheCatalogueListsTheFinancePolicyOnPostgres(t *testing.T) {
 		t.Fatalf("the catalogue: %d items, %d reference items", len(cat.Items), len(cat.Reference))
 	}
 	approval := map[string]bool{"fin.E1": true, "fin.E2": false, "fin.E3": false, "fin.E4": false}
+	// the design's order: E1 the cost variance threshold, E2 the tax treatment of the charge codes, E3 the exchange
+	// rates and E4 the invoice number series
+	for key, title := range map[string]string{"fin.E1": "Cost variance threshold", "fin.E2": "Tax treatment of charge codes", "fin.E3": "Exchange rates",
+		"fin.E4": "Invoice number series"} {
+		found := false
+		for _, r := range cat.Reference {
+			found = found || (r.Key == key && r.TitleEN == title)
+		}
+		if !found {
+			t.Errorf("%s is not %q", key, title)
+		}
+	}
 	for i, r := range cat.Reference {
 		key := "fin.E" + string(rune('1'+i))
 		if r.Key != key || r.TitleEN == "" || r.TitleZH == "" || r.Governs == "" || r.ChangedBy == "" || r.ApprovalNote == "" || r.NeedsApproval != approval[key] {

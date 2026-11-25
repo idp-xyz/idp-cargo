@@ -202,8 +202,8 @@ type Movement struct {
 	retired []int // stored master bills that left CURRENT since the movement was loaded, by index
 	ended   []int // stored entries ended since the movement was loaded, by index
 	pending []Event
-	// s1 is the value of S1 the pending items are read under (ReadUnder); empty when they are read without the
-	// settings.
+	// s1 is the value of S1 the pending items are read under (ReadUnder); empty when they are read
+	// without the settings.
 	s1 string
 }
 

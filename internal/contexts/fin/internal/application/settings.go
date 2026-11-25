@@ -106,8 +106,31 @@ func exceptionsNotice(cat *settings.Catalogue, ledger *settings.Ledger, cs setti
 	if len(parts) == 0 {
 		return ""
 	}
-	return "legal entities that stay looser than the company, as approved exceptions: " + strings.Join(parts, "; ") +
-		"; to tighten one, propose a change set for that legal entity"
+	return exceptionsText(parts)
+}
+
+// maxNotice is what the receipt's notice holds: 4000 characters; the text keeps within it with room to spare.
+const maxNotice = 3900
+
+// exceptionsText lists as many of the legal entities as fit in the receipt, then says how many more there are and where
+// to read them, so that a proposal is never refused for the length of its notice.
+func exceptionsText(parts []string) string {
+	const head = "legal entities that stay looser than the company, as approved exceptions: "
+	const tail = "; to tighten one, propose a change set for that legal entity"
+	kept, size := 0, len(head)+len(tail)
+	for kept < len(parts) {
+		more := fmt.Sprintf("; and %d more legal entities; see %s", len(parts)-kept-1, "GetFinSettings")
+		next := size + len(parts[kept]) + 2
+		if kept < len(parts)-1 && next+len(more) > maxNotice || kept == len(parts)-1 && next > maxNotice {
+			break
+		}
+		size, kept = next, kept+1
+	}
+	text := head + strings.Join(parts[:kept], "; ")
+	if kept < len(parts) {
+		text += fmt.Sprintf("; and %d more legal entities; see %s", len(parts)-kept, "GetFinSettings")
+	}
+	return text + tail
 }
 
 // settingsChange reads the whole ledger and the change set the command names, under the lock the command holds.
@@ -273,7 +296,8 @@ func (d Deps) RuleSettingsOf(ctx context.Context, tenant fin.TenantID, legalEnti
 	if d.Clock == nil {
 		return fin.RuleSettings{}, ErrMissingDependency
 	}
-	return d.rulesAt(ctx, tenant, legalEntity, d.Settings.Read, d.Clock.Now().UTC().Truncate(time.Microsecond))
+	rules, _, err := d.rulesAt(ctx, tenant, legalEntity, d.Settings.Read, d.Clock.Now().UTC().Truncate(time.Microsecond), false)
+	return rules, err
 }
 
 // DecisionSettings reads the settings for a decision that FIN records (a preview, a submission, a close), inside the
@@ -281,8 +305,9 @@ func (d Deps) RuleSettingsOf(ctx context.Context, tenant fin.TenantID, legalEnti
 // and reads the ledger as of that time. The time is the system time the decision is stamped with (the caller stamps its
 // records with it), so the version recorded is the version the ledger says was in force at the recorded time: a
 // settings command stamps its time under the exclusive lock, so it is stamped before this time when it committed before
-// the lock was granted and after it when it waited for this transaction. With no settings store wired the standard
-// profile is answered, version 0.
+// the lock was granted and after it when it waited for this transaction. When the clock is behind the latest time the
+// ledger records, the decision is timed at that latest time (V2.100). With no settings store wired the standard profile
+// is answered, version 0.
 func (d Deps) DecisionSettings(ctx context.Context, tenant fin.TenantID, legalEntity string) (fin.RuleSettings, time.Time, error) {
 	if d.Clock == nil {
 		return fin.RuleSettings{}, time.Time{}, ErrMissingDependency
@@ -293,22 +318,27 @@ func (d Deps) DecisionSettings(ctx context.Context, tenant fin.TenantID, legalEn
 	if err := d.Settings.LockShared(ctx, tenant); err != nil {
 		return fin.RuleSettings{}, time.Time{}, err
 	}
-	at := d.Clock.Now().UTC().Truncate(time.Microsecond)
-	rules, err := d.rulesAt(ctx, tenant, legalEntity, d.Settings.Load, at)
-	return rules, at, err
+	return d.rulesAt(ctx, tenant, legalEntity, d.Settings.Load, d.Clock.Now().UTC().Truncate(time.Microsecond), true)
 }
 
+// rulesAt reads the settings of a legal entity at a time. With notBefore the time is the later of it and the latest
+// time the tenant's ledger records (V2.100): a decision on a clock that is behind a change already committed (the
+// database allows a minute of skew) reads that change and is stamped after it. The time read at is answered.
 func (d Deps) rulesAt(ctx context.Context, tenant fin.TenantID, legalEntity string, load func(context.Context, fin.TenantID) (*settings.Ledger, error),
-	at time.Time) (fin.RuleSettings, error) {
+	at time.Time, notBefore bool) (fin.RuleSettings, time.Time, error) {
 	ledger, err := load(ctx, tenant)
 	if err != nil {
-		return fin.RuleSettings{}, err
+		return fin.RuleSettings{}, at, err
+	}
+	if latest := ledger.Latest(); notBefore && latest.After(at) {
+		at = latest
 	}
 	cfg, version, err := ledger.ConfigAt(FinSettingsCatalogue(), settings.Scope{Kind: settings.KindLegalEntity, ID: legalEntity}, at)
 	if err != nil {
-		return fin.RuleSettings{}, err
+		return fin.RuleSettings{}, at, err
 	}
-	return ruleSettingsFrom(cfg, version)
+	rules, err := ruleSettingsFrom(cfg, version)
+	return rules, at, err
 }
 
 // ruleSettingsFrom is what the rules read of a resolved configuration.

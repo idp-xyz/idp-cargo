@@ -12,24 +12,25 @@ import (
 )
 
 // FIN V2.100: the impact of a settings change before it takes effect. A holder of ReadProfit, ConfigureSettings or
-// ApproveSettings may ask: the answer holds job profits, and a person who proposes or approves a change has to see what
-// it does.
-func (m *Module) authorizeImpact(ctx context.Context, tenant, actor, subject string) error {
+// ApproveSettings may ask, since a person who proposes or approves a change has to see what it does; the profit figures
+// of the jobs (F6) are given only to a holder of ReadProfit, the others are told how many jobs would change.
+func (m *Module) authorizeImpact(ctx context.Context, tenant, actor, subject string) (readProfit bool, err error) {
 	if actor == "" {
-		return classify(application.ErrUnauthenticated)
+		return false, classify(application.ErrUnauthenticated)
 	}
 	var last error
 	for _, action := range []string{api.ActionReadProfit, api.ActionConfigureSettings, api.ActionApproveSettings} {
 		if last = m.auth.AuthorizeFinAction(ctx, tenant, actor, action, subject); last == nil {
-			return nil
+			return action == api.ActionReadProfit || m.auth.AuthorizeFinAction(ctx, tenant, actor, api.ActionReadProfit, subject) == nil, nil
 		}
 	}
-	return classify(fmt.Errorf("%w: %v; the impact of a change is told to a holder of ReadProfit, ConfigureSettings or ApproveSettings", application.ErrUnauthorized, last))
+	return false, classify(fmt.Errorf("%w: %v; the impact of a change is told to a holder of ReadProfit, ConfigureSettings or ApproveSettings", application.ErrUnauthorized, last))
 }
 
 // GetFinSettingsChangeImpact answers what a change of the settings would change, read-only.
 func (m *Module) GetFinSettingsChangeImpact(ctx context.Context, q api.GetFinSettingsChangeImpact) (api.FinSettingsChangeImpact, error) {
-	if err := m.authorizeImpact(ctx, q.TenantID, q.ActorID, q.ChangeID); err != nil {
+	readProfit, err := m.authorizeImpact(ctx, q.TenantID, q.ActorID, q.ChangeID)
+	if err != nil {
 		return api.FinSettingsChangeImpact{}, err
 	}
 	ask := application.ImpactAsk{ChangeID: q.ChangeID, Actor: q.ActorID}
@@ -68,7 +69,11 @@ func (m *Module) GetFinSettingsChangeImpact(ctx context.Context, q api.GetFinSet
 	for _, c := range got.Closes {
 		out.Closes = append(out.Closes, api.FinImpactClose{PoolID: c.PoolID, LegalEntityID: c.LegalEntityID, Now: allowed(c.NowAllowed), After: allowed(!c.NowAllowed), Refusal: c.Refusal})
 	}
+	out.JobsChanged = len(got.Jobs) // told to all; the figures only to a holder of ReadProfit
 	for _, j := range got.Jobs {
+		if !readProfit {
+			break
+		}
 		money := func(n int64) kernel.Money { return kernel.Money{Currency: kernel.CurrencyCode(j.Currency), Minor: n} }
 		out.Jobs = append(out.Jobs, api.FinImpactJob{JobID: j.JobID, ShipmentID: j.ShipmentID, LegalEntityID: j.LegalEntityID, ProfitNow: money(j.Now), ProfitAfter: money(j.After),
 			BasisNow: j.BasisNow, BasisAfter: j.BasisAfter})

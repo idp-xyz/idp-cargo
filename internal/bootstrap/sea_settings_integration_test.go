@@ -166,8 +166,8 @@ func TestAConflictIsReleasedUnderSupervisorOnlyByASupervisor(t *testing.T) {
 }
 
 // A loosening of S1 is approved by another person, who holds the approver's name: a proposer cannot approve its own,
-// "sea:*" does not approve, and once it is approved an operator releases the conflict again, the release recording the
-// new version.
+// "sea:*" does not approve, and once it is approved an operator releases the conflict again, the release recording
+// the new version.
 func TestALooseningOfS1IsApprovedByAnotherPersonAndTheOperatorReleases(t *testing.T) {
 	d := conflictDayUnderPermissions(t, "cargo-ocean-s1-loosen-")
 	_, err := d.sea.ProposeSeaSettingsChange(d.as("ann", conf...), seaapi.ProposeSeaSettingsChange{CommandID: "cfg-1", TenantID: d.tenant, ActorID: "ann", ChangeID: "S1-STRICT",

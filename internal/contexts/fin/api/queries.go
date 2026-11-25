@@ -62,9 +62,9 @@ type FinancePolicy struct {
 	TaxTreatments      []ChargeTaxTreatment
 	Series             []InvoiceSeries
 	VarianceThresholds []VarianceThreshold
-	// InForceThreshold is the version in force now (FIN's clock), 0 when none; ProposedThreshold the version that waits
-	// for approval, 0 when none (both since V2.100). The versions above hold who set each, when, and how it was
-	// decided.
+	// InForceThreshold is the version in force now (FIN's clock), 0 when none; ProposedThreshold the version
+	// that waits for approval, 0 when none (both since V2.100). The versions above hold who set each, when, and
+	// how it was decided.
 	InForceThreshold  int
 	ProposedThreshold int
 }
@@ -1206,9 +1206,9 @@ type CostReviewPage struct {
 // were in force now, compared with what is in force now (FIN V2.100). Name ChangeID, a change set that is proposed or
 // approved and not in force yet, or Entries as a proposal would state them (checked as a proposal is; nothing is
 // proposed), not both. It is read in one read-only snapshot of FIN's rows (PHY's basis of each open pool just before
-// it) and changes nothing. The actor needs ReadProfit, ConfigureSettings or ApproveSettings, any one of them: the
-// answer holds job profits, which a profit reader may see, and whoever proposes or approves a change has to see what it
-// does before deciding.
+// it) and changes nothing. The actor needs ReadProfit, ConfigureSettings or ApproveSettings, any one of them, as
+// whoever proposes or approves a change has to see what it does before deciding; the job profits (F6) are given only to
+// a holder of ReadProfit, and the others are told how many jobs' profit would change (JobsChanged), without amounts.
 type GetFinSettingsChangeImpact struct {
 	TenantID string
 	ActorID  string
@@ -1256,10 +1256,8 @@ type FinImpactJob struct {
 	BasisNow, BasisAfter             string
 }
 
-// FinImpactDefault is a line whose pending former shares of Houses would be defaulted to the cargo that remains
-// (Change WOULD_BE_DEFAULTED), or would stop being defaulted and be refused until attributed
-// (WOULD_STOP_BEING_DEFAULTED)
-// (F8).
+// FinImpactDefault is a line whose pending former shares of Houses would be defaulted to the cargo that remains (Change
+// WOULD_BE_DEFAULTED), or would stop being defaulted and be refused until attributed (WOULD_STOP_BEING_DEFAULTED) (F8).
 type FinImpactDefault struct {
 	PoolID, LegalEntityID string
 	LineNo                int
@@ -1316,7 +1314,8 @@ type FinSettingsChangeImpact struct {
 	Entities      []FinImpactEntity
 	StalePreviews []FinImpactPreview
 	Closes        []FinImpactClose
-	Jobs          []FinImpactJob
+	JobsChanged   int            // how many jobs' profit would change (F6), told to every caller
+	Jobs          []FinImpactJob // those jobs with the profit figures, only for a caller who holds ReadProfit
 	Defaults      []FinImpactDefault
 	Carried       []FinImpactCarried
 	OneStep       []FinImpactOneStep

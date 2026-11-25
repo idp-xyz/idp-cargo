@@ -260,8 +260,8 @@ func TestSeaSettingsProposeApproveRefuseCancelOnPostgres(t *testing.T) {
 	}
 	_, err = s.approve("c2", "carl")
 	s.refusedWith("a second approval", api.Receipt{}, err, api.ErrRejected, "SETTINGS_ALREADY_APPROVED")
-	// a change set that loosens the company's value: SUPERVISOR_ONLY to WITH_REASON waits, and is refused by an
-	// approver
+	// a change set that loosens the company's value: SUPERVISOR_ONLY to WITH_REASON waits, and is refused
+	// by an approver
 	s.must(s.propose("w1", "ann", time.Time{}, tenantEntry("WITH_REASON")))
 	_, err = s.refuse("w1", "ann")
 	s.refusedWith("a refusal by someone who may not approve", api.Receipt{}, err, api.ErrUnauthorized)

@@ -238,8 +238,8 @@ BEGIN
   RETURN false;
 END $fn$;
 
--- At commit, a change set has 1 to 64 entries numbered from 1 without a gap, and an entry is written with its change
--- set.
+-- At commit, a change set has 1 to 64 entries numbered from 1 without a gap, and an entry is written with
+-- its change set.
 CREATE FUNCTION cargo_sea.check_settings_change_at_commit() RETURNS trigger LANGUAGE plpgsql AS $fn$
 BEGIN
   IF (SELECT count(*) < 1 OR count(*) <> max(e.entry_no) FROM cargo_sea.settings_change_entry e
@@ -311,9 +311,9 @@ END $fn$;
 CREATE TRIGGER settings_approval_check BEFORE INSERT ON cargo_sea.settings_approval
   FOR EACH ROW EXECUTE FUNCTION cargo_sea.check_settings_approval();
 
--- A cancellation: the tenant is locked as an approval locks it, the cancellation is not before the proposal, a refusal
--- is of a change set not approved, and a cancellation is of a change set not in force (an approval takes effect at its
--- in_force_at).
+-- A cancellation: the tenant is locked as an approval locks it, the cancellation is not before the proposal, a
+-- refusal is of a change set not approved, and a cancellation is of a change set not in force (an approval takes
+-- effect at its in_force_at).
 CREATE FUNCTION cargo_sea.check_settings_cancellation() RETURNS trigger LANGUAGE plpgsql AS $fn$
 BEGIN
   PERFORM cargo_sea.require_read_committed();

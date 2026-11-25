@@ -29,8 +29,8 @@ func rawEntry(id string, no int, kind, scopeID, key, value string) string {
       VALUES ($1,'%s',%d,'%s','%s','%s','%s')`, id, no, kind, scopeID, key, value)
 }
 
-// rawApproval approves the change set as the columns of its row say, at and inForce being SQL over proposed_at and
-// effective_at.
+// rawApproval approves the change set as the columns of its row say, at and inForce being SQL over
+// proposed_at and effective_at.
 func rawApproval(id, by, at string, version any, inForce string, auto bool) string {
 	return fmt.Sprintf(`INSERT INTO cargo_sea.settings_approval (tenant_id,change_id,proposed_by,proposed_at,effective_at,loosening,approved_by,approved_at,
         version_no,in_force_at,auto)
@@ -143,8 +143,8 @@ func TestSeaSettingsDatabaseRulesRefuseRawWrites(t *testing.T) {
           VALUES ($1,'R7','r',' ',now(),now(),false)`}, "23514", "settings_change_proposed_by_check"},
 		{"a cancellation without a reason", []string{`INSERT INTO cargo_sea.settings_cancellation (tenant_id,change_id,cancelled_by,cancelled_at,reason)
           VALUES ($1,'L1','x',now(),' ')`}, "23514", "settings_cancellation_reason_check"},
-		// the recorded times: within a minute of the database's clock, and not before the latest recorded for the
-		// tenant
+		// the recorded times: within a minute of the database's clock, and not before the latest recorded
+		// for the tenant
 		{"a proposal back-dated by more than a minute", []string{`INSERT INTO cargo_sea.settings_change (tenant_id,change_id,reason,proposed_by,proposed_at,effective_at,loosening)
           VALUES ($1,'R8','r','ann',now() - interval '2 minutes',now() - interval '2 minutes',false)`, rawEntry("R8", 1, "TENANT", "", "sea.S1", "SUPERVISOR_ONLY")}, "23514", "settings_time_window"},
 		{"a proposal dated more than a minute ahead", []string{`INSERT INTO cargo_sea.settings_change (tenant_id,change_id,reason,proposed_by,proposed_at,effective_at,loosening)
@@ -407,8 +407,8 @@ func TestSeaSettingsDatabaseRulesOfTheReleaseAndTheReceipt(t *testing.T) {
 	}
 }
 
-// A proposal written past SEA takes the tenant's settings lock by itself, as the commands do: while the lock is held the
-// insert waits (shown by pg_blocking_pids from the test's own holder), and goes through when it is released.
+// A proposal written past SEA takes the tenant's settings lock by itself, as the commands do: while the lock is held
+// the insert waits (shown by pg_blocking_pids from the test's own holder), and goes through when it is released.
 func TestSeaSettingsADatabaseProposalWaitsForTheSettingsLock(t *testing.T) {
 	s := newSettingsWorld(t)
 	h := holdSettings(t, s.tenant)

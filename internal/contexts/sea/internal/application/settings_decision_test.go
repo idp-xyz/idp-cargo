@@ -41,9 +41,9 @@ func (s tracedSettings) Load(context.Context, sea.TenantID) (*settings.Ledger, e
 	return s.ledger, nil
 }
 
-// The decision's settings: the shared lock first, then the clock, then the ledger as of that time; the legal entity's own
-// value, else the company's, else the standard; a change set that takes effect later does not count; the version is the
-// one in force at the time read, and that time is the one the decision is stamped with.
+// The decision's settings: the shared lock first, then the clock, then the ledger as of that time; the legal entity's
+// own value, else the company's, else the standard; a change set that takes effect later does not count; the version is
+// the one in force at the time read, and that time is the one the decision is stamped with.
 func TestADecisionReadsTheSettingsUnderTheLockAndAtTheTimeAfterIt(t *testing.T) {
 	at := time.Date(2026, 11, 25, 10, 0, 0, 0, time.UTC)
 	entry := func(scope settings.Scope, value string) []settings.Entry {
@@ -77,8 +77,9 @@ func TestADecisionReadsTheSettingsUnderTheLockAndAtTheTimeAfterIt(t *testing.T) 
 	if got, err = d.DecisionSettings(context.Background(), "t1", "LE2"); err != nil || got.S1 != sea.S1SupervisorOnly || got.Version != 2 {
 		t.Fatalf("another legal entity: %+v, %v", got, err)
 	}
-	// before any change set: the standard value, version 0
-	d.Clock = tracedClock{trace, at.Add(-4 * time.Hour)}
+	// before any change set: the standard value, version 0 (a clock behind a change set that is recorded reads
+	// it, since V2.100)
+	d.Clock, d.Settings = tracedClock{trace, at.Add(-4 * time.Hour)}, tracedSettings{trace: trace, ledger: settings.NewLedger(nil)}
 	if got, err = d.DecisionSettings(context.Background(), "t1", "LE"); err != nil || got.S1 != sea.S1WithReason || got.Version != 0 {
 		t.Fatalf("before any change set: %+v, %v", got, err)
 	}

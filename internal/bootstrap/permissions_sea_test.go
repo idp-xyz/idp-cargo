@@ -9,9 +9,9 @@ import (
 	"go.idp.xyz/idp-cargo/internal/foundation/identity"
 )
 
-// SEA's three actions of V2.100, ConfigureSettings, ApproveSettings and SuperviseCarrierConflicts, are granted by name
-// only: "sea:*" and "*" grant every other action of SEA and none of these, and a name grants its own action and not the
-// others.
+// SEA's three actions of V2.100, ConfigureSettings, ApproveSettings and SuperviseCarrierConflicts, are granted by
+// name only: "sea:*" and "*" grant every other action of SEA and none of these, and a name grants its own action and
+// not the others.
 func TestSeaSettingsPermissionsAreGrantedByNameOnly(t *testing.T) {
 	as := func(permissions ...string) context.Context {
 		return identity.WithPrincipal(context.Background(), identity.Principal{TenantID: "t1", ActorID: "ann", Permissions: permissions})

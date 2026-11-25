@@ -83,8 +83,8 @@ type SettingsCommands interface {
 // Actions of the settings, and the permission the release of a carrier conflict needs under S1 SUPERVISOR_ONLY. The
 // three are granted by name only: "sea:*" and "*" grant none of them, so that a general grant never lets a person
 // change how SEA's controls work, approve the change or release a carrier's contradiction as a supervisor. That the
-// approver is not the proposer is SEA's own rule, not a permission. The subject of ActionSuperviseCarrierConflicts is
-// the visit.
+// approver is not the proposer is SEA's own rule, not a permission. The subject of ActionSuperviseCarrierConflicts
+// is the visit.
 const (
 	ActionConfigureSettings         = "ConfigureSettings"
 	ActionApproveSettings           = "ApproveSettings"
@@ -163,9 +163,9 @@ const (
 	SettingsRefused   = "REFUSED"
 )
 
-// SeaSettingsChange is a change set with its history: who proposed it, why and when, whether it loosens, who approved
-// it, the version it made, when it is or was in force, and who cancelled it, why and in which role (CONFIGURER or
-// APPROVER).
+// SeaSettingsChange is a change set with its history: who proposed it, why and when, whether it loosens, who
+// approved it, the version it made, when it is or was in force, and who cancelled it, why and in which role
+// (CONFIGURER or APPROVER).
 type SeaSettingsChange struct {
 	ChangeID      string
 	Status        string

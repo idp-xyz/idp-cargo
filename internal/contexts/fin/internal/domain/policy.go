@@ -303,7 +303,7 @@ func (p *FinancePolicy) ProposeVarianceThreshold(amount int64, rateBP int, by st
 	case len(ts) > 0 && at.Before(ts[len(ts)-1].At):
 		return fmt.Errorf("%w: a threshold is not set before the one in force", ErrInvalid)
 	case now.Before(p.latestThresholdTime()):
-		return fmt.Errorf("%w: FIN's clock is behind the latest threshold record (%s); try the command again", ErrInvalid, p.latestThresholdTime().Format(time.RFC3339))
+		return fmt.Errorf("%w: FIN's clock is behind the latest threshold record (%s); synchronise the clocks of FIN's servers and try the command again", ErrInvalid, p.latestThresholdTime().Format(time.RFC3339))
 	}
 	for _, t := range ts {
 		if t.State == ThresholdProposed {
@@ -338,6 +338,18 @@ func (p *FinancePolicy) latestThresholdTime() time.Time {
 	return latest
 }
 
+// LatestApprovalAt is the latest time an approved version written since V2.100 is in force from (zero when none): a
+// match is not timed before it, whatever the clock reads.
+func (p *FinancePolicy) LatestApprovalAt() time.Time {
+	var latest time.Time
+	for _, t := range p.state.Thresholds {
+		if t.State == ThresholdApproved && !t.ProposedAt.IsZero() && t.InForceAt.After(latest) {
+			latest = t.InForceAt
+		}
+	}
+	return latest
+}
+
 // proposedThreshold finds the version that waits for approval, which must be the one the caller named.
 func (p *FinancePolicy) proposedThreshold(no int, by string, now time.Time) (*VarianceThreshold, error) {
 	var found *VarianceThreshold
@@ -356,7 +368,7 @@ func (p *FinancePolicy) proposedThreshold(no int, by string, now time.Time) (*Va
 	case found.By == by:
 		return nil, fmt.Errorf("%w: version %d was set by %s", ErrThresholdApproval, no, by)
 	case now.Before(p.latestThresholdTime()):
-		return nil, fmt.Errorf("%w: FIN's clock is behind the latest threshold record; try the command again", ErrInvalid)
+		return nil, fmt.Errorf("%w: FIN's clock is behind the latest threshold record (%s); synchronise the clocks of FIN's servers and try the command again", ErrInvalid, p.latestThresholdTime().Format(time.RFC3339))
 	}
 	return found, nil
 }

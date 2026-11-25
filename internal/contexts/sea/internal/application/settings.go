@@ -60,8 +60,8 @@ func inSeaWords(err error) error {
 	return err
 }
 
-// writeSettings runs a settings command: the tenant's lock, then the receipt, then mutate with the time read under the
-// lock.
+// writeSettings runs a settings command: the tenant's lock, then the receipt, then mutate with the time read
+// under the lock.
 func (d Deps) writeSettings(ctx context.Context, c Command, hash string, mutate func(context.Context, time.Time) (Receipt, aggregate, error)) (Receipt, error) {
 	return d.writeAfter(ctx, c, hash, "SeaSettings", func(txCtx context.Context) error { return d.Settings.Lock(txCtx, c.Scope.TenantID) },
 		func(txCtx context.Context) (Receipt, []aggregate, error) {
@@ -135,8 +135,31 @@ func exceptionsNotice(cat *settings.Catalogue, ledger *settings.Ledger, cs setti
 	if len(parts) == 0 {
 		return ""
 	}
-	return "legal entities that stay looser than the company, as approved exceptions: " + strings.Join(parts, "; ") +
-		"; to tighten one, propose a change set for that legal entity"
+	return exceptionsText(parts)
+}
+
+// maxNotice is what the receipt's notice holds: 4000 characters; the text keeps within it with room to spare.
+const maxNotice = 3900
+
+// exceptionsText lists as many of the legal entities as fit in the receipt, then says how many more there are and where
+// to read them, so that a proposal is never refused for the length of its notice.
+func exceptionsText(parts []string) string {
+	const head = "legal entities that stay looser than the company, as approved exceptions: "
+	const tail = "; to tighten one, propose a change set for that legal entity"
+	kept, size := 0, len(head)+len(tail)
+	for kept < len(parts) {
+		more := fmt.Sprintf("; and %d more legal entities; see %s", len(parts)-kept-1, "GetSeaSettings")
+		next := size + len(parts[kept]) + 2
+		if kept < len(parts)-1 && next+len(more) > maxNotice || kept == len(parts)-1 && next > maxNotice {
+			break
+		}
+		size, kept = next, kept+1
+	}
+	text := head + strings.Join(parts[:kept], "; ")
+	if kept < len(parts) {
+		text += fmt.Sprintf("; and %d more legal entities; see %s", len(parts)-kept, "GetSeaSettings")
+	}
+	return text + tail
 }
 
 // tentative is the change set as if it were approved, at its own approval when it has one: a proposal that waits is
@@ -254,8 +277,9 @@ func (d Deps) RefuseSettings(ctx context.Context, c Command, reason string) (Rec
 // SEA's clock after that lock, and reads the ledger as of that time. The time is the system time the decision is
 // stamped with (the release's entered-at), so the version recorded is the version the ledger says was in force at the
 // time recorded: a settings command stamps its time under the exclusive lock, so it is stamped before this time when it
-// committed before the lock was granted and after it when it waited for this transaction. The legal entity must be one
-// the movement names. With no settings store wired the standard profile is answered, version 0.
+// committed before the lock was granted and after it when it waited for this transaction. When the clock is behind the
+// latest time the ledger records, the decision is timed at that latest time (V2.100). The legal entity must be one the
+// movement names. With no settings store wired the standard profile is answered, version 0.
 func (d Deps) DecisionSettings(ctx context.Context, tenant sea.TenantID, legalEntity string) (sea.RuleSettings, error) {
 	if d.Clock == nil {
 		return sea.RuleSettings{}, ErrMissingDependency
@@ -274,6 +298,9 @@ func (d Deps) DecisionSettings(ctx context.Context, tenant sea.TenantID, legalEn
 	ledger, err := d.Settings.Load(ctx, tenant)
 	if err != nil {
 		return sea.RuleSettings{}, err
+	}
+	if latest := ledger.Latest(); latest.After(at) {
+		at = latest // a clock behind a change already committed: the decision is timed after it, and reads it
 	}
 	cfg, version, err := ledger.ConfigAt(SeaSettingsCatalogue(), settings.Scope{Kind: settings.KindLegalEntity, ID: legalEntity}, at)
 	if err != nil {

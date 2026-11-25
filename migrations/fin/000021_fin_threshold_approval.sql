@@ -23,20 +23,24 @@
 -- a stored looser flag that is not the database's answer (looser than the latest version numbered before it that was
 -- approved and in force at its proposal time, or any when none was); a version not looser without its automatic
 -- approval written with it; a second version while an earlier one has no decision (one proposed at a time for a legal
--- entity); a decision of a version written before this migration; a looser version approved by its setter, a refusal
--- by the setter, and an automatic approval of a looser one or by another person; a decision before the proposal;
--- proposal and decision times that are not within a minute of the database's clock or are before the latest time
--- recorded for the legal entity (as in fin/000017); a decision not written with its policy; and an invoice that names
--- another threshold than the one in force at the time it was matched.
+-- entity); a decision of a version written before this migration; a looser version approved by its setter, a refusal by
+-- the setter, and an automatic approval of a looser one or by another person; a decision before the proposal; proposal
+-- and decision times that are not within a minute of the database's clock or are before the latest time recorded for
+-- the legal entity (as in fin/000017); a decision not written with its policy; and an invoice that names another
+-- threshold than the one in force at the time it was matched; and a match time (match_entered_at) that is not within a
+-- minute of the database's clock or is earlier than the latest in-force time of an approved version of the legal
+-- entity's policy written since this migration (a match holds the policy FOR SHARE and a decision takes it exclusively,
+-- so a match that read its clock after its lock is never earlier than a decision that committed before it).
 --
 -- What the schema does not know, and only the domain keeps: that the approver holds the permission ApproveSettings (the
 -- database compares two strings); that the time a version is in force from is the time FIN's clock read under the
 -- policy's lock (the database holds it within a minute of its own clock and monotone); that a version is numbered in
 -- the order it was set and the business time of its command is not before the previous version's (fin/000007's rule,
--- unchanged); that an approval or a refusal names the version that waits (the database knows the version's row);
--- the idempotency of the commands; and that a match read the clock after it held the policy FOR SHARE (the database
--- takes the same lock when the match is written, and compares the threshold named with the one in force at the
--- recorded time).
+-- unchanged); that an approval or a refusal names the version that waits (the database knows the version's row); the
+-- idempotency of the commands; and that a match read its clock after it held the policy FOR SHARE (the database takes
+-- the same lock when the match is written, holds the recorded time within a minute of its own clock and not before the
+-- latest approval in force, and compares the threshold named with the one in force at the recorded time; it cannot tell
+-- the time FIN read from another within the minute that lies after the latest approval).
 
 ALTER TABLE cargo_fin.cost_variance_threshold ADD COLUMN proposed_at timestamptz, ADD COLUMN looser boolean,
   ADD CONSTRAINT cost_variance_threshold_proposal CHECK ((proposed_at IS NULL) = (looser IS NULL));
@@ -149,9 +153,9 @@ CREATE TRIGGER cost_variance_threshold_decision_time AFTER INSERT ON cargo_fin.c
   FOR EACH ROW EXECUTE FUNCTION cargo_fin.check_threshold_time();
 
 -- At commit, a decision is written with its policy (the policy row is then locked, so a match that holds it FOR SHARE
--- and a decision take turns), and a version, besides the rules of fin/000007, names its proposal time and looser flag,
--- the flag is the database's own answer, a version not looser has its automatic approval, and no earlier version is
--- undecided.
+-- and a decision take turns), and a version, besides the rules of fin/000007, names its proposal time and looser
+-- flag, the flag is the database's own answer, a version not looser has its automatic approval, and no earlier
+-- version is undecided.
 CREATE OR REPLACE FUNCTION cargo_fin.check_written_with_parent() RETURNS trigger LANGUAGE plpgsql AS $fn$
 DECLARE
   found boolean;
@@ -238,12 +242,22 @@ BEGIN
       AND l.line_no = NEW.target_line;
   END IF;
   PERFORM 1 FROM cargo_fin.finance_policy p WHERE p.tenant_id = NEW.tenant_id AND p.legal_entity_id = i.legal_entity_id FOR SHARE;
+  IF i.match_entered_at < clock_timestamp() - interval '1 minute' OR i.match_entered_at > clock_timestamp() + interval '1 minute' THEN
+    RAISE EXCEPTION 'cargo_fin: creditor invoice %/% was matched at % which is not within a minute of the database''s clock', NEW.tenant_id, NEW.invoice_id,
+      i.match_entered_at USING ERRCODE = 'check_violation', CONSTRAINT = 'creditor_match_time_window';
+  END IF;
   IF i.threshold_no IS DISTINCT FROM (SELECT x.threshold_no FROM cargo_fin.cost_variance_threshold x JOIN cargo_fin.cost_variance_threshold_decision d
        ON d.tenant_id = x.tenant_id AND d.legal_entity_id = x.legal_entity_id AND d.threshold_no = x.threshold_no
        WHERE x.tenant_id = i.tenant_id AND x.legal_entity_id = i.legal_entity_id AND d.kind = 'APPROVED' AND d.in_force_at <= i.match_entered_at
        ORDER BY x.threshold_no DESC LIMIT 1) THEN
     RAISE EXCEPTION 'cargo_fin: creditor invoice %/% names another threshold than the one in force when it was matched', NEW.tenant_id, NEW.invoice_id
       USING ERRCODE = 'check_violation', CONSTRAINT = 'creditor_invoice_consistent';
+  END IF;
+  IF i.match_entered_at < (SELECT max(d.in_force_at) FROM cargo_fin.cost_variance_threshold_decision d JOIN cargo_fin.cost_variance_threshold x
+       ON x.tenant_id = d.tenant_id AND x.legal_entity_id = d.legal_entity_id AND x.threshold_no = d.threshold_no
+       WHERE d.tenant_id = i.tenant_id AND d.legal_entity_id = i.legal_entity_id AND d.kind = 'APPROVED' AND x.proposed_at IS NOT NULL) THEN
+    RAISE EXCEPTION 'cargo_fin: creditor invoice %/% was matched at % before a threshold version approved by then was in force', NEW.tenant_id, NEW.invoice_id,
+      i.match_entered_at USING ERRCODE = 'check_violation', CONSTRAINT = 'creditor_match_time_monotone';
   END IF;
   SELECT * INTO v FROM cargo_fin.accrual_latest(NEW.tenant_id, NEW.target_kind, target, NEW.target_line);
   SELECT * INTO c FROM cargo_fin.accrual_consumed(NEW.tenant_id, NEW.target_kind, target, NEW.target_line, NEW.invoice_id);

@@ -84,9 +84,9 @@ func readSettings(ctx context.Context, q bentopg.Querier, tenant sea.TenantID) (
 	if err = rows.Err(); err != nil {
 		return nil, err
 	}
-	// only the entries of the change sets read above: a change set committed between the two statements (they run at
-	// READ COMMITTED, and a reader outside the settings lock may meet one) is a later version that this ledger does not
-	// have
+	// only the entries of the change sets read above: a change set committed between the two statements (they run
+	// at READ COMMITTED, and a reader outside the settings lock may meet one) is a later version that this ledger
+	// does not have
 	ids := make([]string, len(sets))
 	for i, c := range sets {
 		ids[i] = c.ID

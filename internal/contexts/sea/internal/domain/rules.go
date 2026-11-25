@@ -46,8 +46,8 @@ type OpenConflict struct {
 }
 
 // OpenConflicts lists the conflicts of the movement's live containers that a release would clear, as the pending items
-// read them (a container has one at a time: its first report not released), in the order of their load units. The caller
-// lists the visits of an open movement: a release is accepted while the movement is open.
+// read them (a container has one at a time: its first report not released), in the order of their load units. The
+// caller lists the visits of an open movement: a release is accepted while the movement is open.
 func (m *Movement) OpenConflicts(visits []VisitState) []OpenConflict {
 	live := liveVisits(visits)
 	var out []OpenConflict

@@ -6,11 +6,11 @@ import (
 	"testing"
 )
 
-// V2.100: the release of a conflict with a carrier's loading report under S1, "a carrier report that contradicts SEA's
-// records". The day is the conflict day of conflict_test.go. The rules the domain keeps: under SUPERVISOR_ONLY the
-// release needs a supervisor, and says the way out when it has none; a release records the version of the settings, the
-// value of S1 and the time they were read at; the pending item says who may release it under the value it is read
-// under.
+// V2.100: the release of a conflict with a carrier's loading report under S1, "a carrier report that contradicts
+// SEA's records". The day is the conflict day of conflict_test.go. The rules the domain keeps: under SUPERVISOR_ONLY
+// the release needs a supervisor, and says the way out when it has none; a release records the version of the
+// settings, the value of S1 and the time they were read at; the pending item says who may release it under the value
+// it is read under.
 
 func (d *reDay) releaseUnder(rules RuleSettings, supervisor bool, hour int) error {
 	return d.v.AcceptCarrierLoadingConflictUnder(d.m, 1, "the line confirmed the box was not loaded", "ops-7", hr(hour), rules, supervisor)

@@ -14,10 +14,10 @@ import (
 )
 
 // V2.100 on PostgreSQL: S1, "a carrier report that contradicts SEA's records", read by the release of a carrier
-// conflict. The day is the conflict day of sea_conflict_release_test.go: the carrier reports at hour 4 that CSQU3054383
-// was loaded, PHY sealed it again at 5, and the container never gated in. ops-9 may release a conflict (every actor may
-// but the intruder), sup-1 holds the permission SuperviseCarrierConflicts, and the settings' actors are those of
-// settingsWorld.
+// conflict. The day is the conflict day of sea_conflict_release_test.go: the carrier reports at hour 4 that
+// CSQU3054383 was loaded, PHY sealed it again at 5, and the container never gated in. ops-9 may release a conflict
+// (every actor may but the intruder), sup-1 holds the permission SuperviseCarrierConflicts, and the settings' actors
+// are those of settingsWorld.
 
 const releaseReason = "the line confirmed that the box was not loaded"
 
@@ -105,8 +105,8 @@ func TestS1EachValueOnTheRelease(t *testing.T) {
 	// whoever may release a conflict, without the permission: refused, with the way out, and nothing is written
 	_, err := s.acceptAs("ops-9", "acc-1", 8)
 	s.wantRefusedAsNoSupervisor("an operator", err)
-	// it is not a stale revision, a missing reason or another refusal in disguise: the same release by a supervisor
-	// passes
+	// it is not a stale revision, a missing reason or another refusal in disguise: the same release by
+	// a supervisor passes
 	if got := s.visit(t, "CV-1"); got.Revision != revision || len(got.Releases) != 0 || len(s.outbox(t)) != before {
 		t.Fatalf("a refused release wrote: %+v", got)
 	}
@@ -327,9 +327,9 @@ func TestS1TheReleaseWaitsForASettingsChangeHoldingTheLock(t *testing.T) {
 	})
 }
 
-// The final declaration reads no settings: it takes no lock of the settings and records no version. With the settings
-// lock held by someone else it is refused for the open conflict, and passes once the conflict is released, without
-// waiting.
+// The final declaration reads no settings: it takes no lock of the settings and records no version. With the
+// settings lock held by someone else it is refused for the open conflict, and passes once the conflict is
+// released, without waiting.
 func TestS1TheFinalDeclarationReadsNoSettings(t *testing.T) {
 	s := conflictWorld(t)
 	h := holdSettings(t, s.tenant)
@@ -370,9 +370,9 @@ func TestS1AReleaseWithNothingToReleaseIsRefusedAsBefore(t *testing.T) {
 	}
 }
 
-// What a change of S1 would change, before it takes effect: for each legal entity whose S1 would differ, from what to
-// what, with the open conflicts of its open movements and who could release them before and after; a query that writes
-// nothing.
+// What a change of S1 would change, before it takes effect: for each legal entity whose S1 would differ, from
+// what to what, with the open conflicts of its open movements and who could release them before and after; a
+// query that writes nothing.
 func TestSeaSettingsChangeImpactOnPostgres(t *testing.T) {
 	s := conflictWorld(t)
 	impact := func(change string, entries ...api.SeaSettingEntry) (api.SeaSettingsChangeImpact, error) {
@@ -485,8 +485,8 @@ func TestSeaSettingsChangeImpactOnPostgres(t *testing.T) {
 }
 
 // The impact is against what would be in force when the change set takes effect, not against what is in force now: with
-// the company's tightening to come in half an hour, a change of one legal entity to the same value an hour from now changes
-// nothing for it.
+// the company's tightening to come in half an hour, a change of one legal entity to the same value an hour from now
+// changes nothing for it.
 func TestSeaSettingsImpactIsAgainstWhatWillBeInForceThen(t *testing.T) {
 	s := conflictWorld(t)
 	s.must(s.propose("a1", "ann", time.Now().UTC().Add(30*time.Minute), tenantEntry("SUPERVISOR_ONLY")))

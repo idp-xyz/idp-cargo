@@ -63,12 +63,22 @@ func (d Deps) ApproveVarianceThreshold(ctx context.Context, c Command, version i
 	})
 }
 
-// RefuseVarianceThreshold refuses the version that waits for approval, with a reason, by a person other than its
-// setter.
+// RefuseVarianceThreshold refuses the version that waits for approval, with a reason, by a person other
+// than its setter.
 func (d Deps) RefuseVarianceThreshold(ctx context.Context, c Command, version int, reason string) (Receipt, error) {
 	return d.changePolicy(ctx, c, func(_ context.Context, p *fin.FinancePolicy) (int, error) {
 		return version, p.RefuseVarianceThreshold(version, reason, c.Scope.ActorID, d.Clock.Now().UTC().Truncate(time.Microsecond))
 	})
+}
+
+// matchTime is the system time a match is read at: FIN's clock, and never before the latest approval of a threshold in
+// force, so that a clock behind a decision that has committed does not make the match read an older threshold.
+func matchTime(now time.Time, p *fin.FinancePolicy) time.Time {
+	now = now.UTC().Truncate(time.Microsecond)
+	if latest := p.LatestApprovalAt(); latest.After(now) {
+		return latest
+	}
+	return now
 }
 
 // RecordCreditorInvoice records a supplier's invoice to a legal entity with a finance policy: ORG confirms the creditor
@@ -168,7 +178,7 @@ func (d Deps) MatchCreditorInvoice(ctx context.Context, c Command, items []fin.M
 		// FIN's clock, read after the policy's lock: a threshold approved at the same moment is in force for this match
 		// or
 		// not, and the invoice records the version it used (since V2.100)
-		if err = inv.MatchAt(items, targets, p, c.Scope.ActorID, c.OccurredAt, d.Clock.Now().UTC().Truncate(time.Microsecond)); err != nil {
+		if err = inv.MatchAt(items, targets, p, c.Scope.ActorID, c.OccurredAt, matchTime(d.Clock.Now(), p)); err != nil {
 			return 0, err
 		}
 		return len(inv.State().Matches), nil
