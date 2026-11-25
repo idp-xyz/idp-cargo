@@ -628,10 +628,13 @@ func (s CommandReceipts) Find(ctx context.Context, tenant sea.TenantID, id strin
 	r := app.Receipt{CommandID: id}
 	var entry, bill *int
 	var hbl *string
-	var seal, assertion, eventNo, release, facts, factNo *int
-	err = q.QueryRow(ctx, `SELECT request_sha256,result_type,result_id,result_revision,result_entry_no,result_hbl,result_bill_no,result_seal_no,result_assertion_no,result_event_no,result_release_no,result_facts_version,result_fact_no
+	var seal, assertion, eventNo, release, facts, factNo, settingsVersion *int
+	var notice *string
+	err = q.QueryRow(ctx, `SELECT request_sha256,result_type,result_id,result_revision,result_entry_no,result_hbl,result_bill_no,result_seal_no,result_assertion_no,result_event_no,result_release_no,result_facts_version,result_fact_no,
+      result_settings_version,result_notice
       FROM cargo_sea.command_receipt WHERE tenant_id=$1 AND command_id=$2`, string(tenant), id).Scan(
-		&r.RequestHash, &r.Kind, &r.SubjectID, &r.NewRevision, &entry, &hbl, &bill, &seal, &assertion, &eventNo, &release, &facts, &factNo)
+		&r.RequestHash, &r.Kind, &r.SubjectID, &r.NewRevision, &entry, &hbl, &bill, &seal, &assertion, &eventNo, &release, &facts, &factNo,
+		&settingsVersion, &notice)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return app.Receipt{}, false, nil
 	}
@@ -662,7 +665,10 @@ func (s CommandReceipts) Find(ctx context.Context, tenant sea.TenantID, id strin
 	if factNo != nil {
 		r.FactNo = *factNo
 	}
-	r.HBL = deref(hbl)
+	if settingsVersion != nil {
+		r.SettingsVersion = *settingsVersion
+	}
+	r.HBL, r.Notice = deref(hbl), deref(notice)
 	return r, true, nil
 }
 
@@ -683,9 +689,10 @@ func (s CommandReceipts) Save(ctx context.Context, tenant sea.TenantID, r app.Re
 		return err
 	}
 	_, err = q.Exec(ctx, `INSERT INTO cargo_sea.command_receipt (tenant_id,command_id,request_sha256,result_type,result_id,result_revision,result_entry_no,
-      result_hbl,result_bill_no,result_seal_no,result_assertion_no,result_event_no,result_release_no,result_facts_version,result_fact_no) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+      result_hbl,result_bill_no,result_seal_no,result_assertion_no,result_event_no,result_release_no,result_facts_version,result_fact_no,
+      result_settings_version,result_notice) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
 		string(tenant), r.CommandID, r.RequestHash, kind, r.SubjectID, r.NewRevision, orNull(r.EntryNo), orNull(r.HBL), orNull(r.BillNo), orNull(r.SealNo),
-		orNull(r.AssertionNo), orNull(r.EventNo), orNull(r.ReleaseNo), orNull(r.FactsVersion), orNull(r.FactNo))
+		orNull(r.AssertionNo), orNull(r.EventNo), orNull(r.ReleaseNo), orNull(r.FactsVersion), orNull(r.FactNo), orNull(r.SettingsVersion), orNull(r.Notice))
 	return err
 }
 
@@ -727,7 +734,7 @@ func SEAEnvelope(commandID string, e sea.Event, recordedAt time.Time) (eventing.
 	digest := sha256.Sum256([]byte(id))
 	payload, err := json.Marshal(api.EventPayload{TenantID: string(e.TenantID), SubjectID: e.SubjectID, ConsolidationID: e.ConsolidationID,
 		MovementID: e.MovementID, ShipmentID: e.ShipmentID, EntryNo: e.EntryNo, BillNo: e.BillNo, SealNo: e.SealNo, AssertionNo: e.AssertionNo, EventNo: e.EventNo, ReleaseNo: e.ReleaseNo,
-		FactsVersion: e.FactsVersion, FactNo: e.FactNo,
+		FactsVersion: e.FactsVersion, FactNo: e.FactNo, SettingsVersion: e.SettingsVersion,
 		BookingID:       e.BookingID,
 		CapacityVersion: e.CapacityVersion, Reason: e.Reason})
 	if err != nil {

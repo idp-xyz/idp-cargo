@@ -670,7 +670,9 @@ func (v *Visit) Stamp(entered time.Time) {
 		v.state.Events[i].EnteredAt = entered.UTC()
 	}
 	for i := v.releases; i < len(v.state.Releases); i++ {
-		v.state.Releases[i].EnteredAt = entered.UTC()
+		if v.state.Releases[i].EnteredAt.IsZero() { // a release decided under settings is stamped with the time they were read at
+			v.state.Releases[i].EnteredAt = entered.UTC()
+		}
 	}
 	if v.responded > 0 {
 		v.state.Assertions[v.responded-1].ResponseEnteredAt = entered.UTC()

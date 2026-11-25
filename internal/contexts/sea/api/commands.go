@@ -201,6 +201,12 @@ type Receipt struct {
 	ReleaseNo    int
 	FactsVersion int
 	FactNo       int
+	// ChangeID names the change set a settings command is about (in MovementID's place, which is then empty);
+	// SettingsVersion is the version of SEA's settings that it made (an approval), 0 for any other command; Notice is
+	// what a settings proposal says besides its receipt, the same on a replay.
+	ChangeID        string
+	SettingsVersion int
+	Notice          string
 }
 
 // Commands is SEA's command entry point.

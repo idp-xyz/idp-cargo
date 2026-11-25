@@ -84,6 +84,9 @@ type releaseRow struct {
 	RecordedBy  string    `json:"recorded_by"`
 	RecordedAt  time.Time `json:"recorded_at"`
 	EnteredAt   time.Time `json:"entered_at"`
+	// null for a release written before V2.100
+	SettingsVersion *int    `json:"settings_version"`
+	S1              *string `json:"s1_value"`
 }
 
 type eventRow struct {
@@ -163,8 +166,12 @@ func readVisit(ctx context.Context, q queryRower, tenant sea.TenantID, id sea.Vi
 		return nil, 0, err
 	}
 	for _, r := range released {
-		st.Releases = append(st.Releases, sea.ConflictRelease{No: r.ReleaseNo, FactNo: r.FactNo, PHYSeal: r.PHYSeal, PHYSealedAt: utc(r.PHYSealedAt), Reason: r.Reason,
-			By: r.RecordedBy, At: utc(r.RecordedAt), EnteredAt: utc(r.EnteredAt)})
+		release := sea.ConflictRelease{No: r.ReleaseNo, FactNo: r.FactNo, PHYSeal: r.PHYSeal, PHYSealedAt: utc(r.PHYSealedAt), Reason: r.Reason,
+			By: r.RecordedBy, At: utc(r.RecordedAt), EnteredAt: utc(r.EnteredAt), S1: deref(r.S1)}
+		if r.SettingsVersion != nil {
+			release.SettingsVersion = *r.SettingsVersion
+		}
+		st.Releases = append(st.Releases, release)
 	}
 	v, err := sea.RestoreVisit(st)
 	return v, revision, err
@@ -235,13 +242,22 @@ func (s VisitStore) Save(ctx context.Context, v *sea.Visit, expected int64) (int
 func writeReleases(ctx context.Context, q bentopg.Executor, v *sea.Visit) error {
 	st := v.State()
 	for _, r := range v.AddedReleases() {
-		if _, err := q.Exec(ctx, `INSERT INTO cargo_sea.carrier_conflict_release (tenant_id,visit_id,release_no,fact_no,phy_seal,phy_sealed_at,reason,recorded_by,recorded_at,entered_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-			string(st.TenantID), string(st.VisitID), r.No, r.FactNo, r.PHYSeal, r.PHYSealedAt, r.Reason, r.By, r.At, r.EnteredAt); err != nil {
+		if _, err := q.Exec(ctx, `INSERT INTO cargo_sea.carrier_conflict_release (tenant_id,visit_id,release_no,fact_no,phy_seal,phy_sealed_at,reason,recorded_by,recorded_at,entered_at,
+        settings_version,s1_value) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+			string(st.TenantID), string(st.VisitID), r.No, r.FactNo, r.PHYSeal, r.PHYSealedAt, r.Reason, r.By, r.At, r.EnteredAt,
+			settingsVersionOf(r), orNull(r.S1)); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// settingsVersionOf is the version a release records, NULL with its S1 value when it was decided without the settings.
+func settingsVersionOf(r sea.ConflictRelease) any {
+	if r.S1 == "" {
+		return nil
+	}
+	return r.SettingsVersion
 }
 
 func writeEvents(ctx context.Context, q bentopg.Executor, v *sea.Visit) error {
