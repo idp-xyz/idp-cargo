@@ -1381,16 +1381,16 @@ func (s CommandReceipts) Find(ctx context.Context, tenant fin.TenantID, id strin
 	}
 	r := app.Receipt{CommandID: id}
 	var version *int
-	var number *string
-	err = q.QueryRow(ctx, `SELECT request_sha256,result_id,result_revision,result_version,result_number FROM cargo_fin.command_receipt
-      WHERE tenant_id=$1 AND command_id=$2`, string(tenant), id).Scan(&r.RequestHash, &r.SubjectID, &r.NewRevision, &version, &number)
+	var number, notice *string
+	err = q.QueryRow(ctx, `SELECT request_sha256,result_id,result_revision,result_version,result_number,result_notice FROM cargo_fin.command_receipt
+      WHERE tenant_id=$1 AND command_id=$2`, string(tenant), id).Scan(&r.RequestHash, &r.SubjectID, &r.NewRevision, &version, &number, &notice)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return app.Receipt{}, false, nil
 	}
 	if err != nil {
 		return app.Receipt{}, false, err
 	}
-	r.Version, r.Number = deref(version), deref(number)
+	r.Version, r.Number, r.Notice = deref(version), deref(number), deref(notice)
 	return r, true, nil
 }
 
@@ -1400,7 +1400,8 @@ func (s CommandReceipts) Save(ctx context.Context, tenant fin.TenantID, r app.Re
 		return err
 	}
 	_, err = q.Exec(ctx, `INSERT INTO cargo_fin.command_receipt (tenant_id,command_id,request_sha256,result_type,result_id,result_revision,result_version,
-      result_number) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, string(tenant), r.CommandID, r.RequestHash, kind, r.SubjectID, r.NewRevision, r.Version, orNull(r.Number))
+      result_number,result_notice) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, string(tenant), r.CommandID, r.RequestHash, kind, r.SubjectID, r.NewRevision, r.Version,
+		orNull(r.Number), orNull(r.Notice))
 	return err
 }
 

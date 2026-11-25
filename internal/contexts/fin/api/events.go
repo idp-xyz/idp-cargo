@@ -67,6 +67,12 @@ const (
 	// Fapiao events have the fapiao record as subject and its debtor.
 	FapiaoIssued      = "FapiaoIssued.v1"
 	FapiaoRedLettered = "FapiaoRedLettered.v1"
+
+	// Settings events have the change set as subject; an approval carries the settings version it made as Version.
+	FinSettingsChangeProposed  = "FinSettingsChangeProposed.v1"
+	FinSettingsChangeApproved  = "FinSettingsChangeApproved.v1"
+	FinSettingsChangeCancelled = "FinSettingsChangeCancelled.v1"
+	FinSettingsChangeRefused   = "FinSettingsChangeRefused.v1"
 )
 
 // EventPayload is the JSON payload of every FIN event: identifiers and versions only, never amounts, names or tax

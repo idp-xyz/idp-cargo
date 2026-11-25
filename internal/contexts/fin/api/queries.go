@@ -939,6 +939,118 @@ type PreviewEffect struct {
 	Reasons     []PreviewReason
 }
 
+// GetFinSettings answers FIN's settings in force for a scope (ScopeKind TENANT with no ScopeID, or LEGAL_ENTITY with
+// its ID) as of a time (zero: now): each item's value, its parameter, the scope the value comes from (its own, the
+// company's, or none when the default applies) and the settings version in force.
+type GetFinSettings struct {
+	TenantID  string
+	ScopeKind string
+	ScopeID   string
+	AsOf      time.Time
+}
+
+// FinSetting is one item's value in force. FromScopeKind is TENANT, LEGAL_ENTITY or, with Default, the default of the
+// standard profile, which no change set set. Threshold is in the legal entity's functional currency.
+type FinSetting struct {
+	Key           string
+	Value         string
+	Threshold     *kernel.Money
+	FromScopeKind string
+	FromScopeID   string
+	Default       bool
+	// ChangeID is the change set that set the value; Exception says that the value of a legal entity is looser than the
+	// company's, an approved exception that stays in force when the company tightens.
+	ChangeID  string
+	Exception bool
+}
+
+// FinSettings is the settings in force for a scope at a time, with the version in force (0 before any change set).
+type FinSettings struct {
+	TenantID  string
+	ScopeKind string
+	ScopeID   string
+	AsOf      time.Time
+	Version   int
+	Items     []FinSetting
+}
+
+// ListFinSettingsChanges lists the tenant's change sets in the order proposed.
+type ListFinSettingsChanges struct {
+	TenantID string
+}
+
+// FinSettingEntryView is an entry of a change set; ThresholdMinor is in the functional currency of the legal entity.
+type FinSettingEntryView struct {
+	ScopeKind      string
+	ScopeID        string
+	Key            string
+	Value          string
+	ThresholdMinor *int64
+}
+
+// Statuses of a change set: PROPOSED (waiting for a second person), APPROVED (its time not yet come), IN_FORCE and
+// CANCELLED.
+const (
+	SettingsProposed  = "PROPOSED"
+	SettingsApproved  = "APPROVED"
+	SettingsInForce   = "IN_FORCE"
+	SettingsCancelled = "CANCELLED"
+	SettingsRefused   = "REFUSED"
+)
+
+// FinSettingsChange is a change set with its history: who proposed it, why and when, whether it loosens, who approved
+// it and the version it made (AutoApproved when its proposer did, because it only tightens), who cancelled it. Times
+// are FIN's clock at each step; InForceAt is when it takes effect, the later of EffectiveAt and the approval.
+type FinSettingsChange struct {
+	ChangeID     string
+	Status       string
+	Reason       string
+	Loosening    bool
+	Entries      []FinSettingEntryView
+	ProposedBy   string
+	ProposedAt   time.Time
+	EffectiveAt  time.Time
+	ApprovedBy   string
+	ApprovedAt   time.Time
+	Version      int
+	InForceAt    time.Time
+	AutoApproved bool
+	CancelledBy  string
+	CancelledAt  time.Time
+	CancelReason string
+	// CancelledRole is the permission the canceller acted under: CONFIGURER (ConfigureSettings) or APPROVER (ApproveSettings).
+	CancelledRole string
+}
+
+// GetFinSettingsCatalogue answers the catalogue of FIN's settings.
+type GetFinSettingsCatalogue struct{}
+
+// FinSettingValue is one value of an item; Parameter names the parameter it asks for, if any.
+type FinSettingValue struct {
+	ID        string
+	TitleZH   string
+	TitleEN   string
+	Parameter string
+}
+
+// FinSettingItem is one item of the catalogue, its values from strict to loose.
+type FinSettingItem struct {
+	Key             string
+	TitleZH         string
+	TitleEN         string
+	Values          []FinSettingValue
+	Default         string
+	ScopeKinds      []string
+	InternalControl bool
+	Explanation     string
+}
+
+// FinSettingsCatalogue is the catalogue, and the same as a Markdown table (for the manual).
+type FinSettingsCatalogue struct {
+	Items []FinSettingItem
+	Table string
+}
+
 // Queries is FIN's read side. Unknown policies, jobs, accounts, profiles and notes yield ErrNotFound.
 type Queries interface {
 	GetFinancePolicy(ctx context.Context, q GetFinancePolicy) (FinancePolicy, error)
@@ -966,4 +1078,7 @@ type Queries interface {
 	GetCreditorAccount(ctx context.Context, q GetCreditorAccount) (CreditorAccount, error)
 	GetFapiaoRecord(ctx context.Context, q GetFapiaoRecord) (FapiaoRecord, error)
 	ListFapiaoRecords(ctx context.Context, q ListFapiaoRecords) ([]FapiaoRecord, error)
+	GetFinSettings(ctx context.Context, q GetFinSettings) (FinSettings, error)
+	ListFinSettingsChanges(ctx context.Context, q ListFinSettingsChanges) ([]FinSettingsChange, error)
+	GetFinSettingsCatalogue(ctx context.Context, q GetFinSettingsCatalogue) (FinSettingsCatalogue, error)
 }

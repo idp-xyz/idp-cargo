@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	finapi "go.idp.xyz/idp-cargo/internal/contexts/fin/api"
 	seaapi "go.idp.xyz/idp-cargo/internal/contexts/sea/api"
 	"go.idp.xyz/idp-cargo/internal/foundation/identity"
 	transport "go.idp.xyz/idp-cargo/internal/transport/http"
@@ -129,6 +130,17 @@ func (permissions) AuthorizeSeaAction(ctx context.Context, tenant, actor, action
 		return identity.AuthorizeNamed(ctx, "sea", tenant, actor, action)
 	}
 	return identity.Authorize(ctx, "sea", tenant, actor, action)
+}
+
+// AuthorizeFinAction covers FIN's commands. The two actions of the settings, "fin:ConfigureSettings" (propose and
+// cancel a change) and "fin:ApproveSettings" (approve one), are granted by name only: "fin:*" and "*" grant neither, so
+// that a general grant never lets a person change how FIN's controls work or approve the change, as with a VGM
+// signatory's name above. That the approver is not the proposer is FIN's own rule, not a permission.
+func (permissions) AuthorizeFinAction(ctx context.Context, tenant, actor, action, _ string) error {
+	if action == finapi.ActionConfigureSettings || action == finapi.ActionApproveSettings {
+		return identity.AuthorizeNamed(ctx, "fin", tenant, actor, action)
+	}
+	return identity.Authorize(ctx, "fin", tenant, actor, action)
 }
 
 // margins is RATE's margin and discount policy, one for every legal entity.
