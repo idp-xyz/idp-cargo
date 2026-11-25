@@ -6,12 +6,13 @@
 #   25432  dev      integration runs (go test -tags integration ./...)
 #   25433  upgrade  upgrade runs: migrate and fill with an older commit, then upgrade
 #   25434  empty    empty-database migration checks
-#   25435-25439     reserved
+#   25435  demo     the test tenant eii-test that tools/demo/eii-test.sh seeds and serves (long-lived)
+#   25436-25439     reserved
 # Each port is served only by its own container, idp-cargo-pg16-<role>, labelled org.idp-cargo.localpg=<role>.
 # The script refuses to start, print a DSN or stop anything when the port is held by something else, so tests
 # and migrations never reach another program's server.
 #
-# Usage: tools/localpg/localpg.sh up|env|grants|down <dev|upgrade|empty>
+# Usage: tools/localpg/localpg.sh up|env|grants|down <dev|upgrade|empty|demo>
 #   up      start the container (postgres:16.15) unless it runs already, and wait until it accepts connections
 #   env     print export lines for IDP_CARGO_MIGRATOR_DSN and IDP_CARGO_POSTGRES_DSN, as CI sets them
 #   grants  create the application role and apply the grants of the CI workflow (run after the migrations)
@@ -25,7 +26,8 @@ case "$role" in
   dev) port=25432 ;;
   upgrade) port=25433 ;;
   empty) port=25434 ;;
-  *) echo "usage: $0 up|env|grants|down <dev|upgrade|empty>" >&2; exit 2 ;;
+  demo) port=25435 ;;
+  *) echo "usage: $0 up|env|grants|down <dev|upgrade|empty|demo>" >&2; exit 2 ;;
 esac
 name=idp-cargo-pg16-$role
 label=org.idp-cargo.localpg
@@ -84,5 +86,5 @@ case "$action" in
     ours || { echo "localpg: $name lacks the $label label; refusing" >&2; exit 1; }
     docker rm -f "$name" >/dev/null
     echo "localpg: $name removed" ;;
-  *) echo "usage: $0 up|env|grants|down <dev|upgrade|empty>" >&2; exit 2 ;;
+  *) echo "usage: $0 up|env|grants|down <dev|upgrade|empty|demo>" >&2; exit 2 ;;
 esac

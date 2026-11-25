@@ -33,9 +33,9 @@ func (c APIConfig) verifier() identity.HS256Verifier {
 }
 
 // API assembles the contexts the HTTP API serves, each authorized by the permissions of the request's verified
-// principal (identity.Authorize), and answers the handler: RATE's catalogue, with ORG for RATE's party checks, and
-// SEA's ocean movements and container visits, with BOOK's bookings and FUL's plans, which SEA reads. COM, FUL, PHY
-// and BOOK have no routes yet.
+// principal (identity.Authorize), and answers the handler: RATE's catalogue, with ORG for RATE's party checks,
+// SEA's ocean movements and container visits, with BOOK's bookings and FUL's plans, which SEA reads, and FIN's profit
+// and cost review (V2.99), with FUL's and PHY's facts, which FIN reads. COM, FUL, PHY and BOOK have no routes yet.
 func (p *Platform) API(cfg APIConfig) (http.Handler, error) {
 	switch {
 	case len(cfg.TokenKey) < 32 || cfg.TokenIssuer == "" || cfg.TokenAudience == "":
@@ -55,7 +55,7 @@ func (p *Platform) API(cfg APIConfig) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	ful, _, err := p.FULAndPHY(com, permissions{}, permissions{})
+	ful, phy, err := p.FULAndPHY(com, permissions{}, permissions{})
 	if err != nil {
 		return nil, err
 	}
@@ -67,7 +67,14 @@ func (p *Platform) API(cfg APIConfig) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	return transport.NewHandler(transport.Config{Verifier: cfg.verifier(), Logger: cfg.Logger, Ready: p.pool.Ping}, rate, sea)
+	// FIN's routes read the profit and run the cost review; no route issues a debit note, which is the only use FIN has
+	// for DOC's snapshots, so they stay unbound (a debit note asked for in process would be refused
+	// ErrDocumentsUnbound).
+	fin, err := p.FIN(org, rate, ful, &DocumentSnapshots{}, phy, permissions{})
+	if err != nil {
+		return nil, err
+	}
+	return transport.NewHandler(transport.Config{Verifier: cfg.verifier(), Logger: cfg.Logger, Ready: p.pool.Ping}, rate, sea, fin)
 }
 
 // APIServer is an http.Server for the API's handler with Cargo's timeouts; its requests run under base.

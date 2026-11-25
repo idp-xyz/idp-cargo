@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	nethttp "net/http"
 	"slices"
 	"strings"
 	"time"
@@ -21,6 +22,7 @@ import (
 	"go.idp.xyz/idp-cargo/internal/contexts/fin/api"
 	docacl "go.idp.xyz/idp-cargo/internal/contexts/fin/internal/adapters/doc"
 	fulacl "go.idp.xyz/idp-cargo/internal/contexts/fin/internal/adapters/ful"
+	finhttp "go.idp.xyz/idp-cargo/internal/contexts/fin/internal/adapters/http"
 	orgacl "go.idp.xyz/idp-cargo/internal/contexts/fin/internal/adapters/org"
 	phyacl "go.idp.xyz/idp-cargo/internal/contexts/fin/internal/adapters/phy"
 	"go.idp.xyz/idp-cargo/internal/contexts/fin/internal/adapters/postgres"
@@ -51,7 +53,12 @@ type Module struct {
 	clock     clock
 	window    kernel.RecordWindow
 	numbers   *numbering.Sequences
+	// scanWindow is the jobs a loss-only page looks at (ListJobProfits).
+	scanWindow int
 }
+
+// RegisterHTTP registers FIN's inbound HTTP routes (V2.99); the composition root calls it.
+func (m *Module) RegisterHTTP(mux *nethttp.ServeMux) { finhttp.Register(mux, m) }
 
 // Option configures a Module.
 type Option func(*Module)
@@ -62,6 +69,10 @@ type clock interface{ Now() time.Time }
 // WithClock replaces the system clock FIN stamps its commands with; it exists to show, in tests, what happens when this
 // server's clock differs from the database's.
 func WithClock(c interface{ Now() time.Time }) Option { return func(m *Module) { m.clock = c } }
+
+// WithScanWindow sets how many jobs a loss-only page of ListJobProfits looks at before it answers (2,000 by default); it
+// exists so that a test can show the cursor of a full window with a few jobs.
+func WithScanWindow(n int) Option { return func(m *Module) { m.scanWindow = n } }
 
 // WithRecordWindow sets how far a command's business time may lie before the time FIN records it (T1).
 func WithRecordWindow(w kernel.RecordWindow) Option { return func(m *Module) { m.window = w } }
@@ -91,12 +102,15 @@ func New(db *bentopg.DB, org orgacl.ORG, rate RATE, ful fulapi.CostDriverQueries
 		return nil, err
 	}
 	m := &Module{db: db, outbox: outbox, shipments: fulacl.Shipments{FUL: ful}, pricing: rateacl.Pricing{RATE: rate}, rating: rateacl.Rating{RATE: rate}, directory: orgacl.Directory{ORG: org},
-		documents: docacl.Documents{DOC: doc}, physical: phyacl.Physical{PHY: phy}, auth: auth, window: kernel.DefaultRecordWindow, clock: bento.SystemClock{}}
+		documents: docacl.Documents{DOC: doc}, physical: phyacl.Physical{PHY: phy}, auth: auth, window: kernel.DefaultRecordWindow, clock: bento.SystemClock{}, scanWindow: defaultScanWindow}
 	if m.numbers, err = numbering.NewSequences(db, "cargo_fin"); err != nil {
 		return nil, err
 	}
 	for _, opt := range opts {
 		opt(m)
+	}
+	if m.scanWindow < 1 {
+		return nil, errors.New("fin: the scan window is at least one job")
 	}
 	if !m.window.Valid() {
 		return nil, errors.New("fin: the record window must not be negative")
@@ -388,50 +402,49 @@ func jobView(j *domain.FreightJob, revision int64) api.FreightJob {
 // transactions; when PHY does not answer, the query fails, as FIN cannot tell what the job bears. A job with no share
 // asks PHY nothing.
 func (m *Module) GetJobProfit(ctx context.Context, q api.GetJobProfit) (api.JobProfit, error) {
+	if q.ActorID != "" {
+		if err := m.authorizeRead(ctx, q.TenantID, q.ActorID, q.JobID); err != nil {
+			return api.JobProfit{}, err
+		}
+	}
 	d := m.deps(q.TenantID, "")
-	var j *domain.FreightJob
-	var revision int64
-	var shares []application.PoolShare
-	var losses []application.PoolLoss
-	var rules domain.RuleSettings
-	err := d.Reader(ctx, func(txCtx context.Context) (err error) {
-		if j, revision, err = readJob(txCtx, d, q.TenantID, q.JobID); err != nil {
+	var read application.ProfitRead
+	err := d.Reader(ctx, func(txCtx context.Context) error {
+		j, revision, err := readJob(txCtx, d, q.TenantID, q.JobID)
+		if err != nil {
 			return err
 		}
-		if rules, err = d.RuleSettingsOf(txCtx, domain.TenantID(q.TenantID), j.State().LegalEntityID); err != nil {
+		rules, err := d.RuleSettingsOf(txCtx, domain.TenantID(q.TenantID), j.State().LegalEntityID)
+		if err != nil {
 			return err
 		}
-		if shares, err = d.Pools.SharesOfJob(txCtx, domain.TenantID(q.TenantID), q.JobID); err != nil {
-			return err
-		}
-		losses, err = d.Pools.LossesOfJob(txCtx, domain.TenantID(q.TenantID), q.JobID)
+		read, err = d.ReadProfit(txCtx, domain.TenantID(q.TenantID), j, revision, rules)
 		return err
 	})
 	if err != nil {
 		return api.JobProfit{}, classify(err)
 	}
-	bases, err := d.FormerBases(ctx, domain.TenantID(q.TenantID), shares)
+	bases, err := d.FormerBases(ctx, domain.TenantID(q.TenantID), read.Shares)
 	if err != nil {
 		return api.JobProfit{}, classify(err)
 	}
-	costs := application.SplitFormerShares(shares, losses, j.State().ShipmentID, bases)
+	j := read.Job
+	costs := application.SplitFormerShares(read.Shares, read.Losses, j.State().ShipmentID, bases)
+	f := application.ProfitOf(j, read.Revision, read.Rules, costs, read.PoolRevs)
 	p := j.Profit()
 	money := func(n int64) kernel.Money { return kernel.Money{Currency: p.Currency, Minor: n} }
 	poolShares, _ := poolShareViews(costs.Borne, p.Currency, false)
 	formerShares, _ := poolShareViews(costs.Former, p.Currency, true)
-	var pendingIn int64 // under F6 INCLUDED_MARKED the former shares pending are counted in the profit, marked
-	if rules.F6 == domain.F6IncludedMarked {
-		pendingIn = costs.FormerTotal
-	}
 	var reroutings []api.JobReroutingLoss
 	for _, l := range costs.Losses {
 		reroutings = append(reroutings, api.JobReroutingLoss{PoolID: l.PoolID, LineNo: l.LineNo, Amount: l.Amount, Local: money(l.Local), Voucher: l.Voucher,
 			DepartedAt: l.DepartedAt})
 	}
-	out := api.JobProfit{JobID: q.JobID, Revision: revision, Revenue: money(p.Revenue), Invoiced: money(p.Invoiced), Cost: money(p.Cost),
-		CostMatched: money(p.Matched), CostAccrued: money(p.Accrued), PoolCost: money(costs.Cost + pendingIn), Profit: money(p.Profit - costs.Cost - pendingIn),
-		PoolShares: poolShares, ReroutingLosses: reroutings, ReroutingLoss: money(costs.LossTotal), FormerShares: formerShares,
-		FormerSharesPending: money(costs.FormerTotal), ProfitBasis: profitBasis(rules), PendingInProfit: money(pendingIn), SettingsVersion: rules.Version}
+	out := api.JobProfit{JobID: q.JobID, Revision: read.Revision, Revenue: money(f.Revenue), Invoiced: money(f.Invoiced), Cost: money(f.Cost),
+		CostMatched: money(f.Matched), CostAccrued: money(f.Accrued), PoolCost: money(f.PoolCost), Profit: money(f.Profit),
+		PoolShares: poolShares, ReroutingLosses: reroutings, ReroutingLoss: money(f.ReroutingLoss), FormerShares: formerShares,
+		FormerSharesPending: money(f.FormerPending), ProfitBasis: f.Basis, PendingInProfit: money(f.PendingInProfit), SettingsVersion: f.SettingsVersion,
+		ProfitVersion: f.Version}
 	for _, c := range p.Lines {
 		out.ByCode = append(out.ByCode, api.ChargeCodeProfit{ChargeCode: c.ChargeCode, Revenue: money(c.Revenue), Cost: money(c.Cost), Profit: money(c.Profit)})
 	}
@@ -818,6 +831,7 @@ func (m *Module) deps(tenant, commandID string) application.Deps {
 		Payments:       postgres.PaymentStore{DB: m.db},
 		Fapiao:         postgres.FapiaoStore{DB: m.db},
 		Settings:       postgres.SettingsStore{DB: m.db},
+		CostReviews:    postgres.CostReviewStore{DB: m.db},
 	}
 }
 
@@ -865,6 +879,8 @@ func classify(err error) error {
 		errors.Is(err, domain.ErrAccrualMatched), errors.Is(err, domain.ErrPoolNotClosable), errors.Is(err, domain.ErrTargetClosed), errors.Is(err, domain.ErrPoolInWork),
 		errors.Is(err, domain.ErrPreviewStale), errors.Is(err, domain.ErrPreviewSubmitted), errors.Is(err, domain.ErrConfirmer), errors.Is(err, domain.ErrAttributionMissing), errors.Is(err, domain.ErrJobBearsPoolCost), errors.Is(err, domain.ErrAttributionConfirmer), errors.Is(err, domain.ErrAttributionReconfirm), errors.Is(err, domain.ErrOneStepRefused),
 		errors.Is(err, domain.ErrFinalBehind), errors.Is(err, domain.ErrNotPayable), errors.Is(err, domain.ErrInvoicePaid),
+		errors.Is(err, domain.ErrReviewJobNotOpen), errors.Is(err, domain.ErrReviewNotLoss), errors.Is(err, domain.ErrReviewStale), errors.Is(err, domain.ErrReviewOpen),
+		errors.Is(err, domain.ErrReviewSameActor), errors.Is(err, domain.ErrReviewClockBehind), errors.Is(err, domain.ErrReviewResolved),
 		errors.Is(err, domain.ErrFapiaoCovers), errors.Is(err, domain.ErrFapiaoNumber), errors.Is(err, domain.ErrNotFapiaoable),
 		errors.Is(err, settings.ErrRefused):
 		kind = api.ErrRejected

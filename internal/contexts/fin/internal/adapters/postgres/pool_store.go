@@ -629,3 +629,26 @@ func (s PoolStore) HoldingsOfJob(ctx context.Context, tenant fin.TenantID, job s
 	}
 	return out, rows.Err()
 }
+
+// RevisionsOf answers the revision of each of the pools named.
+func (s PoolStore) RevisionsOf(ctx context.Context, tenant fin.TenantID, pools []string) (map[string]int64, error) {
+	q, err := s.DB.ReadExecutor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := q.Query(ctx, `SELECT pool_id, revision FROM cargo_fin.consol_cost_pool WHERE tenant_id=$1 AND pool_id = ANY($2)`, string(tenant), pools)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int64{}
+	for rows.Next() {
+		var id string
+		var revision int64
+		if err := rows.Scan(&id, &revision); err != nil {
+			return nil, err
+		}
+		out[id] = revision
+	}
+	return out, rows.Err()
+}

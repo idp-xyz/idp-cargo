@@ -86,6 +86,9 @@ type JobStore interface {
 	// OpenJobsFor locks the legal entity's jobs of the shipments, in job id order (FOR NO KEY UPDATE), until the
 	// transaction ends, then answers each shipment's OPEN job id: job commands and pool apportionments take turns.
 	OpenJobsFor(ctx context.Context, tenant fin.TenantID, legalEntity string, shipments []string) (map[string]string, error)
+	// PageOf reads, in a query's snapshot, the legal entity's jobs that are not cancelled, in job id order, after the
+	// job named (empty for the first), at most limit of them, with their revisions.
+	PageOf(ctx context.Context, tenant fin.TenantID, legalEntity, after string, limit int) ([]*fin.FreightJob, []int64, error)
 }
 
 // Numbers is the platform's sequence of a tenant's document type (idp-platform-go, MD-28), in FIN's schema: Next takes
@@ -300,6 +303,8 @@ type PoolStore interface {
 	// HoldingsOfJob lists what stops a job from being cancelled: its used shares and its losses under each pool line's
 	// latest apportionment, with whether the pool is closed.
 	HoldingsOfJob(ctx context.Context, tenant fin.TenantID, job string) ([]PoolHolding, error)
+	// RevisionsOf answers the revision of each of the pools named.
+	RevisionsOf(ctx context.Context, tenant fin.TenantID, pools []string) (map[string]int64, error)
 }
 
 // CreditorInvoiceStore loads and writes creditor invoices (Load locks the invoice row; a second invoice not cancelled
@@ -421,6 +426,8 @@ type Deps struct {
 	Fapiao FapiaoStore
 	// Settings holds the change sets of FIN's settings (FIN V2.96).
 	Settings SettingsStore
+	// CostReviews holds the cost review requests and their resolutions (FIN V2.99).
+	CostReviews CostReviewStore
 }
 
 // Command is what every FIN command carries: Subject is the legal entity, the job, <legal entity>/<debtor> or the

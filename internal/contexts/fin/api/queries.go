@@ -234,6 +234,11 @@ type JobProfit struct {
 	ProfitBasis     string
 	PendingInProfit kernel.Money
 	SettingsVersion int
+	// ProfitVersion is an opaque text, the SHA-256 in hex of what the profit is computed from (the job's revision, the
+	// revision of each pool the job has a share in, the settings version) and the figures: equal figures from the same
+	// sources give the same version, and any change gives another. Clients compare it for equality only, and send it
+	// with a cost review request.
+	ProfitVersion string
 }
 
 // JobReroutingLoss is a re-routing loss a job bears on a pool's cost line, with its voucher and the house's departure.
@@ -510,9 +515,11 @@ type DebtorStatement struct {
 
 // Queries.
 type (
-	GetFinancePolicy    struct{ TenantID, LegalEntityID string }
-	GetFreightJob       struct{ TenantID, JobID string }
-	GetJobProfit        struct{ TenantID, JobID string }
+	GetFinancePolicy struct{ TenantID, LegalEntityID string }
+	GetFreightJob    struct{ TenantID, JobID string }
+	// GetJobProfit reads a job's economics. An ActorID is checked for ReadProfit; an in-process caller that names none
+	// reads as the system, as before V2.99 (the HTTP adapter always names the token's actor).
+	GetJobProfit        struct{ TenantID, ActorID, JobID string }
 	ListJobsForShipment struct{ TenantID, ShipmentID string }
 	GetCreditAccount    struct{ TenantID, LegalEntityID, DebtorPartyID string }
 	// ListCreditExposure lists a legal entity's debtors with an account or with exposure, over-limit and accountless
@@ -1084,6 +1091,98 @@ type FinSettingsCatalogue struct {
 	Table string
 }
 
+// ListJobProfits lists the profit of the freight jobs of a legal entity that are not cancelled, in job id order, in
+// pages (FIN V2.99): LossOnly keeps the jobs whose profit is below 0, Limit is 1 to 500 and After the job id the page
+// follows. The actor needs ReadProfit.
+type ListJobProfits struct {
+	TenantID      string
+	ActorID       string
+	LegalEntityID string
+	LossOnly      bool
+	Limit         int
+	After         string
+}
+
+// JobProfitRow is one job's profit: revenue, cost (the job's cost and what it bears of pools: Revenue less Cost is
+// Profit) and profit in the functional currency, the profit basis (F6), the settings version and the profit version.
+type JobProfitRow struct {
+	JobID           string
+	ShipmentID      string
+	CustomerPartyID string
+	State           string
+	Currency        kernel.CurrencyCode
+	Revenue         kernel.Money
+	Cost            kernel.Money
+	Profit          kernel.Money
+	ProfitBasis     string
+	SettingsVersion int
+	ProfitVersion   string
+}
+
+// JobProfitPage is a page of job profits, all read in one snapshot of FIN's rows (PHY's basis of a pool is read just
+// before, outside it), as of AsOf on FIN's clock. NextAfter is the After of the next page, empty after the last: with
+// LossOnly a page may hold fewer than Limit rows and still have a next page, and a next page may be empty.
+type JobProfitPage struct {
+	LegalEntityID string
+	AsOf          time.Time
+	Rows          []JobProfitRow
+	NextAfter     string
+}
+
+// CostReviewRequest is a request for the review of a loss-making job's costs, with its resolution when it has one. The
+// figures are those the requester saw, in the job's functional currency.
+type CostReviewRequest struct {
+	RequestID       string
+	JobID           string
+	ShipmentID      string
+	LegalEntityID   string
+	RequestedBy     string
+	RequestedAt     time.Time
+	Reason          string
+	Revenue         kernel.Money
+	Cost            kernel.Money
+	Profit          kernel.Money
+	ProfitBasis     string
+	SettingsVersion int
+	ProfitVersion   string
+	State           string // OPEN or RESOLVED
+	Resolution      *CostReviewResolution
+}
+
+// CostReviewResolution is how a request ended.
+type CostReviewResolution struct {
+	ResolvedBy string
+	ResolvedAt time.Time
+	Outcome    string
+	Note       string
+}
+
+// Cost review request states.
+const (
+	ReviewOpen     = "OPEN"
+	ReviewResolved = "RESOLVED"
+)
+
+// GetCostReviewRequest reads a request by its id; the actor needs ReadProfit.
+type GetCostReviewRequest struct{ TenantID, ActorID, RequestID string }
+
+// ListCostReviewRequests lists the tenant's requests in the order made, of one job when JobID is given, and of one
+// State (OPEN or RESOLVED) when given; Limit is 1 to 500 and After the id of the request the page follows.
+type ListCostReviewRequests struct {
+	TenantID string
+	ActorID  string
+	JobID    string
+	State    string
+	Limit    int
+	After    string
+}
+
+// CostReviewPage is a page of requests; NextAfter is empty after the last.
+type CostReviewPage struct {
+	Requests  []CostReviewRequest
+	NextAfter string
+}
+
 // Queries is FIN's read side. Unknown policies, jobs, accounts, profiles and notes yield ErrNotFound.
 type Queries interface {
 	GetFinancePolicy(ctx context.Context, q GetFinancePolicy) (FinancePolicy, error)
@@ -1114,4 +1213,7 @@ type Queries interface {
 	GetFinSettings(ctx context.Context, q GetFinSettings) (FinSettings, error)
 	ListFinSettingsChanges(ctx context.Context, q ListFinSettingsChanges) ([]FinSettingsChange, error)
 	GetFinSettingsCatalogue(ctx context.Context, q GetFinSettingsCatalogue) (FinSettingsCatalogue, error)
+	ListJobProfits(ctx context.Context, q ListJobProfits) (JobProfitPage, error)
+	GetCostReviewRequest(ctx context.Context, q GetCostReviewRequest) (CostReviewRequest, error)
+	ListCostReviewRequests(ctx context.Context, q ListCostReviewRequests) (CostReviewPage, error)
 }

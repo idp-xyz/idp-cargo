@@ -802,6 +802,43 @@ type CancelFinSettingsChange struct {
 	Reason    string
 }
 
+// RequestCostReview asks finance to review the costs of a loss-making job (FIN V2.99). ProfitVersion is the profit
+// version the requester saw (JobProfit.ProfitVersion). In one transaction FIN locks the job, reads the settings and
+// computes the profit; it refuses, each with its way out, a job that is not OPEN (FIN_REVIEW_JOB_NOT_OPEN), a profit
+// not below 0 (FIN_REVIEW_NOT_A_LOSS), another profit version (FIN_REVIEW_STALE: read it again) and a job with a
+// request not yet resolved (FIN_REVIEW_OPEN, naming it). It records the figures, the basis, the settings version and
+// the profit version as they were, with FIN's clock, and the actor as the requester, and changes no amount. The
+// receipt's SubjectID is the request (CRR-<n>), its NewRevision 1 and its Version the number n; a replay answers it
+// again. It needs the permission RequestCostReview.
+type RequestCostReview struct {
+	CommandID     string
+	TenantID      string
+	ActorID       string
+	JobID         string
+	ProfitVersion string
+	Reason        string
+}
+
+// Outcomes of a cost review's resolution: finance corrected the costs through the ordinary commands, or found them
+// right.
+const (
+	ReviewCostCorrected = "COST_CORRECTED"
+	ReviewNoChange      = "NO_CHANGE"
+)
+
+// ResolveCostReview ends a request with its outcome and a note: by a person other than the requester
+// (FIN_REVIEW_SAME_ACTOR), once (FIN_REVIEW_RESOLVED). It changes no amount; COST_CORRECTED only says that finance
+// corrected the costs through the ordinary commands. The receipt's SubjectID is the request and its NewRevision 2. It
+// needs the permission ResolveCostReview.
+type ResolveCostReview struct {
+	CommandID string
+	TenantID  string
+	ActorID   string
+	RequestID string
+	Outcome   string
+	Note      string
+}
+
 // Commands is FIN's command entry point.
 type Commands interface {
 	OpenFinancePolicy(ctx context.Context, cmd OpenFinancePolicy) (Receipt, error)
@@ -855,6 +892,8 @@ type Commands interface {
 	ApproveFinSettingsChange(ctx context.Context, cmd ApproveFinSettingsChange) (Receipt, error)
 	CancelFinSettingsChange(ctx context.Context, cmd CancelFinSettingsChange) (Receipt, error)
 	RefuseFinSettingsChange(ctx context.Context, cmd RefuseFinSettingsChange) (Receipt, error)
+	RequestCostReview(ctx context.Context, cmd RequestCostReview) (Receipt, error)
+	ResolveCostReview(ctx context.Context, cmd ResolveCostReview) (Receipt, error)
 }
 
 // Actions an Authorizer decides on: the command names.
@@ -919,6 +958,13 @@ const (
 	// controls work, or approve it.
 	ActionConfigureSettings = "ConfigureSettings"
 	ActionApproveSettings   = "ApproveSettings"
+
+	// ReadProfit reads the profit queries and the cost review requests; RequestCostReview and ResolveCostReview are the
+	// two commands of the cost review. "fin:*" grants all three: none changes an amount or how a control works, and the
+	// rule that the resolver is not the requester is the domain's.
+	ActionReadProfit        = "ReadProfit"
+	ActionRequestCostReview = "RequestCostReview"
+	ActionResolveCostReview = "ResolveCostReview"
 )
 
 // Authorizer decides whether a verified actor may perform an action on a subject.
