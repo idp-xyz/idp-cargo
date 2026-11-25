@@ -1536,3 +1536,19 @@ func RateInUse(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "23514" && pgErr.ConstraintName == "exchange_rate_entry_in_use"
 }
+
+// ClockSkew reports whether the database refused a time that FIN's clock gave a threshold, a decision or a match (since
+// V2.100): outside a minute of the database's clock, or before a record already written. It answers the database's own
+// words for the cause. The way out is the same: synchronise the clocks of FIN's servers.
+func ClockSkew(err error) (string, bool) {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "23514" {
+		return "", false
+	}
+	switch pgErr.ConstraintName {
+	case "cost_variance_time_window", "cost_variance_time_monotone", "cost_variance_decision_after_proposal", "creditor_match_time_window",
+		"creditor_match_time_monotone":
+		return pgErr.Message, true
+	}
+	return "", false
+}

@@ -332,6 +332,9 @@ type CreditorInvoiceStore interface {
 	OpenAccruals(ctx context.Context, tenant fin.TenantID, legalEntity, creditor string) ([]fin.AccrualTarget, error)
 	// LatestMatch answers when an invoice of the legal entity was last matched (zero when none was).
 	LatestMatch(ctx context.Context, tenant fin.TenantID, legalEntity string) (time.Time, error)
+	// LatestMatchEntered answers the system time of the legal entity's latest match (match_entered_at), zero when none
+	// was: a threshold set or approved is not stamped before it (V2.100).
+	LatestMatchEntered(ctx context.Context, tenant fin.TenantID, legalEntity string) (time.Time, error)
 }
 
 // PaidAllocation is a live allocation of a creditor payment to an invoice, in the invoice's currency.

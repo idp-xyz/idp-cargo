@@ -857,6 +857,11 @@ func (a authorizer) RequireFinAction(ctx context.Context, s application.Scope, a
 
 // classify wraps known FIN, kernel and Bento causes in their api error kind and passes anything else through.
 func classify(err error) error {
+	if cause, skewed := postgres.ClockSkew(err); skewed {
+		return classify(settings.Refuse(settings.ErrClockSkew, "a time that the clock of FIN's application server gave is not within a minute of the clock of the "+
+			"database, or is before a record already written (%s); synchronise the clocks of FIN's servers and the database's (for example with NTP), "+
+			"then try the command again", cause))
+	}
 	var kind error
 	switch {
 	case errors.Is(err, application.ErrUnauthenticated):

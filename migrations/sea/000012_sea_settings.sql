@@ -50,9 +50,9 @@
 --
 -- The tenant's lock. Every insert into the three tables takes the advisory lock that SEA's settings commands take first
 -- (hashtextextended('cargo_sea.settings/' || tenant, 0)): the checks above read what other transactions committed, and
--- the application role may not update these rows, so it cannot lock them as SEA's other commit checks lock theirs. The
--- release of a carrier conflict takes the same lock in shared mode before it reads the settings; the database does not
--- check that.
+-- the application role may not update these rows, so it cannot lock them as SEA's other commit checks lock theirs.
+-- The release of a carrier conflict takes the same lock in shared mode before it reads the settings; the database does
+-- not check that.
 --
 -- What the schema does not know, and only the domain keeps: that the configuration a change set makes is valid (S1 has
 -- no rule across items yet); that nothing approved alone comes to loosen when an earlier change set is cancelled; that

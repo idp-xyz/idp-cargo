@@ -46,20 +46,44 @@ func (d Deps) SetVarianceThreshold(ctx context.Context, c Command, amount int64,
 			return 0, fmt.Errorf("%w: an invoice of the legal entity was matched at %s; a threshold is set after it", fin.ErrInvalid,
 				latest.Format(time.RFC3339))
 		}
-		// FIN's clock, read under the policy's lock, stamps the version and is when it is in force from (since V2.100)
-		if err := p.ProposeVarianceThreshold(amount, rateBP, c.Scope.ActorID, c.OccurredAt, d.Clock.Now().UTC().Truncate(time.Microsecond)); err != nil {
+		// FIN's clock, read under the policy's lock, stamps the version and is when it is in force from (since V2.100);
+		// never before the latest match, so that a lagging server does not date a version before a match already made
+		now, err := d.recordTime(txCtx, c, p)
+		if err != nil {
+			return 0, err
+		}
+		if err := p.ProposeVarianceThreshold(amount, rateBP, c.Scope.ActorID, c.OccurredAt, now); err != nil {
 			return 0, err
 		}
 		return len(p.State().Thresholds), nil
 	})
 }
 
+// recordTime is the system time a threshold set or approved is stamped with: FIN's clock, read under the policy's lock
+// (which a match holds in share mode), and never before the system time of the latest match of the legal entity, so
+// that a clock behind a match that has committed does not put a version in force before it.
+func (d Deps) recordTime(ctx context.Context, c Command, _ *fin.FinancePolicy) (time.Time, error) {
+	if d.Creditors == nil {
+		return time.Time{}, ErrMissingDependency
+	}
+	now := d.Clock.Now().UTC().Truncate(time.Microsecond)
+	latest, err := d.Creditors.LatestMatchEntered(ctx, c.Scope.TenantID, c.Subject)
+	if err == nil && latest.After(now) {
+		now = latest
+	}
+	return now, err
+}
+
 // ApproveVarianceThreshold approves the version of the legal entity's cost variance threshold that waits for approval
 // (the one named), by a person other than its setter; it is in force from FIN's clock, read under the policy's lock.
 // The permission is ApproveSettings, asked by the caller.
 func (d Deps) ApproveVarianceThreshold(ctx context.Context, c Command, version int) (Receipt, error) {
-	return d.changePolicy(ctx, c, func(_ context.Context, p *fin.FinancePolicy) (int, error) {
-		return version, p.ApproveVarianceThreshold(version, c.Scope.ActorID, d.Clock.Now().UTC().Truncate(time.Microsecond))
+	return d.changePolicy(ctx, c, func(txCtx context.Context, p *fin.FinancePolicy) (int, error) {
+		now, err := d.recordTime(txCtx, c, p)
+		if err != nil {
+			return 0, err
+		}
+		return version, p.ApproveVarianceThreshold(version, c.Scope.ActorID, now)
 	})
 }
 

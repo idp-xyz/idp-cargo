@@ -289,12 +289,11 @@ func (p *FinancePolicy) SetVarianceThreshold(amount int64, rateBP int, by string
 
 // ProposeVarianceThreshold records the next version of the legal entity's cost variance threshold (OD-9 B): an amount
 // in the functional currency, from zero, and a rate of the accrual's local amount, from 0 to 10000 basis points. A
-// final
-// match whose variance is beyond the greater of the two needs approval. at is the command's business time and now FIN's
-// clock, read under the policy's lock. A version is looser than the one in force at now when its amount or its rate is
-// higher, and the first is always looser. One that is not looser is approved at once, by its setter as the system; a
-// looser one is proposed and takes effect when another person approves it (since V2.100). While a version is proposed
-// no other is set.
+// final match whose variance is beyond the greater of the two needs approval. at is the command's business time and now
+// FIN's clock, read under the policy's lock. A version is looser than the one in force at now when its amount or its
+// rate is higher, and the first is always looser. One that is not looser is approved at once, by its setter as the
+// system; a looser one is proposed and takes effect when another person approves it (since V2.100). While a version is
+// proposed no other is set.
 func (p *FinancePolicy) ProposeVarianceThreshold(amount int64, rateBP int, by string, at, now time.Time) error {
 	ts := p.state.Thresholds
 	switch {

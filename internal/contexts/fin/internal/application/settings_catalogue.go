@@ -109,10 +109,9 @@ func FinSettingsCatalogue() *settings.Catalogue {
 }
 
 // finReference is E1 to E4 of the design, the finance policy FIN keeps for each legal entity with its own history:
-// listed
-// in the catalogue, changed by their own commands and not by the settings commands. Only E1's loosening needs a second
-// person (since V2.100); a tax treatment, a rate and a series are facts with a period of their own, and a new one
-// starts after the last.
+// listed in the catalogue, changed by their own commands and not by the settings commands. Only E1's loosening needs a
+// second person (since V2.100); a tax treatment, a rate and a series are facts with a period of their own, and a new
+// one starts after the last.
 var finReference = []settings.Reference{
 	{Key: "fin.E1", TitleZH: "成本差异阈值", TitleEN: "Cost variance threshold",
 		Governs:   "the variance of a final match against its accrual, beyond which the invoice waits for approval",

@@ -16,8 +16,7 @@ import (
 )
 
 // FIN V2.100: the impact of a settings change before it takes effect, through FIN's query on PostgreSQL, on the worlds
-// of
-// V2.97 and V2.98: previewWorld and formerWorld (SH-C leaves with a former share of CNY 230.77).
+// of V2.97 and V2.98: previewWorld and formerWorld (SH-C leaves with a former share of CNY 230.77).
 
 func (u usedWorld) impact(entries ...api.FinSettingEntry) api.FinSettingsChangeImpact {
 	u.t.Helper()
