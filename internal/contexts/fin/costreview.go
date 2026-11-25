@@ -146,6 +146,18 @@ func (m *Module) GetCostReviewRequest(ctx context.Context, q api.GetCostReviewRe
 	return reviewView(r), nil
 }
 
+// GetJobLegalEntity answers the legal entity of a job (FIN V2.101).
+func (m *Module) GetJobLegalEntity(ctx context.Context, q api.GetJobLegalEntity) (string, error) {
+	if err := m.authorizeRead(ctx, q.TenantID, q.ActorID, q.JobID); err != nil {
+		return "", err
+	}
+	j, _, err := m.job(ctx, q.TenantID, q.JobID)
+	if err != nil {
+		return "", classify(err)
+	}
+	return j.State().LegalEntityID, nil
+}
+
 // ListCostReviewRequests lists requests in the order made.
 func (m *Module) ListCostReviewRequests(ctx context.Context, q api.ListCostReviewRequests) (api.CostReviewPage, error) {
 	if err := m.authorizeRead(ctx, q.TenantID, q.ActorID, q.JobID); err != nil {
