@@ -330,8 +330,16 @@ func (d Deps) writeAfter(ctx context.Context, c Command, hash, kind string, firs
 	return result, nil
 }
 
-// Open opens a movement from its booking.
+// Open opens a movement from its booking, on its first capacity line.
 func (d Deps) Open(ctx context.Context, c Command, consolidation, booking string) (Receipt, error) {
+	return d.OpenOnLine(ctx, c, consolidation, booking, 1)
+}
+
+// OpenOnLine opens a movement on one capacity line of its booking (since V2.105; 0 is the first).
+func (d Deps) OpenOnLine(ctx context.Context, c Command, consolidation, booking string, line int) (Receipt, error) {
+	if line == 0 {
+		line = 1
+	}
 	if d.Bookings == nil {
 		return Receipt{}, ErrMissingDependency
 	}
@@ -344,7 +352,7 @@ func (d Deps) Open(ctx context.Context, c Command, consolidation, booking string
 		return Receipt{}, err
 	}
 	return d.write(ctx, c, hash, "OceanMovement", func(txCtx context.Context) (Receipt, []aggregate, error) {
-		m, err := sea.OpenMovement(c.Scope.TenantID, sea.MovementID(c.Subject), consolidation, b, c.Scope.ActorID, c.OccurredAt)
+		m, err := sea.OpenMovementOnLine(c.Scope.TenantID, sea.MovementID(c.Subject), consolidation, b, line, c.Scope.ActorID, c.OccurredAt)
 		if err != nil {
 			return Receipt{}, nil, err
 		}

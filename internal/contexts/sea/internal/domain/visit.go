@@ -160,6 +160,21 @@ type VisitState struct {
 	AssignedBy string
 	AssignedAt time.Time
 	EnteredAt  time.Time
+	// Rolls are the container's moves to another movement of its consolidation (since V2.105), only added: the carrier
+	// rolled it to a later vessel, with its seals, its VGM and its houses. MovementID is the movement it is in now.
+	Rolls []VisitRoll
+}
+
+// VisitRoll is one move of a sealed container, not loaded, to another movement of the same consolidation: from and to,
+// why, by whom and when.
+type VisitRoll struct {
+	No           int
+	FromMovement MovementID
+	ToMovement   MovementID
+	Reason       string
+	By           string
+	At           time.Time
+	EnteredAt    time.Time
 }
 
 // VgmAssertion is one immutable statement of the container's verified gross mass. Signatory is the authorised
@@ -215,6 +230,7 @@ func containerEventKind(kind string) bool {
 // Visit is the aggregate root (ContainerVisit). Seals, VGM assertions and container events are only added.
 type Visit struct {
 	state      VisitState
+	rolls      int
 	releases   int
 	seals      int
 	assertions int
@@ -229,6 +245,7 @@ const (
 	eventSealRecorded      = "SealRecorded.v1"
 	eventContainerEvent    = "ContainerEventRecorded.v1"
 	eventContainerReleased = "ContainerReleased.v1"
+	eventContainerRolled   = "ContainerRolledToMovement.v1"
 	eventVgmAsserted       = "VgmAsserted.v1"
 	eventVgmResponse       = "VgmResponseRecorded.v1"
 	eventConflictReleased  = "CarrierLoadingConflictReleased.v1"
@@ -473,6 +490,39 @@ func sealKey(s string) string {
 }
 
 // Release gives an assigned container back unused, with a reason. A stuffed container is not released.
+// RollTo moves a sealed container that is not loaded (STUFFED, VGM_SUBMITTED or GATED_IN) to another movement of the
+// same consolidation, of a container booking and the same legal entity, OPEN or FINAL (since V2.105): the carrier rolled
+// it to a later vessel. Its seals, its VGM, its stuffing and its events stay; the houses in it move with it (the caller
+// rolls their entries out of the one movement and into the other in the same transaction).
+func (v *Visit) RollTo(from, to *Movement, reason, by string, at time.Time) error {
+	switch {
+	case v.state.Status != VisitStuffed && v.state.Status != VisitVGM && v.state.Status != VisitGatedIn:
+		return fmt.Errorf("%w: container %s is %s: a container rolls to another movement once stuffed and sealed, and before it is loaded; a loaded container is discharged by the carrier first",
+			ErrInvalidTransition, v.state.Number, v.state.Status)
+	case from == nil || to == nil || from.ID() != v.state.MovementID || to.ID() == v.state.MovementID:
+		return fmt.Errorf("%w: a container rolls from its movement to another", ErrInvalidChange)
+	case to.state.TenantID != v.state.TenantID || to.state.ConsolidationID != v.state.ConsolidationID:
+		return fmt.Errorf("%w: movement %s is not of consolidation %s", ErrInvalidChange, to.ID(), v.state.ConsolidationID)
+	case to.state.Kind != KindOwn || to.state.LegalEntityID != from.state.LegalEntityID:
+		return fmt.Errorf("%w: a container rolls to a movement of a container booking of the same legal entity", ErrInvalidChange)
+	case to.state.State != StateOpen && to.state.State != StateFinal:
+		return fmt.Errorf("%w: movement %s is %s", ErrInvalidTransition, to.ID(), to.state.State)
+	case !text(reason):
+		return fmt.Errorf("%w: a roll needs a reason", ErrInvalidChange)
+	}
+	if err := v.changeable(by, at); err != nil {
+		return err
+	}
+	v.state.Rolls = append(v.state.Rolls, VisitRoll{No: len(v.state.Rolls) + 1, FromMovement: v.state.MovementID, ToMovement: to.ID(), Reason: reason, By: by,
+		At: at.UTC()})
+	v.state.MovementID = to.ID()
+	v.record(eventContainerRolled, at, 0, 0, 0, reason)
+	return nil
+}
+
+// AddedRolls returns the rolls recorded since the visit was loaded.
+func (v *Visit) AddedRolls() []VisitRoll { return v.state.Rolls[v.rolls:] }
+
 func (v *Visit) Release(reason, by string, at time.Time) error {
 	switch {
 	case v.state.Status == VisitStuffed:
@@ -669,6 +719,9 @@ func (v *Visit) Stamp(entered time.Time) {
 	for i := v.events; i < len(v.state.Events); i++ {
 		v.state.Events[i].EnteredAt = entered.UTC()
 	}
+	for i := v.rolls; i < len(v.state.Rolls); i++ {
+		v.state.Rolls[i].EnteredAt = entered.UTC()
+	}
 	for i := v.releases; i < len(v.state.Releases); i++ {
 		if v.state.Releases[i].EnteredAt.IsZero() { // a release decided under settings is stamped with the time they were read at
 			v.state.Releases[i].EnteredAt = entered.UTC()
@@ -685,10 +738,11 @@ func RestoreVisit(st VisitState) (*Visit, error) {
 	st.Assertions = append([]VgmAssertion(nil), st.Assertions...)
 	st.Events = append([]VisitEvent(nil), st.Events...)
 	st.Releases = append([]ConflictRelease(nil), st.Releases...)
+	st.Rolls = append([]VisitRoll(nil), st.Rolls...)
 	for i := range st.Assertions {
 		st.Assertions[i].Signatory = ""
 	}
-	v := &Visit{state: st, seals: len(st.Seals), assertions: len(st.Assertions), events: len(st.Events), releases: len(st.Releases)}
+	v := &Visit{state: st, seals: len(st.Seals), assertions: len(st.Assertions), events: len(st.Events), releases: len(st.Releases), rolls: len(st.Rolls)}
 	if err := v.validate(); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidVisit, err)
 	}
@@ -697,6 +751,18 @@ func RestoreVisit(st VisitState) (*Visit, error) {
 
 func (v *Visit) validate() error {
 	st := v.state
+	// the rolls follow each other and end at the movement the visit is in (since V2.105)
+	for i, r := range st.Rolls {
+		switch {
+		case r.No != i+1 || r.FromMovement == r.ToMovement || !identifier(string(r.FromMovement)) || !identifier(string(r.ToMovement)) || !text(r.Reason) ||
+			blank(r.By) || r.At.IsZero():
+			return fmt.Errorf("roll %d", i+1)
+		case i > 0 && r.FromMovement != st.Rolls[i-1].ToMovement:
+			return fmt.Errorf("roll %d does not follow roll %d", i+1, i)
+		case i == len(st.Rolls)-1 && r.ToMovement != st.MovementID:
+			return fmt.Errorf("roll %d does not end at the visit's movement", i+1)
+		}
+	}
 	stuffed, submitted := st.Status == VisitStuffed, st.Status == VisitVGM
 	gated, loaded, released := st.Status == VisitGatedIn, st.Status == VisitLoaded, st.Status == VisitReleased
 	onward := submitted || gated || loaded
@@ -818,4 +884,5 @@ func (v *Visit) RepeatedEvent() int { return v.repeated }
 // Acknowledge is permitted only after the transaction holding the visit and its Outbox events commits.
 func (v *Visit) Acknowledge() {
 	v.pending, v.seals, v.assertions, v.events, v.responded, v.repeated = nil, len(v.state.Seals), len(v.state.Assertions), len(v.state.Events), 0, 0
+	v.rolls = len(v.state.Rolls)
 }

@@ -41,6 +41,7 @@ type (
 		LinkedBy        string    `json:"linked_by"`
 		LinkedAt        time.Time `json:"linked_at"`
 		EnteredAt       time.Time `json:"entered_at"`
+		CapacityLine    int       `json:"capacity_line"` // since V2.105
 	}
 	legRow struct {
 		LinkNo    int       `json:"link_no"`
@@ -220,19 +221,20 @@ type carrierFactRow struct {
 func readMovement(ctx context.Context, q queryRower, tenant sea.TenantID, id sea.MovementID) (*sea.Movement, int64, error) {
 	st := sea.MovementState{TenantID: tenant, MovementID: id}
 	var kind, state, originCode, destCode, booking string
+	var bookingLine int
 	var cancelReason, cancelledBy *string
 	var cancelledAt *time.Time
 	var revision int64
 	var links, legs, cutOffs, bills, entries, parts, stuffings, facts, carrier []byte
 	err := q.QueryRow(ctx, `SELECT m.consolidation_id, m.kind, m.operating_legal_entity_id, m.carrier_party_id, m.carrier_party_revision, m.carrier_role,
-        m.origin_code, m.destination_code, m.location_edition, m.state, m.booking_id, m.cancel_reason, m.cancelled_by, m.cancelled_at, m.revision, `+
+        m.origin_code, m.destination_code, m.location_edition, m.state, m.booking_id, m.cancel_reason, m.cancelled_by, m.cancelled_at, m.revision, m.booking_line, `+
 		child("booking_link", "x.link_no")+`, `+child("voyage_leg", "x.link_no, x.leg_no")+`, `+child("voyage_cut_off", "x.link_no, x.leg_no, x.cut_off_no")+`, `+
 		child("master_bill", "x.bill_no")+`, `+child("house_bill", "x.entry_no")+`, `+child("house_bill_part", "x.entry_no, x.part_no")+`, `+
 		child("house_bill_stuffing", "x.entry_no, x.stuffing_no")+`, `+child("ocean_doc_facts_version", "x.version_no")+`, `+
 		child("ocean_carrier_fact", "x.fact_no")+`
       FROM cargo_sea.ocean_movement m WHERE m.tenant_id=$1 AND m.movement_id=$2`, string(tenant), string(id)).Scan(
 		&st.ConsolidationID, &kind, &st.LegalEntityID, &st.Carrier.PartyID, &st.Carrier.PartyRevision, &st.Carrier.Role, &originCode, &destCode,
-		&st.Edition, &state, &booking, &cancelReason, &cancelledBy, &cancelledAt, &revision, &links, &legs, &cutOffs, &bills, &entries, &parts, &stuffings, &facts, &carrier)
+		&st.Edition, &state, &booking, &cancelReason, &cancelledBy, &cancelledAt, &revision, &bookingLine, &links, &legs, &cutOffs, &bills, &entries, &parts, &stuffings, &facts, &carrier)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, 0, fmt.Errorf("%w: movement %s", bentorepo.ErrNotFound, id)
 	}
@@ -252,12 +254,12 @@ func readMovement(ctx context.Context, q queryRower, tenant sea.TenantID, id sea
 		json.Unmarshal(entries, &er), json.Unmarshal(parts, &pr), json.Unmarshal(stuffings, &sr), json.Unmarshal(facts, &fr), json.Unmarshal(carrier, &crf)); err != nil {
 		return nil, 0, err
 	}
-	st.Kind, st.State, st.Origin, st.Destination = sea.Kind(kind), sea.State(state), unlocode(originCode), unlocode(destCode)
+	st.Kind, st.State, st.Origin, st.Destination, st.BookingLine = sea.Kind(kind), sea.State(state), unlocode(originCode), unlocode(destCode), bookingLine
 	if cancelledAt != nil {
 		st.CancelReason, st.CancelledBy, st.CancelledAt = deref(cancelReason), deref(cancelledBy), cancelledAt.UTC()
 	}
 	for _, l := range lr {
-		link := sea.Link{No: l.LinkNo, BookingID: l.BookingID, BookingRevision: l.BookingRevision, CapacityVersion: l.CapacityVersion, By: l.LinkedBy,
+		link := sea.Link{No: l.LinkNo, BookingID: l.BookingID, BookingRevision: l.BookingRevision, CapacityVersion: l.CapacityVersion, Line: l.CapacityLine, By: l.LinkedBy,
 			At: utc(l.LinkedAt), EnteredAt: utc(l.EnteredAt)}
 		for _, g := range gr {
 			if g.LinkNo != l.LinkNo {
@@ -327,17 +329,18 @@ func (s MovementStore) Insert(ctx context.Context, m *sea.Movement) (int64, erro
 	st := m.State()
 	var revision int64
 	err = q.QueryRow(ctx, `INSERT INTO cargo_sea.ocean_movement (tenant_id,movement_id,consolidation_id,kind,operating_legal_entity_id,carrier_party_id,
-        carrier_party_revision,carrier_role,origin_code,destination_code,location_edition,state,booking_id)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING revision`,
+        carrier_party_revision,carrier_role,origin_code,destination_code,location_edition,state,booking_id,booking_line)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING revision`,
 		string(st.TenantID), string(st.MovementID), st.ConsolidationID, string(st.Kind), st.LegalEntityID, st.Carrier.PartyID, st.Carrier.PartyRevision,
-		st.Carrier.Role, st.Origin.Code, st.Destination.Code, st.Edition, string(st.State), m.Current().BookingID).Scan(&revision)
+		st.Carrier.Role, st.Origin.Code, st.Destination.Code, st.Edition, string(st.State), m.Current().BookingID, lineOf(st.BookingLine)).Scan(&revision)
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 		switch pgErr.ConstraintName {
 		case "ocean_movement_pkey":
 			return 0, fmt.Errorf("%w: movement %s", bentorepo.ErrAlreadyExists, st.MovementID)
-		case "ocean_movement_one_open":
-			return 0, fmt.Errorf("%w: consolidation %s has an open ocean movement", bentorepo.ErrConflict, st.ConsolidationID)
+		case "ocean_movement_one_open", "ocean_movement_one_per_booking_line":
+			return 0, fmt.Errorf("%w: consolidation %s has a movement in force on line %d of booking %s", bentorepo.ErrConflict, st.ConsolidationID,
+				lineOf(st.BookingLine), m.Current().BookingID)
 		}
 	}
 	if err != nil {
@@ -425,7 +428,8 @@ func (s MovementStore) writeAdded(ctx context.Context, q bentopg.Executor, m *se
 	}
 	for _, l := range links {
 		if err := exec(`INSERT INTO cargo_sea.booking_link (tenant_id,movement_id,link_no,booking_id,booking_revision,capacity_version,linked_by,linked_at,
-            entered_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, l.No, l.BookingID, l.BookingRevision, l.CapacityVersion, l.By, l.At, l.EnteredAt); err != nil {
+            entered_at,capacity_line) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, l.No, l.BookingID, l.BookingRevision, l.CapacityVersion, l.By, l.At, l.EnteredAt,
+			lineOf(l.Line)); err != nil {
 			return err
 		}
 		for i, g := range l.Legs {
@@ -754,4 +758,12 @@ func Conflict(err error) bool {
 		pgErr.ConstraintName == "container_seal_consistent" || pgErr.ConstraintName == "ocean_movement_holds_no_container" ||
 		pgErr.ConstraintName == "vgm_assertion_consistent" || pgErr.ConstraintName == "container_event_consistent" ||
 		pgErr.ConstraintName == "ocean_doc_facts_consistent" || pgErr.ConstraintName == "ocean_carrier_fact_consistent")
+}
+
+// lineOf is a booking line as stored: 1 for a movement or a link that names none (before V2.105).
+func lineOf(line int) int {
+	if line < 1 {
+		return 1
+	}
+	return line
 }

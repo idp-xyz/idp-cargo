@@ -42,8 +42,10 @@ func (b Bookings) Booking(ctx context.Context, tenant sea.TenantID, id string) (
 	if legs := got.Request.Legs; len(legs) > 0 {
 		out.Origin, out.Destination = legs[0].Loading.Code, legs[len(legs)-1].Discharge.Code
 	}
-	if len(got.Capacity.Lines) > 0 {
-		for _, l := range got.Capacity.Lines[0].Legs {
+	// the legs of every capacity line (since V2.105: a movement sails on one line), the first as Legs too
+	for i, line := range got.Capacity.Lines {
+		var legs []sea.Leg
+		for _, l := range line.Legs {
 			// BOOK keeps a vessel's name as it was entered; SEA keeps it without the spaces around it. Instants are
 			// kept to the microsecond, as they are stored.
 			leg := sea.Leg{Vessel: strings.TrimSpace(l.Vessel), VesselIMO: l.VesselIMO, Voyage: l.Voyage, From: l.Loading.Code, To: l.Discharge.Code,
@@ -51,8 +53,12 @@ func (b Bookings) Booking(ctx context.Context, tenant sea.TenantID, id string) (
 			for _, c := range l.CutOffs {
 				leg.CutOffs = append(leg.CutOffs, sea.CutOff{Kind: c.Kind, At: micro(c.At), TimeZone: c.TimeZone, Location: c.Location})
 			}
-			out.Legs = append(out.Legs, leg)
+			legs = append(legs, leg)
 		}
+		if i == 0 {
+			out.Legs = legs
+		}
+		out.LineLegs = append(out.LineLegs, legs)
 	}
 	return out, nil
 }

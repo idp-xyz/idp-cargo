@@ -31,7 +31,22 @@ type Booking struct {
 	Edition         string
 	CapacityVersion int
 	Lines           int
-	Legs            []Leg // the legs of its one capacity line
+	Legs            []Leg // the legs of its first capacity line
+	// LineLegs are the legs of each capacity line, in line order (since V2.105): a booking whose carrier rolled one
+	// container to a later vessel under the same booking number has a line per vessel, each the voyage of its own
+	// movement of the consolidation. Empty when only the first line is known (Legs).
+	LineLegs [][]Leg
+}
+
+// legsOf is the legs of one capacity line of the booking, numbered from 1.
+func (b Booking) legsOf(line int) []Leg {
+	if line >= 1 && line <= len(b.LineLegs) {
+		return b.LineLegs[line-1]
+	}
+	if line == 1 {
+		return b.Legs
+	}
+	return nil
 }
 
 // Link is one immutable link to a capacity version of the booking, with its voyage legs; the latest is current.
@@ -44,6 +59,8 @@ type Link struct {
 	By              string
 	At              time.Time
 	EnteredAt       time.Time
+	// Line is the capacity line of the booking the link takes (since V2.105; 1 before).
+	Line int
 }
 
 // Master bill kinds and statuses.
@@ -140,6 +157,11 @@ const (
 	EndDetached     = "DETACHED"
 	EndTransferred  = "TRANSFERRED"
 	EndCancelled    = "SHIPMENT_CANCELLED"
+	// StartRolled and EndRolled are a house that sails with its container in another movement of the consolidation
+	// (since V2.105): the carrier rolled the container to a later vessel. The entry ends in one movement and starts in the
+	// other with the same HBL and the facts SEA froze; no entry links to the other movement's.
+	StartRolled = "ROLLED_WITH_CONTAINER"
+	EndRolled   = "ROLLED_WITH_CONTAINER"
 )
 
 // Entry is one immutable house bill entry; only its end is written later, once. A refresh ends one entry and starts
@@ -188,6 +210,10 @@ type MovementState struct {
 	CancelReason    string
 	CancelledBy     string
 	CancelledAt     time.Time
+	// BookingLine is the capacity line of the booking the movement carries (since V2.105; 1 before): a consolidation
+	// may have one movement per booking line in force, so that a container rolled to a later vessel sails in a
+	// movement of its own.
+	BookingLine int
 }
 
 // Movement is the aggregate root (OceanMovement). Links, master bills and entries are only added; a master bill
@@ -273,25 +299,32 @@ func carrierKind(kind string) bool {
 }
 
 // OpenMovement opens the ocean movement of a consolidation from its booking: a sea LCL booking in force, allocated
-// to the consolidation, with one capacity line. The movement takes its kind, the carrier or co-loader, the
+// to the consolidation, on its first capacity line. The movement takes its kind, the carrier or co-loader, the
 // operating legal entity, the port route and the voyage legs from it.
 func OpenMovement(tenant TenantID, id MovementID, consolidation string, b Booking, by string, at time.Time) (*Movement, error) {
+	return OpenMovementOnLine(tenant, id, consolidation, b, 1, by, at)
+}
+
+// OpenMovementOnLine opens a movement on one capacity line of the booking (since V2.105): the voyage of that line.
+// A consolidation has one movement in force per booking line (the database keeps it), so a container rolled to a later
+// vessel, under a new booking or under a new line of the same one, sails in a movement of its own.
+func OpenMovementOnLine(tenant TenantID, id MovementID, consolidation string, b Booking, line int, by string, at time.Time) (*Movement, error) {
 	if !identifier(string(tenant)) || !identifier(string(id)) || !identifier(consolidation) || blank(by) || at.IsZero() {
 		return nil, ErrInvalidMovement
 	}
-	if err := b.check(consolidation); err != nil {
+	if err := b.check(consolidation, line); err != nil {
 		return nil, err
 	}
 	m := &Movement{state: MovementState{TenantID: tenant, MovementID: id, ConsolidationID: consolidation, Kind: b.Kind, LegalEntityID: b.LegalEntityID,
-		Carrier: b.Carrier, Origin: b.Origin, Destination: b.Destination, Edition: b.Edition, State: StateOpen}}
-	m.addLink(b, by, at)
+		Carrier: b.Carrier, Origin: b.Origin, Destination: b.Destination, Edition: b.Edition, State: StateOpen, BookingLine: line}}
+	m.addLink(b, line, by, at)
 	m.record(eventOpened, at, "", 0, 0, "")
 	m.record(eventLinked, at, "", 0, 0, "")
 	return m, nil
 }
 
-// check validates a booking for a consolidation.
-func (b Booking) check(consolidation string) error {
+// check validates a booking for a consolidation, on one of its capacity lines.
+func (b Booking) check(consolidation string, line int) error {
 	bad := func(what string) error { return fmt.Errorf("%w: %s", ErrInvalidBooking, what) }
 	switch {
 	case !b.Kind.valid() || !b.InForce:
@@ -300,12 +333,12 @@ func (b Booking) check(consolidation string) error {
 		return bad("allocated to another consolidation")
 	case !identifier(b.BookingID) || b.Revision < 1 || b.CapacityVersion < 1 || !identifier(b.LegalEntityID) || !b.Carrier.valid(b.Kind):
 		return bad("booking, capacity version, legal entity and the carrier in the role of the booking's kind")
-	case b.Lines != 1:
-		return bad("one capacity line; a split booking is not carried in V0.1")
+	case line < 1 || line > b.Lines:
+		return bad(fmt.Sprintf("capacity line %d of the booking's %d lines", line, b.Lines))
 	case !port(b.Origin) || !port(b.Destination) || b.Origin == b.Destination || !editionForm.MatchString(b.Edition):
 		return bad("a resolved port route")
 	}
-	return checkLegs(b.Legs, b.Origin, b.Destination)
+	return checkLegs(b.legsOf(line), b.Origin, b.Destination)
 }
 
 func checkLegs(legs []Leg, origin, destination kernel.LocationCode) error {
@@ -345,7 +378,8 @@ func (m *Movement) LinkBooking(b Booking, by string, at time.Time) error {
 	if !m.open() {
 		return ErrInvalidTransition
 	}
-	if err := b.check(m.state.ConsolidationID); err != nil {
+	line := m.line()
+	if err := b.check(m.state.ConsolidationID, line); err != nil {
 		return err
 	}
 	current := m.Current()
@@ -362,14 +396,23 @@ func (m *Movement) LinkBooking(b Booking, by string, at time.Time) error {
 		return err
 	}
 	m.reopen(at)
-	m.addLink(b, by, at)
+	m.addLink(b, line, by, at)
 	m.record(eventLinked, at, "", 0, 0, "")
 	return nil
 }
 
-func (m *Movement) addLink(b Booking, by string, at time.Time) {
-	legs := make([]Leg, len(b.Legs))
-	for i, l := range b.Legs {
+// line is the capacity line of its booking the movement carries (1 for a movement stored before V2.105).
+func (m *Movement) line() int {
+	if m.state.BookingLine < 1 {
+		return 1
+	}
+	return m.state.BookingLine
+}
+
+func (m *Movement) addLink(b Booking, line int, by string, at time.Time) {
+	src := b.legsOf(line)
+	legs := make([]Leg, len(src))
+	for i, l := range src {
 		l.ETD, l.ETA = l.ETD.UTC(), utc(l.ETA)
 		l.CutOffs = append([]CutOff(nil), l.CutOffs...)
 		for j := range l.CutOffs {
@@ -378,7 +421,7 @@ func (m *Movement) addLink(b Booking, by string, at time.Time) {
 		legs[i] = l
 	}
 	m.state.Links = append(m.state.Links, Link{No: len(m.state.Links) + 1, BookingID: b.BookingID, BookingRevision: b.Revision,
-		CapacityVersion: b.CapacityVersion, Legs: legs, By: by, At: at.UTC()})
+		CapacityVersion: b.CapacityVersion, Legs: legs, By: by, At: at.UTC(), Line: line})
 }
 
 // RecordMasterBill records the master bill reference the movement's carrier or co-loader states, with its evidence:
@@ -579,6 +622,83 @@ func (m *Movement) EndAssociation(p Plan, by string, at time.Time) error {
 	m.reopen(at)
 	m.end(i, kind, 0, by, at)
 	m.record(eventEnded, at, p.ShipmentID, m.state.Entries[i].No, 0, kind)
+	return nil
+}
+
+// HousesInStuffing are the live entries whose houses are loaded in one stuffing (a container) of the movement, in entry
+// order, and whether every one of them is loaded in that stuffing alone (since V2.105): a house split over this
+// container and another cannot sail with it, as the house would then be in two movements.
+func (m *Movement) HousesInStuffing(execution string) (entries []Entry, whole bool) {
+	whole = true
+	for _, e := range m.state.Entries {
+		if !e.Live() {
+			continue
+		}
+		in, other := false, false
+		for _, s := range e.Facts.Stuffings {
+			if s.ExecutionID == execution {
+				in = true
+			} else {
+				other = true
+			}
+		}
+		if in {
+			entries = append(entries, e)
+			whole = whole && !other
+		}
+	}
+	return entries, whole
+}
+
+// RollOut ends a live house's entry because it sails with its container in another movement of the consolidation
+// (since V2.105): ROLLED_WITH_CONTAINER, naming the movement it goes to. A FINAL movement returns to OPEN.
+func (m *Movement) RollOut(shipment string, to MovementID, by string, at time.Time) error {
+	if !m.open() {
+		return ErrInvalidTransition
+	}
+	i, err := m.live(shipment)
+	if err != nil {
+		return err
+	}
+	if to == m.state.MovementID || !identifier(string(to)) {
+		return fmt.Errorf("%w: a house rolls with its container to another movement", ErrInvalidChange)
+	}
+	if err = m.changeable(by, at); err != nil {
+		return err
+	}
+	m.reopen(at)
+	m.end(i, EndRolled, 0, by, at)
+	m.record(eventEnded, at, shipment, m.state.Entries[i].No, 0, EndRolled+" to "+string(to))
+	return nil
+}
+
+// RollIn starts the entry of a house that sails with its container from another movement of the same consolidation
+// (since V2.105): the same HBL and the facts SEA froze there, ROLLED_WITH_CONTAINER. A FINAL movement returns to OPEN.
+func (m *Movement) RollIn(from *Movement, e Entry, by string, at time.Time) error {
+	if !m.open() {
+		return ErrInvalidTransition
+	}
+	switch {
+	case from == nil || from.state.ConsolidationID != m.state.ConsolidationID || from.state.MovementID == m.state.MovementID:
+		return fmt.Errorf("%w: a house rolls in from another movement of the same consolidation", ErrInvalidChange)
+	case from.state.Kind != m.state.Kind || from.state.LegalEntityID != m.state.LegalEntityID:
+		return fmt.Errorf("%w: a container rolls to a movement of the same kind and legal entity", ErrInvalidChange)
+	}
+	for _, x := range m.state.Entries {
+		if x.Live() && (x.ShipmentID == e.ShipmentID || x.HBL == e.HBL) {
+			return fmt.Errorf("%w: %s / %s", ErrAlreadyAssociated, x.ShipmentID, x.HBL)
+		}
+	}
+	if err := m.changeable(by, at); err != nil {
+		return err
+	}
+	m.reopen(at)
+	no := len(m.state.Entries) + 1
+	f := e.Facts
+	f.Parts, f.Stuffings = append([]Part(nil), f.Parts...), append([]Stuffing(nil), f.Stuffings...)
+	m.state.Entries = append(m.state.Entries, Entry{No: no, ShipmentID: e.ShipmentID, HBL: e.HBL, FULRevision: e.FULRevision, PlanVersion: e.PlanVersion,
+		ContainerMode: e.ContainerMode, Window: e.Window, Facts: f, Start: StartRolled, By: by, At: at.UTC()})
+	m.record(eventAssociated, at, e.ShipmentID, no, 0, StartRolled+" from "+string(from.state.MovementID))
 	return nil
 }
 
@@ -1011,6 +1131,10 @@ func (m *Movement) validate() error {
 				st.Entries[e.Predecessor-1].ShipmentID != e.ShipmentID {
 				return fmt.Errorf("entry %d predecessor", i+1)
 			}
+		case StartRolled:
+			if e.Predecessor != 0 {
+				return fmt.Errorf("entry %d predecessor", i+1)
+			}
 		default:
 			return fmt.Errorf("entry %d start", i+1)
 		}
@@ -1026,7 +1150,7 @@ func (m *Movement) validate() error {
 			if e.Successor <= e.No || e.Successor > len(st.Entries) || st.Entries[e.Successor-1].Predecessor != e.No {
 				return fmt.Errorf("entry %d successor", i+1)
 			}
-		case EndDetached, EndTransferred, EndCancelled:
+		case EndDetached, EndTransferred, EndCancelled, EndRolled:
 			if e.Successor != 0 {
 				return fmt.Errorf("entry %d successor", i+1)
 			}
