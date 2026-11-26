@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
+	"go.idp.xyz/idp-cargo/internal/foundation/httpapi"
 	"slices"
 	"strings"
 	"time"
@@ -58,7 +58,7 @@ var (
 )
 
 // RegisterHTTP registers SEA's inbound HTTP routes; the composition root calls it.
-func (m *Module) RegisterHTTP(mux *http.ServeMux) { seahttp.Register(mux, m) }
+func (m *Module) RegisterHTTP(r *httpapi.Routes) { seahttp.Register(r.LegacyMux("sea"), m) }
 
 // New assembles SEA. book answers CarrierBooking v1 (relationship 6) and ful OceanOperationPlan v1 and
 // OceanEvidenceCurrency v1 (relationship 10); SEA writes to neither.

@@ -203,12 +203,22 @@ type Onboarding struct {
 
 // GetOnboarding asks for one onboarding of the tenant (ErrNotFound for an unknown one); ListOnboardings for all of
 // them in the order proposed.
+// GetOnboarding reads one onboarding. A person's read names the actor, who needs "org:ReadOnboarding" (since V2.106,
+// the review of V2.102, F13); the platform's onboarding reads in process and names none.
 type GetOnboarding struct {
 	TenantID     string
+	ActorID      string
 	OnboardingID string
 }
 
-type ListOnboardings struct{ TenantID string }
+// ListOnboardings lists the tenant's onboardings, with the actor as GetOnboarding.
+type ListOnboardings struct {
+	TenantID string
+	ActorID  string
+}
+
+// ActionReadOnboarding is the read of the onboardings by a person (since V2.106).
+const ActionReadOnboarding = "ReadOnboarding"
 
 type OnboardingCommands interface {
 	ProposeOnboarding(ctx context.Context, cmd ProposeOnboarding) (OnboardingReceipt, error)

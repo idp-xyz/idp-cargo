@@ -34,7 +34,7 @@ var kinds = httpapi.Errors{Unauthenticated: api.ErrUnauthenticated, Unauthorized
 	Conflict: api.ErrConflict, IdempotencyConflict: api.ErrIdempotencyConflict, Rejected: api.ErrRejected}
 
 // Register registers SEA's routes.
-func Register(mux *nethttp.ServeMux, s Service) {
+func Register(mux httpapi.Mux, s Service) {
 	h := handlers{s}
 	mux.HandleFunc("POST /v1/ocean-movements", h.openMovement)
 	mux.HandleFunc("GET /v1/ocean-movements", h.findMovement)

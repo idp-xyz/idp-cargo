@@ -31,7 +31,7 @@ func costsHidden(w nethttp.ResponseWriter, r *nethttp.Request, p identity.Princi
 	return false
 }
 
-func registerCards(mux *nethttp.ServeMux, h handlers) {
+func registerCards(mux httpapi.Mux, h handlers) {
 	mux.HandleFunc("GET /v1/rate-cards", h.listRateCards)
 	mux.HandleFunc("POST /v1/rate-cards", h.createRateCard)
 	mux.HandleFunc("GET /v1/rate-cards/{card}", h.getRateCard)

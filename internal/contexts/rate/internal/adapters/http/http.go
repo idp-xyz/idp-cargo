@@ -26,7 +26,7 @@ var kinds = httpapi.Errors{Unauthenticated: api.ErrUnauthenticated, Unauthorized
 	Conflict: api.ErrConflict, IdempotencyConflict: api.ErrIdempotencyConflict, Rejected: api.ErrRejected}
 
 // Register registers RATE's routes.
-func Register(mux *nethttp.ServeMux, s Service) {
+func Register(mux httpapi.Mux, s Service) {
 	h := handlers{s}
 	mux.HandleFunc("GET /v1/charge-codes", h.listChargeCodes)
 	mux.HandleFunc("POST /v1/charge-codes", h.defineChargeCode)

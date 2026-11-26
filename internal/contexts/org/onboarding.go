@@ -2,6 +2,7 @@ package org
 
 import (
 	"context"
+	"fmt"
 	"slices"
 
 	"go.idp.xyz/idp-cargo/internal/contexts/org/api"
@@ -129,8 +130,22 @@ func onboardingView(tenant string, r application.OnboardingRecord) api.Onboardin
 	return out
 }
 
+// readsOnboarding authorizes a person's read of the onboardings; the platform's own read names no actor.
+func (m *Module) readsOnboarding(ctx context.Context, tenant, actor string) error {
+	if actor == "" {
+		return nil
+	}
+	if err := m.auth.AuthorizePartyAction(ctx, tenant, actor, api.ActionReadOnboarding, ""); err != nil {
+		return fmt.Errorf("%w: %v", api.ErrUnauthorized, err)
+	}
+	return nil
+}
+
 // GetOnboarding answers one onboarding.
 func (m *Module) GetOnboarding(ctx context.Context, q api.GetOnboarding) (api.Onboarding, error) {
+	if err := m.readsOnboarding(ctx, q.TenantID, q.ActorID); err != nil {
+		return api.Onboarding{}, err
+	}
 	r, err := m.onboardings(q.TenantID, "").Get(ctx, domain.TenantID(q.TenantID), q.OnboardingID)
 	if err != nil {
 		return api.Onboarding{}, classify(err)
@@ -140,6 +155,9 @@ func (m *Module) GetOnboarding(ctx context.Context, q api.GetOnboarding) (api.On
 
 // ListOnboardings answers the tenant's onboardings in the order proposed.
 func (m *Module) ListOnboardings(ctx context.Context, q api.ListOnboardings) ([]api.Onboarding, error) {
+	if err := m.readsOnboarding(ctx, q.TenantID, q.ActorID); err != nil {
+		return nil, err
+	}
 	recs, err := m.onboardings(q.TenantID, "").List(ctx, domain.TenantID(q.TenantID))
 	if err != nil {
 		return nil, classify(err)
