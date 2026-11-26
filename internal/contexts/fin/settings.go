@@ -2,6 +2,8 @@ package fin
 
 import (
 	"context"
+	"fmt"
+	"time"
 
 	"go.idp.xyz/idp-cargo/internal/contexts/fin/api"
 	"go.idp.xyz/idp-cargo/internal/contexts/fin/internal/application"
@@ -26,16 +28,111 @@ func (m *Module) ProposeFinSettingsChange(ctx context.Context, cmd api.ProposeFi
 			asks[i].Param, asks[i].Currency = &minor, e.Threshold.Currency
 		}
 	}
-	r, err := m.deps(cmd.TenantID, cmd.CommandID).ProposeSettings(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, api.ActionConfigureSettings,
-		cmd.ChangeID, 0, m.clock.Now(), cmd), asks, cmd.Reason, stored(cmd.EffectiveAt))
+	action := api.ActionConfigureSettings
+	if cmd.OnboardingID != "" { // held for an onboarding: the platform's onboarding alone proposes it (ConfigureSettings by name, and the platform's mark)
+		action = api.ActionProposeHeldSettings
+	}
+	r, err := m.deps(cmd.TenantID, cmd.CommandID).ProposeSettings(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, action,
+		cmd.ChangeID, 0, m.clock.Now(), cmd), asks, cmd.Reason, stored(cmd.EffectiveAt), cmd.OnboardingID)
 	return receipt(r, err)
 }
 
 // ApproveFinSettingsChange approves a change set that waits for a second person.
 func (m *Module) ApproveFinSettingsChange(ctx context.Context, cmd api.ApproveFinSettingsChange) (api.Receipt, error) {
-	r, err := m.deps(cmd.TenantID, cmd.CommandID).ApproveSettings(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, api.ActionApproveSettings,
-		cmd.ChangeID, 0, m.clock.Now(), cmd))
+	r, err := m.deps(cmd.TenantID, cmd.CommandID).ApproveSettingsAs(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, api.ActionApproveSettings,
+		cmd.ChangeID, 0, m.clock.Now(), cmd), cmd.RiskAcknowledgement)
 	return receipt(r, err)
+}
+
+// DeclareFinSingleAdministrator records the tenant's declaration of a single administrator (V2.102).
+func (m *Module) DeclareFinSingleAdministrator(ctx context.Context, cmd api.DeclareFinSingleAdministrator) (api.Receipt, error) {
+	r, err := m.deps(cmd.TenantID, cmd.CommandID).DeclareSingleAdministrator(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID,
+		api.ActionDeclareSingleAdministrator, cmd.OnboardingID, 0, m.clock.Now(), cmd), cmd.ProposedBy, cmd.AdministratorID)
+	return receipt(r, err)
+}
+
+// ReviewFinSelfApprovedSettingsChange records the review of a change set that its own proposer approved as the single administrator.
+func (m *Module) ReviewFinSelfApprovedSettingsChange(ctx context.Context, cmd api.ReviewFinSelfApprovedSettingsChange) (api.Receipt, error) {
+	r, err := m.deps(cmd.TenantID, cmd.CommandID).ReviewSelfApproval(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, api.ActionReviewSettingsExceptions,
+		cmd.ChangeID, 0, m.clock.Now(), cmd), cmd.Conclusion, cmd.Note)
+	return receipt(r, err)
+}
+
+// ListFinSelfApprovalReviews answers the self-approved change sets of a period with no review, and the reviewed ones with their reviewer
+// and conclusion, to a holder of ReviewSettingsExceptions.
+func (m *Module) ListFinSelfApprovalReviews(ctx context.Context, q api.ListFinSelfApprovalReviews) (api.FinSelfApprovalReviews, error) {
+	if q.ActorID == "" {
+		return api.FinSelfApprovalReviews{}, classify(application.ErrUnauthenticated)
+	}
+	if m.auth == nil || m.auth.AuthorizeFinAction(ctx, q.TenantID, q.ActorID, api.ActionReviewSettingsExceptions, q.TenantID) != nil {
+		return api.FinSelfApprovalReviews{}, classify(fmt.Errorf("%w: the self-approved change sets and their reviews are told to a holder of ReviewSettingsExceptions; ask for the permission, granted by name",
+			application.ErrUnauthorized))
+	}
+	got, err := m.deps(q.TenantID, "").SelfApprovalReviews(ctx, domain.TenantID(q.TenantID), q.From, q.To)
+	if err != nil {
+		return api.FinSelfApprovalReviews{}, classify(err)
+	}
+	out := api.FinSelfApprovalReviews{TenantID: q.TenantID, From: q.From, To: q.To, AsOf: got.At, Pending: []api.FinSelfApproval{}, Reviewed: []api.FinSelfApprovalReview{}}
+	for _, x := range got.Pending {
+		out.Pending = append(out.Pending, selfApproval(x, got.Declarations))
+	}
+	for _, x := range got.Reviewed {
+		out.Reviewed = append(out.Reviewed, api.FinSelfApprovalReview{FinSelfApproval: selfApproval(x.SelfApprovedLine, got.Declarations), ReviewedBy: x.Review.By,
+			ReviewedAt: x.Review.At, Conclusion: x.Review.Conclusion, Note: x.Review.Note})
+	}
+	return out, nil
+}
+
+// selfApproval is a self-approved line as the API tells it, with the declaration it relies on (its administrator and time).
+func selfApproval(x settings.SelfApprovedLine, declared []settings.Declaration) api.FinSelfApproval {
+	line := api.FinSelfApproval{ChangeID: x.ChangeID, ApprovedBy: x.By, ApprovedAt: x.At, Acknowledgement: x.Acknowledgement, BasisOnboardingID: x.Basis}
+	for _, d := range declared {
+		if d.OnboardingID == x.Basis {
+			line.BasisAdministrator, line.BasisDeclaredAt = d.Administrator, d.At
+		}
+	}
+	for _, e := range x.Entries {
+		line.Entries = append(line.Entries, api.FinSettingEntryView{ScopeKind: e.Scope.Kind, ScopeID: e.Scope.ID, Key: e.Key, Value: e.Value, ThresholdMinor: e.Param})
+	}
+	return line
+}
+
+// GetFinExceptionReport answers FIN's part of the exception report to a holder of ApproveSettings.
+func (m *Module) GetFinExceptionReport(ctx context.Context, q api.GetFinExceptionReport) (api.FinExceptionReport, error) {
+	if q.ActorID == "" {
+		return api.FinExceptionReport{}, classify(application.ErrUnauthenticated)
+	}
+	if m.auth == nil || m.auth.AuthorizeFinAction(ctx, q.TenantID, q.ActorID, api.ActionApproveSettings, q.TenantID) != nil {
+		return api.FinExceptionReport{}, classify(fmt.Errorf("%w: the exception report is told to a holder of ApproveSettings; ask for the permission, granted by name",
+			application.ErrUnauthorized))
+	}
+	got, err := m.deps(q.TenantID, "").ExceptionReport(ctx, domain.TenantID(q.TenantID), q.From, q.To)
+	if err != nil {
+		return api.FinExceptionReport{}, classify(err)
+	}
+	out := api.FinExceptionReport{TenantID: q.TenantID, From: q.From, To: q.To, AsOf: got.At}
+	for _, x := range got.Report.Exceptions {
+		out.Exceptions = append(out.Exceptions, api.FinExceptionLine{ScopeKind: x.Scope.Kind, ScopeID: x.Scope.ID, Key: x.Key, Value: x.Value, ThanValue: x.TenantValue,
+			ChangeID: x.ChangeID, ProposedBy: x.ProposedBy, ApprovedBy: x.ApprovedBy})
+	}
+	for _, x := range got.Report.Looser {
+		out.LooserThanStandard = append(out.LooserThanStandard, api.FinExceptionLine{ScopeKind: x.Scope.Kind, ScopeID: x.Scope.ID, Key: x.Key, Value: x.Value,
+			ThresholdMinor: x.Param, ThanValue: x.Standard, ChangeID: x.ChangeID, ProposedBy: x.ProposedBy, ApprovedBy: x.ApprovedBy})
+	}
+	for _, x := range got.Report.SelfApproved {
+		out.SelfApproved = append(out.SelfApproved, selfApproval(x, got.Declarations))
+	}
+	for _, x := range got.Report.Changers {
+		out.Changers = append(out.Changers, api.FinSettingsChanger{ActorID: x.Actor, Proposed: x.Proposed, Approved: x.Approved})
+	}
+	for _, x := range got.Declarations {
+		out.Declarations = append(out.Declarations, api.FinSingleAdministratorDeclaration{OnboardingID: x.OnboardingID, ProposedBy: x.ProposedBy,
+			ConfirmedBy: x.ConfirmedBy, AdministratorID: x.Administrator, DeclaredAt: x.At})
+	}
+	for _, w := range got.Work {
+		out.Work = append(out.Work, api.FinActorWork{ActorID: w.Actor, Submitted: w.Submitted, Confirmed: w.Confirmed})
+	}
+	return out, nil
 }
 
 // CancelFinSettingsChange cancels a change set that is not in force yet.
@@ -97,7 +194,9 @@ func (m *Module) ListFinSettingsChanges(ctx context.Context, q api.ListFinSettin
 		}
 		if a := c.Approval; a != nil {
 			v.ApprovedBy, v.ApprovedAt, v.Version, v.InForceAt, v.AutoApproved = a.By, a.At, a.Version, a.InForce, a.Auto
+			v.RiskAcknowledgement, v.BasisOnboardingID = a.Acknowledgement, a.Basis
 		}
+		v.HeldForOnboarding = c.Hold
 		if x := c.Cancellation; x != nil {
 			v.CancelledBy, v.CancelledAt, v.CancelReason, v.CancelledRole = x.By, x.At, x.Reason, x.Role
 		}
@@ -108,8 +207,14 @@ func (m *Module) ListFinSettingsChanges(ctx context.Context, q api.ListFinSettin
 
 // GetFinSettingsCatalogue answers the catalogue of the settings, and the same as a table.
 func (m *Module) GetFinSettingsCatalogue(context.Context, api.GetFinSettingsCatalogue) (api.FinSettingsCatalogue, error) {
+	return SettingsCatalogue(), nil
+}
+
+// SettingsCatalogue answers the catalogue of FIN's settings without a module: the catalogue document is written from
+// it (cmd/cargo-settings-doc), and the onboarding reads the items and values it checks a profile against.
+func SettingsCatalogue() api.FinSettingsCatalogue {
 	cat := application.FinSettingsCatalogue()
-	out := api.FinSettingsCatalogue{Table: cat.Table()}
+	out := api.FinSettingsCatalogue{Table: cat.Table(), Version: cat.Version()}
 	for _, it := range cat.Items {
 		item := api.FinSettingItem{Key: it.Key, TitleZH: it.TitleZH, TitleEN: it.TitleEN, Default: it.Default, ScopeKinds: append([]string(nil), it.Kinds...),
 			InternalControl: it.Control, Explanation: it.Explanation}
@@ -126,5 +231,25 @@ func (m *Module) GetFinSettingsCatalogue(context.Context, api.GetFinSettingsCata
 		out.Reference = append(out.Reference, api.FinReferenceItem{Key: r.Key, TitleZH: r.TitleZH, TitleEN: r.TitleEN, Governs: r.Governs, ChangedBy: r.ChangedBy,
 			NeedsApproval: r.Approval, ApprovalNote: r.ApprovalNote})
 	}
-	return out, nil
+	return out
+}
+
+// CheckSettingsEntries checks entries as a first proposal of a tenant with no settings would be checked: each entry
+// alone, the configuration they make as a whole, and the rules across items. It writes nothing and reads no legal
+// entity, so a legal entity that FIN does not know is refused only when the change set is proposed. The
+// onboarding uses it to refuse an invalid profile or override when the consultant proposes it, not when the owner confirms.
+func CheckSettingsEntries(entries []api.FinSettingEntry) error {
+	asked := make([]settings.Entry, len(entries))
+	for i, e := range entries {
+		asked[i] = settings.Entry{Scope: settings.Scope{Kind: e.ScopeKind, ID: e.ScopeID}, Key: e.Key, Value: e.Value}
+		if e.Threshold != nil {
+			minor := e.Threshold.Minor
+			asked[i].Param = &minor
+		}
+	}
+	_, err := settings.NewLedger(nil).Propose(application.FinSettingsCatalogue(), settings.Proposal{ID: "check", Entries: asked, Reason: "check", By: "check", At: time.Now().UTC()})
+	if err == nil {
+		return nil
+	}
+	return classify(err)
 }

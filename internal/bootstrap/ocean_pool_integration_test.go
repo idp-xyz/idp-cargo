@@ -2103,10 +2103,13 @@ func TestCostsAreApportionedByRevenueWithPHYAndFIN(t *testing.T) {
 // consolidation closed and each house's lot L-x of 6 packs received at the CFS, weighed and completed, all with the
 // real ORG, RATE, COM, FUL, PHY and FIN. Nothing is stuffed.
 type oceanDay struct {
-	t        *testing.T
-	ctx      context.Context
-	phy      *phymodule.Module
-	fin      *finmodule.Module
+	t   *testing.T
+	ctx context.Context
+	phy *phymodule.Module
+	fin *finmodule.Module
+	// finAt is FIN on the same database and contexts with its clock stopped at a time, for what only a later time allows
+	// (the review of a week that has ended).
+	finAt    func(time.Time) *finmodule.Module
 	tenant   string
 	at       time.Time
 	cfs      phyapi.Facility
@@ -2164,6 +2167,13 @@ func newOceanDay(t *testing.T, prefix string, weights map[string]int64, volumes 
 	}
 	d := &oceanDay{t: t, ctx: ctx, phy: phyModule, fin: finModule, tenant: uniqueTenant(prefix), at: time.Now().UTC().Add(-48 * time.Hour).Truncate(time.Microsecond),
 		revision: map[string]int64{}}
+	d.finAt = func(at time.Time) *finmodule.Module {
+		m, err := platform.FIN(orgModule, rateModule, fulModule, &DocumentSnapshots{}, phyModule, allowAll{}, finmodule.WithClock(stoppedClock{at}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
 	tenant, at := d.tenant, d.at
 	departs := at.Add(72 * time.Hour)
 	unlocode := func(code string) kernel.LocationCode { return kernel.LocationCode{Scheme: kernel.UNLOCODE, Code: code} }
@@ -2441,3 +2451,8 @@ func TestAnEmptyStuffingIsGivenUpAndThePoolClosesWithPHYAndFIN(t *testing.T) {
 		t.Fatalf("the pool: %+v", p)
 	}
 }
+
+// stoppedClock is a clock that says one time.
+type stoppedClock struct{ at time.Time }
+
+func (c stoppedClock) Now() time.Time { return c.at }

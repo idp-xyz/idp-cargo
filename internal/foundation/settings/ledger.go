@@ -38,6 +38,11 @@ const (
 	ErrClock           kind = "SETTINGS_CLOCK"
 	ErrClockSkew       kind = "SETTINGS_CLOCK_SKEW"
 	ErrRefusedChange   kind = "SETTINGS_REFUSED"
+	ErrAcknowledgement kind = "SETTINGS_ACKNOWLEDGEMENT"
+	// ErrOnboardingWaiting is the refusal of any other change set while a change set held for an onboarding waits (V2.102, batch F).
+	ErrOnboardingWaiting kind = "SETTINGS_ONBOARDING_WAITING"
+	// ErrHeld is the refusal to approve a change set held for an onboarding by its own proposer (V2.102, batch F).
+	ErrHeld kind = "SETTINGS_HELD_FOR_ONBOARDING"
 )
 
 // Refuse is a refusal of the given kind; a context's cross-item Rule answers one of kind ErrRule.
@@ -64,7 +69,17 @@ type Approval struct {
 	Version int
 	InForce time.Time
 	Auto    bool
+	// Acknowledgement is the written risk acknowledgement of a loosening that its own proposer approved, the single
+	// administrator of a tenant that declared one (V2.102); empty for every other approval.
+	Acknowledgement string
+	// Basis is, for such an approval, the onboarding of the declaration of the single administrator it relies on: the
+	// tenant's latest declaration at or before the approval (V2.102, batch F); empty for every other approval.
+	Basis string
 }
+
+// SelfApproved says that the approval is of a loosening by its own proposer, with an acknowledgement, as a single
+// administrator's: not the automatic approval of a change set that only tightens, which has none.
+func (a Approval) SelfApproved() bool { return !a.Auto && a.Acknowledgement != "" }
 
 // Cancellation withdraws a change set before it is in force.
 type Cancellation struct {
@@ -99,6 +114,11 @@ type ChangeSet struct {
 	Loosening    bool
 	Approval     *Approval
 	Cancellation *Cancellation
+	// Hold is the onboarding this change set is held for (V2.102, batch F), empty for an ordinary change set. A held change
+	// set is not approved when it is proposed, not even when it only tightens, and its approver is never its proposer: the
+	// owner who confirms the onboarding approves it. While one waits (proposed, neither approved nor cancelled), every other
+	// change set of the tenant is refused (Ledger.Waiting).
+	Hold string
 }
 
 // Status of a change set at a time.
@@ -131,6 +151,8 @@ func (c ChangeSet) Status(now time.Time) Status {
 const (
 	MaxEntries = 64
 	MaxReason  = 500
+	// MaxAcknowledgement is the length of a single administrator's risk acknowledgement, in characters.
+	MaxAcknowledgement = 2000
 	// MaxAhead is how far after the proposal a change set may take effect: a change set far ahead sits in every
 	// check of the ones after it.
 	MaxAhead = 366 * 24 * time.Hour
@@ -154,6 +176,27 @@ func (l *Ledger) Find(id string) (ChangeSet, bool) {
 		return ChangeSet{}, false
 	}
 	return l.sets[i], true
+}
+
+// Waiting answers the change set held for an onboarding that is neither approved nor cancelled, if the ledger has one:
+// while it waits, every other change set of the tenant is refused (V2.102, batch F), so that what the owner confirms is
+// what the consultant proposed, against the settings the consultant saw. A change set that was refused or cancelled
+// no longer waits.
+func (l *Ledger) Waiting() (ChangeSet, bool) {
+	for _, c := range l.sets {
+		if c.Hold != "" && c.Approval == nil && c.Cancellation == nil {
+			return c, true
+		}
+	}
+	return ChangeSet{}, false
+}
+
+func waiting(l *Ledger) bool { _, ok := l.Waiting(); return ok }
+
+// waitingRefusal is the refusal of change set id while the held change set w waits.
+func waitingRefusal(w ChangeSet, id, what string) error {
+	return Refuse(ErrOnboardingWaiting, "%s %s is refused while onboarding %s waits: its change set %s, held for it, is neither approved nor cancelled, and no other change set is "+
+		"proposed or approved until then; confirm the onboarding (the customer's owner: ConfirmOnboarding) or withdraw it (WithdrawOnboarding), then send this again", what, id, w.Hold, w.ID)
 }
 
 // latest is the latest time recorded in the ledger: a proposal, an approval or a cancellation.
@@ -515,6 +558,8 @@ type Proposal struct {
 	By        string
 	At        time.Time
 	Effective time.Time
+	// Hold is the onboarding the change set is held for, or empty (see ChangeSet.Hold).
+	Hold string
 }
 
 // Propose checks the proposal and answers the change set: each entry on its own, the configuration it would make, and
@@ -530,8 +575,14 @@ func (l *Ledger) Propose(cat *Catalogue, p Proposal) (ChangeSet, error) {
 	case len(p.Entries) < 1 || len(p.Entries) > MaxEntries:
 		return ChangeSet{}, Refuse(ErrInvalid, "a change set has 1 to %d entries; propose the rest in another change set", MaxEntries)
 	}
+	if p.Hold != "" && !idPattern.MatchString(p.Hold) {
+		return ChangeSet{}, Refuse(ErrInvalid, "the onboarding a change set is held for is named by 1 to 128 letters, digits and . _ : / -; this is the platform's own call, so ask its owners if you see it")
+	}
 	if _, ok := l.Find(p.ID); ok {
 		return ChangeSet{}, fmt.Errorf("%w: %w: change set %s exists; propose with another ID", ErrRefused, ErrDuplicate, p.ID)
+	}
+	if w, waits := l.Waiting(); waits && w.Hold != p.Hold {
+		return ChangeSet{}, waitingRefusal(w, p.ID, "change set")
 	}
 	effective := p.Effective
 	if effective.IsZero() {
@@ -575,10 +626,11 @@ func (l *Ledger) Propose(cat *Catalogue, p Proposal) (ChangeSet, error) {
 	if err != nil {
 		return ChangeSet{}, err
 	}
-	cs := ChangeSet{ID: p.ID, Entries: entries, Reason: strings.TrimSpace(p.Reason), By: p.By, At: p.At, Effective: effective, Loosening: why != ""}
+	cs := ChangeSet{ID: p.ID, Entries: entries, Reason: strings.TrimSpace(p.Reason), By: p.By, At: p.At, Effective: effective, Loosening: why != "", Hold: p.Hold}
+	auto := !cs.Loosening && cs.Hold == "" // a change set held for an onboarding is approved by the owner, even when it only tightens
 	tentative := cs
-	tentative.Approval = &Approval{By: p.By, At: p.At, Version: l.nextVersion(), InForce: effective, Auto: !cs.Loosening}
-	if !cs.Loosening {
+	tentative.Approval = &Approval{By: p.By, At: p.At, Version: l.nextVersion(), InForce: effective, Auto: auto}
+	if auto {
 		if err = inOrder(l.sets, cs.ID, *tentative.Approval); err != nil {
 			return ChangeSet{}, err
 		}
@@ -586,7 +638,7 @@ func (l *Ledger) Propose(cat *Catalogue, p Proposal) (ChangeSet, error) {
 	if err = check(cat, append(slices.Clone(l.sets), tentative), effective); err != nil {
 		return ChangeSet{}, err
 	}
-	if !cs.Loosening {
+	if auto {
 		cs.Approval = tentative.Approval
 	}
 	return cs, nil
@@ -596,8 +648,31 @@ func (l *Ledger) Propose(cat *Catalogue, p Proposal) (ChangeSet, error) {
 // system's time, with the next version number. The configuration is checked again, since the change sets in force may
 // have moved since the proposal.
 func (l *Ledger) Approve(cat *Catalogue, id, by string, at time.Time) (Approval, error) {
+	return l.ApproveAs(cat, id, by, at, Own{})
+}
+
+// Own is what lets a proposer approve their own change set: the tenant declared a single administrator, who is that
+// proposer (the caller reads the administrator the tenant declared from its own records, never from the command; see
+// AdministratorInForce), and the approval carries a written risk acknowledgement. A tenant has at most one single
+// administrator in force (V2.102, batch E), so Administrators has at most one name; the ledger refuses more.
+type Own struct {
+	Administrators  []string
+	Acknowledgement string
+	// Basis is the onboarding of the declaration the administrator is in force by (DeclarationInForce): the approval records it,
+	// and a self-approval is refused without it (V2.102, batch F).
+	Basis string
+}
+
+// ApproveAs is Approve, with the single administrator's way (V2.102): the proposer approves their own loosening only
+// when the tenant declared them its single administrator and the approval carries an acknowledgement of 1 to 2000
+// characters. Another approver gives no acknowledgement.
+func (l *Ledger) ApproveAs(cat *Catalogue, id, by string, at time.Time, own Own) (Approval, error) {
 	cs, ok := l.Find(id)
+	ack := strings.TrimSpace(own.Acknowledgement)
 	switch {
+	case len(own.Administrators) > 1:
+		return Approval{}, Refuse(ErrInvalid, "a tenant has one single administrator in force, the one its latest declaration names, and %d were given (%s); the module reads it with AdministratorInForce",
+			len(own.Administrators), strings.Join(own.Administrators, ", "))
 	case !ok:
 		return Approval{}, Refuse(ErrUnknownChange, "there is no change set %s; list the tenant's change sets (ListFinSettingsChanges) for the IDs", id)
 	case cs.Cancellation != nil:
@@ -606,13 +681,38 @@ func (l *Ledger) Approve(cat *Catalogue, id, by string, at time.Time) (Approval,
 		return Approval{}, Refuse(ErrAlreadyApproved, "change set %s is approved already (version %d); there is nothing more to do", id, cs.Approval.Version)
 	case strings.TrimSpace(by) == "" || len(by) > 128 || at.IsZero() || at.Before(cs.At):
 		return Approval{}, Refuse(ErrInvalid, "an approval names its actor (1 to 128 bytes) and a time not before the proposal; try the command again")
-	case by == cs.By:
+	case cs.Hold != "" && by == cs.By:
+		return Approval{}, Refuse(ErrHeld, "change set %s is held for onboarding %s, which its owner confirms: the proposer %s may not approve it, not even as a single administrator; "+
+			"the customer's owner confirms the onboarding (ConfirmOnboarding), or the consultant withdraws it (WithdrawOnboarding)", id, cs.Hold, by)
+	case cs.Hold == "" && waiting(l):
+		w, _ := l.Waiting()
+		return Approval{}, waitingRefusal(w, id, "the approval of change set")
+	case by != cs.By && ack != "":
+		return Approval{}, Refuse(ErrAcknowledgement, "change set %s was proposed by %s; a risk acknowledgement is for a single administrator approving their own "+
+			"proposal only, so leave it out", id, cs.By)
+	case by == cs.By && len(own.Administrators) == 0 && ack != "":
+		return Approval{}, Refuse(ErrSameActor, "change set %s was proposed by %s, who may not approve it, and this tenant has not declared a single administrator "+
+			"(the customer's owner declares one when confirming an onboarding); have another approver approve it", id, by)
+	case by == cs.By && len(own.Administrators) == 0:
 		return Approval{}, Refuse(ErrSameActor, "change set %s was proposed by %s, who may not approve it; have another approver approve it", id, by)
+	case by == cs.By && !slices.Contains(own.Administrators, by):
+		return Approval{}, Refuse(ErrSameActor, "change set %s was proposed by %s, who is not the single administrator this tenant declared (%s), so may not approve it; "+
+			"have another approver approve it, or have the declared administrator propose it and approve it with a risk acknowledgement", id, by, strings.Join(own.Administrators, ", "))
+	case by == cs.By && own.Basis == "":
+		return Approval{}, Refuse(ErrInvalid, "a self-approval names the declaration of the single administrator it relies on; the module reads it with DeclarationInForce, so ask the platform's owners if you see this")
+	case by == cs.By && utf8.RuneCountInString(ack) < 1:
+		return Approval{}, Refuse(ErrAcknowledgement, "this tenant declared you its single administrator, who may approve their own loosening (change set %s) with a "+
+			"written risk acknowledgement of 1 to %d characters; give it, or have another approver approve the change set", id, MaxAcknowledgement)
+	case by == cs.By && utf8.RuneCountInString(ack) > MaxAcknowledgement:
+		return Approval{}, Refuse(ErrAcknowledgement, "the risk acknowledgement is 1 to %d characters; shorten it", MaxAcknowledgement)
 	}
 	if err := l.clockBehind(at); err != nil {
 		return Approval{}, err
 	}
 	a := Approval{By: by, At: at, Version: l.nextVersion(), InForce: cs.Effective}
+	if by == cs.By {
+		a.Acknowledgement, a.Basis = ack, own.Basis
+	}
 	if at.After(a.InForce) {
 		a.InForce = at
 	}

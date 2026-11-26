@@ -3,11 +3,13 @@ package bootstrap
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
 
 	finapi "go.idp.xyz/idp-cargo/internal/contexts/fin/api"
+	orgapi "go.idp.xyz/idp-cargo/internal/contexts/org/api"
 	seaapi "go.idp.xyz/idp-cargo/internal/contexts/sea/api"
 	"go.idp.xyz/idp-cargo/internal/foundation/identity"
 	transport "go.idp.xyz/idp-cargo/internal/transport/http"
@@ -104,7 +106,46 @@ func (permissions) AuthorizeRoleApproval(ctx context.Context, tenant, actor, _, 
 	return identity.Authorize(ctx, "org", tenant, actor, "ApproveRole")
 }
 
+// onlyThePlatform refuses an action that the onboarding's own principal alone may take: a context without the platform's
+// mark, which no token and no code outside this package can set, is refused whatever permissions its principal carries.
+func onlyThePlatform(ctx context.Context, bc, action string) error {
+	if ctx.Value(platformRecorder{}) == nil {
+		return fmt.Errorf("%w: %s:%s is the platform's own, which no person holds: it is taken through the platform's onboarding, which no token can stand in for", identity.ErrDenied, bc, action)
+	}
+	return nil
+}
+
+// authorizeHeld authorizes the proposal of a change set held for an onboarding, in the consultant's own name, and its approval, in the
+// owner's own name (V2.102, batch F): each needs the platform's mark, which only the onboarding's own calls carry, besides the
+// person's own permission by name (the proposal's ConfigureSettings, the approval's ApproveSettings). So the onboarding alone holds a
+// change set for an onboarding or approves one, and a person who holds ConfigureSettings cannot freeze a tenant's settings with a
+// made-up onboarding.
+func authorizeHeld(ctx context.Context, bc, tenant, actor, action, proposeAction, configure, approve string) error {
+	if err := onlyThePlatform(ctx, bc, action); err != nil {
+		return err
+	}
+	if action == proposeAction {
+		return identity.AuthorizeNamed(ctx, bc, tenant, actor, configure)
+	}
+	return identity.AuthorizeNamed(ctx, bc, tenant, actor, approve)
+}
+
+// AuthorizePartyAction covers ORG's party actions. The actions of customer onboarding (V2.102), "org:ProposeOnboarding"
+// (the implementation consultant's proposal), "org:ConfirmOnboarding" (the customer's owner's confirmation) and
+// "org:RecordOnboardingModule" (the platform's record of what each module made of it), are granted by name only: "org:*"
+// and "*" grant none, so that a general grant never lets a person choose how a customer's controls are set, confirm that
+// choice or write its progress. ORG's commands for them run only under the platform's mark (V2.102, batch E): the only way
+// in is the bootstrap's onboarding, which checks the plan and the consultant, and which checks the person's permission by
+// name before it calls ORG. The record of a module's progress is held only by the principal the onboarding builds, which
+// carries a mark no token can carry, so no person's role holds it.
 func (permissions) AuthorizePartyAction(ctx context.Context, tenant, actor, action, _ string) error {
+	switch action {
+	case orgapi.ActionRecordOnboardingModule, orgapi.ActionProposeOnboarding, orgapi.ActionConfirmOnboarding:
+		if err := onlyThePlatform(ctx, "org", action); err != nil { // the principal the onboarding builds, not a person's token that carries the permission
+			return err
+		}
+		return identity.AuthorizeNamed(ctx, "org", tenant, actor, action)
+	}
 	return identity.Authorize(ctx, "org", tenant, actor, action)
 }
 
@@ -139,7 +180,14 @@ func (permissions) AuthorizeBookingAction(ctx context.Context, tenant, actor, ac
 func (permissions) AuthorizeSeaAction(ctx context.Context, tenant, actor, action, _ string) error {
 	switch action {
 	case seaapi.ActionReadVgmSignatory, seaapi.ActionReadVgmSignatoryLog, seaapi.ActionConfigureSettings, seaapi.ActionApproveSettings,
-		seaapi.ActionSuperviseCarrierConflicts:
+		seaapi.ActionSuperviseCarrierConflicts, seaapi.ActionReviewSettingsExceptions: // the review of a self-approval (V2.102, batch F) is by name too
+		return identity.AuthorizeNamed(ctx, "sea", tenant, actor, action)
+	case seaapi.ActionProposeHeldSettings, seaapi.ActionApproveHeldSettings: // a change set held for an onboarding (V2.102, batch F)
+		return authorizeHeld(ctx, "sea", tenant, actor, action, seaapi.ActionProposeHeldSettings, seaapi.ActionConfigureSettings, seaapi.ActionApproveSettings)
+	case seaapi.ActionDeclareSingleAdministrator: // the platform's own (V2.102, batch E): by name, and only with the platform's mark
+		if err := onlyThePlatform(ctx, "sea", action); err != nil {
+			return err
+		}
 		return identity.AuthorizeNamed(ctx, "sea", tenant, actor, action)
 	}
 	return identity.Authorize(ctx, "sea", tenant, actor, action)
@@ -148,9 +196,23 @@ func (permissions) AuthorizeSeaAction(ctx context.Context, tenant, actor, action
 // AuthorizeFinAction covers FIN's commands. The two actions of the settings, "fin:ConfigureSettings" (propose and
 // cancel a change) and "fin:ApproveSettings" (approve one), are granted by name only: "fin:*" and "*" grant neither, so
 // that a general grant never lets a person change how FIN's controls work or approve the change, as with a VGM
-// signatory's name above. That the approver is not the proposer is FIN's own rule, not a permission.
+// signatory's name above; so is "fin:DeclareSingleAdministrator" (V2.102), which only the platform's onboarding holds
+// (it is granted only with the platform's mark, as "org:RecordOnboardingModule" is), and "fin:ReviewAfterTheFact" (V2.102, batch B), which marks a week of the after-the-fact review list reviewed, so
+// that a general grant never lets a person sign off the weekly compensation of the LEAN profile. That the approver is
+// not the proposer, and that the reviewer is neither the submitter nor the previewer of a line of the week, are FIN's
+// own rules, not permissions.
 func (permissions) AuthorizeFinAction(ctx context.Context, tenant, actor, action, _ string) error {
-	if action == finapi.ActionConfigureSettings || action == finapi.ActionApproveSettings {
+	if action == finapi.ActionProposeHeldSettings || action == finapi.ActionApproveHeldSettings { // a change set held for an onboarding (V2.102, batch F)
+		return authorizeHeld(ctx, "fin", tenant, actor, action, finapi.ActionProposeHeldSettings, finapi.ActionConfigureSettings, finapi.ActionApproveSettings)
+	}
+	if action == finapi.ActionDeclareSingleAdministrator { // the platform's own (V2.102, batch E): by name, and only with the platform's mark
+		if err := onlyThePlatform(ctx, "fin", action); err != nil {
+			return err
+		}
+		return identity.AuthorizeNamed(ctx, "fin", tenant, actor, action)
+	}
+	if action == finapi.ActionConfigureSettings || action == finapi.ActionApproveSettings || action == finapi.ActionReviewAfterTheFact ||
+		action == finapi.ActionReviewSettingsExceptions {
 		return identity.AuthorizeNamed(ctx, "fin", tenant, actor, action)
 	}
 	return identity.Authorize(ctx, "fin", tenant, actor, action)
