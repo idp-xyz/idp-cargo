@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -96,7 +97,11 @@ func (w *onboardingWorld) confirm(command, id, actor, text string) (api.Onboardi
 }
 
 func (w *onboardingWorld) confirmNaming(command, id, actor, text, admin string) (api.OnboardingReceipt, error) {
-	return w.module.ConfirmOnboarding(context.Background(), api.ConfirmOnboarding{CommandID: command, TenantID: w.tenant, ActorID: actor, OnboardingID: id, AcknowledgedText: text, AdministratorID: admin})
+	digest := ""
+	if o, err := w.module.GetOnboarding(context.Background(), api.GetOnboarding{TenantID: w.tenant, OnboardingID: id}); err == nil {
+		digest = o.PlanSHA256 // the owner confirms the digest of the plan they read
+	}
+	return w.module.ConfirmOnboarding(context.Background(), api.ConfirmOnboarding{CommandID: command, TenantID: w.tenant, ActorID: actor, OnboardingID: id, AcknowledgedText: text, PlanSHA256: digest, AdministratorID: admin})
 }
 
 func (w *onboardingWorld) record(id, actor, module, state string) (api.OnboardingReceipt, error) {
@@ -138,7 +143,7 @@ func TestOnboardingIsProposedConfirmedAndRecordedPerModule(t *testing.T) {
 	if err != nil || r.State != "PROPOSED" || r.NewRevision != 1 || r.OnboardingID != "ob-1" || !strings.Contains(r.Notice, "at least 3 finance staff") || !strings.Contains(r.Notice, "declared 2") {
 		t.Fatalf("a STRICT proposal with 2 finance staff: %+v, %v", r, err)
 	}
-	if again, err := w.propose("ob-1", "ann", "STRICT", 2, true); err != nil || again != r {
+	if again, err := w.propose("ob-1", "ann", "STRICT", 2, true); err != nil || !reflect.DeepEqual(again, r) {
 		t.Fatalf("a replay: %+v, %v", again, err)
 	}
 	for name, c := range map[string]struct {
@@ -202,7 +207,7 @@ func TestOnboardingIsProposedConfirmedAndRecordedPerModule(t *testing.T) {
 	if err != nil || c1.State != "CONFIRMED" || c1.NewRevision != 2 || !strings.Contains(c1.Notice, "at least 3 finance staff") {
 		t.Fatalf("the confirmation: %+v, %v", c1, err)
 	}
-	if again, err := w.confirm("conf-1", "ob-1", "olga", riskText); err != nil || again != c1 {
+	if again, err := w.confirm("conf-1", "ob-1", "olga", riskText); err != nil || !reflect.DeepEqual(again, c1) {
 		t.Fatalf("a retry: %+v, %v", again, err)
 	}
 	if again, err := w.confirm("conf-retry", "ob-1", "olga", riskText); err != nil || again.State != "CONFIRMED" || again.NewRevision != 2 {
@@ -277,19 +282,19 @@ func TestOnboardingDatabaseRulesRefuseRawWrites(t *testing.T) {
 	many := func(n int) string { return strings.TrimSuffix(strings.Repeat(entry+",", n), ",") }
 	proposal := func(id, by, cmd, extra string) string { // extra overrides a column: "profile='FANCY'"
 		cols := map[string]string{"profile": "'LEAN'", "overrides": "'{}'", "risk_statement": "'the statement'", "finance_staff": "2", "single_administrator": "false",
-			"proposed_by": "'" + by + "'", "command_id": "'" + cmd + "'", "onboarding_id": "'" + id + "'", "plan": "'" + goodPlan + "'"}
+			"proposed_by": "'" + by + "'", "command_id": "'" + cmd + "'", "onboarding_id": "'" + id + "'", "plan": "'" + goodPlan + "'", "plan_sha256": "'" + hash + "'"}
 		if extra != "" {
 			kv := strings.SplitN(extra, "=", 2)
 			cols[kv[0]] = kv[1]
 		}
-		return fmt.Sprintf(`INSERT INTO cargo_org.onboarding (tenant_id,onboarding_id,command_id,request_hash,profile,overrides,plan,risk_statement,finance_staff,single_administrator,
-        proposed_by,proposed_at) VALUES ($1,%s,%s,'%s',%s,%s,%s,%s,%s,%s,%s,now())`, cols["onboarding_id"], cols["command_id"], hash, cols["profile"], cols["overrides"], cols["plan"],
-			cols["risk_statement"], cols["finance_staff"], cols["single_administrator"], cols["proposed_by"])
+		return fmt.Sprintf(`INSERT INTO cargo_org.onboarding (tenant_id,onboarding_id,command_id,request_hash,profile,overrides,plan,plan_sha256,risk_statement,finance_staff,single_administrator,
+        proposed_by,proposed_at) VALUES ($1,%s,%s,'%s',%s,%s,%s,%s,%s,%s,%s,%s,now())`, cols["onboarding_id"], cols["command_id"], hash, cols["profile"], cols["overrides"], cols["plan"],
+			cols["plan_sha256"], cols["risk_statement"], cols["finance_staff"], cols["single_administrator"], cols["proposed_by"])
 	}
 	// confirmationBy confirms with the proposal's own flag and the administrator named ("NULL" or a quoted id)
 	confirmationBy := func(id, proposer, confirmer, text, at, administrator string) string {
 		return fmt.Sprintf(`INSERT INTO cargo_org.onboarding_confirmation (tenant_id,onboarding_id,command_id,proposed_by,proposed_at,confirmed_by,confirmed_at,acknowledged_text,
-        single_administrator,administrator) SELECT tenant_id,onboarding_id,'c-'||onboarding_id,'%s',proposed_at,'%s',%s,'%s',single_administrator,%s
+        single_administrator,administrator,plan_sha256) SELECT tenant_id,onboarding_id,'c-'||onboarding_id,'%s',proposed_at,'%s',%s,'%s',single_administrator,%s,plan_sha256
         FROM cargo_org.onboarding WHERE tenant_id=$1 AND onboarding_id='%s'`, proposer, confirmer, at, text, administrator, id)
 	}
 	confirmation := func(id, proposer, confirmer, text, at string) string {
@@ -363,7 +368,7 @@ func TestOnboardingDatabaseRulesRefuseRawWrites(t *testing.T) {
 		{"approved before proposed", []string{proposal("a", "ann", "c1", ""), confirmation("a", "ann", "olga", "the statement", "proposed_at"),
 			module("a", "olga", "FIN", "APPROVED", "onb-a-fin", "now()")}, "23514", "onboarding_module_approved_after_proposed"},
 		{"another tenant's onboarding", []string{`INSERT INTO cargo_org.onboarding (tenant_id,onboarding_id,command_id,request_hash,profile,overrides,risk_statement,finance_staff,
-          plan,single_administrator,proposed_by,proposed_at) VALUES ($1 || '-other','a','c1','` + hash + `','LEAN','{}','s',1,'` + goodPlan + `',false,'ann',now())`}, "42501", ""},
+          plan,plan_sha256,single_administrator,proposed_by,proposed_at) VALUES ($1 || '-other','a','c1','` + hash + `','LEAN','{}','s',1,'` + goodPlan + `','` + hash + `',false,'ann',now())`}, "42501", ""},
 	} {
 		err := w.raw(c.stmts...)
 		var pgErr *pgconn.PgError

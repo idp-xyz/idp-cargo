@@ -1,16 +1,21 @@
--- IDP-Cargo FIN V2.102 (batch B) / PostgreSQL 16. Run only as the migrator role, never at service start.
+-- IDP-Cargo FIN V2.102 (batches B, D and E) / PostgreSQL 16. Run only as the migrator role, never at service start.
 -- The after-the-fact review of the LEAN profile: each week, the attributions confirmed in it that have no second person,
 -- no voucher or were made by default (F8) are listed for finance's head, who marks the week reviewed with a note. The
 -- list itself is a query over the apportionments (it needs no table); this migration holds only the mark.
 --
--- Added: one table, after_the_fact_review: one row per legal entity and ISO week, immutable (rows are only inserted),
--- with row security enabled and forced and written at READ COMMITTED like every table of cargo_fin. A row says who
--- reviewed the week, the note (1 to 2000 characters), when, and the size and the SHA-256 digest of the list at that
--- time, so that a list that changes later can be told from the one that was reviewed. Changed: the result types of
+-- Added: one table, after_the_fact_review: one row per review of a legal entity's ISO week, immutable (rows are only
+-- inserted), with row security enabled and forced and written at READ COMMITTED like every table of cargo_fin. A row says
+-- who reviewed the week, the note (1 to 2000 characters), when, and the size and the SHA-256 digest of the list at that
+-- time, so that a list that changes later can be told from the one that was reviewed. A week may be reviewed again when its
+-- list changed after the latest review (a command stamped inside the week can commit after the week's end, so that its line
+-- is listed and was never reviewed): each review has its own number in the key, from 1 without a gap, and its own size and
+-- digest; the trigger after_the_fact_review_order refuses a number that is not the next one and a review whose size and digest
+-- are those of the latest review of the week (there is nothing new to review). Changed: the result types of
 -- command_receipt gain 'AfterTheFactReview'. No row changes and nothing is dropped; the ALTER TABLE takes an ACCESS
 -- EXCLUSIVE lock on command_receipt for its brief check of the existing rows (reasoned, not measured).
 --
--- What the database refuses: a second review of one legal entity and week (the primary key); a legal entity with no
+-- What the database refuses: a review whose number is not the next of its legal entity and week, counted from 1 (the primary
+-- key and the trigger), or whose list is the one the latest review of the week signed (the trigger); a legal entity with no
 -- finance policy (a foreign key); a week that is not written YYYY-Www with a week from 01 to 53, or one that does not
 -- exist (week 53 of a year that has 52, which to_char reads as week 01 of the next year); a week_start that is not
 -- that week's Monday at 00:00 UTC; a review made before its week began, or before it has ended (a week is reviewed at or
@@ -22,20 +27,22 @@
 -- What the schema does not know, and only the domain keeps: that the reviewer is neither the submitter nor the
 -- previewer of any line of the week's list (the list is a query over other tables, and a check at commit that read it
 -- would take a lock on every apportionment of the week), what the list is (so that the size and the digest are those of
--- the list at the time, and that a list still matches its digest is read by the query), that the reviewer holds the
+-- the list at the time, and that a list still matches its digest is read by the query), that the bar on the reviewer is
+-- applied to every line of the list of each review, that the reviewer holds the
 -- permissions ReviewAfterTheFact and ReadProfit, and that the actor is the token's actor.
 
 CREATE TABLE cargo_fin.after_the_fact_review (
  tenant_id text NOT NULL CHECK (length(btrim(tenant_id)) BETWEEN 1 AND 128),
  legal_entity_id text NOT NULL,
  week text NOT NULL,
+ review_no integer NOT NULL CONSTRAINT after_the_fact_review_no CHECK (review_no >= 1),
  week_start timestamptz NOT NULL,
  reviewed_by text NOT NULL CHECK (length(btrim(reviewed_by)) BETWEEN 1 AND 128),
  note text NOT NULL CHECK (length(btrim(note)) BETWEEN 1 AND 2000),
  list_size integer NOT NULL CHECK (list_size >= 0),
  list_digest char(64) NOT NULL CHECK (list_digest ~ '^[0-9a-f]{64}$'),
  reviewed_at timestamptz NOT NULL,
- PRIMARY KEY (tenant_id, legal_entity_id, week),
+ PRIMARY KEY (tenant_id, legal_entity_id, week, review_no),
  FOREIGN KEY (tenant_id, legal_entity_id) REFERENCES cargo_fin.finance_policy (tenant_id, legal_entity_id),
  CONSTRAINT after_the_fact_review_week_form CHECK (week ~ '^[0-9]{4}-W(0[1-9]|[1-4][0-9]|5[0-3])$'),
  CONSTRAINT after_the_fact_review_week_start CHECK (
@@ -50,6 +57,23 @@ ALTER TABLE cargo_fin.command_receipt DROP CONSTRAINT command_receipt_result_typ
     CHECK (result_type IN ('FinancePolicy','FreightJob','CreditAccount','BillingProfile','DebtorReceipt','ConsolCostPool','CreditorInvoice',
       'CreditorPayment','FapiaoRecord','FinSettings','CostReviewRequest','CostReviewResolution','AfterTheFactReview'));
 
+CREATE FUNCTION cargo_fin.check_after_the_fact_review() RETURNS trigger LANGUAGE plpgsql AS $fn$
+DECLARE latest cargo_fin.after_the_fact_review;
+BEGIN
+  SELECT * INTO latest FROM cargo_fin.after_the_fact_review r WHERE r.tenant_id = NEW.tenant_id AND r.legal_entity_id = NEW.legal_entity_id
+    AND r.week = NEW.week ORDER BY r.review_no DESC LIMIT 1;
+  IF NEW.review_no <> coalesce(latest.review_no, 0) + 1 THEN
+    RAISE EXCEPTION 'cargo_fin: review % of %/% week % is not the next review of the week (%)', NEW.review_no, NEW.tenant_id, NEW.legal_entity_id, NEW.week,
+      coalesce(latest.review_no, 0) + 1 USING ERRCODE = 'check_violation', CONSTRAINT = 'after_the_fact_review_numbered';
+  END IF;
+  IF latest.review_no IS NOT NULL AND NEW.list_size = latest.list_size AND NEW.list_digest = latest.list_digest THEN
+    RAISE EXCEPTION 'cargo_fin: week % of legal entity % was reviewed (review %) with this very list; there is nothing new to review', NEW.week, NEW.legal_entity_id,
+      latest.review_no USING ERRCODE = 'check_violation', CONSTRAINT = 'after_the_fact_review_list_changed';
+  END IF;
+  RETURN NEW;
+END $fn$;
+CREATE TRIGGER after_the_fact_review_order BEFORE INSERT ON cargo_fin.after_the_fact_review
+  FOR EACH ROW EXECUTE FUNCTION cargo_fin.check_after_the_fact_review();
 CREATE TRIGGER after_the_fact_review_immutable BEFORE UPDATE OR DELETE ON cargo_fin.after_the_fact_review
   FOR EACH ROW EXECUTE FUNCTION cargo_fin.reject_row_change();
 CREATE TRIGGER after_the_fact_review_read_committed BEFORE INSERT OR UPDATE OR DELETE ON cargo_fin.after_the_fact_review

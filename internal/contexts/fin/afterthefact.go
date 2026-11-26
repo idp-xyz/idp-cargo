@@ -85,7 +85,7 @@ func (m *Module) GetAfterTheFactReview(ctx context.Context, q api.GetAfterTheFac
 		page.NextAfter = afterTheFactCursor(got.Lines[len(got.Lines)-1].ReviewKey)
 	}
 	if r := got.Review; r != nil {
-		page.Review = api.AfterTheFactReviewMark{Reviewed: true, ReviewedBy: r.ReviewedBy, ReviewedAt: r.ReviewedAt, Note: r.Note, ListSize: r.ListSize, ListDigest: r.ListDigest,
+		page.Review = api.AfterTheFactReviewMark{Reviewed: true, ReviewNo: r.ReviewNo, ReviewedBy: r.ReviewedBy, ReviewedAt: r.ReviewedAt, Note: r.Note, ListSize: r.ListSize, ListDigest: r.ListDigest,
 			CurrentSize: got.Size, CurrentDigest: got.Digest, Matches: got.Matches}
 	}
 	return page, nil

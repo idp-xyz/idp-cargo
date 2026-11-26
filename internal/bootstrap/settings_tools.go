@@ -339,7 +339,9 @@ type SettingsDiff struct {
 // that legal entity's own entry, so that an entry the file has at a legal entity stays that legal entity's own, even when
 // its value equals the company's here, unless this environment has the same entry at that legal entity. The file is
 // refused when it is not JSON of this format. The caller sees the modules where they hold ConfigureSettings or
-// ApproveSettings, by name; the answer says which it left out and why, and a caller who may see neither is refused.
+// ApproveSettings, by name; the answer says which it left out and why, and a caller who may see neither is refused. A module
+// that the file's own LeftOut names, because its exporter could not see it, is named in the answer's LeftOut too, with why:
+// the diff answers nothing about that module's configuration.
 func (t *SettingsTools) DiffSettingsImport(ctx context.Context, tenant, actor string, file []byte) (SettingsDiff, error) {
 	var in SettingsExport
 	dec := json.NewDecoder(bytes.NewReader(file))
@@ -355,6 +357,13 @@ func (t *SettingsTools) DiffSettingsImport(ctx context.Context, tenant, actor st
 		return SettingsDiff{}, err
 	}
 	out := SettingsDiff{LeftOut: left}
+	// a module the file's own exporter could not see is not in the file: the diff answers nothing about it, and says so
+	for _, l := range in.LeftOut {
+		if _, carried := in.Modules[l.Module]; !carried && (l.Module == ModuleFIN || l.Module == ModuleSEA) {
+			out.LeftOut = append(out.LeftOut, LeftOut{Module: l.Module, Reason: fmt.Sprintf("the file does not carry %s: its exporter might not see it (%s); this diff answers nothing about %s's "+
+				"configuration, so an empty answer for %s does not mean that it matches: export %s again as a caller who sees it", l.Module, l.Reason, l.Module, l.Module, l.Module)})
+		}
+	}
 	for module := range in.Modules {
 		if module != ModuleFIN && module != ModuleSEA {
 			out.Unknown = append(out.Unknown, UnknownItem{Module: module, Reason: "this environment has no module " + module + "; remove it from the file"})

@@ -77,6 +77,8 @@ type ConfirmCommand struct {
 	Scope        Scope
 	OnboardingID string
 	Acknowledged string
+	// PlanSHA256 is the digest of the plan the owner read (GetOnboarding, or the proposal's receipt).
+	PlanSHA256 string
 	// Administrator is the owner's declaration of the customer's single administrator, or empty.
 	Administrator string
 }
@@ -112,7 +114,9 @@ func (h Onboardings) ready(scope Scope, commandID string) error {
 }
 
 func proposalHash(o org.Onboarding) (string, error) {
-	o.ProposedAt = time.Time{} // the time is ORG's, not part of what was asked
+	// the time is ORG's, and the plan is what the build resolved from what was asked: neither is part of what the caller sent, so a
+	// replay of the same proposal, with the same command id, after a deploy that resolves it otherwise, answers the stored record
+	o.ProposedAt, o.Plan, o.PlanSHA256 = time.Time{}, nil, ""
 	raw, err := json.Marshal(o)
 	if err != nil {
 		return "", err
@@ -168,6 +172,7 @@ func (h Onboardings) Propose(ctx context.Context, c ProposeCommand) (OnboardingR
 			return nil
 		}
 		o.ProposedAt = h.Clock.Now().UTC().Truncate(time.Microsecond)
+		o.PlanSHA256 = org.PlanDigest(o.Plan)
 		if err = h.Store.Insert(txCtx, c.Scope.TenantID, o, c.CommandID, hash); err != nil {
 			return err
 		}
@@ -194,6 +199,9 @@ func (h Onboardings) Confirm(ctx context.Context, c ConfirmCommand) (OnboardingR
 	if c.OnboardingID == "" {
 		return OnboardingResult{}, fmt.Errorf("%w: a confirmation names its onboarding", ErrInvalidCommand)
 	}
+	if !org.ValidActor(c.Scope.ActorID) {
+		return OnboardingResult{}, fmt.Errorf("%w: the owner's actor id is 1 to 128 bytes, without spaces around it; give it as the identity platform names the person", org.ErrInvalidOnboarding)
+	}
 	if err := h.Auth.RequirePartyAction(ctx, c.Scope, ActionConfirmOnboarding, org.PartyID(c.OnboardingID)); err != nil {
 		return OnboardingResult{}, fmt.Errorf("%w: %v", ErrUnauthorized, err)
 	}
@@ -210,7 +218,7 @@ func (h Onboardings) Confirm(ctx context.Context, c ConfirmCommand) (OnboardingR
 			return fmt.Errorf("%w: onboarding %s; list the tenant's onboardings (ListOnboardings) for the ids", bentorepo.ErrNotFound, c.OnboardingID)
 		}
 		if k := rec.Confirmation; k != nil {
-			if k.By != c.Scope.ActorID || k.AcknowledgedText != c.Acknowledged || k.Administrator != c.Administrator {
+			if k.By != c.Scope.ActorID || k.AcknowledgedText != c.Acknowledged || k.Administrator != c.Administrator || k.PlanSHA256 != c.PlanSHA256 {
 				return fmt.Errorf("%w: onboarding %s was confirmed by %s already; read it (GetOnboarding)", ErrIdempotencyConflict, c.OnboardingID, k.By)
 			}
 			out = OnboardingResult{Record: rec, Notice: org.StrictNotice(rec.Onboarding.Profile, rec.Onboarding.FinanceStaff), Revision: revision(rec)}
@@ -222,6 +230,9 @@ func (h Onboardings) Confirm(ctx context.Context, c ConfirmCommand) (OnboardingR
 				c.OnboardingID, c.Scope.ActorID)
 		case c.Acknowledged != rec.Onboarding.RiskStatement:
 			return fmt.Errorf("%w: the text acknowledged is not the risk statement proposed; read the statement (GetOnboarding), and acknowledge it exactly as it is", org.ErrInvalidOnboarding)
+		case c.PlanSHA256 != rec.Onboarding.PlanSHA256:
+			return fmt.Errorf("%w: the SHA-256 given (%q) is not the digest of the plan proposed (%s); read the onboarding again (GetOnboarding shows the plan and its PlanSHA256), "+
+				"and confirm what it shows", org.ErrInvalidOnboarding, c.PlanSHA256, rec.Onboarding.PlanSHA256)
 		case rec.Onboarding.SingleAdministrator && strings.TrimSpace(c.Administrator) == "":
 			return fmt.Errorf("%w: the proposal says the customer declares a single administrator, and the owner names them when confirming; give the administrator's actor id "+
 				"(AdministratorID), or have the consultant propose a new onboarding, under another id, that declares none", org.ErrInvalidOnboarding)
@@ -234,7 +245,7 @@ func (h Onboardings) Confirm(ctx context.Context, c ConfirmCommand) (OnboardingR
 			return fmt.Errorf("%w: the administrator the owner names is not the consultant %s who proposed the onboarding; name the customer's own administrator", org.ErrInvalidOnboarding,
 				rec.Onboarding.ProposedBy)
 		}
-		k := org.Confirmation{By: c.Scope.ActorID, At: h.Clock.Now().UTC().Truncate(time.Microsecond), AcknowledgedText: c.Acknowledged, Administrator: c.Administrator}
+		k := org.Confirmation{By: c.Scope.ActorID, At: h.Clock.Now().UTC().Truncate(time.Microsecond), AcknowledgedText: c.Acknowledged, Administrator: c.Administrator, PlanSHA256: c.PlanSHA256}
 		if k.At.Before(rec.Onboarding.ProposedAt) {
 			k.At = rec.Onboarding.ProposedAt
 		}

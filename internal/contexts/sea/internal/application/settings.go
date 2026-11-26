@@ -221,7 +221,7 @@ func (d Deps) ApproveSettingsAs(ctx context.Context, c Command, acknowledgement 
 		if err != nil {
 			return Receipt{}, nil, err
 		}
-		a, err := ledger.ApproveAs(SeaSettingsCatalogue(), c.Subject, c.Scope.ActorID, now, settings.Own{Administrators: administratorsOf(declared), Acknowledgement: acknowledgement})
+		a, err := ledger.ApproveAs(SeaSettingsCatalogue(), c.Subject, c.Scope.ActorID, now, settings.Own{Administrators: administratorsOf(declared, now), Acknowledgement: acknowledgement})
 		if err != nil {
 			return Receipt{}, nil, err
 		}
@@ -232,15 +232,13 @@ func (d Deps) ApproveSettingsAs(ctx context.Context, c Command, acknowledgement 
 	})
 }
 
-// administratorsOf are the single administrators the declarations name.
-func administratorsOf(declared []settings.Declaration) []string {
-	var out []string
-	for _, d := range declared {
-		if !slices.Contains(out, d.Administrator) {
-			out = append(out, d.Administrator)
-		}
+// administratorsOf is the tenant's single administrator in force at the time of the approval, one name or none: the one
+// the latest declaration at or before the time names.
+func administratorsOf(declared []settings.Declaration, at time.Time) []string {
+	if administrator, ok := settings.AdministratorInForce(declared, at); ok {
+		return []string{administrator}
 	}
-	return out
+	return nil
 }
 
 // CancelSettings cancels a change set that is not in force yet, with a reason.
@@ -536,6 +534,19 @@ func (d Deps) DeclareSingleAdministrator(ctx context.Context, c Command, propose
 			strings.TrimSpace(administrator) == "" || administrator == proposedBy {
 			return Receipt{}, nil, fmt.Errorf("%w: a declaration names its onboarding, two different people, the consultant who proposed it and the owner who "+
 				"confirmed it, and the administrator, who is not the consultant; the platform's onboarding makes it, so ask its owners if you see this", sea.ErrInvalidChange)
+		}
+		// a tenant has one single administrator in force, the one its latest declaration names, so its declarations are in a total
+		// order: each has its own time, later than every earlier one (the schema's unique key on the tenant and the time)
+		now = now.Truncate(time.Microsecond)
+		earlier, err := d.Settings.DeclarationsForWrite(txCtx, c.Scope.TenantID)
+		if err != nil {
+			return Receipt{}, nil, err
+		}
+		for _, e := range earlier {
+			if !now.After(e.At) {
+				return Receipt{}, nil, fmt.Errorf("%w: the tenant's declaration of onboarding %s is at %s, not before this one's time %s, and the declarations of a tenant are in order of time "+
+					"(the latest names the single administrator); send the same command again", sea.ErrInvalidChange, e.OnboardingID, e.At.UTC().Format(time.RFC3339Nano), now.UTC().Format(time.RFC3339Nano))
+			}
 		}
 		d1 := settings.Declaration{OnboardingID: c.Subject, ProposedBy: proposedBy, ConfirmedBy: c.Scope.ActorID, Administrator: administrator, At: now}
 		if err := d.Settings.InsertDeclaration(txCtx, c.Scope.TenantID, d1); err != nil {

@@ -31,10 +31,12 @@ import (
 // also hold fin:ConfigureSettings and sea:ConfigureSettings when proposing, the owner fin:ApproveSettings and
 // sea:ApproveSettings when confirming (all by name only, as the modules ask them), and the platform then proposes as the
 // consultant with exactly the two ConfigureSettings permissions and declares a single administrator as the owner with
-// exactly the two DeclareSingleAdministrator permissions: no principal can make that declaration without ORG's
-// confirmed onboarding, except one that holds that permission by name. The platform records each module's progress in
-// ORG as the owner with org:RecordOnboardingModule alone, by name only, which only the principal built here holds (the
-// authorizer asks for the platform's mark on the context as well, which nothing outside this package can set).
+// exactly the two DeclareSingleAdministrator permissions. Three things are the platform's own and need its mark on the
+// context, which nothing outside this package can set and no token carries (the authorizer asks for it besides the
+// permission by name): ORG's own ProposeOnboarding and ConfirmOnboarding (the only way in is this onboarding, which checks the
+// plan and the consultant, and checks the person's org permission by name before it calls ORG), the declaration of a single
+// administrator in FIN and in SEA, and ORG's record of each module's progress (org:RecordOnboardingModule alone, held only by
+// the principal built here).
 //
 // What the trail says, and what it cannot. What is applied is what the consultant proposed: ProposeOnboarding resolves
 // the profile and the overrides into each module's entries, with the module's catalogue version, and ORG keeps them; the
@@ -93,8 +95,9 @@ var (
 var ErrOnboardingIncomplete = errors.New("bootstrap: the onboarding is confirmed but a module is not applied yet")
 
 // ErrOnboardingBlocked says that a module of a confirmed onboarding can never be applied by sending the same confirmation
-// again (its change set's id or a command id is taken by another change, its change set was refused or cancelled, or its
-// catalogue is another version than the proposal's): the way out is to propose a new onboarding under another id.
+// again (its change set's id or a command id is taken by another change, or its change set was refused or cancelled): the way
+// out is to propose a new onboarding under another id. A build that is not the proposal's is not in this list: the build the
+// plan was made with cures it (ErrOnboardingBuild, which is curable).
 var ErrOnboardingBlocked = errors.New("bootstrap: the onboarding is confirmed but a module cannot be applied by sending the same confirmation again")
 
 // ModuleFailure is a module that did not reach APPROVED, and why. Permanent says that sending the same confirmation again
@@ -118,8 +121,43 @@ type platformRecorder struct{}
 // recordingAsPlatform is ctx for the platform's own record of a module's progress in ORG: the owner's actor with the one
 // permission, and the mark that the authorizer asks for.
 func recordingAsPlatform(ctx context.Context, tenant, actor string) context.Context {
-	p := identity.Principal{TenantID: tenant, ActorID: actor, Permissions: []string{"org:" + orgapi.ActionRecordOnboardingModule}}
+	return platformPrincipal(ctx, tenant, actor, "org:"+orgapi.ActionRecordOnboardingModule)
+}
+
+// platformPrincipal is ctx for the platform acting as the actor with the one permission, and the platform's mark.
+func platformPrincipal(ctx context.Context, tenant, actor, permission string) context.Context {
+	p := identity.Principal{TenantID: tenant, ActorID: actor, Permissions: []string{permission}}
 	return context.WithValue(identity.WithPrincipal(ctx, p), platformRecorder{}, true)
+}
+
+// asPlatform marks a person's own ctx as the platform's, for ORG's commands that run only under the mark: the person's
+// principal stays, and ORG's authorizer still asks for their org permission by name.
+func asPlatform(ctx context.Context) context.Context {
+	return context.WithValue(ctx, platformRecorder{}, true)
+}
+
+// ErrInvalidActor is the refusal of an actor id (or the administrator's) that is blank, has spaces around it or is longer
+// than 128 bytes: no module accepts it, so it is refused before anything is called, and nothing is recorded.
+var ErrInvalidActor = errors.New("bootstrap: ONBOARDING_INVALID_ACTOR")
+
+// ErrOnboardingBuild says that this build is not the one the onboarding was proposed with: a catalogue's version differs
+// from the plan's, or this build's rules refuse the plan's entries. Before the confirmation nothing is recorded; after it,
+// the confirmation stands and the same ConfirmOnboarding completes the module once the build is the proposal's.
+var ErrOnboardingBuild = errors.New("bootstrap: ONBOARDING_BUILD_DIFFERS")
+
+func checkActor(what, id string, optional bool) error {
+	if optional && id == "" {
+		return nil
+	}
+	if !domainValidActor(id) {
+		return fmt.Errorf("%w: %w: %s %q is blank, has spaces around it or is longer than 128 bytes (%d); give the actor id exactly as the identity platform names the person, "+
+			"and nothing is recorded", orgapi.ErrRejected, ErrInvalidActor, what, id, len(id))
+	}
+	return nil
+}
+
+func domainValidActor(id string) bool {
+	return strings.TrimSpace(id) != "" && strings.TrimSpace(id) == id && len(id) <= 128
 }
 
 func holdsNamed(ctx context.Context, bc, tenant, actor string, actions ...string) error {
@@ -172,6 +210,29 @@ func (o *Onboarding) catalogueVersion(ctx context.Context, module string) (strin
 	return c.Version, err
 }
 
+// buildDiffers says why this build is not the one a module's plan was made with, nil when it is: the module's catalogue is
+// another version, or this build's own rules refuse the plan's entries (a rule that changed under the same version).
+func (o *Onboarding) buildDiffers(ctx context.Context, module string, plan orgapi.ModulePlan) error {
+	current, err := o.catalogueVersion(ctx, module)
+	if err != nil {
+		return err
+	}
+	if current != plan.CatalogueVersion {
+		return fmt.Errorf("the catalogue of %s is version %s in this build and the proposal was resolved against version %s, so what the owner reads is not what %s would apply here",
+			module, current, plan.CatalogueVersion, module)
+	}
+	f, s, err := storedEntries(module, entriesOfOnboarding(plan.Entries))
+	if err == nil && module == ModuleFIN {
+		err = fin.CheckSettingsEntries(f)
+	} else if err == nil {
+		err = sea.CheckSettingsEntries(s)
+	}
+	if err != nil {
+		return fmt.Errorf("this build's rules of %s refuse the entries of the plan, which was resolved by a build that accepted them (%v)", module, err)
+	}
+	return nil
+}
+
 // checkModules refuses a proposal whose profile and overrides a module would refuse, with the module's own words.
 func checkModules(profile Profile, overrides map[string][]orgapi.OnboardingEntry) error {
 	for _, module := range []string{ModuleFIN, ModuleSEA} {
@@ -221,6 +282,12 @@ func onboardingReason(onboarding, consultant string, proposedAt time.Time, owner
 // records the proposal, with those entries and the modules' catalogue versions, in ORG. The receipt carries the notice
 // of a STRICT profile with fewer than three declared finance staff.
 func (o *Onboarding) ProposeOnboarding(ctx context.Context, cmd orgapi.ProposeOnboarding) (orgapi.OnboardingReceipt, error) {
+	if err := checkActor("the consultant's actor id", cmd.ActorID, false); err != nil {
+		return orgapi.OnboardingReceipt{}, err
+	}
+	if err := holdsNamed(ctx, "org", cmd.TenantID, cmd.ActorID, orgapi.ActionProposeOnboarding); err != nil {
+		return orgapi.OnboardingReceipt{}, fmt.Errorf("%w: %v; the consultant holds org:ProposeOnboarding by name", orgapi.ErrUnauthorized, err)
+	}
 	if err := holdsNamed(ctx, "fin", cmd.TenantID, cmd.ActorID, finapi.ActionConfigureSettings); err != nil {
 		return orgapi.OnboardingReceipt{}, fmt.Errorf("%w: %v; the platform proposes the modules' change sets as the consultant, so the consultant holds fin:ConfigureSettings by name", orgapi.ErrUnauthorized, err)
 	}
@@ -246,23 +313,48 @@ func (o *Onboarding) ProposeOnboarding(ctx context.Context, cmd orgapi.ProposeOn
 		return orgapi.OnboardingReceipt{}, err
 	}
 	cmd.Plan = plan
-	return o.org.ProposeOnboarding(ctx, cmd)
+	return o.org.ProposeOnboarding(asPlatform(ctx), cmd)
 }
 
-// ConfirmOnboarding is the owner's confirmation, with their declaration of the customer's single administrator when the
-// proposal says there is one. It records it in ORG, then applies each module (FIN, then SEA) exactly as the proposal
+// ConfirmOnboarding is the owner's confirmation of the plan they read (the SHA-256 of the plan they were shown), with their
+// declaration of the customer's single administrator when the proposal says there is one. Before anything is called it refuses
+// an actor id or an administrator's that no module accepts (ErrInvalidActor), and before ORG records the confirmation it refuses
+// a build that is not the one the plan was made with (ErrOnboardingBuild: nothing is recorded). It records it in ORG, then applies each module (FIN, then SEA) exactly as the proposal
 // stored it: a single administrator is declared when the onboarding says so, the module's change set is proposed as the
 // consultant and, when it loosens something, approved as the owner. A module that fails does not stop the other; the
 // answer lists what failed. When sending the same command again can cure it the error is ErrOnboardingIncomplete; when it
 // cannot, ErrOnboardingBlocked, and the way out is a new onboarding under another id.
 func (o *Onboarding) ConfirmOnboarding(ctx context.Context, cmd orgapi.ConfirmOnboarding) (OnboardingConfirmation, error) {
+	if err := checkActor("the owner's actor id", cmd.ActorID, false); err != nil {
+		return OnboardingConfirmation{}, err
+	}
+	if err := checkActor("the administrator's actor id", cmd.AdministratorID, true); err != nil {
+		return OnboardingConfirmation{}, err
+	}
+	if err := holdsNamed(ctx, "org", cmd.TenantID, cmd.ActorID, orgapi.ActionConfirmOnboarding); err != nil {
+		return OnboardingConfirmation{}, fmt.Errorf("%w: %v; the owner holds org:ConfirmOnboarding by name", orgapi.ErrUnauthorized, err)
+	}
 	for _, bc := range []struct{ name, owns string }{{"fin", finapi.ActionApproveSettings}, {"sea", seaapi.ActionApproveSettings}} {
 		if err := holdsNamed(ctx, bc.name, cmd.TenantID, cmd.ActorID, bc.owns); err != nil {
 			return OnboardingConfirmation{}, fmt.Errorf("%w: %v; the platform approves the modules' change sets as the owner, so the owner holds %s:%s by name",
 				orgapi.ErrUnauthorized, err, bc.name, bc.owns)
 		}
 	}
-	receipt, err := o.org.ConfirmOnboarding(ctx, cmd)
+	// before ORG records the owner's confirmation, this build must be the one the plan was made with: otherwise nothing is
+	// recorded and the owner can confirm again, with this build fixed or with a new onboarding
+	before, err := o.org.GetOnboarding(ctx, orgapi.GetOnboarding{TenantID: cmd.TenantID, OnboardingID: cmd.OnboardingID})
+	if err != nil {
+		return OnboardingConfirmation{}, err
+	}
+	if before.State == orgapi.OnboardingStateProposed {
+		for _, module := range []string{ModuleFIN, ModuleSEA} {
+			if err := o.buildDiffers(ctx, module, before.Plan[module]); err != nil {
+				return OnboardingConfirmation{}, fmt.Errorf("%w: %w: %v; nothing is recorded, the onboarding is still waiting for the owner: run the build the plan was made with and confirm again, "+
+					"or have the consultant propose a new onboarding under another id", orgapi.ErrRejected, ErrOnboardingBuild, err)
+			}
+		}
+	}
+	receipt, err := o.org.ConfirmOnboarding(asPlatform(ctx), cmd)
 	if err != nil {
 		return OnboardingConfirmation{}, err
 	}
@@ -384,14 +476,36 @@ func sameEntries(stored, got []onboardingEntry) bool {
 	return slices.Equal(a, b)
 }
 
-// asPermanent marks an error of a module's own command as one that sending the same confirmation again cannot cure when
-// it says that a command id is reused with another payload, or that the change set was refused or cancelled.
-func asPermanent(module string, err error) error {
+// asPermanent classes an error of a module's own command, for the step (declare, propose or approve) that got it, as one that
+// sending the same confirmation again can never cure (Permanent: the way out is a new onboarding under another id) or not. Each
+// error a module can answer to a step, and how it is classed:
+//
+//   - a command id the onboarding derived is taken by another command (idempotency conflict): permanent;
+//   - the change set was cancelled or refused (SETTINGS_CANCELLED, SETTINGS_REFUSED), and an approver who is the proposer
+//     (SETTINGS_SAME_ACTOR) or an acknowledgement where there is none to give (SETTINGS_ACKNOWLEDGEMENT), which depend only on
+//     the people and the record and which the confirmation's own checks prevent: permanent;
+//   - the module refuses the plan's own entries (an unknown item or value, a scope, a parameter, a duplicate or a shape,
+//     SETTINGS_UNKNOWN_ITEM, _UNKNOWN_VALUE, _SCOPE, _PARAMETER, _DUPLICATE, _INVALID when proposing): not permanent, because the
+//     build the plan was made with accepted it, so running that build cures it; the answer names both ways out, as it does for a
+//     build that differs (buildDiffers, which checks the same before the module is called);
+//   - SETTINGS_RULE against the tenant's other change sets (the plan's own entries pass this build's rules): curable, by
+//     cancelling or approving what conflicts, with the module's own words;
+//   - FIN_NO_POLICY (an override names a legal entity that has no policy yet), a clock that is behind (SETTINGS_CLOCK,
+//     SETTINGS_CLOCK_SKEW, SETTINGS_ORDER, SETTINGS_EFFECTIVE_TIME, a declaration at the instant of another or before it, an
+//     approval before its proposal), a change set already approved (the retry finds it), a missing permission, a conflict or
+//     a database that is down: curable, by what the words say, and then the same confirmation completes the module.
+func asPermanent(module, step string, err error) error {
 	switch {
 	case errors.Is(err, finapi.ErrIdempotencyConflict), errors.Is(err, seaapi.ErrIdempotencyConflict):
 		return permanent{fmt.Errorf("a command id the onboarding derived for %s is taken by another command (%w); %s", module, err, newOnboarding)}
-	case errors.Is(err, settings.ErrCancelled):
+	case errors.Is(err, settings.ErrCancelled), errors.Is(err, settings.ErrRefusedChange): // ErrCancelled is reached only by a cancellation between the listing and the approval, a race
 		return permanent{fmt.Errorf("the change set of %s was cancelled or refused (%w); %s", module, err, newOnboarding)}
+	case errors.Is(err, settings.ErrSameActor), errors.Is(err, settings.ErrAcknowledgement):
+		return permanent{fmt.Errorf("the people of the onboarding cannot approve the change set of %s (%w); %s", module, err, newOnboarding)}
+	case step == "propose" && (errors.Is(err, settings.ErrUnknownItem) || errors.Is(err, settings.ErrUnknownValue) || errors.Is(err, settings.ErrScope) ||
+		errors.Is(err, settings.ErrParameter) || errors.Is(err, settings.ErrDuplicate) || errors.Is(err, settings.ErrInvalid)):
+		return fmt.Errorf("%w: %s refuses the plan's entries (%w); run the build the plan was made with and send the same ConfirmOnboarding again, or propose a new onboarding under another id",
+			ErrOnboardingBuild, module, err)
 	}
 	return err
 }
@@ -412,13 +526,10 @@ func (o *Onboarding) applyModule(ctx context.Context, cmd orgapi.ConfirmOnboardi
 	if !ok {
 		return permanent{fmt.Errorf("the onboarding stores no plan for %s; %s", module, newOnboarding)}
 	}
-	current, err := o.catalogueVersion(ctx, module)
-	if err != nil {
-		return err
-	}
-	if current != plan.CatalogueVersion {
-		return permanent{fmt.Errorf("the catalogue of %s is version %s now and the proposal was resolved against version %s, so what the owner confirmed is not what %s would apply now; %s",
-			module, current, plan.CatalogueVersion, module, newOnboarding)}
+	// a build that is not the proposal's is not permanent: the build the plan was made with cures it
+	if err := o.buildDiffers(ctx, module, plan); err != nil {
+		return fmt.Errorf("%w: %v; the owner's confirmation is recorded and stays: run the build the plan was made with and send the same ConfirmOnboarding again, "+
+			"or propose a new onboarding under another id", ErrOnboardingBuild, err)
 	}
 	reason := onboardingReason(id, onb.ProposedBy, onb.ProposedAt, onb.ConfirmedBy, onb.ConfirmedAt)
 	stored := entriesOfOnboarding(plan.Entries)
@@ -439,7 +550,7 @@ func (o *Onboarding) applyModule(ctx context.Context, cmd orgapi.ConfirmOnboardi
 	if err != nil {
 		return err
 	}
-	declarer := identity.WithPrincipal(ctx, identity.Principal{TenantID: cmd.TenantID, ActorID: cmd.ActorID, Permissions: []string{lower + ":DeclareSingleAdministrator"}})
+	declarer := platformPrincipal(ctx, cmd.TenantID, cmd.ActorID, lower+":DeclareSingleAdministrator")
 	consultant := identity.WithPrincipal(ctx, identity.Principal{TenantID: cmd.TenantID, ActorID: onb.ProposedBy, Permissions: []string{lower + ":ConfigureSettings"}})
 	if onb.SingleAdministrator {
 		if module == ModuleFIN {
@@ -450,7 +561,7 @@ func (o *Onboarding) applyModule(ctx context.Context, cmd orgapi.ConfirmOnboardi
 				ActorID: cmd.ActorID, OnboardingID: id, ProposedBy: onb.ProposedBy, AdministratorID: onb.AdministratorID})
 		}
 		if err != nil {
-			return asPermanent(module, err)
+			return asPermanent(module, "declare", err)
 		}
 	}
 	if !found {
@@ -462,7 +573,7 @@ func (o *Onboarding) applyModule(ctx context.Context, cmd orgapi.ConfirmOnboardi
 				ChangeID: changeID, Entries: seaAsked, Reason: reason})
 		}
 		if err != nil {
-			return asPermanent(module, err)
+			return asPermanent(module, "propose", err)
 		}
 		if change, found, err = o.findChange(ctx, module, cmd.TenantID, changeID); err != nil {
 			return err
@@ -487,7 +598,7 @@ func (o *Onboarding) applyModule(ctx context.Context, cmd orgapi.ConfirmOnboardi
 			_, err = o.sea.ApproveSeaSettingsChange(ctx, seaapi.ApproveSeaSettingsChange{CommandID: command("approve"), TenantID: cmd.TenantID, ActorID: cmd.ActorID, ChangeID: changeID})
 		}
 		if err != nil {
-			return asPermanent(module, err)
+			return asPermanent(module, "approve", err)
 		}
 	}
 	if !hasModuleState(onb.Modules, module, orgapi.ModuleApproved) {

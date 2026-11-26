@@ -1,6 +1,9 @@
 package domain
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -66,15 +69,26 @@ type ModulePlan struct {
 
 // Onboarding is a consultant's proposal.
 type Onboarding struct {
-	ID                  string
-	Profile             string
-	Overrides           map[string][]OnboardingEntry
-	Plan                map[string]ModulePlan
+	ID        string
+	Profile   string
+	Overrides map[string][]OnboardingEntry
+	Plan      map[string]ModulePlan
+	// PlanSHA256 is the digest of the plan (PlanDigest), set by ORG when it records the proposal, never taken from the caller.
+	PlanSHA256          string
 	RiskStatement       string
 	FinanceStaff        int
 	SingleAdministrator bool
 	ProposedBy          string
 	ProposedAt          time.Time
+}
+
+// PlanDigest is the SHA-256, in lower-case hexadecimal, of the plan as JSON (encoding/json: the modules in the order of
+// their names, each with CatalogueVersion and Entries in the order stored). The owner reads the plan and confirms the
+// digest of what they read; ORG keeps the digest with the proposal and refuses a confirmation that carries another.
+func PlanDigest(plan map[string]ModulePlan) string {
+	raw, _ := json.Marshal(plan) // a map of strings, numbers and pointers to numbers cannot fail to marshal
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
 }
 
 // Confirmation is the owner's. Administrator is the single administrator the owner declared, empty when the proposal
@@ -84,6 +98,13 @@ type Confirmation struct {
 	At               time.Time
 	AcknowledgedText string
 	Administrator    string
+	// PlanSHA256 is the digest of the plan the owner read, which is the proposal's.
+	PlanSHA256 string
+}
+
+// ValidActor says whether an actor id is 1 to 128 bytes without spaces around it, the form every module accepts.
+func ValidActor(id string) bool {
+	return strings.TrimSpace(id) != "" && strings.TrimSpace(id) == id && len(id) <= 128
 }
 
 // ModuleState is what an onboarding recorded for a module: the state and its change set.
@@ -109,8 +130,8 @@ func (o Onboarding) Validate() error {
 		return refuse("the risk statement is 1 to %d characters; write what the customer is told it accepts", MaxRiskStatement)
 	case o.FinanceStaff < 1 || o.FinanceStaff > MaxFinanceStaff:
 		return refuse("the customer's declared number of finance staff is 1 to %d; ask the customer", MaxFinanceStaff)
-	case strings.TrimSpace(o.ProposedBy) == "" || len(o.ProposedBy) > 128:
-		return refuse("an onboarding names its proposer (1 to 128 bytes); this is ORG's own call, so ask the platform's owners if you see it")
+	case !ValidActor(o.ProposedBy):
+		return refuse("an onboarding names its proposer (1 to 128 bytes, no spaces around it); give the actor id as the identity platform names the person")
 	}
 	for module, entries := range o.Overrides {
 		if !slices.Contains(Modules, module) {

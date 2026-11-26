@@ -26,16 +26,16 @@ func (s Onboardings) Lock(ctx context.Context, tenant org.TenantID, id string) e
 	return err
 }
 
-const onboardingColumns = `o.onboarding_id,o.command_id,o.request_hash,o.profile,o.overrides,o.plan,o.risk_statement,o.finance_staff,o.single_administrator,o.proposed_by,
-  o.proposed_at,k.confirmed_by,k.confirmed_at,k.acknowledged_text,k.command_id,k.administrator`
+const onboardingColumns = `o.onboarding_id,o.command_id,o.request_hash,o.profile,o.overrides,o.plan,o.plan_sha256,o.risk_statement,o.finance_staff,o.single_administrator,o.proposed_by,
+  o.proposed_at,k.confirmed_by,k.confirmed_at,k.acknowledged_text,k.command_id,k.administrator,k.plan_sha256`
 
 func scanOnboarding(row interface{ Scan(...any) error }) (app.OnboardingRecord, error) {
 	var r app.OnboardingRecord
 	var overrides, plan []byte
-	var by, text, command, administrator *string
+	var by, text, command, administrator, digest *string
 	var at *time.Time
-	if err := row.Scan(&r.Onboarding.ID, &r.CommandID, &r.Hash, &r.Onboarding.Profile, &overrides, &plan, &r.Onboarding.RiskStatement, &r.Onboarding.FinanceStaff,
-		&r.Onboarding.SingleAdministrator, &r.Onboarding.ProposedBy, &r.Onboarding.ProposedAt, &by, &at, &text, &command, &administrator); err != nil {
+	if err := row.Scan(&r.Onboarding.ID, &r.CommandID, &r.Hash, &r.Onboarding.Profile, &overrides, &plan, &r.Onboarding.PlanSHA256, &r.Onboarding.RiskStatement, &r.Onboarding.FinanceStaff,
+		&r.Onboarding.SingleAdministrator, &r.Onboarding.ProposedBy, &r.Onboarding.ProposedAt, &by, &at, &text, &command, &administrator, &digest); err != nil {
 		return r, err
 	}
 	r.Onboarding.ProposedAt = r.Onboarding.ProposedAt.UTC()
@@ -46,7 +46,7 @@ func scanOnboarding(row interface{ Scan(...any) error }) (app.OnboardingRecord, 
 		return r, err
 	}
 	if by != nil {
-		r.Confirmation = &org.Confirmation{By: *by, At: at.UTC(), AcknowledgedText: *text}
+		r.Confirmation = &org.Confirmation{By: *by, At: at.UTC(), AcknowledgedText: *text, PlanSHA256: *digest}
 		if administrator != nil {
 			r.Confirmation.Administrator = *administrator
 		}
@@ -144,9 +144,9 @@ func (s Onboardings) Insert(ctx context.Context, tenant org.TenantID, o org.Onbo
 	if err != nil {
 		return err
 	}
-	_, err = q.Exec(ctx, `INSERT INTO cargo_org.onboarding (tenant_id,onboarding_id,command_id,request_hash,profile,overrides,plan,risk_statement,finance_staff,
-        single_administrator,proposed_by,proposed_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, string(tenant), o.ID, commandID, hash, o.Profile, raw, rawPlan,
-		o.RiskStatement, o.FinanceStaff, o.SingleAdministrator, o.ProposedBy, o.ProposedAt)
+	_, err = q.Exec(ctx, `INSERT INTO cargo_org.onboarding (tenant_id,onboarding_id,command_id,request_hash,profile,overrides,plan,plan_sha256,risk_statement,finance_staff,
+        single_administrator,proposed_by,proposed_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`, string(tenant), o.ID, commandID, hash, o.Profile, raw, rawPlan,
+		o.PlanSHA256, o.RiskStatement, o.FinanceStaff, o.SingleAdministrator, o.ProposedBy, o.ProposedAt)
 	return err
 }
 
@@ -160,8 +160,8 @@ func (s Onboardings) InsertConfirmation(ctx context.Context, tenant org.TenantID
 		administrator = &c.Administrator
 	}
 	_, err = q.Exec(ctx, `INSERT INTO cargo_org.onboarding_confirmation (tenant_id,onboarding_id,command_id,proposed_by,proposed_at,confirmed_by,confirmed_at,
-        acknowledged_text,single_administrator,administrator) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, string(tenant), id, commandID, o.ProposedBy, o.ProposedAt,
-		c.By, c.At, c.AcknowledgedText, o.SingleAdministrator, administrator)
+        acknowledged_text,single_administrator,administrator,plan_sha256) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, string(tenant), id, commandID, o.ProposedBy, o.ProposedAt,
+		c.By, c.At, c.AcknowledgedText, o.SingleAdministrator, administrator, c.PlanSHA256)
 	return err
 }
 

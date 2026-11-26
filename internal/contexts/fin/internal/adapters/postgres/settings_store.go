@@ -251,6 +251,9 @@ func (s SettingsStore) InsertDeclaration(ctx context.Context, tenant fin.TenantI
 		string(tenant), d.OnboardingID, d.ProposedBy, d.ConfirmedBy, d.Administrator, d.At)
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		if pgErr.ConstraintName == "single_administrator_time_once" { // two declarations of a tenant at one instant: the later retries
+			return fmt.Errorf("%w: a declaration of the tenant is at the same instant as this one's; the declarations of a tenant are in order of time, so send the same command again", bentorepo.ErrConflict)
+		}
 		return fmt.Errorf("%w: the declaration of onboarding %s", bentorepo.ErrAlreadyExists, d.OnboardingID)
 	}
 	return err

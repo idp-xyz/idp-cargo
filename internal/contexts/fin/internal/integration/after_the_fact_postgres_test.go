@@ -318,10 +318,10 @@ func TestTheWeekOfTheListHasItsBoundsOnPostgres(t *testing.T) {
 	}
 }
 
-// The review: another person, once, replayed. The reviewer is neither the submitter nor the previewer of any line of the
-// week's list (the refusal names the line and the way out); a week is reviewed once and only once it has begun; a
-// replay answers the stored receipt and writes nothing more; the week's answer says who reviewed it and when, and the
-// list still matches.
+// The review: another person, replayed. The reviewer is neither the submitter nor the previewer of any line of the
+// week's list (the refusal names the line and the way out); a week whose list is the one already reviewed is not reviewed
+// again (V2.102 batch E: it is when the list changed) and only once it has begun; a replay answers the stored receipt and
+// writes nothing more; the week's answer says who reviewed it and when, and the list still matches.
 func TestAWeekIsReviewedOnceByAnotherPersonAndReplayedOnPostgres(t *testing.T) {
 	u, week, start := afterWorld(t, 3)
 	u.atTime("one", 1, start.Add(time.Hour))
@@ -362,10 +362,10 @@ func TestAWeekIsReviewedOnceByAnotherPersonAndReplayedOnPostgres(t *testing.T) {
 		m.CurrentSize != 2 || m.CurrentDigest != m.ListDigest || !m.Matches {
 		t.Fatalf("the review: %+v", m)
 	}
-	// a second review of the week, by anyone, is refused, naming who reviewed it
+	// a second review of the week with the same list, by anyone, is refused, naming who reviewed it and that there is nothing new
 	for _, who := range []string{"head-1", "head-2"} {
 		_, err := after.module.MarkAfterTheFactReviewed(after.ctx, after.markCmd("review-2-"+who, who, week))
-		after.refused("a second review by "+who, err, "FIN_AFTER_THE_FACT_REVIEWED", "reviewed by head-1")
+		after.refused("a second review by "+who, err, "FIN_AFTER_THE_FACT_REVIEWED", "reviewed by head-1", "nothing new to review", "has not changed")
 	}
 	// refusals of the command's form, each naming what to do
 	for name, c := range map[string]api.MarkAfterTheFactReviewed{
@@ -532,8 +532,8 @@ func TestTheDatabaseKeepsTheReviewRulesOnPostgres(t *testing.T) {
 	u.atTime("one", 1, start.Add(time.Hour))
 	f := u.fixture
 	insert := func(entity, week, startAt, by, note string, size int, digest, reviewedAt string) string {
-		return fmt.Sprintf(`INSERT INTO cargo_fin.after_the_fact_review (tenant_id,legal_entity_id,week,week_start,reviewed_by,note,list_size,list_digest,reviewed_at)
-            VALUES ($1,'%s','%s','%s','%s','%s',%d,'%s','%s')`, entity, week, startAt, by, note, size, digest, reviewedAt)
+		return fmt.Sprintf(`INSERT INTO cargo_fin.after_the_fact_review (tenant_id,legal_entity_id,week,review_no,week_start,reviewed_by,note,list_size,list_digest,reviewed_at)
+            VALUES ($1,'%s','%s',1,'%s','%s','%s',%d,'%s','%s')`, entity, week, startAt, by, note, size, digest, reviewedAt)
 	}
 	hex := strings.Repeat("a", 64)
 	row := func(week, startAt string) string {
@@ -547,28 +547,28 @@ func TestTheDatabaseKeepsTheReviewRulesOnPostgres(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, c := range map[string]struct{ sql, state, check string }{
-		"a second review of the week":     {row(w, monday), "23505", "after_the_fact_review_pkey"},
-		"a legal entity with no policy":   {with(row("2026-W49", "2026-11-30 00:00:00"), "'LE'", "'LE-9'"), "23503", ""},
-		"a week with no W":                {row("2026-49", "2026-11-30 00:00:00"), "23514", "after_the_fact_review_week_form"},
-		"week 00":                         {row("2026-W00", "2025-12-22 00:00:00"), "23514", "after_the_fact_review_week_form"},
-		"week 54":                         {row("2026-W54", "2027-01-11 00:00:00"), "23514", "after_the_fact_review_week_form"},
-		"a lower-case w":                  {row("2026-w49", "2026-11-30 00:00:00"), "23514", "after_the_fact_review_week_form"},
-		"a week of one digit":             {row("2026-W9", "2026-02-23 00:00:00"), "23514", "after_the_fact_review_week_form"},
-		"a Monday that is not the week's": {row("2026-W49", "2026-11-23 00:00:00"), "23514", "after_the_fact_review_week_start"},
-		"a Tuesday":                       {row("2026-W49", "2026-12-01 00:00:00"), "23514", "after_the_fact_review_week_start"},
-		"a Monday at 00:00:01":            {row("2026-W49", "2026-11-30 00:00:01"), "23514", "after_the_fact_review_week_start"},
-		"week 53 of a year that has 52":   {row("2027-W53", "2027-01-04 00:00:00"), "23514", "after_the_fact_review_week_start"},
-		"a review before its week began":  {with(row("2026-W49", "2026-11-30 00:00:00"), "2099-01-01 00:00:00+00", "2026-11-29 23:59:59.999999+00"), "23514", "after_the_fact_review_week_begun"},
-		"an empty note":                   {with(row("2026-W49", "2026-11-30 00:00:00"), "'a note'", "' '"), "23514", "after_the_fact_review_note_check"},
-		"a note of 2001 characters":       {with(row("2026-W49", "2026-11-30 00:00:00"), "'a note'", "repeat('n',2001)"), "23514", "after_the_fact_review_note_check"},
-		"an empty reviewer":               {with(row("2026-W49", "2026-11-30 00:00:00"), "'head-1'", "''"), "23514", "after_the_fact_review_reviewed_by_check"},
-		"a reviewer of 129 characters":    {with(row("2026-W49", "2026-11-30 00:00:00"), "'head-1'", "repeat('r',129)"), "23514", "after_the_fact_review_reviewed_by_check"},
-		"a negative list size":            {with(row("2026-W49", "2026-11-30 00:00:00"), ",1,'"+hex, ",-1,'"+hex), "23514", "after_the_fact_review_list_size_check"},
-		"a digest in capitals":            {with(row("2026-W49", "2026-11-30 00:00:00"), hex, strings.Repeat("A", 64)), "23514", "after_the_fact_review_list_digest_check"},
-		"a digest of 63 characters":       {with(row("2026-W49", "2026-11-30 00:00:00"), hex, hex[:63]), "23514", "after_the_fact_review_list_digest_check"},
-		"a row changed":                   {`UPDATE cargo_fin.after_the_fact_review SET note='changed' WHERE tenant_id=$1`, "42501|23001", ""},
-		"a row removed":                   {`DELETE FROM cargo_fin.after_the_fact_review WHERE tenant_id=$1`, "42501|23001", ""},
-		"a row of another tenant":         {with(row("2026-W49", "2026-11-30 00:00:00"), "VALUES ($1,", "VALUES ($1||'x',"), "42501", ""},
+		"a second review numbered 1 again": {row(w, monday), "23514", "after_the_fact_review_numbered"},
+		"a legal entity with no policy":    {with(row("2026-W49", "2026-11-30 00:00:00"), "'LE'", "'LE-9'"), "23503", ""},
+		"a week with no W":                 {row("2026-49", "2026-11-30 00:00:00"), "23514", "after_the_fact_review_week_form"},
+		"week 00":                          {row("2026-W00", "2025-12-22 00:00:00"), "23514", "after_the_fact_review_week_form"},
+		"week 54":                          {row("2026-W54", "2027-01-11 00:00:00"), "23514", "after_the_fact_review_week_form"},
+		"a lower-case w":                   {row("2026-w49", "2026-11-30 00:00:00"), "23514", "after_the_fact_review_week_form"},
+		"a week of one digit":              {row("2026-W9", "2026-02-23 00:00:00"), "23514", "after_the_fact_review_week_form"},
+		"a Monday that is not the week's":  {row("2026-W49", "2026-11-23 00:00:00"), "23514", "after_the_fact_review_week_start"},
+		"a Tuesday":                        {row("2026-W49", "2026-12-01 00:00:00"), "23514", "after_the_fact_review_week_start"},
+		"a Monday at 00:00:01":             {row("2026-W49", "2026-11-30 00:00:01"), "23514", "after_the_fact_review_week_start"},
+		"week 53 of a year that has 52":    {row("2027-W53", "2027-01-04 00:00:00"), "23514", "after_the_fact_review_week_start"},
+		"a review before its week began":   {with(row("2026-W49", "2026-11-30 00:00:00"), "2099-01-01 00:00:00+00", "2026-11-29 23:59:59.999999+00"), "23514", "after_the_fact_review_week_begun"},
+		"an empty note":                    {with(row("2026-W49", "2026-11-30 00:00:00"), "'a note'", "' '"), "23514", "after_the_fact_review_note_check"},
+		"a note of 2001 characters":        {with(row("2026-W49", "2026-11-30 00:00:00"), "'a note'", "repeat('n',2001)"), "23514", "after_the_fact_review_note_check"},
+		"an empty reviewer":                {with(row("2026-W49", "2026-11-30 00:00:00"), "'head-1'", "''"), "23514", "after_the_fact_review_reviewed_by_check"},
+		"a reviewer of 129 characters":     {with(row("2026-W49", "2026-11-30 00:00:00"), "'head-1'", "repeat('r',129)"), "23514", "after_the_fact_review_reviewed_by_check"},
+		"a negative list size":             {with(row("2026-W49", "2026-11-30 00:00:00"), ",1,'"+hex, ",-1,'"+hex), "23514", "after_the_fact_review_list_size_check"},
+		"a digest in capitals":             {with(row("2026-W49", "2026-11-30 00:00:00"), hex, strings.Repeat("A", 64)), "23514", "after_the_fact_review_list_digest_check"},
+		"a digest of 63 characters":        {with(row("2026-W49", "2026-11-30 00:00:00"), hex, hex[:63]), "23514", "after_the_fact_review_list_digest_check"},
+		"a row changed":                    {`UPDATE cargo_fin.after_the_fact_review SET note='changed' WHERE tenant_id=$1`, "42501|23001", ""},
+		"a row removed":                    {`DELETE FROM cargo_fin.after_the_fact_review WHERE tenant_id=$1`, "42501|23001", ""},
+		"a row of another tenant":          {with(row("2026-W49", "2026-11-30 00:00:00"), "VALUES ($1,", "VALUES ($1||'x',"), "42501", ""},
 	} {
 		err := f.within(t, func(ctx context.Context, e bentopg.Executor) error {
 			_, err := e.Exec(ctx, c.sql, f.tenant)

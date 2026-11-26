@@ -35,7 +35,8 @@ func TestAProposerApprovesTheirOwnLooseningOnlyWithTheDeclarationAndAnAcknowledg
 		"with a blank acknowledgement":                     {"ann", Own{Administrators: []string{"ann"}, Acknowledgement: "  \n "}, ErrAcknowledgement, "1 to 2000 characters"},
 		"with too long an acknowledgement":                 {"ann", Own{Administrators: []string{"ann"}, Acknowledgement: long}, ErrAcknowledgement, "shorten it"},
 		"the declared administrator is another person":     {"ann", Own{Administrators: []string{"dan"}, Acknowledgement: "I accept"}, ErrSameActor, "not the single administrator this tenant declared (dan)"},
-		"another person declared, without acknowledgement": {"ann", Own{Administrators: []string{"dan", "eve"}}, ErrSameActor, "(dan, eve)"},
+		"two administrators in force":                      {"ann", Own{Administrators: []string{"dan", "eve"}}, ErrInvalid, "one single administrator in force"},
+		"two in force, the proposer one of them":           {"ann", Own{Administrators: []string{"ann", "eve"}, Acknowledgement: "I accept"}, ErrInvalid, "(ann, eve)"},
 		"another approver with an acknowledgement":         {"bob", Own{Administrators: []string{"ann"}, Acknowledgement: "I accept"}, ErrAcknowledgement, "leave it out"},
 	} {
 		a, err := l.ApproveAs(cat, "L1", c.by, hours(2), c.own)
@@ -143,5 +144,28 @@ func TestTheReportLeavesOutAnEntryAtTheStandardValue(t *testing.T) {
 	l, _ := propose(t, NewLedger(nil), "S1", "ann", 1, -1, entry(TenantScope, "tst.A", "X1"), entry(TenantScope, "tst.B", "B0"))
 	if r := l.ExceptionReport(testCatalogue(), hours(5), hours(0), hours(9)); len(r.Looser) != 0 {
 		t.Fatalf("looser than standard: %+v", r.Looser)
+	}
+}
+
+// V2.102 batch E: a tenant has one single administrator in force, the one its latest declaration at or before the time
+// names; a later declaration replaces the earlier one from its time.
+func TestTheSingleAdministratorInForceIsTheLatestDeclarationAtOrBeforeTheTime(t *testing.T) {
+	d := func(admin string, h int) Declaration {
+		return Declaration{OnboardingID: "ob-" + admin, Administrator: admin, At: hours(h)}
+	}
+	declared := []Declaration{d("dan", 1), d("eve", 5), d("fay", 3)} // not in order: the latest by time wins, not the last listed
+	for name, c := range map[string]struct {
+		at   int
+		want string
+		ok   bool
+	}{"before any": {0, "", false}, "at the first": {1, "dan", true}, "between the first and the second": {2, "dan", true}, "at the third by time": {3, "fay", true},
+		"after the third": {4, "fay", true}, "at the latest": {5, "eve", true}, "long after": {99, "eve", true}} {
+		got, ok := AdministratorInForce(declared, hours(c.at))
+		if got != c.want || ok != c.ok {
+			t.Errorf("%s: %q, %v; want %q, %v", name, got, ok, c.want, c.ok)
+		}
+	}
+	if got, ok := AdministratorInForce(nil, hours(9)); ok || got != "" {
+		t.Errorf("no declaration: %q, %v", got, ok)
 	}
 }

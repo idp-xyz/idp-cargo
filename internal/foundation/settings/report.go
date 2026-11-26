@@ -136,3 +136,21 @@ type Declaration struct {
 	Administrator string
 	At            time.Time
 }
+
+// AdministratorInForce is the tenant's single administrator at a time: the one named by its latest declaration at or
+// before the time. A tenant has at most one in force (V2.102, batch E): a later onboarding that declares another replaces
+// the earlier one from its declaration's time, and the earlier administrator may no longer approve their own loosening.
+// The order of the declarations is total because a tenant's declarations have distinct times (the schema's unique key on
+// the tenant and the time). It answers false when no declaration is at or before the time.
+func AdministratorInForce(declared []Declaration, at time.Time) (string, bool) {
+	var latest *Declaration
+	for i := range declared {
+		if !declared[i].At.After(at) && (latest == nil || declared[i].At.After(latest.At)) {
+			latest = &declared[i]
+		}
+	}
+	if latest == nil {
+		return "", false
+	}
+	return latest.Administrator, true
+}

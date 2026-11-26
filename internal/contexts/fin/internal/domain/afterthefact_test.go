@@ -175,3 +175,56 @@ func TestAReviewIsMadeByAnotherPersonOnceTheWeekHasEnded(t *testing.T) {
 		t.Errorf("a week that is not one: %v", err)
 	}
 }
+
+// V2.102 batch E: a week is reviewed again when its list differs from the latest review's (size or digest) and is refused only
+// when it is the list already reviewed; each review has the next number, from 1 without a gap.
+func TestAWeekIsReviewedAgainOnlyWhenItsListChanged(t *testing.T) {
+	week := "2026-W48"
+	_, end, _ := ParseWeek(week)
+	line := func(no int, by string) ReviewLine {
+		return ReviewLine{ReviewKey: ReviewKey{PoolID: "P-1", ApportionmentNo: no, LineNo: 1, ShipmentID: "SH-C"}, SubmittedBy: by, PreviewedBy: by}
+	}
+	one := []ReviewLine{line(1, "fin-2")}
+	review := func(lines []ReviewLine, done *AfterTheFactReviewState, reviewer string) (*AfterTheFactReview, error) {
+		return ReviewAfterTheFact("t", "LE", week, lines, done, reviewer, "read", end.Add(time.Hour))
+	}
+	r1, err := review(one, nil, "head-1")
+	if err != nil || r1.State().ReviewNo != 1 {
+		t.Fatalf("the first review: %+v, %v", r1, err)
+	}
+	done := r1.State()
+	// the list the latest review signed, whoever asks: nothing new
+	for _, who := range []string{"head-1", "head-2"} {
+		if _, err = review(one, &done, who); !errors.Is(err, ErrAfterTheFactReviewed) || !strings.Contains(err.Error(), "nothing new to review") || !strings.Contains(err.Error(), "review 1") {
+			t.Errorf("the same list, by %s: %v", who, err)
+		}
+	}
+	// a line added: the list changed in size
+	two := []ReviewLine{line(1, "fin-2"), line(2, "fin-3")}
+	r2, err := review(two, &done, "head-1")
+	if err != nil || r2.State().ReviewNo != 2 || r2.State().ListSize != 2 || r2.State().ReviewedBy != "head-1" {
+		t.Fatalf("the second review, a line added: %+v, %v", r2, err)
+	}
+	if e := r2.Pending(); len(e) != 1 || e[0].Version != 2 {
+		t.Fatalf("the second review's event: %+v", e)
+	}
+	// a line changed with the size the same: the list changed in digest, and the week is reviewed again
+	done = r2.State()
+	changed := []ReviewLine{line(1, "fin-2"), line(2, "fin-4")}
+	if ListDigest(changed) == done.ListDigest || len(changed) != done.ListSize {
+		t.Fatal("the fixture: a list of the same size and another digest")
+	}
+	r3, err := review(changed, &done, "head-2")
+	if err != nil || r3.State().ReviewNo != 3 || r3.State().ListDigest != ListDigest(changed) {
+		t.Fatalf("the third review, a line changed with the same size: %+v, %v", r3, err)
+	}
+	// the bar on the reviewer applies to every line of the list, whoever reviewed before
+	done = r3.State()
+	if _, err = review([]ReviewLine{line(1, "fin-2"), line(2, "fin-4"), line(3, "head-9")}, &done, "head-9"); !errors.Is(err, ErrAfterTheFactReviewer) {
+		t.Errorf("a reviewer who submitted a line of the changed list: %v", err)
+	}
+	// the week must have ended whatever its reviews
+	if _, err = ReviewAfterTheFact("t", "LE", week, two, &done, "head-1", "read", end.Add(-time.Nanosecond)); !errors.Is(err, ErrAfterTheFactNotEnded) {
+		t.Errorf("a week that has not ended: %v", err)
+	}
+}

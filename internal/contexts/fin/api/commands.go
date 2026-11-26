@@ -864,10 +864,11 @@ type ResolveCostReview struct {
 // apportionments' system time) reviewed, with a note of 1 to 2000 characters (FIN V2.102, batch B). It records the size
 // and the digest of the week's list as it is then, so that a list that changes later is visible in
 // GetAfterTheFactReview. The reviewer is neither the submitter nor the previewer of any line of that list
-// (FIN_AFTER_THE_FACT_REVIEWER: another person reviews), the week is reviewed once (FIN_AFTER_THE_FACT_REVIEWED) and
-// only once it has ended, from the next Monday at 00:00 UTC by FIN's clock (FIN_AFTER_THE_FACT_WEEK_NOT_ENDED: review it
+// (FIN_AFTER_THE_FACT_REVIEWER: another person reviews), a week is reviewed again when its list differs from the latest
+// review's, in size or digest, and is refused only when it is the list already reviewed (FIN_AFTER_THE_FACT_REVIEWED: there is
+// nothing new to review), each review keeping its own number, from 1 without a gap, its size and its digest, and only once it has ended, from the next Monday at 00:00 UTC by FIN's clock (FIN_AFTER_THE_FACT_WEEK_NOT_ENDED: review it
 // from that Monday; a week that has not begun is FIN_AFTER_THE_FACT_WEEK_NOT_BEGUN). The receipt's SubjectID is "<legal entity>/<week>", its
-// NewRevision 1 and its Version the list's size. It needs the permission ReviewAfterTheFact, granted by name only, and
+// NewRevision the review's number (1 for the first) and its Version the list's size. It needs the permission ReviewAfterTheFact, granted by name only, and
 // ReadProfit as well, so that the reviewer can read the list they sign.
 type MarkAfterTheFactReviewed struct {
 	CommandID     string

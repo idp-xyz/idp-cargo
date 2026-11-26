@@ -24,12 +24,12 @@ type AfterTheFactStore interface {
 	// Lines lists the attributions of the legal entity confirmed in [from, to) by the apportionments' system time that are
 	// listed for a reason, in the order of fin.ReviewKey, those after the key; limit 0 lists them all.
 	Lines(ctx context.Context, tenant fin.TenantID, legalEntity string, from, to time.Time, after fin.ReviewKey, limit int) ([]fin.ReviewLine, error)
-	// Find answers the week's mark, if it has one.
+	// Find answers the week's latest review, if it has one.
 	Find(ctx context.Context, tenant fin.TenantID, legalEntity, week string) (*fin.AfterTheFactReview, bool, error)
 	Insert(ctx context.Context, r *fin.AfterTheFactReview) error
 }
 
-// ReviewPage is a page of the list with the week's mark and, when it has one, the whole list's size and digest now.
+// ReviewPage is a page of the list with the week's latest review and, when it has one, the whole list's size and digest now.
 type ReviewPage struct {
 	Lines   []fin.ReviewLine
 	More    bool
@@ -131,6 +131,6 @@ func (d Deps) MarkAfterTheFactReviewed(ctx context.Context, c Command, legalEnti
 		if err = d.AfterTheFact.Insert(txCtx, r); err != nil {
 			return Receipt{}, nil, err
 		}
-		return Receipt{SubjectID: fin.ReviewSubject(legalEntity, week), NewRevision: 1, Version: len(lines)}, r, nil
+		return Receipt{SubjectID: fin.ReviewSubject(legalEntity, week), NewRevision: int64(r.State().ReviewNo), Version: len(lines)}, r, nil
 	})
 }

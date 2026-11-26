@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -59,8 +60,19 @@ func TestTheProposalKeepsThePlanOfEachModule(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a plan of 64 entries: %v", err)
 	}
-	_, err = w.proposeWith("ob-1", api.ProposeOnboarding{Profile: "LEAN", RiskStatement: riskText, FinanceStaff: 3, Plan: plan(api.OnboardingEntry{ScopeKind: "TENANT", Key: "fin.F7", Value: "DOES_NOT_BLOCK"})})
-	said(t, "another plan under the same id", err, api.ErrIdempotencyConflict, "propose with another onboarding id")
+	// batch E: the request's hash covers what the caller sent, not what the build resolved, so the same proposal with the same command id
+	// and another plan (a deploy between a try and its retry) answers the stored record; the same onboarding under another command id,
+	// or with another content, is still refused
+	other := plan(api.OnboardingEntry{ScopeKind: "TENANT", Key: "fin.F7", Value: "DOES_NOT_BLOCK"})
+	again, err := w.proposeWith("ob-1", api.ProposeOnboarding{Profile: "LEAN", RiskStatement: riskText, FinanceStaff: 3, Plan: other})
+	if err != nil || !reflect.DeepEqual(again.Plan, o.Plan) || again.PlanSHA256 != o.PlanSHA256 || again.PlanSHA256 != api.PlanSHA256(o.Plan) {
+		t.Fatalf("the same proposal with another plan under the same command id: %+v, %v; want the stored plan %+v", again, err, o.Plan)
+	}
+	_, err = w.module.ProposeOnboarding(context.Background(), api.ProposeOnboarding{CommandID: "p-other", TenantID: w.tenant, ActorID: "ann", OnboardingID: "ob-1", Profile: "LEAN",
+		RiskStatement: riskText, FinanceStaff: 3, Plan: other})
+	said(t, "another plan under the same id and another command id", err, api.ErrIdempotencyConflict, "propose with another onboarding id")
+	_, err = w.proposeWith("ob-1", api.ProposeOnboarding{Profile: "STRICT", RiskStatement: riskText, FinanceStaff: 3, Plan: other})
+	said(t, "another profile under the same command id", err, api.ErrIdempotencyConflict, "propose with another onboarding id")
 }
 
 // The overrides of a module are at most 64 entries: 64 are kept, 65 refused with the way out.

@@ -1,9 +1,9 @@
--- IDP-Cargo ORG V2.102 (batches A and D) / PostgreSQL 16. Run only as the migrator role, never at service start. Customer
+-- IDP-Cargo ORG V2.102 (batches A, D and E) / PostgreSQL 16. Run only as the migrator role, never at service start. Customer
 -- onboarding (design section 9, item 2): an implementation consultant proposes a profile of the rules, overrides, the
 -- entries that these resolve to in each module with the version of each module's catalogue (the plan: what will be
 -- applied), a risk statement, the customer's declared number of finance staff and whether the customer has a single
 -- administrator; the customer's appointed owner, a different person, confirms it, acknowledges the risk statement, whose
--- text is kept as acknowledged, and names the single administrator when the proposal says there is one. The platform then
+-- text is kept as acknowledged, confirms the SHA-256 of the plan they read, and names the single administrator when the proposal says there is one. The platform then
 -- proposes and approves FIN's and SEA's change sets from the plan, one module at a time, and records here each module's
 -- change set and state. 000001 through 000011 are unchanged.
 --
@@ -20,7 +20,8 @@
 -- confirmation that names a single administrator unless the proposal says the customer declares one, or that names none
 -- when it does (the confirmation repeats the proposal's flag in the same foreign key), and an administrator who is the
 -- proposer or whose id has spaces around it; a confirmation whose acknowledged text is not the proposal's risk statement, character for character (the same foreign
--- key); a confirmation before the proposal; a module row of an onboarding not confirmed, recorded by anyone but the
+-- key); a confirmation whose SHA-256 of the plan is not the proposal's (the same foreign key); a proposer or a confirmer whose actor id is
+-- blank, has spaces around it or is longer than 128 characters; a confirmation before the proposal; a module row of an onboarding not confirmed, recorded by anyone but the
 -- confirmer (a foreign key to the confirmation's confirmer), before the confirmation, or whose change set is not the one
 -- derived from the onboarding and the module ('onb-' || onboarding || '-fin' or '-sea', so that a retry never makes a
 -- second change set); an APPROVED row without the PROPOSED row of the same change set; a change of any row; another
@@ -33,7 +34,9 @@
 -- it again when it proposes their change sets; a module's catalogue version that differs at the confirmation is refused
 -- by the platform), that the change set a module row names exists in that module (the schemas are separate, and the roles
 -- forbid a read across them), and that the confirmer is the customer's appointed owner (ORG has no user directory yet:
--- it knows two different people, not who they are).
+-- it knows two different people, not who they are), and that the proposal's SHA-256 is the digest of its plan (the domain computes it; the
+-- schema checks its shape and that the confirmation repeats it). ORG's own commands for the proposal and the confirmation run only
+-- under the platform's mark, which the schema does not know either.
 
 CREATE TABLE cargo_org.onboarding (
  tenant_id text NOT NULL CHECK (length(btrim(tenant_id)) BETWEEN 1 AND 128),
@@ -49,14 +52,16 @@ CREATE TABLE cargo_org.onboarding (
    AND jsonb_typeof(plan->'SEA'->'CatalogueVersion') = 'string' AND length(btrim(plan->'SEA'->>'CatalogueVersion')) BETWEEN 1 AND 64
    AND jsonb_typeof(plan->'FIN'->'Entries') = 'array' AND jsonb_array_length(plan->'FIN'->'Entries') BETWEEN 1 AND 64
    AND jsonb_typeof(plan->'SEA'->'Entries') = 'array' AND jsonb_array_length(plan->'SEA'->'Entries') BETWEEN 1 AND 64, false)),
+ -- the SHA-256 of the plan as JSON, which the owner reads and confirms (the domain computes it; the confirmation repeats it in a foreign key)
+ plan_sha256 text NOT NULL CONSTRAINT onboarding_plan_sha256 CHECK (plan_sha256 ~ '^[0-9a-f]{64}$'),
  risk_statement text NOT NULL CONSTRAINT onboarding_risk_statement CHECK (char_length(btrim(risk_statement)) BETWEEN 1 AND 2000),
  finance_staff integer NOT NULL CONSTRAINT onboarding_finance_staff CHECK (finance_staff BETWEEN 1 AND 10000),
  single_administrator boolean NOT NULL,
- proposed_by text NOT NULL CHECK (length(btrim(proposed_by)) BETWEEN 1 AND 128),
+ proposed_by text NOT NULL CHECK (proposed_by = btrim(proposed_by) AND length(proposed_by) BETWEEN 1 AND 128),
  proposed_at timestamptz NOT NULL,
  PRIMARY KEY (tenant_id, onboarding_id),
  CONSTRAINT onboarding_command_once UNIQUE (tenant_id, command_id),
- CONSTRAINT onboarding_for_confirmation UNIQUE (tenant_id, onboarding_id, proposed_by, risk_statement, proposed_at, single_administrator)
+ CONSTRAINT onboarding_for_confirmation UNIQUE (tenant_id, onboarding_id, proposed_by, risk_statement, proposed_at, single_administrator, plan_sha256)
 );
 
 CREATE TABLE cargo_org.onboarding_confirmation (
@@ -65,12 +70,14 @@ CREATE TABLE cargo_org.onboarding_confirmation (
  command_id text NOT NULL CHECK (length(btrim(command_id)) BETWEEN 1 AND 128),
  proposed_by text NOT NULL,
  proposed_at timestamptz NOT NULL,
- confirmed_by text NOT NULL CHECK (length(btrim(confirmed_by)) BETWEEN 1 AND 128),
+ confirmed_by text NOT NULL CHECK (confirmed_by = btrim(confirmed_by) AND length(confirmed_by) BETWEEN 1 AND 128),
  confirmed_at timestamptz NOT NULL,
  -- the risk statement as the owner acknowledged it, which is the proposal's, character for character
  acknowledged_text text NOT NULL,
  -- the owner's declaration: the proposal's flag, repeated so that a foreign key holds the two together, and the administrator
  single_administrator boolean NOT NULL,
+ -- the SHA-256 of the plan the owner read, which is the proposal's (the foreign key below)
+ plan_sha256 text NOT NULL,
  administrator text CONSTRAINT onboarding_administrator_length CHECK (administrator IS NULL OR (length(btrim(administrator)) BETWEEN 1 AND 128 AND administrator = btrim(administrator))),
  PRIMARY KEY (tenant_id, onboarding_id),
  CONSTRAINT onboarding_confirmation_command_once UNIQUE (tenant_id, command_id),
@@ -79,8 +86,8 @@ CREATE TABLE cargo_org.onboarding_confirmation (
  CONSTRAINT onboarding_confirmation_after_proposal CHECK (confirmed_at >= proposed_at),
  CONSTRAINT onboarding_administrator_declared CHECK ((administrator IS NOT NULL) = single_administrator),
  CONSTRAINT onboarding_administrator_not_proposer CHECK (administrator IS NULL OR administrator <> proposed_by),
- CONSTRAINT onboarding_confirmation_matches_proposal FOREIGN KEY (tenant_id, onboarding_id, proposed_by, acknowledged_text, proposed_at, single_administrator)
-   REFERENCES cargo_org.onboarding (tenant_id, onboarding_id, proposed_by, risk_statement, proposed_at, single_administrator)
+ CONSTRAINT onboarding_confirmation_matches_proposal FOREIGN KEY (tenant_id, onboarding_id, proposed_by, acknowledged_text, proposed_at, single_administrator, plan_sha256)
+   REFERENCES cargo_org.onboarding (tenant_id, onboarding_id, proposed_by, risk_statement, proposed_at, single_administrator, plan_sha256)
 );
 
 CREATE TABLE cargo_org.onboarding_module (

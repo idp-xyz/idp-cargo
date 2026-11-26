@@ -1425,11 +1425,13 @@ type AfterTheFactLine struct {
 	Reasons         []string
 }
 
-// AfterTheFactReviewMark says whether the week is reviewed and, if it is, by whom and when, the note and the size and
-// digest of the list at that time, with the size and digest of the whole list now and whether they match: a list that
-// changed after its review (an attribution recorded later in the same week) does not.
+// AfterTheFactReviewMark says whether the week is reviewed and, if it is, the latest review: its number, by whom and when,
+// the note and the size and digest of the list at that time, with the size and digest of the whole list now and whether they
+// match: a list that changed after its review (an attribution recorded later in the same week) does not, and the week may be
+// reviewed again (MarkAfterTheFactReviewed), which makes the next review.
 type AfterTheFactReviewMark struct {
 	Reviewed      bool
+	ReviewNo      int
 	ReviewedBy    string
 	ReviewedAt    time.Time
 	Note          string

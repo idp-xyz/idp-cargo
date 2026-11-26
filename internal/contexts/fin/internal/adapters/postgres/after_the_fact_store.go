@@ -78,9 +78,9 @@ func (s AfterTheFactStore) Find(ctx context.Context, tenant fin.TenantID, legalE
 		return nil, false, err
 	}
 	st := fin.AfterTheFactReviewState{TenantID: tenant, LegalEntityID: legalEntity, Week: week}
-	err = q.QueryRow(ctx, `SELECT week_start, reviewed_by, note, list_size, list_digest, reviewed_at FROM cargo_fin.after_the_fact_review
-      WHERE tenant_id = $1 AND legal_entity_id = $2 AND week = $3`, string(tenant), legalEntity, week).
-		Scan(&st.WeekStart, &st.ReviewedBy, &st.Note, &st.ListSize, &st.ListDigest, &st.ReviewedAt)
+	err = q.QueryRow(ctx, `SELECT review_no, week_start, reviewed_by, note, list_size, list_digest, reviewed_at FROM cargo_fin.after_the_fact_review
+      WHERE tenant_id = $1 AND legal_entity_id = $2 AND week = $3 ORDER BY review_no DESC LIMIT 1`, string(tenant), legalEntity, week).
+		Scan(&st.ReviewNo, &st.WeekStart, &st.ReviewedBy, &st.Note, &st.ListSize, &st.ListDigest, &st.ReviewedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, false, nil
 	}
@@ -94,7 +94,7 @@ func (s AfterTheFactStore) Insert(ctx context.Context, r *fin.AfterTheFactReview
 		return err
 	}
 	st := r.State()
-	_, err = q.Exec(ctx, `INSERT INTO cargo_fin.after_the_fact_review (tenant_id,legal_entity_id,week,week_start,reviewed_by,note,list_size,list_digest,reviewed_at)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, string(st.TenantID), st.LegalEntityID, st.Week, st.WeekStart, st.ReviewedBy, st.Note, st.ListSize, st.ListDigest, st.ReviewedAt)
+	_, err = q.Exec(ctx, `INSERT INTO cargo_fin.after_the_fact_review (tenant_id,legal_entity_id,week,review_no,week_start,reviewed_by,note,list_size,list_digest,reviewed_at)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, string(st.TenantID), st.LegalEntityID, st.Week, st.ReviewNo, st.WeekStart, st.ReviewedBy, st.Note, st.ListSize, st.ListDigest, st.ReviewedAt)
 	return err
 }

@@ -182,9 +182,12 @@ func TestSeaSingleAdministratorDatabaseRulesRefuseRawWrites(t *testing.T) {
 	check("an approval by the proposer without an acknowledgement", []string{self("L1", "NULL")}, "23514", "settings_approval_other_actor")
 	check("a blank acknowledgement", []string{self("L1", "'  '")}, "23514", "settings_approval_acknowledgement_length")
 	check("an acknowledgement of 2001 characters", []string{self("L1", "repeat('x',2001)")}, "23514", "settings_approval_acknowledgement_length")
-	// bob is declared an administrator too (by another onboarding), so that the trigger lets his row through to the check on its own
+	// bob is declared the administrator by a later onboarding, so that the trigger lets his row through to the check on its own
 	s.must(s.declare("decl-bob", "ob-bob", "consultant-1", "owner-1", "bob"))
 	check("an acknowledgement on another person's approval", []string{byAnother("L1", "'I accept'")}, "23514", "settings_approval_acknowledgement_self")
+	// bob, declared by the later onboarding, is the administrator in force until dan is declared again by a later one: the declaration that
+	// names the approver must be the tenant's latest (V2.102 batch E)
+	s.must(s.declare("decl-dan-again", "ob-dan-again", "consultant-1", "owner-1", "dan"))
 	check("an acknowledgement on an automatic approval", []string{rawChange("R9", "dan", "now()", true), rawEntry("R9", 1, "LEGAL_ENTITY", "LE", "sea.S1", "SUPERVISOR_ONLY"),
 		strings.Replace(self("R9", "'I accept'"), "false,'I accept'", "true,'I accept'", 1)}, "23514", "settings_approval_acknowledgement_self")
 	check("an acknowledgement on a change set that does not loosen", []string{rawChange("R9", "dan", "now()", false), rawEntry("R9", 1, "LEGAL_ENTITY", "LE", "sea.S1", "SUPERVISOR_ONLY"),
@@ -198,7 +201,7 @@ func TestSeaSingleAdministratorDatabaseRulesRefuseRawWrites(t *testing.T) {
 	if err := s.rawTx(t, self("L1", "'I accept'")); err != nil {
 		t.Fatalf("a self approval with an acknowledgement and a declaration: %v", err)
 	}
-	if s.count("single_administrator") != 2 {
+	if s.count("single_administrator") != 3 {
 		t.Errorf("%d declarations", s.count("single_administrator"))
 	}
 }

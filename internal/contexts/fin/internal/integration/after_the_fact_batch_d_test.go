@@ -50,8 +50,8 @@ func TestTheDatabaseChecksTheWeekHasEndedInUTCWhateverTheSessionZone(t *testing.
 	u, _, _ := afterWorld(t, 1)
 	f := u.fixture
 	row := func(week, startAt, reviewedAt string) string {
-		return fmt.Sprintf(`INSERT INTO cargo_fin.after_the_fact_review (tenant_id,legal_entity_id,week,week_start,reviewed_by,note,list_size,list_digest,reviewed_at)
-            VALUES ($1,'LE','%s','%s+00','head-1','a note',0,'%s','%s')`, week, startAt, strings.Repeat("a", 64), reviewedAt)
+		return fmt.Sprintf(`INSERT INTO cargo_fin.after_the_fact_review (tenant_id,legal_entity_id,week,review_no,week_start,reviewed_by,note,list_size,list_digest,reviewed_at)
+            VALUES ($1,'LE','%s',1,'%s+00','head-1','a note',0,'%s','%s')`, week, startAt, strings.Repeat("a", 64), reviewedAt)
 	}
 	run := func(zone, sql string) error {
 		return f.within(t, func(ctx context.Context, e bentopg.Executor) error {

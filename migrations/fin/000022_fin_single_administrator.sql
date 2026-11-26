@@ -1,6 +1,7 @@
--- IDP-Cargo FIN V2.102 (batch A) / PostgreSQL 16. Run only as the migrator role, never at service start. A single
+-- IDP-Cargo FIN V2.102 (batches A, D and E) / PostgreSQL 16. Run only as the migrator role, never at service start. A single
 -- administrator (design section 9, item 3): a tenant whose onboarding declared that it has one administrator may have a
 -- loosening of FIN's settings approved by its own proposer, but only with a written risk acknowledgement in the approval.
+-- A tenant has one single administrator in force: the one named by its latest declaration.
 -- 000001 through 000017 are unchanged.
 --
 -- Added: the table single_administrator, the declaration, and on settings_approval the column risk_acknowledgement.
@@ -8,22 +9,27 @@
 -- who proposed that onboarding and the customer's owner who confirmed it (two different people), the administrator the
 -- owner named (one person, who is not the consultant; the owner may name themselves), and when FIN recorded it. It is only inserted (immutable, row security enabled and forced, written at READ COMMITTED) and is written by
 -- FIN's command DeclareFinSingleAdministrator, which the platform's bootstrap calls once the owner has confirmed the
--- onboarding; a tenant has as many declarations as onboardings that made one, and one is enough. There is no way to
--- withdraw one yet.
+-- onboarding; a tenant has one declaration for each onboarding that made one, and the latest
+-- names the single administrator in force: a later onboarding that declares another administrator replaces the earlier one from its
+-- declaration's time, and the earlier administrator may no longer approve their own loosening; an onboarding that makes none changes
+-- nothing. The order of a tenant's declarations is total because no two have the same time (the unique key
+-- single_administrator_time_once on the tenant and declared_at; the command refuses a declaration not later than the tenant's latest
+-- and the database refuses two at one instant). There is no way to withdraw one yet.
 --
 -- How the database knows the declaration. FIN's schema holds it: the approval's trigger reads single_administrator in
 -- the same schema, so no read crosses a schema and the roles stay as they are. What the database cannot know is that
 -- ORG's onboarding exists and was confirmed by the owner it names: FIN's command takes it on the word of its caller,
 -- which holds a permission granted by name only (DeclareSingleAdministrator) that the bootstrap's onboarding alone is
--- given; the declaration cannot be set by a configurer alone, since ConfigureSettings does not grant it.
+-- given: the bootstrap's authorizer grants it only to a context that carries the platform's own mark, which only the principal
+-- the onboarding builds has, so a token that carries the permission's name is not enough; ConfigureSettings does not grant it.
 --
 -- Changed: the approval's rule "the approver is the proposer exactly when the approval is the automatic one of a
 -- change set that only tightens" (settings_approval_other_actor, the same name) now also lets the approver be the
 -- proposer when the approval carries a risk acknowledgement, and the trigger lets that happen only when the approver is
--- the administrator a declaration of the tenant names; the acknowledgement is of 1 to 2000 characters, only on
+-- the administrator the tenant's latest declaration names; the acknowledgement is of 1 to 2000 characters, only on
 -- such an approval, and only of a change set that loosens (settings_approval_acknowledgement_*). The approval's trigger
--- refuses such an approval of a tenant with no declaration recorded at or before it that names the approver as its
--- administrator (settings_approval_single_administrator; it looks at the acknowledgement, so that a proposer's approval without one is still
+-- refuses such an approval unless the approver is the administrator that the tenant's latest declaration at or before the
+-- approval names, so a tenant with none, or whose latest names another person, is refused (settings_approval_single_administrator; it looks at the acknowledgement, so that a proposer's approval without one is still
 -- refused by settings_approval_other_actor, as before). Everything else about approvals is as 000017 has it. The ALTER TABLE
 -- takes an ACCESS EXCLUSIVE lock on settings_approval for its own duration and checks its rows once (reasoned, not
 -- measured); no column has a default, so no table is rewritten.
@@ -41,7 +47,8 @@ CREATE TABLE cargo_fin.single_administrator (
  declared_at timestamptz NOT NULL,
  PRIMARY KEY (tenant_id, onboarding_id),
  CONSTRAINT single_administrator_two_people CHECK (confirmed_by <> proposed_by),
- CONSTRAINT single_administrator_not_the_consultant CHECK (administrator <> proposed_by)
+ CONSTRAINT single_administrator_not_the_consultant CHECK (administrator <> proposed_by),
+ CONSTRAINT single_administrator_time_once UNIQUE (tenant_id, declared_at)
 );
 CREATE TRIGGER single_administrator_immutable BEFORE UPDATE OR DELETE ON cargo_fin.single_administrator
   FOR EACH ROW EXECUTE FUNCTION cargo_fin.reject_row_change();
@@ -77,9 +84,10 @@ BEGIN
     RAISE EXCEPTION 'cargo_fin: settings change set %/% loosens a value; another person approves it', NEW.tenant_id, NEW.change_id
       USING ERRCODE = 'check_violation', CONSTRAINT = 'settings_approval_loosening';
   END IF;
-  IF NEW.risk_acknowledgement IS NOT NULL AND NOT EXISTS (SELECT 1 FROM cargo_fin.single_administrator d
-       WHERE d.tenant_id = NEW.tenant_id AND d.administrator = NEW.approved_by AND d.declared_at <= NEW.approved_at) THEN
-    RAISE EXCEPTION 'cargo_fin: tenant % declared no single administrator named %, so the proposer of change set % may not approve it', NEW.tenant_id, NEW.approved_by, NEW.change_id
+  IF NEW.risk_acknowledgement IS NOT NULL AND NOT EXISTS (SELECT 1 FROM (SELECT d.administrator FROM cargo_fin.single_administrator d
+       WHERE d.tenant_id = NEW.tenant_id AND d.declared_at <= NEW.approved_at ORDER BY d.declared_at DESC LIMIT 1) latest
+       WHERE latest.administrator = NEW.approved_by) THEN
+    RAISE EXCEPTION 'cargo_fin: the single administrator of tenant % in force is not %, so the proposer of change set % may not approve it', NEW.tenant_id, NEW.approved_by, NEW.change_id
       USING ERRCODE = 'check_violation', CONSTRAINT = 'settings_approval_single_administrator';
   END IF;
   RETURN NEW;

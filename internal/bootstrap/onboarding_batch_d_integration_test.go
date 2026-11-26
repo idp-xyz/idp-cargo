@@ -83,14 +83,17 @@ func TestAModuleWhoseCatalogueChangedBeforeTheConfirmationIsRefusedWithTheWayOut
 	later, err := NewOnboarding(d.org, otherCatalogue{d.fin}, d.sea)
 	d.must("the onboarding", err)
 	got, err := later.ConfirmOnboarding(d.as("olga", owner...), d.confirmCommand("ob-1"))
-	saidKind(t, "FIN's catalogue changed", err, ErrOnboardingBlocked, "FIN:", "the catalogue of FIN is version 0123456789abcdef now", "propose a new onboarding under another id")
-	if len(got.Failures) != 1 || got.Failures[0].Module != "FIN" || !got.Failures[0].Permanent || got.Onboarding.Modules[1].State != "APPROVED" || got.Onboarding.Modules[0].State != "NOT_STARTED" {
-		t.Fatalf("FIN is refused and SEA goes on: %+v", got)
+	// batch E (R2-F5): the build is checked before ORG records the confirmation, so nothing is recorded, no module goes on, and the
+	// difference is not called permanent (the build the plan was made with cures it); the way out names both causes
+	saidKind(t, "FIN's catalogue changed", err, ErrOnboardingBuild, "the catalogue of FIN is version 0123456789abcdef in this build", "nothing is recorded",
+		"propose a new onboarding under another id")
+	if len(got.Failures) != 0 || got.Receipt.State != "" || errors.Is(err, ErrOnboardingBlocked) {
+		t.Fatalf("a difference of build before the confirmation records nothing and is not permanent: %+v, %v", got, err)
 	}
-	if strings.Contains(err.Error(), "send the same ConfirmOnboarding again, which completes") {
-		t.Fatalf("the answer says to retry what a retry cannot cure: %v", err)
+	if o, _ := d.org.GetOnboarding(context.Background(), orgapi.GetOnboarding{TenantID: d.tenant, OnboardingID: "ob-1"}); o.State != "PROPOSED" {
+		t.Fatalf("the owner's confirmation was recorded: %+v", o)
 	}
-	if f, s := d.count(); f != 0 || s != 1 {
+	if f, s := d.count(); f != 0 || s != 0 {
 		t.Fatalf("change sets: FIN %d, SEA %d", f, s)
 	}
 }
@@ -223,7 +226,7 @@ func TestOnlyThePlatformRecordsAModulesProgressAndItTrustsTheModule(t *testing.T
 	if _, err := d.propose("ob-1", "STRICT", 3, false, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.org.ConfirmOnboarding(d.as("olga", "org:ConfirmOnboarding"), d.confirmCommand("ob-1")); err != nil {
+	if _, err := d.org.ConfirmOnboarding(asPlatform(d.as("olga", "org:ConfirmOnboarding")), d.confirmCommand("ob-1")); err != nil {
 		t.Fatal(err)
 	}
 	record := func(ctx context.Context, m, state string) error {

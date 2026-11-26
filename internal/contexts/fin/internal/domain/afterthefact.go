@@ -47,7 +47,7 @@ const (
 // Refusals of the review, each with its way out.
 var (
 	ErrAfterTheFactReviewer = errors.New("fin: FIN_AFTER_THE_FACT_REVIEWER: the reviewer of a week is neither the submitter nor the previewer of any line of its list: another person reviews it")
-	ErrAfterTheFactReviewed = errors.New("fin: FIN_AFTER_THE_FACT_REVIEWED: the week is reviewed already: read it (GetAfterTheFactReview); a week is reviewed once")
+	ErrAfterTheFactReviewed = errors.New("fin: FIN_AFTER_THE_FACT_REVIEWED: the week's list is the one already reviewed, so there is nothing new to review: read it (GetAfterTheFactReview); a week is reviewed again only when its list has changed")
 	ErrAfterTheFactBegun    = errors.New("fin: FIN_AFTER_THE_FACT_WEEK_NOT_BEGUN: the week has not begun: review it once it has ended, or name a week that has")
 	ErrAfterTheFactNotEnded = errors.New("fin: FIN_AFTER_THE_FACT_WEEK_NOT_ENDED: the week has not ended: wait for the Monday after it, at 00:00 UTC, and review it from then, so that the list you sign is the whole week's")
 )
@@ -138,11 +138,14 @@ func ListDigest(lines []ReviewLine) string {
 }
 
 // AfterTheFactReviewState is the mark of a reviewed week: who reviewed it and when, the note, and the size and digest
-// of the list as it was.
+// of the list as it was. A week may be reviewed again when its list changed after its last review (a command stamped
+// inside the week commits after the week's end, so that its line is listed and was never reviewed); each review has its own
+// number, from 1 without a gap, and its own size and digest.
 type AfterTheFactReviewState struct {
 	TenantID      TenantID
 	LegalEntityID string
 	Week          string
+	ReviewNo      int
 	WeekStart     time.Time
 	ReviewedBy    string
 	Note          string
@@ -161,9 +164,10 @@ type AfterTheFactReview struct {
 func ReviewSubject(legalEntity, week string) string { return legalEntity + "/" + week }
 
 // ReviewAfterTheFact marks a legal entity's week reviewed by the reviewer at a time. lines is the whole list of the
-// week as the caller read it under the week's lock and done the mark the week has already, if it has one. The reviewer
-// is neither the submitter nor the previewer of any line; a refusal names the first line of the list that says
-// otherwise.
+// week as the caller read it under the week's lock and done the week's latest review, if it has one. A week is reviewed
+// again when its list differs from the latest review's (size or digest) and is refused only when it is the one already
+// reviewed. The reviewer is neither the submitter nor the previewer of any line of the list, whoever reviewed it before; a
+// refusal names the first line of the list that says otherwise.
 func ReviewAfterTheFact(tenant TenantID, legalEntity, week string, lines []ReviewLine, done *AfterTheFactReviewState, reviewer, note string, at time.Time) (*AfterTheFactReview, error) {
 	start, end, err := ParseWeek(week)
 	switch {
@@ -173,8 +177,9 @@ func ReviewAfterTheFact(tenant TenantID, legalEntity, week string, lines []Revie
 		return nil, fmt.Errorf("%w: a note is 1 to %d characters", ErrInvalid, MaxReviewNote)
 	case tenant == "" || !identifier(legalEntity) || !identifier(reviewer) || at.IsZero():
 		return nil, fmt.Errorf("%w: a review names its legal entity, its reviewer and a time", ErrInvalid)
-	case done != nil:
-		return nil, fmt.Errorf("%w (%s of %s was reviewed by %s at %s)", ErrAfterTheFactReviewed, week, legalEntity, done.ReviewedBy, done.ReviewedAt.UTC().Format(time.RFC3339))
+	case done != nil && done.ListSize == len(lines) && done.ListDigest == ListDigest(lines):
+		return nil, fmt.Errorf("%w (%s of %s was reviewed by %s at %s, review %d, and its list of %d lines has not changed)", ErrAfterTheFactReviewed, week, legalEntity, done.ReviewedBy,
+			done.ReviewedAt.UTC().Format(time.RFC3339), done.ReviewNo, done.ListSize)
 	case at.Before(start):
 		return nil, fmt.Errorf("%w (%s begins at %s, this server's time is %s)", ErrAfterTheFactBegun, week, start.Format(time.RFC3339), at.UTC().Format(time.RFC3339))
 	case at.Before(end):
@@ -195,9 +200,13 @@ func ReviewAfterTheFact(tenant TenantID, legalEntity, week string, lines []Revie
 				l.PoolID, l.LineNo, l.ShipmentID)
 		}
 	}
-	r := &AfterTheFactReview{state: AfterTheFactReviewState{TenantID: tenant, LegalEntityID: legalEntity, Week: week, WeekStart: start, ReviewedBy: reviewer, Note: note,
+	no := 1
+	if done != nil {
+		no = done.ReviewNo + 1
+	}
+	r := &AfterTheFactReview{state: AfterTheFactReviewState{TenantID: tenant, LegalEntityID: legalEntity, Week: week, ReviewNo: no, WeekStart: start, ReviewedBy: reviewer, Note: note,
 		ListSize: len(lines), ListDigest: ListDigest(lines), ReviewedAt: at.UTC()}}
-	r.pending = append(r.pending, Event{Type: "AfterTheFactReviewed.v1", At: at.UTC(), TenantID: tenant, SubjectID: ReviewSubject(legalEntity, week), LegalEntityID: legalEntity, Version: 1})
+	r.pending = append(r.pending, Event{Type: "AfterTheFactReviewed.v1", At: at.UTC(), TenantID: tenant, SubjectID: ReviewSubject(legalEntity, week), LegalEntityID: legalEntity, Version: no})
 	return r, nil
 }
 

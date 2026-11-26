@@ -2,6 +2,9 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"time"
 )
 
@@ -69,6 +72,14 @@ type ModulePlan struct {
 	Entries          []OnboardingEntry
 }
 
+// PlanSHA256 is the SHA-256, in lower-case hexadecimal, of a plan as JSON (encoding/json): the digest ORG keeps with the
+// proposal, which the proposal's receipt and GetOnboarding show with the plan, and which the owner's confirmation carries.
+func PlanSHA256(plan map[string]ModulePlan) string {
+	raw, _ := json.Marshal(plan) // a map of strings, numbers and pointers to numbers cannot fail to marshal
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
+}
+
 // ProposeOnboarding records the consultant's proposal: the profile, the overrides by module (ModuleFIN, ModuleSEA; each
 // override replaces the profile's value of its item at its scope, or adds a legal entity's), the plan, which is the
 // entries of each module that the profile and the overrides resolve to (1 to 64 for each, with the module's catalogue
@@ -92,7 +103,10 @@ type ProposeOnboarding struct {
 }
 
 // ConfirmOnboarding records the owner's confirmation and acknowledgement of the risk statement: AcknowledgedText must
-// be the proposal's risk statement exactly, and is kept as acknowledged. AdministratorID is the owner's own declaration
+// be the proposal's risk statement exactly, and is kept as acknowledged. PlanSHA256 is the digest of the plan the owner
+// read (the proposal's receipt and GetOnboarding show the plan and its digest): it must be the stored plan's, as the text
+// must be the risk statement, and is kept with the confirmation; another is refused, and the way out is to read the
+// onboarding again and confirm what it shows. AdministratorID is the owner's own declaration
 // of the customer's one administrator: it is named if and only if the proposal says the customer declares a single
 // administrator, and it is not the proposer. The actor is not the proposer and needs the permission ConfirmOnboarding,
 // granted by name only. A retry by the same actor with the same text and administrator answers the record again.
@@ -102,6 +116,7 @@ type ConfirmOnboarding struct {
 	ActorID          string
 	OnboardingID     string
 	AcknowledgedText string
+	PlanSHA256       string
 	AdministratorID  string
 }
 
@@ -119,13 +134,17 @@ type RecordOnboardingModule struct {
 	State        string
 }
 
-// OnboardingReceipt confirms an onboarding command. State is the onboarding's, Notice what the command says besides.
+// OnboardingReceipt confirms an onboarding command. State is the onboarding's, Notice what the command says besides. Plan
+// is what will be applied to each module and PlanSHA256 its digest (PlanSHA256 computes it), so that the owner who is
+// shown the proposal's receipt reads the plan and confirms its digest.
 type OnboardingReceipt struct {
 	CommandID    string
 	OnboardingID string
 	State        string
 	NewRevision  int64
 	Notice       string
+	Plan         map[string]ModulePlan
+	PlanSHA256   string
 }
 
 // OnboardingModule is a module's part of an onboarding.
@@ -143,6 +162,7 @@ type Onboarding struct {
 	Profile             string
 	Overrides           map[string][]OnboardingEntry
 	Plan                map[string]ModulePlan
+	PlanSHA256          string
 	RiskStatement       string
 	FinanceStaff        int
 	SingleAdministrator bool

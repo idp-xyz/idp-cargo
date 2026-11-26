@@ -610,8 +610,9 @@ func (l *Ledger) Approve(cat *Catalogue, id, by string, at time.Time) (Approval,
 }
 
 // Own is what lets a proposer approve their own change set: the tenant declared a single administrator, who is that
-// proposer (the caller reads the administrators the tenant declared from its own records, never from the command), and
-// the approval carries a written risk acknowledgement.
+// proposer (the caller reads the administrator the tenant declared from its own records, never from the command; see
+// AdministratorInForce), and the approval carries a written risk acknowledgement. A tenant has at most one single
+// administrator in force (V2.102, batch E), so Administrators has at most one name; the ledger refuses more.
 type Own struct {
 	Administrators  []string
 	Acknowledgement string
@@ -624,6 +625,9 @@ func (l *Ledger) ApproveAs(cat *Catalogue, id, by string, at time.Time, own Own)
 	cs, ok := l.Find(id)
 	ack := strings.TrimSpace(own.Acknowledgement)
 	switch {
+	case len(own.Administrators) > 1:
+		return Approval{}, Refuse(ErrInvalid, "a tenant has one single administrator in force, the one its latest declaration names, and %d were given (%s); the module reads it with AdministratorInForce",
+			len(own.Administrators), strings.Join(own.Administrators, ", "))
 	case !ok:
 		return Approval{}, Refuse(ErrUnknownChange, "there is no change set %s; list the tenant's change sets (ListFinSettingsChanges) for the IDs", id)
 	case cs.Cancellation != nil:
