@@ -1977,6 +1977,1131 @@
         },
         "type": "object"
       },
+      "doc.Address": {
+        "additionalProperties": false,
+        "properties": {
+          "city": {
+            "type": "string"
+          },
+          "country_code": {
+            "type": "string"
+          },
+          "lines": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "name": {
+            "type": "string"
+          },
+          "org_address_id": {
+            "type": "string"
+          },
+          "org_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "postcode": {
+            "type": "string"
+          },
+          "region": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "un_locode": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "doc.Airline": {
+        "additionalProperties": false,
+        "properties": {
+          "awb_prefix": {
+            "type": "string"
+          },
+          "designator": {
+            "type": "string"
+          },
+          "party_id": {
+            "type": "string"
+          },
+          "party_revision": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "doc.Airport": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "iata": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "doc.Cargo": {
+        "additionalProperties": false,
+        "properties": {
+          "chargeable_rule": {
+            "type": "string"
+          },
+          "chargeable_weight_grams": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "gross_weight_grams": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/doc.CargoLine"
+            },
+            "type": "array"
+          },
+          "pieces": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "volume_cubic_centimetres": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "doc.CargoLine": {
+        "additionalProperties": false,
+        "properties": {
+          "goods_description": {
+            "type": "string"
+          },
+          "gross_weight_grams": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "hawb": {
+            "type": "string"
+          },
+          "order_id": {
+            "type": "string"
+          },
+          "package_type": {
+            "type": "string"
+          },
+          "pieces": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "doc.CarrierDocument": {
+        "additionalProperties": false,
+        "properties": {
+          "cancel_reason": {
+            "type": "string"
+          },
+          "cancelled_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "cancelled_by": {
+            "type": "string"
+          },
+          "carrier_party_id": {
+            "type": "string"
+          },
+          "carrier_party_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "carrier_role": {
+            "type": "string"
+          },
+          "consolidation_id": {
+            "type": "string"
+          },
+          "content": {
+            "contentEncoding": "base64",
+            "type": "string"
+          },
+          "content_sha256": {
+            "type": "string"
+          },
+          "document_id": {
+            "type": "string"
+          },
+          "evidence": {
+            "$ref": "#/components/schemas/doc.CarrierEvidence"
+          },
+          "issue_place": {
+            "type": "string"
+          },
+          "issued_on": {
+            "type": "string"
+          },
+          "issuer_capacity": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "legal_entity_id": {
+            "type": "string"
+          },
+          "movement_id": {
+            "type": "string"
+          },
+          "number": {
+            "type": "string"
+          },
+          "originals": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "recorded_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "recorded_by": {
+            "type": "string"
+          },
+          "release": {
+            "type": "string"
+          },
+          "revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "source_sha256": {
+            "type": "string"
+          },
+          "source_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "state": {
+            "type": "string"
+          },
+          "verified": {
+            "type": "boolean"
+          },
+          "verified_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "verified_by": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "doc.CarrierEvidence": {
+        "additionalProperties": false,
+        "properties": {
+          "captured_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "media_type": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "storage_id": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "doc.ContactConsent": {
+        "additionalProperties": false,
+        "properties": {
+          "basis": {
+            "type": "string"
+          },
+          "cross_border": {
+            "type": "boolean"
+          },
+          "notice_version": {
+            "type": "string"
+          },
+          "org_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "provide_to_others": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "doc.DispatchContact": {
+        "additionalProperties": false,
+        "properties": {
+          "classification": {
+            "type": "string"
+          },
+          "consent": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/doc.ContactConsent"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "key": {
+            "type": "string"
+          },
+          "legal_path": {
+            "type": "string"
+          },
+          "no": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "omit_reason": {
+            "type": "string"
+          },
+          "order_id": {
+            "type": "string"
+          },
+          "party_id": {
+            "type": "string"
+          },
+          "party_role": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "doc.DispatchCopy": {
+        "additionalProperties": false,
+        "properties": {
+          "dispatch": {
+            "$ref": "#/components/schemas/doc.DocumentDispatch"
+          },
+          "pdf": {
+            "contentEncoding": "base64",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "doc.DispatchOutcome": {
+        "additionalProperties": false,
+        "properties": {
+          "no": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "outcome": {
+            "type": "string"
+          },
+          "recorded_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "recorded_by": {
+            "type": "string"
+          },
+          "reference": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "doc.DocumentContent": {
+        "additionalProperties": false,
+        "properties": {
+          "airline": {
+            "$ref": "#/components/schemas/doc.Airline"
+          },
+          "cargo": {
+            "$ref": "#/components/schemas/doc.Cargo"
+          },
+          "consignee": {
+            "$ref": "#/components/schemas/doc.Party"
+          },
+          "consolidation_id": {
+            "type": "string"
+          },
+          "containers": {
+            "items": {
+              "$ref": "#/components/schemas/doc.ShippedContainer"
+            },
+            "type": "array"
+          },
+          "destination": {
+            "$ref": "#/components/schemas/doc.Airport"
+          },
+          "document_id": {
+            "type": "string"
+          },
+          "flights": {
+            "items": {
+              "$ref": "#/components/schemas/doc.Flight"
+            },
+            "type": "array"
+          },
+          "handling_information": {
+            "type": "string"
+          },
+          "issue_place": {
+            "$ref": "#/components/schemas/doc.Airport"
+          },
+          "issuer": {
+            "$ref": "#/components/schemas/doc.Issuer"
+          },
+          "issuer_capacity": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "location_edition": {
+            "type": "string"
+          },
+          "master_bill_number": {
+            "type": "string"
+          },
+          "mawb": {
+            "type": "string"
+          },
+          "notify_party": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/doc.Party"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "number": {
+            "type": "string"
+          },
+          "on_board_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "orders": {
+            "items": {
+              "$ref": "#/components/schemas/doc.OrderRef"
+            },
+            "type": "array"
+          },
+          "origin": {
+            "$ref": "#/components/schemas/doc.Airport"
+          },
+          "originals": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "payment_indicator": {
+            "type": "string"
+          },
+          "place_of_receipt": {
+            "type": "string"
+          },
+          "port_of_discharge": {
+            "type": "string"
+          },
+          "port_of_loading": {
+            "type": "string"
+          },
+          "release_type": {
+            "type": "string"
+          },
+          "security": {
+            "$ref": "#/components/schemas/doc.Security"
+          },
+          "shipment_id": {
+            "type": "string"
+          },
+          "shipper": {
+            "$ref": "#/components/schemas/doc.Party"
+          },
+          "source": {
+            "$ref": "#/components/schemas/doc.SourceRef"
+          },
+          "vessel": {
+            "type": "string"
+          },
+          "voyage": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "doc.DocumentDispatch": {
+        "additionalProperties": false,
+        "properties": {
+          "channel": {
+            "type": "string"
+          },
+          "contacts": {
+            "items": {
+              "$ref": "#/components/schemas/doc.DispatchContact"
+            },
+            "type": "array"
+          },
+          "copy_sha256": {
+            "type": "string"
+          },
+          "cross_border_keys": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "dispatch_id": {
+            "type": "string"
+          },
+          "document_id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "ordering_party": {
+            "type": "string"
+          },
+          "outcomes": {
+            "items": {
+              "$ref": "#/components/schemas/doc.DispatchOutcome"
+            },
+            "type": "array"
+          },
+          "prepared_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "prepared_by": {
+            "type": "string"
+          },
+          "recipient": {
+            "$ref": "#/components/schemas/doc.Recipient"
+          },
+          "register_state": {
+            "type": "string"
+          },
+          "register_year": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "state": {
+            "type": "string"
+          },
+          "template": {
+            "type": "string"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "version_status": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "doc.DocumentSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "current_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "document_id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "latest_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "number": {
+            "type": "string"
+          },
+          "revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "state": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "doc.DocumentVersion": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "contentEncoding": "base64",
+            "type": "string"
+          },
+          "doc": {
+            "$ref": "#/components/schemas/doc.DocumentContent"
+          },
+          "document_id": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "version": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "doc.Flight": {
+        "additionalProperties": false,
+        "properties": {
+          "eta": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "etd": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "flight": {
+            "type": "string"
+          },
+          "from": {
+            "$ref": "#/components/schemas/doc.Airport"
+          },
+          "to": {
+            "$ref": "#/components/schemas/doc.Airport"
+          }
+        },
+        "type": "object"
+      },
+      "doc.Identifier": {
+        "additionalProperties": false,
+        "properties": {
+          "country": {
+            "type": "string"
+          },
+          "none": {
+            "type": "boolean"
+          },
+          "type": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "doc.IssuanceAuthority": {
+        "additionalProperties": false,
+        "properties": {
+          "airline_party_id": {
+            "type": "string"
+          },
+          "authority_id": {
+            "type": "string"
+          },
+          "evidence_ref": {
+            "type": "string"
+          },
+          "issue_place": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "legal_entity_id": {
+            "type": "string"
+          },
+          "qualification": {
+            "type": "string"
+          },
+          "recorded_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "recorded_by": {
+            "type": "string"
+          },
+          "revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "validity": {
+            "$ref": "#/components/schemas/kernel.ValidityInterval"
+          },
+          "withdraw_reason": {
+            "type": "string"
+          },
+          "withdrawn_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "withdrawn_by": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "doc.Issuer": {
+        "additionalProperties": false,
+        "properties": {
+          "jurisdiction": {
+            "type": "string"
+          },
+          "legal_entity_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "revision": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "doc.OrderRef": {
+        "additionalProperties": false,
+        "properties": {
+          "consignee_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "notify_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "order_id": {
+            "type": "string"
+          },
+          "revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "shipper_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "transport": {
+            "$ref": "#/components/schemas/doc.Transport"
+          }
+        },
+        "type": "object"
+      },
+      "doc.Original": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "by": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "string"
+          },
+          "record": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "serial": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "status": {
+            "type": "string"
+          },
+          "version": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "doc.Party": {
+        "additionalProperties": false,
+        "properties": {
+          "address": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/doc.Address"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "country_code": {
+            "type": "string"
+          },
+          "english_name": {
+            "type": "string"
+          },
+          "identifiers": {
+            "items": {
+              "$ref": "#/components/schemas/doc.Identifier"
+            },
+            "type": "array"
+          },
+          "legal_name": {
+            "type": "string"
+          },
+          "overridden": {
+            "type": "boolean"
+          },
+          "party_id": {
+            "type": "string"
+          },
+          "party_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "to_order": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "doc.PendingItem": {
+        "additionalProperties": false,
+        "properties": {
+          "blocking": {
+            "type": "boolean"
+          },
+          "document_id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "number": {
+            "type": "string"
+          },
+          "shipment_id": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "doc.Receipt": {
+        "additionalProperties": false,
+        "properties": {
+          "command_id": {
+            "type": "string"
+          },
+          "document_id": {
+            "type": "string"
+          },
+          "new_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "version": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "doc.Recipient": {
+        "additionalProperties": false,
+        "properties": {
+          "country": {
+            "type": "string"
+          },
+          "party_id": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "doc.RenderedDocument": {
+        "additionalProperties": false,
+        "properties": {
+          "document_id": {
+            "type": "string"
+          },
+          "pdf": {
+            "contentEncoding": "base64",
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "template": {
+            "type": "string"
+          },
+          "version": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "doc.Screening": {
+        "additionalProperties": false,
+        "properties": {
+          "lot_id": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "outcome": {
+            "type": "string"
+          },
+          "reference": {
+            "type": "string"
+          },
+          "screened_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "screener": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "doc.Security": {
+        "additionalProperties": false,
+        "properties": {
+          "screenings": {
+            "items": {
+              "$ref": "#/components/schemas/doc.Screening"
+            },
+            "type": "array"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "doc.ShippedContainer": {
+        "additionalProperties": false,
+        "properties": {
+          "gross_weight_grams": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "number": {
+            "type": "string"
+          },
+          "packs": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "seal_number": {
+            "type": "string"
+          },
+          "size_type": {
+            "type": "string"
+          },
+          "volume_cubic_centimetres": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "doc.SourceRef": {
+        "additionalProperties": false,
+        "properties": {
+          "contract": {
+            "type": "string"
+          },
+          "movement_id": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "version": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "doc.Transport": {
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "type": "string"
+          },
+          "movement": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "doc.TransportDocument": {
+        "additionalProperties": false,
+        "properties": {
+          "cancel_reason": {
+            "type": "string"
+          },
+          "cancelled_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "consolidation_id": {
+            "type": "string"
+          },
+          "current_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "document_id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "latest_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "legal_entity_id": {
+            "type": "string"
+          },
+          "movement_id": {
+            "type": "string"
+          },
+          "number": {
+            "type": "string"
+          },
+          "revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "shipment_id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "versions": {
+            "items": {
+              "$ref": "#/components/schemas/doc.VersionSummary"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "doc.VersionSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "approved_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "approved_by": {
+            "type": "string"
+          },
+          "authority_id": {
+            "type": "string"
+          },
+          "credit_basis": {
+            "type": "string"
+          },
+          "credit_override_reason": {
+            "type": "string"
+          },
+          "discard_reason": {
+            "type": "string"
+          },
+          "drafted_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "drafted_by": {
+            "type": "string"
+          },
+          "issued_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "issued_by": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "self_approved": {
+            "type": "boolean"
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "source_facts_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "status": {
+            "type": "string"
+          },
+          "version": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
       "ful.PlannedPart": {
         "additionalProperties": false,
         "properties": {
@@ -3965,7 +5090,7 @@
   "info": {
     "description": "Cargo's HTTP API. Every /v1 call carries a bearer token; the tenant and the actor come only from it. A command carries Idempotency-Key (its command id) and, when it changes a resource at a revision, If-Match \"n\"; it states its business time in occurred_at. Errors are RFC 9457 problems with a business code.",
     "title": "IDP Cargo API",
-    "version": "2.108"
+    "version": "2.109"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -6981,6 +8106,323 @@
         "x-permission": "phy:RecordScreeningResult"
       }
     },
+    "/v1/carrier-documents": {
+      "post": {
+        "operationId": "doc.RecordCarrierDocument",
+        "parameters": [
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "document_id": {
+                    "type": "string"
+                  },
+                  "evidence": {
+                    "$ref": "#/components/schemas/doc.CarrierEvidence"
+                  },
+                  "issue_place": {
+                    "type": "string"
+                  },
+                  "issued_on": {
+                    "type": "string"
+                  },
+                  "movement_id": {
+                    "type": "string"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "originals": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "release": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/doc.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Record the carrier's document, with its evidence",
+        "tags": [
+          "doc"
+        ],
+        "x-calls": "RecordCarrierDocument",
+        "x-permission": "doc:RecordCarrierDocument"
+      }
+    },
+    "/v1/carrier-documents/{document_id}": {
+      "get": {
+        "operationId": "doc.GetCarrierDocument",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/doc.CarrierDocument"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "A carrier's document",
+        "tags": [
+          "doc"
+        ],
+        "x-calls": "GetCarrierDocument",
+        "x-permission": "doc:Read"
+      }
+    },
+    "/v1/carrier-documents/{document_id}/cancel": {
+      "post": {
+        "operationId": "doc.CancelCarrierDocument",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/doc.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Cancel it",
+        "tags": [
+          "doc"
+        ],
+        "x-calls": "CancelCarrierDocument",
+        "x-permission": "doc:CancelCarrierDocument"
+      }
+    },
+    "/v1/carrier-documents/{document_id}/verify": {
+      "post": {
+        "operationId": "doc.VerifyCarrierDocument",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/doc.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Verify it (not by who recorded it)",
+        "tags": [
+          "doc"
+        ],
+        "x-calls": "VerifyCarrierDocument",
+        "x-permission": "doc:VerifyCarrierDocument"
+      }
+    },
     "/v1/charge-codes": {
       "get": {
         "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
@@ -7632,6 +9074,58 @@
         ],
         "x-calls": "CloseConsolidation",
         "x-permission": "phy:CloseConsolidation"
+      }
+    },
+    "/v1/consolidations/{consolidation_id}/documents": {
+      "get": {
+        "operationId": "doc.ListDocumentsForConsolidation",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "consolidation_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "items": {
+                      "items": {
+                        "$ref": "#/components/schemas/doc.DocumentSummary"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "A consolidation's documents",
+        "tags": [
+          "doc"
+        ],
+        "x-calls": "ListDocumentsForConsolidation",
+        "x-permission": "doc:Read"
       }
     },
     "/v1/consolidations/{consolidation_id}/houses": {
@@ -8454,6 +9948,66 @@
         "x-permission": "phy:ReopenConsolidation"
       }
     },
+    "/v1/contact-provisions": {
+      "get": {
+        "operationId": "doc.ListContactProvisions",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "from",
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "until",
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "items": {
+                      "items": {
+                        "$ref": "#/components/schemas/doc.DocumentDispatch"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Contacts provided abroad in a window: doc:ReadProvisionRecords by name",
+        "tags": [
+          "doc"
+        ],
+        "x-calls": "ListContactProvisions",
+        "x-permission": "checked by the context"
+      }
+    },
     "/v1/contact-transfers/releases": {
       "post": {
         "operationId": "org.ReleaseContactTransfers",
@@ -9119,6 +10673,1528 @@
         "x-permission": "phy:Read"
       }
     },
+    "/v1/dispatches": {
+      "post": {
+        "operationId": "doc.PrepareDocumentDispatch",
+        "parameters": [
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "channel": {
+                    "type": "string"
+                  },
+                  "dispatch_id": {
+                    "type": "string"
+                  },
+                  "document_id": {
+                    "type": "string"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "recipient_party": {
+                    "type": "string"
+                  },
+                  "recipient_role": {
+                    "type": "string"
+                  },
+                  "version": {
+                    "format": "int64",
+                    "type": "integer"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/doc.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Prepare a dispatch of an issued version (after ORG's reservation)",
+        "tags": [
+          "doc"
+        ],
+        "x-calls": "PrepareDocumentDispatch",
+        "x-permission": "doc:PrepareDocumentDispatch"
+      }
+    },
+    "/v1/dispatches/{dispatch_id}": {
+      "get": {
+        "operationId": "doc.GetDispatch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dispatch_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/doc.DocumentDispatch"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "A dispatch",
+        "tags": [
+          "doc"
+        ],
+        "x-calls": "GetDispatch",
+        "x-permission": "doc:Read"
+      }
+    },
+    "/v1/dispatches/{dispatch_id}/copy": {
+      "get": {
+        "operationId": "doc.GetDispatchCopy",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dispatch_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/doc.DispatchCopy"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "The copy sent, with its contacts (the actor's COM and ORG rights)",
+        "tags": [
+          "doc"
+        ],
+        "x-calls": "GetDispatchCopy",
+        "x-permission": "checked by the context"
+      }
+    },
+    "/v1/dispatches/{dispatch_id}/outcome": {
+      "post": {
+        "operationId": "doc.RecordDispatchOutcome",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dispatch_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "outcome": {
+                    "type": "string"
+                  },
+                  "reference": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/doc.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Record what became of the dispatch",
+        "tags": [
+          "doc"
+        ],
+        "x-calls": "RecordDispatchOutcome",
+        "x-permission": "doc:RecordDispatchOutcome"
+      }
+    },
+    "/v1/documents": {
+      "post": {
+        "operationId": "doc.DraftTransportDocument",
+        "parameters": [
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "agent_party_id": {
+                    "type": "string"
+                  },
+                  "document_id": {
+                    "type": "string"
+                  },
+                  "handling_information": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "type": "string"
+                  },
+                  "movement_id": {
+                    "type": "string"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "originals": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "payment_indicator": {
+                    "type": "string"
+                  },
+                  "release": {
+                    "type": "string"
+                  },
+                  "shipment_id": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/doc.Receipt"
+                }
+              }
+            },
+            "description": "Created",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Draft a transport document from the movement's facts",
+        "tags": [
+          "doc"
+        ],
+        "x-calls": "DraftTransportDocument",
+        "x-permission": "doc:DraftTransportDocument"
+      }
+    },
+    "/v1/documents/{document_id}": {
+      "get": {
+        "operationId": "doc.GetTransportDocument",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/doc.TransportDocument"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "A document: its state, number and versions",
+        "tags": [
+          "doc"
+        ],
+        "x-calls": "GetTransportDocument",
+        "x-permission": "doc:Read"
+      }
+    },
+    "/v1/documents/{document_id}/amendments": {
+      "post": {
+        "operationId": "doc.OpenDocumentAmendment",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "agent_party_id": {
+                    "type": "string"
+                  },
+                  "handling_information": {
+                    "type": "string"
+                  },
+                  "movement_id": {
+                    "type": "string"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "originals": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "payment_indicator": {
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  },
+                  "release": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/doc.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Open an amendment of an issued document",
+        "tags": [
+          "doc"
+        ],
+        "x-calls": "OpenDocumentAmendment",
+        "x-permission": "doc:OpenDocumentAmendment"
+      }
+    },
+    "/v1/documents/{document_id}/amendments/abandon": {
+      "post": {
+        "operationId": "doc.AbandonDocumentAmendment",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/doc.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Abandon the amendment",
+        "tags": [
+          "doc"
+        ],
+        "x-calls": "AbandonDocumentAmendment",
+        "x-permission": "doc:AbandonDocumentAmendment"
+      }
+    },
+    "/v1/documents/{document_id}/amendments/issue": {
+      "post": {
+        "operationId": "doc.IssueDocumentAmendment",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "credit_override_reason": {
+                    "type": "string"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/doc.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Issue the amendment under the same number",
+        "tags": [
+          "doc"
+        ],
+        "x-calls": "IssueDocumentAmendment",
+        "x-permission": "doc:IssueDocumentAmendment"
+      }
+    },
+    "/v1/documents/{document_id}/approve": {
+      "post": {
+        "operationId": "doc.ApproveTransportDocument",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/doc.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Approve the draft (one's own draft also needs doc:ApproveOwnTransportDocument)",
+        "tags": [
+          "doc"
+        ],
+        "x-calls": "ApproveTransportDocument",
+        "x-permission": "doc:ApproveTransportDocument"
+      }
+    },
+    "/v1/documents/{document_id}/cancel": {
+      "post": {
+        "operationId": "doc.CancelTransportDocument",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/doc.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Cancel it",
+        "tags": [
+          "doc"
+        ],
+        "x-calls": "CancelTransportDocument",
+        "x-permission": "doc:CancelTransportDocument"
+      }
+    },
+    "/v1/documents/{document_id}/dispatches": {
+      "get": {
+        "operationId": "doc.ListDocumentDispatches",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "items": {
+                      "items": {
+                        "$ref": "#/components/schemas/doc.DocumentDispatch"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "A document's dispatches",
+        "tags": [
+          "doc"
+        ],
+        "x-calls": "ListDocumentDispatches",
+        "x-permission": "doc:Read"
+      }
+    },
+    "/v1/documents/{document_id}/issue": {
+      "post": {
+        "operationId": "doc.IssueTransportDocument",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "credit_override_reason": {
+                    "type": "string"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/doc.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Issue it (overriding a credit hold needs doc:OverrideCreditCheck)",
+        "tags": [
+          "doc"
+        ],
+        "x-calls": "IssueTransportDocument",
+        "x-permission": "doc:IssueTransportDocument"
+      }
+    },
+    "/v1/documents/{document_id}/originals": {
+      "get": {
+        "operationId": "doc.ListOriginals",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "items": {
+                      "items": {
+                        "$ref": "#/components/schemas/doc.Original"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "The originals and where each is",
+        "tags": [
+          "doc"
+        ],
+        "x-calls": "ListOriginals",
+        "x-permission": "doc:Read"
+      }
+    },
+    "/v1/documents/{document_id}/originals/return": {
+      "post": {
+        "operationId": "doc.ReturnOriginal",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "evidence": {
+                    "type": "string"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "serial": {
+                    "format": "int64",
+                    "type": "integer"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/doc.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Record an original returned",
+        "tags": [
+          "doc"
+        ],
+        "x-calls": "ReturnOriginal",
+        "x-permission": "doc:ReturnOriginal"
+      }
+    },
+    "/v1/documents/{document_id}/originals/surrender": {
+      "post": {
+        "operationId": "doc.SurrenderOriginals",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "evidence": {
+                    "type": "string"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/doc.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Record the originals surrendered at origin",
+        "tags": [
+          "doc"
+        ],
+        "x-calls": "SurrenderOriginals",
+        "x-permission": "doc:SurrenderOriginals"
+      }
+    },
+    "/v1/documents/{document_id}/pending": {
+      "get": {
+        "operationId": "doc.GetPendingItemsOfDocument",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "items": {
+                      "items": {
+                        "$ref": "#/components/schemas/doc.PendingItem"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "What the document waits for",
+        "tags": [
+          "doc"
+        ],
+        "x-calls": "GetPendingItemsOfDocument",
+        "x-permission": "doc:Read"
+      }
+    },
+    "/v1/documents/{document_id}/refresh": {
+      "post": {
+        "operationId": "doc.RefreshDocumentDraft",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "agent_party_id": {
+                    "type": "string"
+                  },
+                  "handling_information": {
+                    "type": "string"
+                  },
+                  "movement_id": {
+                    "type": "string"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "originals": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "payment_indicator": {
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  },
+                  "release": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/doc.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Refresh the draft from the latest facts (a rolled house follows its container)",
+        "tags": [
+          "doc"
+        ],
+        "x-calls": "RefreshDocumentDraft",
+        "x-permission": "doc:RefreshDocumentDraft"
+      }
+    },
+    "/v1/documents/{document_id}/versions/{version}": {
+      "get": {
+        "operationId": "doc.GetDocumentVersion",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/doc.DocumentVersion"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "A version's content (0: the latest)",
+        "tags": [
+          "doc"
+        ],
+        "x-calls": "GetDocumentVersion",
+        "x-permission": "doc:Read"
+      }
+    },
+    "/v1/documents/{document_id}/versions/{version}/pdf": {
+      "get": {
+        "operationId": "doc.RenderDocumentVersion",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/doc.RenderedDocument"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "A version rendered (PDF as base64), without contacts",
+        "tags": [
+          "doc"
+        ],
+        "x-calls": "RenderDocumentVersion",
+        "x-permission": "doc:Read"
+      }
+    },
     "/v1/fin/cost-review-requests": {
       "post": {
         "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
@@ -9499,6 +12575,239 @@
         ],
         "x-calls": "FindHouseWaybill",
         "x-permission": "air:Read"
+      }
+    },
+    "/v1/issuance-authorities": {
+      "post": {
+        "operationId": "doc.RecordIssuanceAuthority",
+        "parameters": [
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "airline_party_id": {
+                    "type": "string"
+                  },
+                  "authority_id": {
+                    "type": "string"
+                  },
+                  "evidence_ref": {
+                    "type": "string"
+                  },
+                  "issue_place": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "type": "string"
+                  },
+                  "legal_entity_id": {
+                    "type": "string"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "qualification": {
+                    "type": "string"
+                  },
+                  "validity": {
+                    "$ref": "#/components/schemas/kernel.ValidityInterval"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/doc.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Record a legal entity's authority to issue a kind of document",
+        "tags": [
+          "doc"
+        ],
+        "x-calls": "RecordIssuanceAuthority",
+        "x-permission": "doc:RecordIssuanceAuthority"
+      }
+    },
+    "/v1/issuance-authorities/{authority_id}": {
+      "get": {
+        "operationId": "doc.GetIssuanceAuthority",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "authority_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/doc.IssuanceAuthority"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "An issuance authority",
+        "tags": [
+          "doc"
+        ],
+        "x-calls": "GetIssuanceAuthority",
+        "x-permission": "doc:Read"
+      }
+    },
+    "/v1/issuance-authorities/{authority_id}/withdraw": {
+      "post": {
+        "operationId": "doc.WithdrawIssuanceAuthority",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "authority_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/doc.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Withdraw an issuance authority",
+        "tags": [
+          "doc"
+        ],
+        "x-calls": "WithdrawIssuanceAuthority",
+        "x-permission": "doc:WithdrawIssuanceAuthority"
       }
     },
     "/v1/legal-entities": {
@@ -10942,6 +14251,109 @@
         ],
         "x-calls": "RecordCargoUnloaded",
         "x-permission": "phy:RecordCargoUnloaded"
+      }
+    },
+    "/v1/movements/{movement_id}/carrier-document": {
+      "get": {
+        "operationId": "doc.FindCarrierDocumentByMovement",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "movement_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/doc.CarrierDocument"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "A movement's carrier document",
+        "tags": [
+          "doc"
+        ],
+        "x-calls": "FindCarrierDocumentByMovement",
+        "x-permission": "doc:Read"
+      }
+    },
+    "/v1/movements/{movement_id}/pending-documents": {
+      "get": {
+        "operationId": "doc.GetPendingItemsOfMovement",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "movement_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "items": {
+                      "items": {
+                        "$ref": "#/components/schemas/doc.PendingItem"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "What a movement's documents wait for",
+        "tags": [
+          "doc"
+        ],
+        "x-calls": "GetPendingItemsOfMovement",
+        "x-permission": "doc:Read"
       }
     },
     "/v1/obligations/{obligation_id}/reservations": {
@@ -16326,6 +19738,58 @@
         ],
         "x-calls": "RecordConsolDetachment",
         "x-permission": "ful:RecordConsolDetachment"
+      }
+    },
+    "/v1/shipments/{shipment_id}/documents": {
+      "get": {
+        "operationId": "doc.ListDocumentsForShipment",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "shipment_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "items": {
+                      "items": {
+                        "$ref": "#/components/schemas/doc.DocumentSummary"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "A shipment's documents",
+        "tags": [
+          "doc"
+        ],
+        "x-calls": "ListDocumentsForShipment",
+        "x-permission": "doc:Read"
       }
     },
     "/v1/shipments/{shipment_id}/load-evidence": {

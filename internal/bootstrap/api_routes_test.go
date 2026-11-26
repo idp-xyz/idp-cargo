@@ -14,6 +14,8 @@ import (
 	bookapi "go.idp.xyz/idp-cargo/internal/contexts/book/api"
 	"go.idp.xyz/idp-cargo/internal/contexts/com"
 	comapi "go.idp.xyz/idp-cargo/internal/contexts/com/api"
+	"go.idp.xyz/idp-cargo/internal/contexts/doc"
+	docapi "go.idp.xyz/idp-cargo/internal/contexts/doc/api"
 	"go.idp.xyz/idp-cargo/internal/contexts/ful"
 	fulapi "go.idp.xyz/idp-cargo/internal/contexts/ful/api"
 	"go.idp.xyz/idp-cargo/internal/contexts/org"
@@ -92,6 +94,11 @@ var covered = []coverage{
 	{context: "book", module: (*book.Module)(nil), interfaces: []reflect.Type{reflect.TypeFor[bookapi.Commands](), reflect.TypeFor[bookapi.Queries]()}},
 	{context: "air", module: (*air.Module)(nil), interfaces: []reflect.Type{reflect.TypeFor[airapi.Commands](), reflect.TypeFor[airapi.Queries](),
 		reflect.TypeFor[airapi.AirDocFactsQueries]()}},
+	{context: "doc", module: (*doc.Module)(nil), interfaces: []reflect.Type{
+		reflect.TypeFor[docapi.Commands](), reflect.TypeFor[docapi.Queries](), reflect.TypeFor[docapi.PendingQueries](), reflect.TypeFor[docapi.CarrierCommands](),
+		reflect.TypeFor[docapi.CarrierQueries](), reflect.TypeFor[docapi.DispatchCommands](), reflect.TypeFor[docapi.DispatchQueries](),
+		reflect.TypeFor[docapi.TransportDocumentSnapshotQueries](),
+	}, internal: map[string]string{"GetHouseDocumentSnapshot": "FIN's read of the house bill a debit note is on"}},
 }
 
 func TestEveryPublicMethodOfARoutedContextHasOneRoute(t *testing.T) {

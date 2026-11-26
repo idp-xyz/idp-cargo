@@ -9,6 +9,7 @@ import (
 	"time"
 
 	comapi "go.idp.xyz/idp-cargo/internal/contexts/com/api"
+	docapi "go.idp.xyz/idp-cargo/internal/contexts/doc/api"
 	finapi "go.idp.xyz/idp-cargo/internal/contexts/fin/api"
 	orgapi "go.idp.xyz/idp-cargo/internal/contexts/org/api"
 	seaapi "go.idp.xyz/idp-cargo/internal/contexts/sea/api"
@@ -41,7 +42,7 @@ func (c APIConfig) verifier() identity.HS256Verifier {
 // and cost review (V2.99), with FUL's and PHY's facts, which FIN reads; ORG's parties, legal entities, address books,
 // contact transfer register and onboardings, with the platform's onboarding commands (V2.106); COM's orders and FUL's
 // shipments (V2.107); PHY's consolidations, cargo lots and load executions (V2.107); BOOK's bookings and AIR's movements
-// (V2.108). DOC has no routes yet.
+// (V2.108); DOC's transport documents, carrier documents and dispatches (V2.109).
 func (p *Platform) API(cfg APIConfig) (http.Handler, error) {
 	switch {
 	case len(cfg.TokenKey) < 32 || cfg.TokenIssuer == "" || cfg.TokenAudience == "":
@@ -77,18 +78,23 @@ func (p *Platform) API(cfg APIConfig) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	// FIN's routes read the profit and run the cost review; no route issues a debit note, which is the only use FIN has
-	// for DOC's snapshots, so they stay unbound (a debit note asked for in process would be refused
-	// ErrDocumentsUnbound).
-	fin, err := p.FIN(org, rate, ful, &DocumentSnapshots{}, phy, permissions{})
+	// FIN asks DOC for the house bill a debit note is on; DOC asks FIN for a customer's credit status before issuing.
+	// FIN is made with DOC's snapshots unbound and they are bound once DOC is made (since V2.109).
+	snapshots := &DocumentSnapshots{}
+	fin, err := p.FIN(org, rate, ful, snapshots, phy, permissions{})
 	if err != nil {
 		return nil, err
 	}
+	doc, err := p.DOC(air, sea, com, org, fin, permissions{})
+	if err != nil {
+		return nil, err
+	}
+	snapshots.Bind(doc)
 	onboarding, err := NewOnboarding(org, fin, sea)
 	if err != nil {
 		return nil, err
 	}
-	return transport.NewHandler(transport.Config{Verifier: cfg.verifier(), Logger: cfg.Logger, Ready: p.pool.Ping}, apiRegistrars(rate, sea, fin, org, com, ful, phy, book, air, onboarding)...)
+	return transport.NewHandler(transport.Config{Verifier: cfg.verifier(), Logger: cfg.Logger, Ready: p.pool.Ping}, apiRegistrars(rate, sea, fin, org, com, ful, phy, book, air, doc, onboarding)...)
 }
 
 // APIServer is an http.Server for the API's handler with Cargo's timeouts; its requests run under base.
@@ -184,6 +190,18 @@ func (permissions) AuthorizeShipmentAction(ctx context.Context, tenant, actor, a
 
 func (permissions) AuthorizeConsolidationAction(ctx context.Context, tenant, actor, action, _ string) error {
 	return identity.Authorize(ctx, "phy", tenant, actor, action)
+}
+
+// AuthorizeDocAction covers DOC's commands and the two reads DOC authorizes itself (since V2.109, when DOC is first
+// served). Approving one's own draft ("doc:ApproveOwnTransportDocument"), issuing over a credit hold
+// ("doc:OverrideCreditCheck") and reading the records of contacts provided abroad ("doc:ReadProvisionRecords") are
+// granted by name only: a general grant never lets a person relax a control or read whose contacts went abroad.
+func (permissions) AuthorizeDocAction(ctx context.Context, tenant, actor, action, _ string) error {
+	switch action {
+	case docapi.ActionApproveOwnTransportDocument, docapi.ActionOverrideCreditCheck, docapi.ActionReadProvisionRecords:
+		return identity.AuthorizeNamed(ctx, "doc", tenant, actor, action)
+	}
+	return identity.Authorize(ctx, "doc", tenant, actor, action)
 }
 
 // AuthorizeAirAction covers AIR's commands (since V2.108, when AIR is first served).
