@@ -25,9 +25,6 @@ var (
 // declaration makes one, and ConfigureSettings does not grant it.
 func TestASingleAdministratorIsDeclaredOnlyByAConfirmedOnboarding(t *testing.T) {
 	d := newSettingsDay(t, "cargo-onb-single-")
-	if _, err := d.propose("ob-1", "STRICT", 3, true, nil); err != nil {
-		t.Fatal(err)
-	}
 	dan := append(append([]string{}, adminFin...), adminSea...)
 	// before the confirmation: dan makes a loosening change set and may not approve it, with or without an acknowledgement
 	prep := func(tag string) string {
@@ -44,6 +41,12 @@ func TestASingleAdministratorIsDeclaredOnlyByAConfirmedOnboarding(t *testing.T) 
 	_, err := d.fin.ApproveFinSettingsChange(d.as("dan", dan...), finapi.ApproveFinSettingsChange{CommandID: d.command(), TenantID: d.tenant, ActorID: "dan", ChangeID: l0,
 		RiskAcknowledgement: "I accept"})
 	saidKind(t, "before any confirmation", err, finapi.ErrRejected, "SETTINGS_SAME_ACTOR", "has not declared a single administrator")
+	// the onboarding is proposed after those (a tenant takes no other change set while one waits for its owner)
+	if _, err = d.propose("ob-1", "STRICT", 3, true, nil); err != nil {
+		t.Fatal(err)
+	}
+	_, err = d.fin.ApproveFinSettingsChange(d.as("dan", dan...), finapi.ApproveFinSettingsChange{CommandID: d.command(), TenantID: d.tenant, ActorID: "dan", ChangeID: l0, RiskAcknowledgement: "I accept"})
+	saidKind(t, "while the onboarding waits for its owner", err, finapi.ErrRejected, "SETTINGS_ONBOARDING_WAITING", "onboarding ob-1 waits", "confirm the onboarding")
 	// no permission makes the declaration but its own name, and the onboarding is the one that holds it
 	for name, perms := range map[string][]string{"fin:*": {"fin:*"}, "ConfigureSettings and ApproveSettings": adminFin} {
 		_, err = d.fin.DeclareFinSingleAdministrator(d.as("olga", perms...), finapi.DeclareFinSingleAdministrator{CommandID: d.command(), TenantID: d.tenant, ActorID: "olga",

@@ -19,13 +19,13 @@ import (
 // V2.102, migration org/000012: customer onboarding, the record of a consultant's proposal, the owner's confirmation and
 // each module's change set and state.
 
-// onboardingAuth grants the actions by name: ann proposes, olga confirms, dan does both, olga and dan record a module (as the
-// platform does for the confirmer), and nobody else does anything.
+// onboardingAuth grants the actions by name: ann proposes, olga confirms, dan does both, and all three record a module (as the platform
+// does: the proposer's PROPOSED row, the confirmer's APPROVED row), and nobody else does anything.
 type onboardingAuth struct{ testAuthorizer }
 
 func (onboardingAuth) AuthorizePartyAction(_ context.Context, _, actor, action, _ string) error {
-	grants := map[string][]string{"ann": {api.ActionProposeOnboarding}, "olga": {api.ActionConfirmOnboarding, api.ActionRecordOnboardingModule},
-		"dan": {api.ActionProposeOnboarding, api.ActionConfirmOnboarding, api.ActionRecordOnboardingModule}}
+	grants := map[string][]string{"ann": {api.ActionProposeOnboarding, api.ActionRecordOnboardingModule}, "olga": {api.ActionConfirmOnboarding, api.ActionRecordOnboardingModule},
+		"dan": {api.ActionProposeOnboarding, api.ActionConfirmOnboarding, api.ActionRecordOnboardingModule}, "pete": {api.ActionProposeOnboarding}}
 	for _, a := range grants[actor] {
 		if a == action {
 			return nil
@@ -104,9 +104,18 @@ func (w *onboardingWorld) confirmNaming(command, id, actor, text, admin string) 
 	return w.module.ConfirmOnboarding(context.Background(), api.ConfirmOnboarding{CommandID: command, TenantID: w.tenant, ActorID: actor, OnboardingID: id, AcknowledgedText: text, PlanSHA256: digest, AdministratorID: admin})
 }
 
+// record records a module's state; an APPROVED row carries the settings version the module put in force, 3 here.
 func (w *onboardingWorld) record(id, actor, module, state string) (api.OnboardingReceipt, error) {
+	version := 0
+	if state == "APPROVED" {
+		version = 3
+	}
 	return w.module.RecordOnboardingModule(context.Background(), api.RecordOnboardingModule{CommandID: w.command(), TenantID: w.tenant, ActorID: actor, OnboardingID: id,
-		Module: module, ChangeID: "onb-" + id + "-" + strings.ToLower(module), State: state})
+		Module: module, ChangeID: "onb-" + id + "-" + strings.ToLower(module), State: state, Version: version})
+}
+
+func (w *onboardingWorld) withdraw(command, id, actor, reason string) (api.OnboardingReceipt, error) {
+	return w.module.WithdrawOnboarding(context.Background(), api.WithdrawOnboarding{CommandID: command, TenantID: w.tenant, ActorID: actor, OnboardingID: id, Reason: reason})
 }
 
 func (w *onboardingWorld) get(id string) api.Onboarding {
@@ -221,42 +230,54 @@ func TestOnboardingIsProposedConfirmedAndRecordedPerModule(t *testing.T) {
 		t.Fatalf("the onboarding: %+v", o)
 	}
 
-	// the modules: recorded by the confirmer, PROPOSED then APPROVED, once each, with the change set derived from the onboarding
-	_, err = w.record("ob-both", "olga", "FIN", "PROPOSED")
-	said(t, "a module of an onboarding not confirmed", err, api.ErrRejected, "not confirmed")
-	_, err = w.record("ob-1", "ann", "FIN", "PROPOSED")
-	said(t, "the consultant recording a module", err, api.ErrUnauthorized)
-	_, err = w.record("ob-1", "dan", "FIN", "PROPOSED")
-	said(t, "someone else who may confirm recording a module", err, api.ErrRejected, "recorded by its confirmer, olga")
-	_, err = w.module.RecordOnboardingModule(context.Background(), api.RecordOnboardingModule{CommandID: w.command(), TenantID: w.tenant, ActorID: "olga", OnboardingID: "ob-1",
+	// the modules: PROPOSED recorded as the proposer, APPROVED as the confirmer with the settings version, once each, with the change set derived from the onboarding
+	_, err = w.record("ob-both", "olga", "FIN", "APPROVED")
+	said(t, "a module approved for an onboarding not confirmed", err, api.ErrRejected, "not confirmed")
+	_, err = w.record("ob-1", "olga", "FIN", "PROPOSED")
+	said(t, "the owner recording the consultant's held change set", err, api.ErrRejected, "recorded as its proposer's, ann")
+	_, err = w.record("ob-1", "nobody", "FIN", "PROPOSED")
+	said(t, "someone without the permission recording a module", err, api.ErrUnauthorized)
+	_, err = w.module.RecordOnboardingModule(context.Background(), api.RecordOnboardingModule{CommandID: w.command(), TenantID: w.tenant, ActorID: "ann", OnboardingID: "ob-1",
 		Module: "FIN", ChangeID: "another-change", State: "PROPOSED"})
 	said(t, "a change set that is not the derived one", err, api.ErrRejected, "onb-ob-1-fin")
-	_, err = w.record("ob-1", "olga", "AIR", "PROPOSED")
+	_, err = w.record("ob-1", "ann", "AIR", "PROPOSED")
 	said(t, "another module", err, api.ErrRejected)
-	_, err = w.record("ob-1", "olga", "FIN", "DONE")
+	_, err = w.record("ob-1", "ann", "FIN", "DONE")
 	said(t, "another state", err, api.ErrRejected)
+	_, err = w.module.RecordOnboardingModule(context.Background(), api.RecordOnboardingModule{CommandID: w.command(), TenantID: w.tenant, ActorID: "ann", OnboardingID: "ob-1",
+		Module: "FIN", ChangeID: "onb-ob-1-fin", State: "PROPOSED", Version: 1})
+	said(t, "a version on a PROPOSED record", err, api.ErrRejected, "APPROVED with the settings version")
+	_, err = w.module.RecordOnboardingModule(context.Background(), api.RecordOnboardingModule{CommandID: w.command(), TenantID: w.tenant, ActorID: "olga", OnboardingID: "ob-1",
+		Module: "FIN", ChangeID: "onb-ob-1-fin", State: "APPROVED"})
+	said(t, "an APPROVED record without its version", err, api.ErrRejected, "APPROVED with the settings version")
 	if _, err = w.record("ob-1", "olga", "FIN", "APPROVED"); err == nil || !strings.Contains(err.Error(), "approved before it is proposed") {
 		t.Fatalf("approved before proposed: %v", err)
 	}
-	r1, err := w.record("ob-1", "olga", "FIN", "PROPOSED")
+	r1, err := w.record("ob-1", "ann", "FIN", "PROPOSED")
 	if err != nil || r1.State != "CONFIRMED" || r1.NewRevision != 3 {
 		t.Fatalf("FIN proposed: %+v, %v", r1, err)
 	}
-	if again, err := w.record("ob-1", "olga", "FIN", "PROPOSED"); err != nil || again.NewRevision != 3 {
+	if again, err := w.record("ob-1", "ann", "FIN", "PROPOSED"); err != nil || again.NewRevision != 3 {
 		t.Fatalf("a record again: %+v, %v", again, err)
 	}
-	if m := w.get("ob-1").Modules[0]; m.State != "PROPOSED" || m.ChangeID != "onb-ob-1-fin" {
+	if m := w.get("ob-1").Modules[0]; m.State != "PROPOSED" || m.ChangeID != "onb-ob-1-fin" || m.Version != 0 {
 		t.Fatalf("FIN: %+v", m)
 	}
-	for _, step := range [][2]string{{"FIN", "APPROVED"}, {"SEA", "PROPOSED"}} {
-		if r, err = w.record("ob-1", "olga", step[0], step[1]); err != nil || r.State != "CONFIRMED" {
-			t.Fatalf("%v: %+v, %v", step, r, err)
-		}
+	_, err = w.record("ob-1", "dan", "FIN", "APPROVED")
+	said(t, "someone else who may confirm recording an approval", err, api.ErrRejected, "recorded as its confirmer's, olga")
+	if r, err = w.record("ob-1", "olga", "FIN", "APPROVED"); err != nil || r.State != "CONFIRMED" {
+		t.Fatalf("FIN approved: %+v, %v", r, err)
+	}
+	if m := w.get("ob-1").Modules[0]; m.State != "APPROVED" || m.Version != 3 {
+		t.Fatalf("FIN's version: %+v", m)
+	}
+	if r, err = w.record("ob-1", "ann", "SEA", "PROPOSED"); err != nil || r.State != "CONFIRMED" {
+		t.Fatalf("SEA proposed: %+v, %v", r, err)
 	}
 	if r, err = w.record("ob-1", "olga", "SEA", "APPROVED"); err != nil || r.State != "COMPLETE" || r.NewRevision != 6 {
 		t.Fatalf("SEA approved: %+v, %v", r, err)
 	}
-	if o = w.get("ob-1"); o.State != "COMPLETE" || o.Modules[0].State != "APPROVED" || o.Modules[1].State != "APPROVED" || o.Modules[1].ChangeID != "onb-ob-1-sea" {
+	if o = w.get("ob-1"); o.State != "COMPLETE" || o.Modules[0].State != "APPROVED" || o.Modules[1].State != "APPROVED" || o.Modules[1].ChangeID != "onb-ob-1-sea" || o.Modules[1].Version != 3 {
 		t.Fatalf("the onboarding: %+v", o)
 	}
 
@@ -300,9 +321,21 @@ func TestOnboardingDatabaseRulesRefuseRawWrites(t *testing.T) {
 	confirmation := func(id, proposer, confirmer, text, at string) string {
 		return confirmationBy(id, proposer, confirmer, text, at, "NULL")
 	}
-	module := func(id, by, mod, state, change, at string) string {
-		return fmt.Sprintf(`INSERT INTO cargo_org.onboarding_module (tenant_id,onboarding_id,module,state,change_id,recorded_by,confirmed_at,recorded_at)
-        SELECT tenant_id,onboarding_id,'%s','%s','%s','%s',confirmed_at,%s FROM cargo_org.onboarding_confirmation WHERE tenant_id=$1 AND onboarding_id='%s'`, mod, state, change, by, at, id)
+	// the consultant's PROPOSED row, recorded by the platform as the proposer, and the confirmer's APPROVED row with the settings version it made
+	proposedRow := func(id, by, mod, change, at string) string {
+		return fmt.Sprintf(`INSERT INTO cargo_org.onboarding_module (tenant_id,onboarding_id,module,state,change_id,recorded_by,recorded_at)
+        SELECT tenant_id,onboarding_id,'%s','PROPOSED','%s','%s',%s FROM cargo_org.onboarding WHERE tenant_id=$1 AND onboarding_id='%s'`, mod, change, by, at, id)
+	}
+	approvedRow := func(id, by, mod, change, at, version string) string {
+		return fmt.Sprintf(`INSERT INTO cargo_org.onboarding_module (tenant_id,onboarding_id,module,state,change_id,recorded_by,confirmed_at,recorded_at,settings_version)
+        SELECT tenant_id,onboarding_id,'%s','APPROVED','%s','%s',confirmed_at,%s,%s FROM cargo_org.onboarding_confirmation WHERE tenant_id=$1 AND onboarding_id='%s'`, mod, change, by, at, version, id)
+	}
+	withdrawal := func(id, by, at, reason, cmd string) string {
+		return fmt.Sprintf(`INSERT INTO cargo_org.onboarding_withdrawal (tenant_id,onboarding_id,command_id,withdrawn_by,withdrawn_at,reason)
+        SELECT tenant_id,onboarding_id,'%s','%s',%s,%s FROM cargo_org.onboarding WHERE tenant_id=$1 AND onboarding_id='%s'`, cmd, by, at, reason, id)
+	}
+	confirmed := func(id string) []string {
+		return []string{proposal(id, "ann", "c-"+id, ""), confirmation(id, "ann", "olga", "the statement", "proposed_at")}
 	}
 	type rule struct {
 		name       string
@@ -351,22 +384,50 @@ func TestOnboardingDatabaseRulesRefuseRawWrites(t *testing.T) {
 			"onboarding_confirmation_after_proposal"},
 		{"a second confirmation", []string{proposal("a", "ann", "c1", ""), confirmation("a", "ann", "olga", "the statement", "proposed_at"),
 			strings.Replace(confirmation("a", "ann", "olga", "the statement", "proposed_at"), "'c-'||onboarding_id", "'c-2'", 1)}, "23505", "onboarding_confirmation_pkey"},
-		{"a module of an onboarding not confirmed", []string{proposal("a", "ann", "c1", ""), `INSERT INTO cargo_org.onboarding_module (tenant_id,onboarding_id,module,state,change_id,
-          recorded_by,confirmed_at,recorded_at) VALUES ($1,'a','FIN','PROPOSED','onb-a-fin','olga',now(),now())`}, "23503", "onboarding_module_by_confirmer"},
-		{"a module recorded by someone but the confirmer", []string{proposal("a", "ann", "c1", ""), confirmation("a", "ann", "olga", "the statement", "proposed_at"),
-			module("a", "dan", "FIN", "PROPOSED", "onb-a-fin", "now()")}, "23503", "onboarding_module_by_confirmer"},
-		{"a module recorded before the confirmation", []string{proposal("a", "ann", "c1", ""), confirmation("a", "ann", "olga", "the statement", "proposed_at"),
-			module("a", "olga", "FIN", "PROPOSED", "onb-a-fin", "confirmed_at - interval '1 second'")}, "23514", "onboarding_module_after_confirmation"},
-		{"a change set that is not derived", []string{proposal("a", "ann", "c1", ""), confirmation("a", "ann", "olga", "the statement", "proposed_at"),
-			module("a", "olga", "FIN", "PROPOSED", "onb-a-sea", "now()")}, "23514", "onboarding_module_change_derived"},
-		{"a second change set for a module", []string{proposal("a", "ann", "c1", ""), confirmation("a", "ann", "olga", "the statement", "proposed_at"),
-			module("a", "olga", "FIN", "PROPOSED", "onb-a-fin", "now()"), module("a", "olga", "FIN", "PROPOSED", "onb-a-fin", "now()")}, "23505", "onboarding_module_pkey"},
-		{"another module", []string{proposal("a", "ann", "c1", ""), confirmation("a", "ann", "olga", "the statement", "proposed_at"),
-			module("a", "olga", "AIR", "PROPOSED", "onb-a-air", "now()")}, "23514", "onboarding_module_known"},
-		{"another state", []string{proposal("a", "ann", "c1", ""), confirmation("a", "ann", "olga", "the statement", "proposed_at"),
-			module("a", "olga", "FIN", "DONE", "onb-a-fin", "now()")}, "23514", "onboarding_module_state"},
-		{"approved before proposed", []string{proposal("a", "ann", "c1", ""), confirmation("a", "ann", "olga", "the statement", "proposed_at"),
-			module("a", "olga", "FIN", "APPROVED", "onb-a-fin", "now()")}, "23514", "onboarding_module_approved_after_proposed"},
+		{"a PROPOSED row recorded by anyone but the proposer", []string{proposal("a", "ann", "c1", ""), proposedRow("a", "olga", "FIN", "onb-a-fin", "now()")}, "23514", "onboarding_module_proposed_by_proposer"},
+		{"a PROPOSED row before the proposal", []string{proposal("a", "ann", "c1", ""), proposedRow("a", "ann", "FIN", "onb-a-fin", "(SELECT proposed_at - interval '1 second' FROM cargo_org.onboarding WHERE tenant_id=$1 AND onboarding_id='a')")},
+			"23514", "onboarding_module_after_proposal"},
+		{"a PROPOSED row for a withdrawn onboarding", []string{proposal("a", "ann", "c1", ""), withdrawal("a", "ann", "now()", "'no longer wanted'", "w1"), proposedRow("a", "ann", "FIN", "onb-a-fin", "now()")},
+			"23514", "onboarding_module_withdrawn"},
+		{"a PROPOSED row with a version", []string{proposal("a", "ann", "c1", ""), `INSERT INTO cargo_org.onboarding_module (tenant_id,onboarding_id,module,state,change_id,recorded_by,recorded_at,settings_version)
+        SELECT tenant_id,onboarding_id,'FIN','PROPOSED','onb-a-fin','ann',now(),2 FROM cargo_org.onboarding WHERE tenant_id=$1 AND onboarding_id='a'`}, "23514", "onboarding_module_version"},
+		{"a PROPOSED row that repeats the confirmation's time", []string{proposal("a", "ann", "c1", ""), `INSERT INTO cargo_org.onboarding_module (tenant_id,onboarding_id,module,state,change_id,recorded_by,confirmed_at,recorded_at)
+        SELECT tenant_id,onboarding_id,'FIN','PROPOSED','onb-a-fin','ann',now(),now() FROM cargo_org.onboarding WHERE tenant_id=$1 AND onboarding_id='a'`}, "23514", "onboarding_module_confirmed_at"},
+		{"an APPROVED row of an onboarding not confirmed", []string{proposal("a", "ann", "c1", ""), proposedRow("a", "ann", "FIN", "onb-a-fin", "now()"),
+			`INSERT INTO cargo_org.onboarding_module (tenant_id,onboarding_id,module,state,change_id,recorded_by,confirmed_at,recorded_at,settings_version) VALUES ($1,'a','FIN','APPROVED','onb-a-fin','olga',now(),now(),1)`},
+			"23503", "onboarding_module_by_confirmer"},
+		{"an APPROVED row recorded by someone but the confirmer", append(confirmed("a"), proposedRow("a", "ann", "FIN", "onb-a-fin", "now()"),
+			approvedRow("a", "dan", "FIN", "onb-a-fin", "now()", "1")), "23503", "onboarding_module_by_confirmer"},
+		{"an APPROVED row recorded before the confirmation", append(confirmed("a"), proposedRow("a", "ann", "FIN", "onb-a-fin", "now()"),
+			approvedRow("a", "olga", "FIN", "onb-a-fin", "(SELECT confirmed_at - interval '1 second' FROM cargo_org.onboarding_confirmation WHERE tenant_id=$1 AND onboarding_id='a')", "1")),
+			"23514", "onboarding_module_after_confirmation"},
+		{"an APPROVED row with no version", append(confirmed("a"), proposedRow("a", "ann", "FIN", "onb-a-fin", "now()"), `INSERT INTO cargo_org.onboarding_module
+        (tenant_id,onboarding_id,module,state,change_id,recorded_by,confirmed_at,recorded_at)
+        SELECT tenant_id,onboarding_id,'FIN','APPROVED','onb-a-fin','olga',confirmed_at,now() FROM cargo_org.onboarding_confirmation WHERE tenant_id=$1 AND onboarding_id='a'`),
+			"23514", "onboarding_module_version"},
+		{"an APPROVED row with a version of 0", append(confirmed("a"), proposedRow("a", "ann", "FIN", "onb-a-fin", "now()"), approvedRow("a", "olga", "FIN", "onb-a-fin", "now()", "0")),
+			"23514", "onboarding_module_version"},
+		{"a change set that is not derived", []string{proposal("a", "ann", "c1", ""), proposedRow("a", "ann", "FIN", "onb-a-sea", "now()")}, "23514", "onboarding_module_change_derived"},
+		{"a second change set for a module", []string{proposal("a", "ann", "c1", ""), proposedRow("a", "ann", "FIN", "onb-a-fin", "now()"), proposedRow("a", "ann", "FIN", "onb-a-fin", "now()")},
+			"23505", "onboarding_module_pkey"},
+		{"another module", []string{proposal("a", "ann", "c1", ""), proposedRow("a", "ann", "AIR", "onb-a-air", "now()")}, "23514", "onboarding_module_known"},
+		{"a module of an onboarding that does not exist", []string{proposedRow("a", "ann", "FIN", "onb-a-fin", "now()"), `INSERT INTO cargo_org.onboarding_module (tenant_id,onboarding_id,module,state,change_id,recorded_by,recorded_at)
+        VALUES ($1,'ghost','FIN','PROPOSED','onb-ghost-fin','ann',now())`}, "23503", "onboarding_module_tenant_id_onboarding_id_fkey"},
+		{"approved before proposed", append(confirmed("a"), approvedRow("a", "olga", "FIN", "onb-a-fin", "now()", "1")), "23514", "onboarding_module_approved_after_proposed"},
+		{"a withdrawal of a confirmed onboarding", append(confirmed("a"), withdrawal("a", "ann", "now()", "'changed my mind'", "w1")), "23514", "onboarding_withdrawal_confirmed"},
+		{"a confirmation of a withdrawn onboarding", []string{proposal("a", "ann", "c1", ""), withdrawal("a", "ann", "now()", "'changed my mind'", "w1"),
+			confirmation("a", "ann", "olga", "the statement", "now()")}, "23514", "onboarding_confirmation_withdrawn"},
+		{"a withdrawal before the proposal", []string{proposal("a", "ann", "c1", ""), withdrawal("a", "ann", "(SELECT proposed_at - interval '1 second' FROM cargo_org.onboarding WHERE tenant_id=$1 AND onboarding_id='a')",
+			"'x'", "w1")}, "23514", "onboarding_withdrawal_after_proposal"},
+		{"a withdrawal without a reason", []string{proposal("a", "ann", "c1", ""), withdrawal("a", "ann", "now()", "'  '", "w1")}, "23514", "onboarding_withdrawal_reason"},
+		{"a withdrawal with a reason of 2001 characters", []string{proposal("a", "ann", "c1", ""), withdrawal("a", "ann", "now()", "'"+long+"'", "w1")}, "23514", "onboarding_withdrawal_reason"},
+		{"a withdrawal by a person with spaces around the id", []string{proposal("a", "ann", "c1", ""), withdrawal("a", " ann", "now()", "'x'", "w1")}, "23514", "onboarding_withdrawal_withdrawn_by_check"},
+		{"a withdrawal by a blank person", []string{proposal("a", "ann", "c1", ""), withdrawal("a", "", "now()", "'x'", "w1")}, "23514", "onboarding_withdrawal_withdrawn_by_check"},
+		{"a second withdrawal", []string{proposal("a", "ann", "c1", ""), withdrawal("a", "ann", "now()", "'x'", "w1"), withdrawal("a", "olga", "now()", "'y'", "w2")}, "23505", "onboarding_withdrawal_pkey"},
+		{"a command id used twice by two withdrawals", []string{proposal("a", "ann", "c1", ""), proposal("b", "ann", "c2", ""), withdrawal("a", "ann", "now()", "'x'", "w1"),
+			withdrawal("b", "ann", "now()", "'x'", "w1")}, "23505", "onboarding_withdrawal_command_once"},
+		{"a withdrawal of an onboarding that does not exist", []string{`INSERT INTO cargo_org.onboarding_withdrawal (tenant_id,onboarding_id,command_id,withdrawn_by,withdrawn_at,reason)
+        VALUES ($1,'ghost','w1','ann',now(),'x')`}, "23503", "onboarding_withdrawal_tenant_id_onboarding_id_fkey"},
 		{"another tenant's onboarding", []string{`INSERT INTO cargo_org.onboarding (tenant_id,onboarding_id,command_id,request_hash,profile,overrides,risk_statement,finance_staff,
           plan,plan_sha256,single_administrator,proposed_by,proposed_at) VALUES ($1 || '-other','a','c1','` + hash + `','LEAN','{}','s',1,'` + goodPlan + `','` + hash + `',false,'ann',now())`}, "42501", ""},
 	} {
@@ -377,16 +438,19 @@ func TestOnboardingDatabaseRulesRefuseRawWrites(t *testing.T) {
 		}
 	}
 	// written as ORG writes it, the same rows are accepted, so that what was refused above was the rule
-	if err := w.raw(proposal("ok", "ann", "c-ok", ""), confirmation("ok", "ann", "olga", "the statement", "proposed_at"), module("ok", "olga", "FIN", "PROPOSED", "onb-ok-fin", "now()"),
-		module("ok", "olga", "FIN", "APPROVED", "onb-ok-fin", "now()")); err != nil {
+	if err := w.raw(proposal("ok", "ann", "c-ok", ""), proposedRow("ok", "ann", "FIN", "onb-ok-fin", "now()"), confirmation("ok", "ann", "olga", "the statement", "proposed_at"),
+		approvedRow("ok", "olga", "FIN", "onb-ok-fin", "now()", "3")); err != nil {
 		t.Fatalf("an onboarding written as ORG writes it: %v", err)
+	}
+	if err := w.raw(proposal("ok4", "ann", "c-ok4", ""), withdrawal("ok4", "olga", "now()", "'the customer chose another profile'", "w-ok4")); err != nil {
+		t.Fatalf("an onboarding withdrawn as ORG writes it: %v", err)
 	}
 	if err := w.raw(proposal("ok2", "ann", "c-ok2", "single_administrator=true"), confirmationBy("ok2", "ann", "olga", "the statement", "proposed_at", "'olga'"),
 		proposal("ok3", "ann", "c-ok3", `plan='{"FIN":{"CatalogueVersion":"v","Entries":[`+many(64)+`]},"SEA":{"CatalogueVersion":"v","Entries":[`+many(64)+`]}}'`)); err != nil {
 		t.Fatalf("an owner who names themselves as the administrator, and plans of 64 entries: %v", err)
 	}
 	// the rows are only inserted
-	for _, table := range []string{"onboarding", "onboarding_confirmation", "onboarding_module"} {
+	for _, table := range []string{"onboarding", "onboarding_confirmation", "onboarding_module", "onboarding_withdrawal"} {
 		for _, stmt := range []string{`UPDATE cargo_org.` + table + ` SET tenant_id = tenant_id WHERE tenant_id = $1`, `DELETE FROM cargo_org.` + table + ` WHERE tenant_id = $1`} {
 			err := w.raw(stmt)
 			var pgErr *pgconn.PgError
@@ -397,7 +461,7 @@ func TestOnboardingDatabaseRulesRefuseRawWrites(t *testing.T) {
 	}
 	// row security is enabled and forced on each table
 	db, _ := testDB(t)
-	for _, table := range []string{"onboarding", "onboarding_confirmation", "onboarding_module"} {
+	for _, table := range []string{"onboarding", "onboarding_confirmation", "onboarding_module", "onboarding_withdrawal"} {
 		var enabled, forced bool
 		q, err := db.ReadExecutor(context.Background())
 		if err != nil {

@@ -19,6 +19,7 @@ const (
 	eventSettingsCancelled = "SeaSettingsChangeCancelled.v1"
 	eventSettingsRefused   = "SeaSettingsChangeRefused.v1"
 	eventDeclared          = "SeaSingleAdministratorDeclared.v1"
+	eventSelfReviewed      = "SeaSelfApprovalReviewed.v1"
 )
 
 // SettingS1 is the key of S1, "a carrier report that contradicts SEA's records".
@@ -86,4 +87,9 @@ func (s *SettingsEvents) Acknowledge()         { s.events = nil }
 // SingleAdministratorDeclared is the event of a declaration, with the onboarding as its subject.
 func SingleAdministratorDeclared(tenant sea.TenantID, onboarding string, at time.Time) *SettingsEvents {
 	return &SettingsEvents{events: []sea.Event{{Type: eventDeclared, At: at.UTC(), TenantID: tenant, SubjectID: onboarding}}}
+}
+
+// SelfApprovalReviewed is the event of the review of a self-approved change set, with the change set as its subject.
+func SelfApprovalReviewed(tenant sea.TenantID, id string, at time.Time) *SettingsEvents {
+	return &SettingsEvents{events: []sea.Event{{Type: eventSelfReviewed, At: at.UTC(), TenantID: tenant, SubjectID: id}}}
 }

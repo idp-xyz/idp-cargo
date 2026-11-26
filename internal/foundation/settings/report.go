@@ -34,7 +34,9 @@ type SelfApprovedLine struct {
 	By              string
 	At              time.Time
 	Acknowledgement string
-	Entries         []Entry
+	// Basis is the onboarding of the declaration of the single administrator the approval relies on (V2.102, batch F).
+	Basis   string
+	Entries []Entry
 }
 
 // Changer is an actor who proposed or approved change sets in a period, and how many of each (an approval by the
@@ -115,7 +117,7 @@ func (l *Ledger) ExceptionReport(cat *Catalogue, at, from, to time.Time) Report 
 		}
 		count(a.By).Approved++
 		if a.SelfApproved() {
-			r.SelfApproved = append(r.SelfApproved, SelfApprovedLine{ChangeID: c.ID, By: a.By, At: a.At, Acknowledgement: a.Acknowledgement, Entries: slices.Clone(c.Entries)})
+			r.SelfApproved = append(r.SelfApproved, SelfApprovedLine{ChangeID: c.ID, By: a.By, At: a.At, Acknowledgement: a.Acknowledgement, Basis: a.Basis, Entries: slices.Clone(c.Entries)})
 		}
 	}
 	for _, c := range counts {
@@ -143,6 +145,13 @@ type Declaration struct {
 // The order of the declarations is total because a tenant's declarations have distinct times (the schema's unique key on
 // the tenant and the time). It answers false when no declaration is at or before the time.
 func AdministratorInForce(declared []Declaration, at time.Time) (string, bool) {
+	d, ok := DeclarationInForce(declared, at)
+	return d.Administrator, ok
+}
+
+// DeclarationInForce is the tenant's latest declaration at or before the time (see AdministratorInForce): the one a
+// single administrator's self-approval relies on, whose onboarding the approval records as its basis (V2.102, batch F).
+func DeclarationInForce(declared []Declaration, at time.Time) (Declaration, bool) {
 	var latest *Declaration
 	for i := range declared {
 		if !declared[i].At.After(at) && (latest == nil || declared[i].At.After(latest.At)) {
@@ -150,7 +159,7 @@ func AdministratorInForce(declared []Declaration, at time.Time) (string, bool) {
 		}
 	}
 	if latest == nil {
-		return "", false
+		return Declaration{}, false
 	}
-	return latest.Administrator, true
+	return *latest, true
 }

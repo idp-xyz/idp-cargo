@@ -85,10 +85,17 @@ func (m *Module) ConfirmOnboarding(ctx context.Context, cmd api.ConfirmOnboardin
 	return onboardingReceipt(cmd.CommandID, r, err)
 }
 
-// RecordOnboardingModule records a module's change set and state for a confirmed onboarding.
+// WithdrawOnboarding records the withdrawal of an onboarding that was not confirmed.
+func (m *Module) WithdrawOnboarding(ctx context.Context, cmd api.WithdrawOnboarding) (api.OnboardingReceipt, error) {
+	r, err := m.onboardings(cmd.TenantID, cmd.CommandID).Withdraw(ctx, application.WithdrawCommand{CommandID: cmd.CommandID, Scope: bookScope(cmd.TenantID, cmd.ActorID),
+		OnboardingID: cmd.OnboardingID, Reason: cmd.Reason})
+	return onboardingReceipt(cmd.CommandID, r, err)
+}
+
+// RecordOnboardingModule records a module's change set, state and settings version for an onboarding.
 func (m *Module) RecordOnboardingModule(ctx context.Context, cmd api.RecordOnboardingModule) (api.OnboardingReceipt, error) {
 	r, err := m.onboardings(cmd.TenantID, cmd.CommandID).RecordModule(ctx, application.ModuleCommand{CommandID: cmd.CommandID, Scope: bookScope(cmd.TenantID, cmd.ActorID),
-		OnboardingID: cmd.OnboardingID, Module: cmd.Module, ChangeID: cmd.ChangeID, State: cmd.State})
+		OnboardingID: cmd.OnboardingID, Module: cmd.Module, ChangeID: cmd.ChangeID, State: cmd.State, Version: cmd.Version})
 	return onboardingReceipt(cmd.CommandID, r, err)
 }
 
@@ -104,10 +111,18 @@ func onboardingView(tenant string, r application.OnboardingRecord) api.Onboardin
 	if k := r.Confirmation; k != nil {
 		out.ConfirmedBy, out.ConfirmedAt, out.AcknowledgedText, out.AdministratorID = k.By, k.At, k.AcknowledgedText, k.Administrator
 	}
+	if w := r.Withdrawal; w != nil {
+		out.WithdrawnBy, out.WithdrawnAt, out.WithdrawReason = w.By, w.At, w.Reason
+	}
 	for _, module := range domain.Modules {
 		v := api.OnboardingModule{Module: module, State: domain.ModuleStateOf(r.Modules, module)}
 		if i := slices.IndexFunc(r.Modules, func(s domain.ModuleState) bool { return s.Module == module }); i >= 0 {
 			v.ChangeID = r.Modules[i].ChangeID
+		}
+		for _, row := range r.Modules {
+			if row.Module == module && row.State == domain.ModuleApproved {
+				v.Version = row.Version
+			}
 		}
 		out.Modules = append(out.Modules, v)
 	}

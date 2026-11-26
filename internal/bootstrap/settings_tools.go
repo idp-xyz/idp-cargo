@@ -13,6 +13,7 @@ import (
 	finapi "go.idp.xyz/idp-cargo/internal/contexts/fin/api"
 	orgapi "go.idp.xyz/idp-cargo/internal/contexts/org/api"
 	seaapi "go.idp.xyz/idp-cargo/internal/contexts/sea/api"
+	"go.idp.xyz/idp-cargo/internal/foundation/identity"
 	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
@@ -487,4 +488,87 @@ func sameThreshold(now *kernel.Money, it ExportedItem) bool {
 		return false
 	}
 	return now.Minor == *it.ThresholdMinor && string(now.Currency) == it.ThresholdCurrency
+}
+
+// ReviewQueue is what waits for review in a tenant, for a holder of the review permissions (V2.102, batch F): each module's part to that
+// module's holders, nil for a part the actor may not see (LeftOut says which and why). It is read-only.
+type ReviewQueue struct {
+	TenantID string
+	From, To time.Time
+	// FinSelfApprovals is FIN's self-approved change sets of the period, with no review and with theirs, for a holder of fin:ReviewSettingsExceptions.
+	FinSelfApprovals *finapi.FinSelfApprovalReviews
+	// SeaSelfApprovals is SEA's, for a holder of sea:ReviewSettingsExceptions.
+	SeaSelfApprovals *seaapi.SeaSelfApprovalReviews
+	// FinAfterTheFact is, for each legal entity asked, the lines of the ended weeks of the period that no review covers and the ended weeks with no
+	// review, for a holder of fin:ReviewAfterTheFact who also holds fin:ReadProfit.
+	FinAfterTheFact []finapi.AfterTheFactPending
+	// LeftOut says, for each part the actor may not see or that was not asked for, which and why.
+	LeftOut []ReviewQueueLeftOut
+}
+
+// ReviewQueueLeftOut is a part of the review queue that is not answered, and why.
+type ReviewQueueLeftOut struct {
+	Part   string
+	Reason string
+}
+
+// GetReviewQueue answers what waits for review in the tenant for the period from (included) to to (excluded): FIN's and SEA's self-approved
+// change sets with no review (and the reviewed ones with their reviewer and conclusion), and, for each of the legal entities named, the
+// weeks of the period that have ended: the lines of their lists that no review covers and the weeks with no review. Each part goes to the
+// holders of its module's permission, by name: fin:ReviewSettingsExceptions, sea:ReviewSettingsExceptions, and fin:ReviewAfterTheFact with
+// fin:ReadProfit. An actor who holds none is refused; the parts left out are named, with the reason. The period is at most 53 weeks.
+func (t *SettingsTools) GetReviewQueue(ctx context.Context, tenant, actor string, from, to time.Time, legalEntities []string) (ReviewQueue, error) {
+	out := ReviewQueue{TenantID: tenant, From: from, To: to}
+	if tenant == "" || actor == "" || from.IsZero() || to.IsZero() || !to.After(from) {
+		return out, fmt.Errorf("%w: the review queue asks for a tenant, an actor and a period, from before to", orgapi.ErrRejected)
+	}
+	leftOut := func(part string, err error) {
+		out.LeftOut = append(out.LeftOut, ReviewQueueLeftOut{Part: part, Reason: err.Error()})
+	}
+	// the weeks that the period covers
+	firstWeek, lastWeek := isoWeek(from), isoWeek(to.Add(-time.Nanosecond))
+	f, ferr := t.fin.ListFinSelfApprovalReviews(ctx, finapi.ListFinSelfApprovalReviews{TenantID: tenant, ActorID: actor, From: from, To: to})
+	s, serr := t.sea.ListSeaSelfApprovalReviews(ctx, seaapi.ListSeaSelfApprovalReviews{TenantID: tenant, ActorID: actor, From: from, To: to})
+	if ferr != nil && !errors.Is(ferr, finapi.ErrUnauthorized) {
+		return out, ferr
+	}
+	if serr != nil && !errors.Is(serr, seaapi.ErrUnauthorized) {
+		return out, serr
+	}
+	if ferr == nil {
+		out.FinSelfApprovals = &f
+	} else {
+		leftOut("FIN's self-approved change sets", errors.New("fin:ReviewSettingsExceptions is granted by name only and the actor does not hold it"))
+	}
+	if serr == nil {
+		out.SeaSelfApprovals = &s
+	} else {
+		leftOut("SEA's self-approved change sets", errors.New("sea:ReviewSettingsExceptions is granted by name only and the actor does not hold it"))
+	}
+	holdsWeekly := identity.AuthorizeNamed(ctx, "fin", tenant, actor, finapi.ActionReviewAfterTheFact) == nil && identity.Authorize(ctx, "fin", tenant, actor, finapi.ActionReadProfit) == nil
+	switch {
+	case !holdsWeekly:
+		leftOut("FIN's after-the-fact review", errors.New("fin:ReviewAfterTheFact is granted by name only, and fin:ReadProfit is needed to read the lines; the actor does not hold both"))
+	case len(legalEntities) == 0:
+		leftOut("FIN's after-the-fact review", errors.New("no legal entity was named: name the legal entities whose weeks are to be read"))
+	default:
+		for _, le := range legalEntities {
+			p, err := t.fin.ListAfterTheFactPending(ctx, finapi.ListAfterTheFactPending{TenantID: tenant, ActorID: actor, LegalEntityID: le, FromWeek: firstWeek, ToWeek: lastWeek})
+			if err != nil {
+				return out, err
+			}
+			out.FinAfterTheFact = append(out.FinAfterTheFact, p)
+		}
+	}
+	if ferr != nil && serr != nil && !holdsWeekly {
+		return out, fmt.Errorf("%w: the review queue is told to a holder of fin:ReviewSettingsExceptions, sea:ReviewSettingsExceptions or fin:ReviewAfterTheFact (with fin:ReadProfit), "+
+			"granted by name; ask for one of them: %v", orgapi.ErrUnauthorized, ferr)
+	}
+	return out, nil
+}
+
+// isoWeek is the ISO week, YYYY-Www, that contains the time in UTC.
+func isoWeek(at time.Time) string {
+	y, w := at.UTC().ISOWeek()
+	return fmt.Sprintf("%04d-W%02d", y, w)
 }

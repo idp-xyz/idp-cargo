@@ -236,7 +236,7 @@ func TestBoxAUnderTheLeanProfile(t *testing.T) {
 	}
 	review := d.finAt(weekEnd(a.EnteredAt).Add(time.Hour)) // a week is reviewed once it has ended
 	mark := func(id, who string) (finapi.Receipt, error) {
-		return review.MarkAfterTheFactReviewed(d.ctx, finapi.MarkAfterTheFactReviewed{CommandID: id, TenantID: d.tenant, ActorID: who, LegalEntityID: "LE", Week: week,
+		return review.MarkAfterTheFactReviewed(d.ctx, finapi.MarkAfterTheFactReviewed{CommandID: id, TenantID: d.tenant, ActorID: who, LegalEntityID: "LE", Week: week, Conclusion: "ACCEPTED",
 			Note: "the default of H03 is right: the line's whole cost stays with the cargo that remains"})
 	}
 	_, err = mark("lean-review-ops-1", "ops-1")

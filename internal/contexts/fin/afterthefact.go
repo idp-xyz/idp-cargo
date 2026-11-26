@@ -18,7 +18,7 @@ import (
 // MarkAfterTheFactReviewed marks a legal entity's week reviewed.
 func (m *Module) MarkAfterTheFactReviewed(ctx context.Context, cmd api.MarkAfterTheFactReviewed) (api.Receipt, error) {
 	r, err := m.deps(cmd.TenantID, cmd.CommandID).MarkAfterTheFactReviewed(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, api.ActionReviewAfterTheFact,
-		domain.ReviewSubject(cmd.LegalEntityID, cmd.Week), 0, m.clock.Now(), cmd), cmd.LegalEntityID, cmd.Week, cmd.Note)
+		domain.ReviewSubject(cmd.LegalEntityID, cmd.Week), 0, m.clock.Now(), cmd), cmd.LegalEntityID, cmd.Week, cmd.Conclusion, cmd.Note)
 	return receipt(r, err)
 }
 
@@ -75,18 +75,61 @@ func (m *Module) GetAfterTheFactReview(ctx context.Context, q api.GetAfterTheFac
 	}
 	page := api.AfterTheFactPage{LegalEntityID: q.LegalEntityID, Week: q.Week, WeekStart: start, WeekEnd: end, Lines: []api.AfterTheFactLine{}}
 	for _, l := range got.Lines {
-		money := func(c kernel.CurrencyCode, n int64) kernel.Money { return kernel.Money{Currency: c, Minor: n} }
-		page.Lines = append(page.Lines, api.AfterTheFactLine{PoolID: l.PoolID, ConsolidationID: l.ConsolidationID, LineNo: l.LineNo, ShipmentID: l.ShipmentID, JobID: l.JobID,
-			ApportionmentNo: l.ApportionmentNo, PreviewNo: l.PreviewNo, EnteredAt: l.EnteredAt, Loss: money(l.Currency, l.Loss), LossLocal: money(l.FunctionalCurrency, l.LossLocal),
-			Exception: money(l.Currency, l.Exception), ExceptionLocal: money(l.FunctionalCurrency, l.ExceptionLocal), Party: l.Party, Voucher: l.Voucher,
-			SubmittedBy: l.SubmittedBy, PreviewedBy: l.PreviewedBy, Reasons: l.Reasons()})
+		page.Lines = append(page.Lines, afterTheFactLine(l))
+		if c, ok := got.Covers[l.ReviewKey]; ok {
+			line := &page.Lines[len(page.Lines)-1]
+			line.Covered, line.CoveredByReview, line.CoveredBy, line.CoveredConclusion, line.CoveredAt = true, c.ReviewNo, c.ReviewedBy, c.Conclusion, c.ReviewedAt
+		}
 	}
 	if got.More {
 		page.NextAfter = afterTheFactCursor(got.Lines[len(got.Lines)-1].ReviewKey)
 	}
 	if r := got.Review; r != nil {
-		page.Review = api.AfterTheFactReviewMark{Reviewed: true, ReviewNo: r.ReviewNo, ReviewedBy: r.ReviewedBy, ReviewedAt: r.ReviewedAt, Note: r.Note, ListSize: r.ListSize, ListDigest: r.ListDigest,
+		page.Review = api.AfterTheFactReviewMark{Reviewed: true, ReviewNo: r.ReviewNo, ReviewedBy: r.ReviewedBy, ReviewedAt: r.ReviewedAt, Conclusion: r.Conclusion, Note: r.Note, ListSize: r.ListSize, ListDigest: r.ListDigest,
 			CurrentSize: got.Size, CurrentDigest: got.Digest, Matches: got.Matches}
 	}
 	return page, nil
+}
+
+// ListAfterTheFactPending answers what still waits for review: every listed line of an ended week that no review covers, and the ended
+// weeks with no review, for a legal entity and a range of weeks (V2.102, batch F). The actor holds ReviewAfterTheFact, by name, and
+// ReadProfit.
+func (m *Module) ListAfterTheFactPending(ctx context.Context, q api.ListAfterTheFactPending) (api.AfterTheFactPending, error) {
+	if q.ActorID == "" {
+		return api.AfterTheFactPending{}, classify(application.ErrUnauthenticated)
+	}
+	subject := q.LegalEntityID + "/" + q.FromWeek + "-" + q.ToWeek
+	if err := m.auth.AuthorizeFinAction(ctx, q.TenantID, q.ActorID, api.ActionReviewAfterTheFact, subject); err != nil {
+		return api.AfterTheFactPending{}, classify(fmt.Errorf("%w: %v; what still waits for review is told to a holder of ReviewAfterTheFact, granted by name, who also holds ReadProfit: ask for them",
+			application.ErrUnauthorized, err))
+	}
+	if err := m.authorizeRead(ctx, q.TenantID, q.ActorID, subject); err != nil {
+		return api.AfterTheFactPending{}, err
+	}
+	if q.LegalEntityID == "" {
+		return api.AfterTheFactPending{}, classify(fmt.Errorf("%w: name a legal entity", application.ErrInvalidQuery))
+	}
+	asOf, weeks, err := m.deps(q.TenantID, "").AfterTheFactPending(ctx, domain.TenantID(q.TenantID), q.LegalEntityID, q.FromWeek, q.ToWeek)
+	if err != nil {
+		return api.AfterTheFactPending{}, classify(err)
+	}
+	out := api.AfterTheFactPending{LegalEntityID: q.LegalEntityID, FromWeek: q.FromWeek, ToWeek: q.ToWeek, AsOf: asOf,
+		WeeksWithoutReview: []api.AfterTheFactWeek{}, Lines: []api.AfterTheFactPendingLine{}}
+	for _, w := range weeks {
+		if !w.Reviewed {
+			out.WeeksWithoutReview = append(out.WeeksWithoutReview, api.AfterTheFactWeek{Week: w.Week, WeekStart: w.Start, WeekEnd: w.End, ListedLines: w.Listed})
+		}
+		for _, l := range w.Uncovered {
+			out.Lines = append(out.Lines, api.AfterTheFactPendingLine{Week: w.Week, AfterTheFactLine: afterTheFactLine(l)})
+		}
+	}
+	return out, nil
+}
+
+func afterTheFactLine(l domain.ReviewLine) api.AfterTheFactLine {
+	money := func(c kernel.CurrencyCode, n int64) kernel.Money { return kernel.Money{Currency: c, Minor: n} }
+	return api.AfterTheFactLine{PoolID: l.PoolID, ConsolidationID: l.ConsolidationID, LineNo: l.LineNo, ShipmentID: l.ShipmentID, JobID: l.JobID,
+		ApportionmentNo: l.ApportionmentNo, PreviewNo: l.PreviewNo, EnteredAt: l.EnteredAt, Loss: money(l.Currency, l.Loss), LossLocal: money(l.FunctionalCurrency, l.LossLocal),
+		Exception: money(l.Currency, l.Exception), ExceptionLocal: money(l.FunctionalCurrency, l.ExceptionLocal), Party: l.Party, Voucher: l.Voucher,
+		SubmittedBy: l.SubmittedBy, PreviewedBy: l.PreviewedBy, Reasons: l.Reasons()}
 }

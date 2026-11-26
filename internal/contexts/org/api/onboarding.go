@@ -10,10 +10,11 @@ import (
 
 // Customer onboarding (V2.102, design section 9): ORG holds the record of who proposed the profile of the rules for a
 // customer, what the proposal makes of it in each module, who confirmed it and what the owner acknowledged. ORG does not
-// apply the profile: the platform's onboarding does that in FIN and SEA through their own settings commands once the
-// owner has confirmed, and applies exactly the entries stored in the proposal, with the catalogue version each was
-// resolved against; it records here the change set and the state of each module. ORG knows different people, not who the
-// customer's owner or administrator is.
+// apply the profile: the platform's onboarding does that in FIN and SEA through their own settings commands, in the identity
+// of the people actually signed in (V2.102, batch F): the consultant's proposal holds each module's change set, exactly the
+// entries stored in the proposal, with the catalogue version each was resolved against, and the owner's confirmation approves
+// them; an onboarding not confirmed is withdrawn instead, which cancels them. It records here the change set, its state and
+// the settings version of each module. ORG knows different people, not who the customer's owner or administrator is.
 
 // Actions an Authorizer decides on (AuthorizePartyAction); the subject is the onboarding. All are granted by name
 // only: "org:*" and "*" grant none. ActionRecordOnboardingModule is the platform's own: the principal the bootstrap
@@ -28,6 +29,7 @@ const (
 const (
 	OnboardingProposed  = "OnboardingProposed.v1"
 	OnboardingConfirmed = "OnboardingConfirmed.v1"
+	OnboardingWithdrawn = "OnboardingWithdrawn.v1"
 )
 
 // The profiles of the rules, and the modules an onboarding applies them to.
@@ -40,13 +42,15 @@ const (
 	ModuleSEA = "SEA"
 )
 
-// States of an onboarding: PROPOSED (waiting for the owner), CONFIRMED (the owner confirmed; a module is still to be
-// applied: retry ConfirmOnboarding) and COMPLETE (every module's change set is approved). A module's state is
-// NOT_STARTED, PROPOSED (its change set is proposed and waits for the owner's approval) or APPROVED.
+// States of an onboarding: PROPOSED (waiting for the owner; the modules' change sets are held for it), CONFIRMED (the owner
+// confirmed; a module is still to be applied: retry ConfirmOnboarding), COMPLETE (every module's change set is approved) and
+// WITHDRAWN (withdrawn before it was confirmed, and never confirmed). A module's state is NOT_STARTED, PROPOSED (its change set
+// is held for the onboarding and waits for the owner's approval) or APPROVED.
 const (
 	OnboardingStateProposed  = "PROPOSED"
 	OnboardingStateConfirmed = "CONFIRMED"
 	OnboardingStateComplete  = "COMPLETE"
+	OnboardingStateWithdrawn = "WITHDRAWN"
 
 	ModuleNotStarted = "NOT_STARTED"
 	ModuleProposed   = "PROPOSED"
@@ -120,10 +124,23 @@ type ConfirmOnboarding struct {
 	AdministratorID  string
 }
 
-// RecordOnboardingModule records the change set a module made for the confirmed onboarding and its state (ModuleProposed,
-// then ModuleApproved), once each. The change set is 'onb-<onboarding>-fin' or 'onb-<onboarding>-sea'. Only the
-// platform's onboarding records it, on the module's own change set: it needs the permission RecordOnboardingModule,
-// granted by name only and held by the principal the bootstrap builds for it, and the actor is the confirmer.
+// WithdrawOnboarding withdraws an onboarding that is not confirmed, with a reason of 1 to 2000 characters: it is then never
+// confirmed, and the platform's onboarding cancels the change sets held for it in FIN and SEA, in the withdrawing person's own
+// identity. The consultant who proposed it (ActionProposeOnboarding) or the customer's owner (ActionConfirmOnboarding) withdraws it.
+// The record is immutable: who withdrew, when and why. The same person with the same reason again answers the record.
+type WithdrawOnboarding struct {
+	CommandID    string
+	TenantID     string
+	ActorID      string
+	OnboardingID string
+	Reason       string
+}
+
+// RecordOnboardingModule records the change set a module made for the onboarding and its state: ModuleProposed when the
+// consultant's change set is held for it (the actor is the proposer), then ModuleApproved, with the settings Version the module
+// put in force, once the owner confirmed and the module approved it (the actor is the confirmer), once each. The change set is
+// 'onb-<onboarding>-fin' or 'onb-<onboarding>-sea'. Only the platform's onboarding records it, on the module's own change set:
+// it needs the permission RecordOnboardingModule, granted by name only and held by the principal the bootstrap builds for it.
 type RecordOnboardingModule struct {
 	CommandID    string
 	TenantID     string
@@ -132,6 +149,7 @@ type RecordOnboardingModule struct {
 	Module       string
 	ChangeID     string
 	State        string
+	Version      int
 }
 
 // OnboardingReceipt confirms an onboarding command. State is the onboarding's, Notice what the command says besides. Plan
@@ -152,6 +170,8 @@ type OnboardingModule struct {
 	Module   string
 	State    string
 	ChangeID string
+	// Version is the settings version the module put in force when its change set was approved (0 until then).
+	Version int
 }
 
 // Onboarding is an onboarding with its confirmation and its modules (FIN and SEA, in that order).
@@ -173,8 +193,12 @@ type Onboarding struct {
 	AcknowledgedText    string
 	// AdministratorID is the single administrator the owner declared when confirming; empty when the customer declares none.
 	AdministratorID string
-	Modules         []OnboardingModule
-	Notice          string
+	// WithdrawnBy, WithdrawnAt and WithdrawReason say who withdrew the onboarding, when and why (State WITHDRAWN).
+	WithdrawnBy    string
+	WithdrawnAt    time.Time
+	WithdrawReason string
+	Modules        []OnboardingModule
+	Notice         string
 }
 
 // GetOnboarding asks for one onboarding of the tenant (ErrNotFound for an unknown one); ListOnboardings for all of
@@ -189,6 +213,7 @@ type ListOnboardings struct{ TenantID string }
 type OnboardingCommands interface {
 	ProposeOnboarding(ctx context.Context, cmd ProposeOnboarding) (OnboardingReceipt, error)
 	ConfirmOnboarding(ctx context.Context, cmd ConfirmOnboarding) (OnboardingReceipt, error)
+	WithdrawOnboarding(ctx context.Context, cmd WithdrawOnboarding) (OnboardingReceipt, error)
 	RecordOnboardingModule(ctx context.Context, cmd RecordOnboardingModule) (OnboardingReceipt, error)
 }
 

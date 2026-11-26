@@ -41,7 +41,11 @@ func (d Deps) writeSettings(ctx context.Context, c Command, hash string, mutate 
 // an amount parameter must be given in. The receipt's revision is the records the change set has: its proposal, and its
 // approval when it only tightens (an approval and a cancellation come later). The notice names the legal entities whose
 // own values stay looser than what the company's entries of the change set now say.
-func (d Deps) ProposeSettings(ctx context.Context, c Command, asks []SettingEntryAsk, reason string, effective time.Time) (Receipt, error) {
+//
+// A change set proposed with hold, the onboarding it is held for (V2.102, batch F), is not approved when it is proposed, not even
+// when it only tightens: the owner who confirms the onboarding approves it, and while it waits no other change set is proposed
+// or approved (the ledger refuses it, and so does the database).
+func (d Deps) ProposeSettings(ctx context.Context, c Command, asks []SettingEntryAsk, reason string, effective time.Time, hold string) (Receipt, error) {
 	if d.Settings == nil || d.Policies == nil {
 		return Receipt{}, ErrMissingDependency
 	}
@@ -72,7 +76,7 @@ func (d Deps) ProposeSettings(ctx context.Context, c Command, asks []SettingEntr
 			}
 		}
 		cat := FinSettingsCatalogue()
-		cs, err := ledger.Propose(cat, settings.Proposal{ID: c.Subject, Entries: entries, Reason: reason, By: c.Scope.ActorID, At: now, Effective: effective})
+		cs, err := ledger.Propose(cat, settings.Proposal{ID: c.Subject, Entries: entries, Reason: reason, By: c.Scope.ActorID, At: now, Effective: effective, Hold: hold})
 		if err != nil {
 			return Receipt{}, nil, err
 		}
@@ -163,15 +167,26 @@ func (d Deps) ApproveSettingsAs(ctx context.Context, c Command, acknowledgement 
 		return stored, err
 	}
 	return d.writeSettings(ctx, c, hash, func(txCtx context.Context, now time.Time) (Receipt, aggregate, error) {
-		ledger, _, err := d.settingsChange(txCtx, c)
+		ledger, cs, err := d.settingsChange(txCtx, c)
 		if err != nil {
 			return Receipt{}, nil, err
+		}
+		// a change set held for an onboarding is approved only by the platform's onboarding, in the owner's own name
+		if cs.Hold != "" {
+			if err = d.Auth.RequireFinAction(txCtx, c.Scope, ActionApproveHeld, c.Subject); err != nil {
+				return Receipt{}, nil, fmt.Errorf("%w: %v; change set %s is held for onboarding %s, which the customer's owner confirms (ConfirmOnboarding): confirm it, or withdraw it (WithdrawOnboarding)",
+					ErrUnauthorized, err, c.Subject, cs.Hold)
+			}
 		}
 		declared, err := d.Settings.DeclarationsForWrite(txCtx, c.Scope.TenantID)
 		if err != nil {
 			return Receipt{}, nil, err
 		}
-		a, err := ledger.ApproveAs(FinSettingsCatalogue(), c.Subject, c.Scope.ActorID, now, settings.Own{Administrators: administratorsOf(declared, now), Acknowledgement: acknowledgement})
+		own := settings.Own{Administrators: administratorsOf(declared, now), Acknowledgement: acknowledgement}
+		if in, ok := settings.DeclarationInForce(declared, now); ok {
+			own.Basis = in.OnboardingID
+		}
+		a, err := ledger.ApproveAs(FinSettingsCatalogue(), c.Subject, c.Scope.ActorID, now, own)
 		if err != nil {
 			return Receipt{}, nil, err
 		}
@@ -181,6 +196,10 @@ func (d Deps) ApproveSettingsAs(ctx context.Context, c Command, acknowledgement 
 		return Receipt{SubjectID: c.Subject, NewRevision: 2, Version: a.Version}, SettingsApproved(c.Scope.TenantID, c.Subject, a), nil
 	})
 }
+
+// ActionApproveHeld is the action of approving a change set held for an onboarding, which only the platform's onboarding takes, in
+// the owner's own name (api.ActionApproveHeldSettings).
+const ActionApproveHeld Action = "ApproveHeldSettings"
 
 // administratorsOf is the tenant's single administrator in force at the time of the approval, one name or none: the one
 // the latest declaration at or before the time names.
@@ -443,6 +462,84 @@ func (d Deps) ExceptionReport(ctx context.Context, tenant fin.TenantID, from, to
 		}
 		out.Work, err = d.Settings.WorkActors(txCtx, tenant, from.UTC(), to.UTC())
 		return err
+	})
+	return out, err
+}
+
+// ReviewSelfApproval records the review of a change set that its own proposer approved as the single administrator: by someone other
+// than the approver, once, with a conclusion and a note, at FIN's clock under the settings lock. Subject is the change set.
+func (d Deps) ReviewSelfApproval(ctx context.Context, c Command, conclusion, note string) (Receipt, error) {
+	if d.Settings == nil {
+		return Receipt{}, ErrMissingDependency
+	}
+	hash, _, stored, replayed, err := d.begin(ctx, c)
+	if err != nil || replayed {
+		return stored, err
+	}
+	return d.writeSettings(ctx, c, hash, func(txCtx context.Context, now time.Time) (Receipt, aggregate, error) {
+		_, cs, err := d.settingsChange(txCtx, c)
+		if err != nil {
+			return Receipt{}, nil, err
+		}
+		reviews, err := d.Settings.ReviewsForWrite(txCtx, c.Scope.TenantID)
+		if err != nil {
+			return Receipt{}, nil, err
+		}
+		var existing *settings.SelfReview
+		for i := range reviews {
+			if reviews[i].ChangeID == c.Subject {
+				existing = &reviews[i]
+			}
+		}
+		now = now.Truncate(time.Microsecond)
+		if cs.Approval != nil && now.Before(cs.Approval.At) { // FIN's clock is behind the approval it reviews
+			now = cs.Approval.At
+		}
+		r, err := settings.ReviewSelfApproval(cs, existing, c.Scope.ActorID, conclusion, note, now)
+		if err != nil {
+			return Receipt{}, nil, err
+		}
+		if err = d.Settings.InsertReview(txCtx, c.Scope.TenantID, r, cs.Approval.By); err != nil {
+			return Receipt{}, nil, err
+		}
+		return Receipt{SubjectID: c.Subject, NewRevision: 1}, SelfApprovalReviewed(c.Scope.TenantID, c.Subject, r.At), nil
+	})
+}
+
+// SelfApprovalReviews is the self-approved change sets approved in the period [from, to) with no review, and those with their review,
+// as of one snapshot.
+type SelfApprovalReviews struct {
+	At           time.Time
+	Pending      []settings.SelfApprovedLine
+	Reviewed     []settings.ReviewedLine
+	Declarations []settings.Declaration
+}
+
+// SelfApprovalReviews reads, in one snapshot, the self-approved change sets approved from from (included) to to (excluded), divided into
+// those with no review and those reviewed, with their reviewers and conclusions.
+func (d Deps) SelfApprovalReviews(ctx context.Context, tenant fin.TenantID, from, to time.Time) (SelfApprovalReviews, error) {
+	if d.Settings == nil || d.Clock == nil {
+		return SelfApprovalReviews{}, ErrMissingDependency
+	}
+	if tenant == "" || from.IsZero() || to.IsZero() || !to.After(from) {
+		return SelfApprovalReviews{}, fmt.Errorf("%w: the query asks for a tenant and a period, from before to", ErrInvalidQuery)
+	}
+	out := SelfApprovalReviews{At: d.Clock.Now().UTC().Truncate(time.Microsecond)}
+	err := d.Reader(ctx, func(txCtx context.Context) error {
+		ledger, err := d.Settings.Read(txCtx, tenant)
+		if err != nil {
+			return err
+		}
+		reviews, err := d.Settings.Reviews(txCtx, tenant)
+		if err != nil {
+			return err
+		}
+		if out.Declarations, err = d.Settings.Declarations(txCtx, tenant); err != nil {
+			return err
+		}
+		report := ledger.ExceptionReport(FinSettingsCatalogue(), out.At, from.UTC(), to.UTC())
+		out.Pending, out.Reviewed = settings.SplitReviews(report.SelfApproved, reviews)
+		return nil
 	})
 	return out, err
 }

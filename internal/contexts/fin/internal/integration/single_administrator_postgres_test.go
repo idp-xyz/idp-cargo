@@ -127,9 +127,9 @@ func TestFinSingleAdministratorDatabaseRulesRefuseRawWrites(t *testing.T) {
 	s.must(s.propose("L1", "dan", time.Time{}, tenantEntry("fin.F7", "DOES_NOT_BLOCK")))
 	self := func(id, ack string) string {
 		return fmt.Sprintf(`INSERT INTO cargo_fin.settings_approval (tenant_id,change_id,proposed_by,proposed_at,effective_at,loosening,approved_by,approved_at,
-          version_no,in_force_at,auto,risk_acknowledgement)
+          version_no,in_force_at,auto,risk_acknowledgement,basis_onboarding_id)
         SELECT tenant_id,change_id,proposed_by,proposed_at,effective_at,loosening,proposed_by,now(),(SELECT coalesce(max(version_no),0)+1 FROM cargo_fin.settings_approval
-          WHERE tenant_id=$1),greatest(effective_at,now()),false,%s FROM cargo_fin.settings_change WHERE tenant_id=$1 AND change_id='%s'`, ack, id)
+          WHERE tenant_id=$1),greatest(effective_at,now()),false,%s,(CASE WHEN %s IS NULL THEN NULL ELSE (SELECT onboarding_id FROM cargo_fin.single_administrator WHERE tenant_id=$1 AND declared_at <= now() ORDER BY declared_at DESC LIMIT 1) END) FROM cargo_fin.settings_change WHERE tenant_id=$1 AND change_id='%s'`, ack, ack, id)
 	}
 	declaration := func(onboarding, proposer, confirmer, at string) string {
 		return fmt.Sprintf(`INSERT INTO cargo_fin.single_administrator (tenant_id,onboarding_id,proposed_by,confirmed_by,administrator,declared_at) VALUES ($1,'%s','%s','%s','dan',%s)`,

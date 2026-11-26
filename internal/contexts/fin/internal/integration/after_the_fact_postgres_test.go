@@ -150,7 +150,7 @@ func sameList(t *testing.T, name string, got []string, want ...string) {
 }
 
 func (u usedWorld) markCmd(id, reviewer, week string) api.MarkAfterTheFactReviewed {
-	return api.MarkAfterTheFactReviewed{CommandID: id, TenantID: u.tenant, ActorID: reviewer, LegalEntityID: "LE", Week: week, Note: "every line read against its claim"}
+	return api.MarkAfterTheFactReviewed{CommandID: id, TenantID: u.tenant, ActorID: reviewer, LegalEntityID: "LE", Week: week, Conclusion: "ACCEPTED", Note: "every line read against its claim"}
 }
 
 // The list: each reason, a line with several, a carried attribution left out, the amounts in both currencies, the
@@ -532,12 +532,12 @@ func TestTheDatabaseKeepsTheReviewRulesOnPostgres(t *testing.T) {
 	u.atTime("one", 1, start.Add(time.Hour))
 	f := u.fixture
 	insert := func(entity, week, startAt, by, note string, size int, digest, reviewedAt string) string {
-		return fmt.Sprintf(`INSERT INTO cargo_fin.after_the_fact_review (tenant_id,legal_entity_id,week,review_no,week_start,reviewed_by,note,list_size,list_digest,reviewed_at)
-            VALUES ($1,'%s','%s',1,'%s','%s','%s',%d,'%s','%s')`, entity, week, startAt, by, note, size, digest, reviewedAt)
+		return fmt.Sprintf(`INSERT INTO cargo_fin.after_the_fact_review (tenant_id,legal_entity_id,week,review_no,week_start,reviewed_by,conclusion,note,list_size,list_digest,reviewed_at)
+            VALUES ($1,'%s','%s',1,'%s','%s','ACCEPTED','%s',%d,'%s','%s')`, entity, week, startAt, by, note, size, digest, reviewedAt)
 	}
 	hex := strings.Repeat("a", 64)
 	row := func(week, startAt string) string {
-		return insert("LE", week, startAt+"+00", "head-1", "a note", 1, hex, "2099-01-01 00:00:00+00")
+		return insert("LE", week, startAt+"+00", "head-1", "a note", 0, hex, "2099-01-01 00:00:00+00")
 	}
 	w := "2026-W48"
 	monday := "2026-11-23 00:00:00"
@@ -559,11 +559,11 @@ func TestTheDatabaseKeepsTheReviewRulesOnPostgres(t *testing.T) {
 		"a Monday at 00:00:01":             {row("2026-W49", "2026-11-30 00:00:01"), "23514", "after_the_fact_review_week_start"},
 		"week 53 of a year that has 52":    {row("2027-W53", "2027-01-04 00:00:00"), "23514", "after_the_fact_review_week_start"},
 		"a review before its week began":   {with(row("2026-W49", "2026-11-30 00:00:00"), "2099-01-01 00:00:00+00", "2026-11-29 23:59:59.999999+00"), "23514", "after_the_fact_review_week_begun"},
-		"an empty note":                    {with(row("2026-W49", "2026-11-30 00:00:00"), "'a note'", "' '"), "23514", "after_the_fact_review_note_check"},
-		"a note of 2001 characters":        {with(row("2026-W49", "2026-11-30 00:00:00"), "'a note'", "repeat('n',2001)"), "23514", "after_the_fact_review_note_check"},
+		"an empty note":                    {with(row("2026-W49", "2026-11-30 00:00:00"), "'a note'", "' '"), "23514", "after_the_fact_review_note_length"},
+		"a note of 2001 characters":        {with(row("2026-W49", "2026-11-30 00:00:00"), "'a note'", "repeat('n',2001)"), "23514", "after_the_fact_review_note_length"},
 		"an empty reviewer":                {with(row("2026-W49", "2026-11-30 00:00:00"), "'head-1'", "''"), "23514", "after_the_fact_review_reviewed_by_check"},
 		"a reviewer of 129 characters":     {with(row("2026-W49", "2026-11-30 00:00:00"), "'head-1'", "repeat('r',129)"), "23514", "after_the_fact_review_reviewed_by_check"},
-		"a negative list size":             {with(row("2026-W49", "2026-11-30 00:00:00"), ",1,'"+hex, ",-1,'"+hex), "23514", "after_the_fact_review_list_size_check"},
+		"a negative list size":             {with(row("2026-W49", "2026-11-30 00:00:00"), ",0,'"+hex, ",-1,'"+hex), "23514", "after_the_fact_review_list_size_check"},
 		"a digest in capitals":             {with(row("2026-W49", "2026-11-30 00:00:00"), hex, strings.Repeat("A", 64)), "23514", "after_the_fact_review_list_digest_check"},
 		"a digest of 63 characters":        {with(row("2026-W49", "2026-11-30 00:00:00"), hex, hex[:63]), "23514", "after_the_fact_review_list_digest_check"},
 		"a row changed":                    {`UPDATE cargo_fin.after_the_fact_review SET note='changed' WHERE tenant_id=$1`, "42501|23001", ""},

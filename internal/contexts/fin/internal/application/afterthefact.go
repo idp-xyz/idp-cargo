@@ -26,7 +26,10 @@ type AfterTheFactStore interface {
 	Lines(ctx context.Context, tenant fin.TenantID, legalEntity string, from, to time.Time, after fin.ReviewKey, limit int) ([]fin.ReviewLine, error)
 	// Find answers the week's latest review, if it has one.
 	Find(ctx context.Context, tenant fin.TenantID, legalEntity, week string) (*fin.AfterTheFactReview, bool, error)
+	// Insert writes the review and the lines it covers.
 	Insert(ctx context.Context, r *fin.AfterTheFactReview) error
+	// Covers answers, for each line of the week that a review covers, the latest review that does (V2.102, batch F).
+	Covers(ctx context.Context, tenant fin.TenantID, legalEntity, week string) (map[fin.ReviewKey]fin.ReviewCover, error)
 }
 
 // ReviewPage is a page of the list with the week's latest review and, when it has one, the whole list's size and digest now.
@@ -37,6 +40,8 @@ type ReviewPage struct {
 	Size    int
 	Digest  string
 	Matches bool
+	// Covers is, for each line of the page that a review covers, the latest review that does.
+	Covers map[fin.ReviewKey]fin.ReviewCover
 }
 
 // AfterTheFactPage reads, in one snapshot, a page of a week's list (limit lines after the key) and the week's mark.
@@ -65,6 +70,9 @@ func (d Deps) AfterTheFactPage(ctx context.Context, tenant fin.TenantID, legalEn
 			lines = lines[:limit]
 		}
 		out.Lines = lines
+		if out.Covers, err = d.AfterTheFact.Covers(txCtx, tenant, legalEntity, week); err != nil {
+			return err
+		}
 		r, found, err := d.AfterTheFact.Find(txCtx, tenant, legalEntity, week)
 		if err != nil || !found {
 			return err
@@ -84,7 +92,7 @@ func (d Deps) AfterTheFactPage(ctx context.Context, tenant fin.TenantID, legalEn
 
 // MarkAfterTheFactReviewed marks a legal entity's week reviewed; Subject is "<legal entity>/<week>". The receipt's
 // subject is the same, its revision 1.
-func (d Deps) MarkAfterTheFactReviewed(ctx context.Context, c Command, legalEntity, week, note string) (Receipt, error) {
+func (d Deps) MarkAfterTheFactReviewed(ctx context.Context, c Command, legalEntity, week, conclusion, note string) (Receipt, error) {
 	if d.AfterTheFact == nil || d.Policies == nil {
 		return Receipt{}, ErrMissingDependency
 	}
@@ -124,7 +132,7 @@ func (d Deps) MarkAfterTheFactReviewed(ctx context.Context, c Command, legalEnti
 			return Receipt{}, nil, err
 		}
 		at := d.Clock.Now().UTC().Truncate(time.Microsecond)
-		r, err := fin.ReviewAfterTheFact(c.Scope.TenantID, legalEntity, week, lines, done, c.Scope.ActorID, note, at)
+		r, err := fin.ReviewAfterTheFact(c.Scope.TenantID, legalEntity, week, lines, done, c.Scope.ActorID, conclusion, note, at)
 		if err != nil {
 			return Receipt{}, nil, err
 		}
@@ -133,4 +141,74 @@ func (d Deps) MarkAfterTheFactReviewed(ctx context.Context, c Command, legalEnti
 		}
 		return Receipt{SubjectID: fin.ReviewSubject(legalEntity, week), NewRevision: int64(r.State().ReviewNo), Version: len(lines)}, r, nil
 	})
+}
+
+// MaxPendingWeeks is the most weeks a query for what still waits for review covers.
+const MaxPendingWeeks = 53
+
+// PendingWeek is an ended week of the range: whether it has a review, how many lines its list has now, and the lines that no review covers.
+type PendingWeek struct {
+	Week      string
+	Start     time.Time
+	End       time.Time
+	Reviewed  bool
+	Listed    int
+	Uncovered []fin.ReviewLine
+}
+
+// AfterTheFactPending reads, in one snapshot, each ended week from fromWeek to toWeek (both included; a week that has not ended is left
+// out, since it cannot be reviewed yet): whether it has a review, and the lines of its list that no review covers (V2.102, batch F).
+func (d Deps) AfterTheFactPending(ctx context.Context, tenant fin.TenantID, legalEntity, fromWeek, toWeek string) (time.Time, []PendingWeek, error) {
+	first, _, err := fin.ParseWeek(fromWeek)
+	if err != nil {
+		return time.Time{}, nil, fmt.Errorf("%w: %v", ErrInvalidQuery, err)
+	}
+	last, _, err := fin.ParseWeek(toWeek)
+	if err != nil {
+		return time.Time{}, nil, fmt.Errorf("%w: %v", ErrInvalidQuery, err)
+	}
+	if last.Before(first) || last.Sub(first) >= MaxPendingWeeks*7*24*time.Hour {
+		return time.Time{}, nil, fmt.Errorf("%w: the weeks are from the first to the last, at most %d weeks; ask for a shorter range", ErrInvalidQuery, MaxPendingWeeks)
+	}
+	if d.AfterTheFact == nil || d.Policies == nil || d.Clock == nil {
+		return time.Time{}, nil, ErrMissingDependency
+	}
+	now := d.Clock.Now().UTC().Truncate(time.Microsecond)
+	var out []PendingWeek
+	err = d.Reader(ctx, func(txCtx context.Context) error {
+		if _, found, err := d.Policies.Find(txCtx, tenant, legalEntity); err != nil || !found {
+			if err == nil {
+				err = fmt.Errorf("%w (legal entity %s)", ErrNoPolicy, legalEntity)
+			}
+			return err
+		}
+		for start := first; !start.After(last); start = start.AddDate(0, 0, 7) {
+			week := fin.WeekOf(start)
+			from, to, _ := fin.ParseWeek(week)
+			if to.After(now) { // not ended: it is reviewed from the Monday after it
+				continue
+			}
+			lines, err := d.AfterTheFact.Lines(txCtx, tenant, legalEntity, from, to, fin.ReviewKey{}, 0)
+			if err != nil {
+				return err
+			}
+			covers, err := d.AfterTheFact.Covers(txCtx, tenant, legalEntity, week)
+			if err != nil {
+				return err
+			}
+			_, reviewed, err := d.AfterTheFact.Find(txCtx, tenant, legalEntity, week)
+			if err != nil {
+				return err
+			}
+			w := PendingWeek{Week: week, Start: from, End: to, Reviewed: reviewed, Listed: len(lines)}
+			for _, l := range lines {
+				if _, ok := covers[l.ReviewKey]; !ok {
+					w.Uncovered = append(w.Uncovered, l)
+				}
+			}
+			out = append(out, w)
+		}
+		return nil
+	})
+	return now, out, err
 }

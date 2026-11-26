@@ -99,7 +99,7 @@ func TestAReviewIsMadeByAnotherPersonOnceTheWeekHasEnded(t *testing.T) {
 		{ReviewKey: ReviewKey{PoolID: "P-1", ApportionmentNo: 3, LineNo: 2, ShipmentID: "SH-D"}, SubmittedBy: "fin-3", PreviewedBy: "fin-3"},
 	}
 	review := func(lines []ReviewLine, done *AfterTheFactReviewState, reviewer, note string, at time.Time) (*AfterTheFactReview, error) {
-		return ReviewAfterTheFact("t", "LE", week, lines, done, reviewer, note, at)
+		return ReviewAfterTheFact("t", "LE", week, lines, done, reviewer, "ACCEPTED", note, at)
 	}
 	r, err := review(lines, nil, "head-1", "checked the vouchers", end.Add(time.Hour))
 	if err != nil {
@@ -163,15 +163,36 @@ func TestAReviewIsMadeByAnotherPersonOnceTheWeekHasEnded(t *testing.T) {
 	if _, err = review(nil, nil, "head-1", strings.Repeat("语", 2000), end); err != nil {
 		t.Errorf("a note of %d characters of 3 bytes: %v", MaxReviewNote, err)
 	}
-	for name, note := range map[string]string{"empty": "", "blank": "  \n", "long": long + "n"} {
+	for name, note := range map[string]string{"blank": "  \n", "long": long + "n"} {
 		if _, err = review(nil, nil, "head-1", note, end); !errors.Is(err, ErrInvalid) {
 			t.Errorf("a %s note: %v", name, err)
 		}
 	}
+	// batch F: the note is given or left out for ACCEPTED, and required for NOT_ACCEPTED; the conclusion is one of the two
+	if r, err = ReviewAfterTheFact("t", "LE", week, nil, nil, "head-1", ConclusionAccepted, "", end); err != nil || r.State().Note != "" || r.State().Conclusion != ConclusionAccepted {
+		t.Errorf("an ACCEPTED review needs no note: %v", err)
+	}
+	for name, note := range map[string]string{"empty": "", "blank": " \n", "long": long + "n"} {
+		if _, err = ReviewAfterTheFact("t", "LE", week, nil, nil, "head-1", ConclusionNotAccepted, note, end); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "note") {
+			t.Errorf("a NOT_ACCEPTED review with a %s note: %v", name, err)
+		}
+	}
+	if r, err = ReviewAfterTheFact("t", "LE", week, nil, nil, "head-1", ConclusionNotAccepted, "the vouchers are missing", end); err != nil || r.State().Conclusion != ConclusionNotAccepted {
+		t.Errorf("a NOT_ACCEPTED review with its note: %v", err)
+	}
+	for _, c := range []string{"", "accepted", "REJECTED", " ACCEPTED"} {
+		if _, err = ReviewAfterTheFact("t", "LE", week, nil, nil, "head-1", c, "x", end); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "ACCEPTED or NOT_ACCEPTED") {
+			t.Errorf("the conclusion %q: %v", c, err)
+		}
+	}
+	// the review records the lines it covers: the list at that time, in order
+	if r, err = review(lines, nil, "head-1", "x", end); err != nil || len(r.Lines()) != len(lines) || r.Lines()[0] != lines[0].ReviewKey || r.Lines()[1] != lines[1].ReviewKey {
+		t.Errorf("the lines of the review: %v %v", r.Lines(), err)
+	}
 	if _, err = review(nil, nil, " ", "x", end); !errors.Is(err, ErrInvalid) {
 		t.Errorf("a blank reviewer: %v", err)
 	}
-	if _, err = ReviewAfterTheFact("t", "LE", "2026-W54", nil, nil, "head-1", "x", end); !errors.Is(err, ErrInvalid) {
+	if _, err = ReviewAfterTheFact("t", "LE", "2026-W54", nil, nil, "head-1", "ACCEPTED", "x", end); !errors.Is(err, ErrInvalid) {
 		t.Errorf("a week that is not one: %v", err)
 	}
 }
@@ -186,7 +207,7 @@ func TestAWeekIsReviewedAgainOnlyWhenItsListChanged(t *testing.T) {
 	}
 	one := []ReviewLine{line(1, "fin-2")}
 	review := func(lines []ReviewLine, done *AfterTheFactReviewState, reviewer string) (*AfterTheFactReview, error) {
-		return ReviewAfterTheFact("t", "LE", week, lines, done, reviewer, "read", end.Add(time.Hour))
+		return ReviewAfterTheFact("t", "LE", week, lines, done, reviewer, "ACCEPTED", "read", end.Add(time.Hour))
 	}
 	r1, err := review(one, nil, "head-1")
 	if err != nil || r1.State().ReviewNo != 1 {
@@ -224,7 +245,7 @@ func TestAWeekIsReviewedAgainOnlyWhenItsListChanged(t *testing.T) {
 		t.Errorf("a reviewer who submitted a line of the changed list: %v", err)
 	}
 	// the week must have ended whatever its reviews
-	if _, err = ReviewAfterTheFact("t", "LE", week, two, &done, "head-1", "read", end.Add(-time.Nanosecond)); !errors.Is(err, ErrAfterTheFactNotEnded) {
+	if _, err = ReviewAfterTheFact("t", "LE", week, two, &done, "head-1", "ACCEPTED", "read", end.Add(-time.Nanosecond)); !errors.Is(err, ErrAfterTheFactNotEnded) {
 		t.Errorf("a week that has not ended: %v", err)
 	}
 }

@@ -21,13 +21,13 @@ import (
 	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
-// settingsAuth grants the two actions of the settings to the actors named, by name, as the platform does, and every
-// other action of FIN to everyone but the "intruder".
+// settingsAuth grants the three actions of the settings (the review of a self-approval since V2.102 batch F) to the actors named, by
+// name, as the platform does, and every other action of FIN to everyone but the "intruder".
 type settingsAuth struct{ grants map[string][]string }
 
 func (a settingsAuth) AuthorizeFinAction(_ context.Context, _, actor, action, _ string) error {
 	switch action {
-	case api.ActionConfigureSettings, api.ActionApproveSettings:
+	case api.ActionConfigureSettings, api.ActionApproveSettings, api.ActionReviewSettingsExceptions:
 		if !slices.Contains(a.grants[actor], action) {
 			return fmt.Errorf("%s may not %s", actor, action)
 		}
@@ -56,7 +56,8 @@ func settingsModule(t *testing.T, f *fixture, opts ...finmodule.Option) *finmodu
 	m, err := finmodule.New(f.db, f.w, f.w, f.w, f.w, f.w, settingsAuth{grants: map[string][]string{
 		"ann": {api.ActionConfigureSettings}, "eve": {api.ActionConfigureSettings},
 		"bob": {api.ActionApproveSettings}, "carl": {api.ActionApproveSettings},
-		"dan": {api.ActionConfigureSettings, api.ActionApproveSettings}, "frank": {api.ActionConfigureSettings, api.ActionApproveSettings}}}, opts...)
+		"dan": {api.ActionConfigureSettings, api.ActionApproveSettings, api.ActionReviewSettingsExceptions}, "frank": {api.ActionConfigureSettings, api.ActionApproveSettings},
+		"rita": {api.ActionReviewSettingsExceptions}, "pat": {api.ActionReviewSettingsExceptions}}}, opts...)
 	if err != nil {
 		t.Fatal(err)
 	}

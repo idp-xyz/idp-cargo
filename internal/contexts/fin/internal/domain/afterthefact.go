@@ -55,6 +55,27 @@ var (
 // MaxReviewNote is the longest note of a review, in characters.
 const MaxReviewNote = 2000
 
+// Conclusions of a review (V2.102, batch F): the reviewer accepts what the list shows or does not, and a review that does not accept
+// it says why. The review changes no amount: what it found is put right by the ordinary commands.
+const (
+	ConclusionAccepted    = "ACCEPTED"
+	ConclusionNotAccepted = "NOT_ACCEPTED"
+)
+
+// CheckConclusion refuses a conclusion that is not ACCEPTED or NOT_ACCEPTED, a NOT_ACCEPTED without a note, and a note given that is
+// not 1 to 2000 characters, each with its way out.
+func CheckConclusion(conclusion, note string) error {
+	switch {
+	case conclusion != ConclusionAccepted && conclusion != ConclusionNotAccepted:
+		return fmt.Errorf("%w: the conclusion of a review is ACCEPTED or NOT_ACCEPTED, not %q; choose one", ErrInvalid, conclusion)
+	case conclusion == ConclusionNotAccepted && blank(note):
+		return fmt.Errorf("%w: a review that is NOT_ACCEPTED says why in a note of 1 to %d characters; write it", ErrInvalid, MaxReviewNote)
+	case note != "" && (blank(note) || utf8.RuneCountInString(note) > MaxReviewNote):
+		return fmt.Errorf("%w: a note is 1 to %d characters when given; shorten it, or leave it out for ACCEPTED", ErrInvalid, MaxReviewNote)
+	}
+	return nil
+}
+
 var weekForm = regexp.MustCompile(`^([0-9]{4})-W([0-9]{2})$`)
 
 // ParseWeek reads an ISO week, YYYY-Www, as the Monday at 00:00 UTC that begins it and the Monday after, which ends it
@@ -125,6 +146,15 @@ func (l ReviewLine) Reasons() []string {
 	return out
 }
 
+// ReviewCover says which review covers a line of the list: the latest review of the week that has the line, with its reviewer, its
+// conclusion and its time (V2.102, batch F).
+type ReviewCover struct {
+	ReviewNo   int
+	ReviewedBy string
+	Conclusion string
+	ReviewedAt time.Time
+}
+
 // ListDigest is the SHA-256, in lower-case hexadecimal, of the list in its order: every field of every line that a
 // reader of the list sees, so that a line added, a line taken away or any figure or person changed gives another digest.
 func ListDigest(lines []ReviewLine) string {
@@ -148,17 +178,23 @@ type AfterTheFactReviewState struct {
 	ReviewNo      int
 	WeekStart     time.Time
 	ReviewedBy    string
-	Note          string
-	ListSize      int
-	ListDigest    string
-	ReviewedAt    time.Time
+	// Conclusion is ACCEPTED or NOT_ACCEPTED; Note is empty for an ACCEPTED review that gave none.
+	Conclusion string
+	Note       string
+	ListSize   int
+	ListDigest string
+	ReviewedAt time.Time
 }
 
 // AfterTheFactReview is a reviewed week, the aggregate of this step. Its row is only inserted.
 type AfterTheFactReview struct {
 	state   AfterTheFactReviewState
+	lines   []ReviewKey
 	pending []Event
 }
+
+// Lines are the lines the review covers: the list at the time of the review, in the list's order.
+func (r *AfterTheFactReview) Lines() []ReviewKey { return append([]ReviewKey(nil), r.lines...) }
 
 // ReviewSubject is the subject of a legal entity's week: its command subject, its receipt and its event.
 func ReviewSubject(legalEntity, week string) string { return legalEntity + "/" + week }
@@ -168,13 +204,14 @@ func ReviewSubject(legalEntity, week string) string { return legalEntity + "/" +
 // again when its list differs from the latest review's (size or digest) and is refused only when it is the one already
 // reviewed. The reviewer is neither the submitter nor the previewer of any line of the list, whoever reviewed it before; a
 // refusal names the first line of the list that says otherwise.
-func ReviewAfterTheFact(tenant TenantID, legalEntity, week string, lines []ReviewLine, done *AfterTheFactReviewState, reviewer, note string, at time.Time) (*AfterTheFactReview, error) {
+func ReviewAfterTheFact(tenant TenantID, legalEntity, week string, lines []ReviewLine, done *AfterTheFactReviewState, reviewer, conclusion, note string, at time.Time) (*AfterTheFactReview, error) {
 	start, end, err := ParseWeek(week)
+	if err == nil {
+		err = CheckConclusion(conclusion, note)
+	}
 	switch {
 	case err != nil:
 		return nil, err
-	case blank(note) || utf8.RuneCountInString(note) > MaxReviewNote:
-		return nil, fmt.Errorf("%w: a note is 1 to %d characters", ErrInvalid, MaxReviewNote)
 	case tenant == "" || !identifier(legalEntity) || !identifier(reviewer) || at.IsZero():
 		return nil, fmt.Errorf("%w: a review names its legal entity, its reviewer and a time", ErrInvalid)
 	case done != nil && done.ListSize == len(lines) && done.ListDigest == ListDigest(lines):
@@ -204,8 +241,11 @@ func ReviewAfterTheFact(tenant TenantID, legalEntity, week string, lines []Revie
 	if done != nil {
 		no = done.ReviewNo + 1
 	}
-	r := &AfterTheFactReview{state: AfterTheFactReviewState{TenantID: tenant, LegalEntityID: legalEntity, Week: week, ReviewNo: no, WeekStart: start, ReviewedBy: reviewer, Note: note,
+	r := &AfterTheFactReview{state: AfterTheFactReviewState{TenantID: tenant, LegalEntityID: legalEntity, Week: week, ReviewNo: no, WeekStart: start, ReviewedBy: reviewer, Conclusion: conclusion, Note: note,
 		ListSize: len(lines), ListDigest: ListDigest(lines), ReviewedAt: at.UTC()}}
+	for _, l := range lines {
+		r.lines = append(r.lines, l.ReviewKey)
+	}
 	r.pending = append(r.pending, Event{Type: "AfterTheFactReviewed.v1", At: at.UTC(), TenantID: tenant, SubjectID: ReviewSubject(legalEntity, week), LegalEntityID: legalEntity, Version: no})
 	return r, nil
 }

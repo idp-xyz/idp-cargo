@@ -402,6 +402,11 @@ type SettingsStore interface {
 	Declarations(ctx context.Context, tenant fin.TenantID) ([]settings.Declaration, error)
 	DeclarationsForWrite(ctx context.Context, tenant fin.TenantID) ([]settings.Declaration, error)
 	InsertDeclaration(ctx context.Context, tenant fin.TenantID, d settings.Declaration) error
+	// Reviews lists the reviews of self-approved change sets in a query's snapshot, ReviewsForWrite in a write transaction (under
+	// the settings lock); InsertReview records one, with the approver it repeats.
+	Reviews(ctx context.Context, tenant fin.TenantID) ([]settings.SelfReview, error)
+	ReviewsForWrite(ctx context.Context, tenant fin.TenantID) ([]settings.SelfReview, error)
+	InsertReview(ctx context.Context, tenant fin.TenantID, r settings.SelfReview, approvedBy string) error
 	// WorkActors lists who submitted apportionments and stated attributions in a period (the exception report).
 	WorkActors(ctx context.Context, tenant fin.TenantID, from, to time.Time) ([]ActorWork, error)
 }

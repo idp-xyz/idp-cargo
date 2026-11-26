@@ -77,6 +77,8 @@ const (
 	FinSettingsChangeRefused   = "FinSettingsChangeRefused.v1"
 	// FinSingleAdministratorDeclared has the onboarding as subject.
 	FinSingleAdministratorDeclared = "FinSingleAdministratorDeclared.v1"
+	// FinSelfApprovalReviewed has the change set whose self-approval was reviewed as subject.
+	FinSelfApprovalReviewed = "FinSelfApprovalReviewed.v1"
 
 	// Cost review events have the request (CRR-<n>) as subject, its number as Version, and the job and shipment.
 	CostReviewRequested = "CostReviewRequested.v1"

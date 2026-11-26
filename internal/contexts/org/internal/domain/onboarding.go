@@ -28,12 +28,15 @@ const (
 	StateProposed  = "PROPOSED"
 	StateConfirmed = "CONFIRMED"
 	StateComplete  = "COMPLETE"
+	// StateWithdrawn is an onboarding withdrawn before it was confirmed (V2.102, batch F): never confirmed.
+	StateWithdrawn = "WITHDRAWN"
 
 	ModuleNotStarted = "NOT_STARTED"
 	ModuleProposed   = "PROPOSED"
 	ModuleApproved   = "APPROVED"
 
 	MaxRiskStatement   = 2000
+	MaxWithdrawReason  = 2000
 	MaxFinanceStaff    = 10000
 	MaxEntries         = 64
 	StrictMinimumStaff = 3
@@ -102,6 +105,13 @@ type Confirmation struct {
 	PlanSHA256 string
 }
 
+// Withdrawal is the withdrawal of an onboarding that was not confirmed: by whom, when and why.
+type Withdrawal struct {
+	By     string
+	At     time.Time
+	Reason string
+}
+
 // ValidActor says whether an actor id is 1 to 128 bytes without spaces around it, the form every module accepts.
 func ValidActor(id string) bool {
 	return strings.TrimSpace(id) != "" && strings.TrimSpace(id) == id && len(id) <= 128
@@ -112,6 +122,8 @@ type ModuleState struct {
 	Module   string
 	State    string
 	ChangeID string
+	// Version is the settings version the module put in force when it approved its change set (ModuleApproved only, 1 or more).
+	Version int
 }
 
 func refuse(format string, args ...any) error {
@@ -194,8 +206,11 @@ func StrictNotice(profile string, staff int) string {
 		"attribution: consider the STANDARD or LEAN profile, or more finance staff", StrictMinimumStaff, staff)
 }
 
-// StateOf is the onboarding's state from its confirmation and its modules' records.
-func StateOf(confirmed bool, modules []ModuleState) string {
+// StateOf is the onboarding's state from its confirmation, its withdrawal and its modules' records.
+func StateOf(confirmed, withdrawn bool, modules []ModuleState) string {
+	if withdrawn {
+		return StateWithdrawn
+	}
 	if !confirmed {
 		return StateProposed
 	}

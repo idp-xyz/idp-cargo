@@ -170,6 +170,14 @@ func (d *settingsDay) finChange(id string) (finapi.FinSettingsChange, bool) {
 	return finapi.FinSettingsChange{}, false
 }
 
+// org0 is ORG's record of an onboarding.
+func (d *settingsDay) org0(id string) orgapi.Onboarding {
+	d.t.Helper()
+	o, err := d.org.GetOnboarding(context.Background(), orgapi.GetOnboarding{TenantID: d.tenant, OnboardingID: id})
+	d.must("the onboarding", err)
+	return o
+}
+
 func (d *settingsDay) count() (fin, sea int) {
 	d.t.Helper()
 	f, err := d.fin.ListFinSettingsChanges(context.Background(), finapi.ListFinSettingsChanges{TenantID: d.tenant})
@@ -177,6 +185,30 @@ func (d *settingsDay) count() (fin, sea int) {
 	s, err := d.sea.ListSeaSettingsChanges(context.Background(), seaapi.ListSeaSettingsChanges{TenantID: d.tenant})
 	d.must("SEA's change sets", err)
 	return len(f), len(s)
+}
+
+// heldOnly says that each module has one change set and no other, held for the onboarding, neither approved nor in force: the settings
+// stay as they were (version 0) until the owner confirms it.
+func (d *settingsDay) heldOnly(onboarding string) {
+	d.t.Helper()
+	if f, s := d.count(); f != 1 || s != 1 {
+		d.t.Fatalf("change sets: FIN %d, SEA %d, want one held change set in each", f, s)
+	}
+	fc, ok := d.finChange("onb-" + onboarding + "-fin")
+	if !ok || fc.Status != finapi.SettingsProposed || fc.HeldForOnboarding != onboarding || fc.AutoApproved || fc.ApprovedBy != "" || fc.Version != 0 || fc.ProposedBy != "ann" {
+		d.t.Fatalf("FIN's held change set: %+v", fc)
+	}
+	list, err := d.sea.ListSeaSettingsChanges(context.Background(), seaapi.ListSeaSettingsChanges{TenantID: d.tenant})
+	d.must("SEA's change sets", err)
+	if sc := list[0]; sc.ChangeID != "onb-"+onboarding+"-sea" || sc.Status != seaapi.SettingsProposed || sc.HeldForOnboarding != onboarding || sc.AutoApproved || sc.ApprovedBy != "" || sc.ProposedBy != "ann" {
+		d.t.Fatalf("SEA's held change set: %+v", sc)
+	}
+	if got := d.finValues("TENANT", ""); got["version"] != "0" {
+		d.t.Fatalf("FIN's settings changed: %+v", got)
+	}
+	if _, version := d.seaValue("TENANT", ""); version != 0 {
+		d.t.Fatalf("SEA's settings changed: version %d", version)
+	}
 }
 
 func saidKind(t *testing.T, what string, err error, kind error, contains ...string) {
@@ -232,9 +264,8 @@ func TestOnboardingNeedsItsPermissionsByName(t *testing.T) {
 	_, err = d.onboarding.ConfirmOnboarding(d.as("ann", append(append([]string{}, consultant...), owner...)...), orgapi.ConfirmOnboarding{CommandID: "c-ann", TenantID: d.tenant, ActorID: "ann",
 		OnboardingID: "ob-1", AcknowledgedText: riskStatement})
 	saidKind(t, "the proposer confirming", err, orgapi.ErrRejected, "may not confirm it", "appointed owner")
-	if f, s := d.count(); f != 0 || s != 0 {
-		t.Fatalf("change sets made by refused confirmations: %d, %d", f, s)
-	}
+	// the proposal holds one change set in each module, and a refused confirmation makes no other and approves none
+	d.heldOnly("ob-1")
 }
 
 // A profile and its overrides are checked with FIN's and SEA's own rules when the consultant proposes, not when the owner
@@ -269,9 +300,7 @@ func TestAnOnboardingAppliesItsProfileInEachModule(t *testing.T) {
 	if err != nil || !strings.Contains(r.Notice, "at least 3 finance staff") || r.State != "PROPOSED" {
 		t.Fatalf("the proposal: %+v, %v", r, err)
 	}
-	if f, s := d.count(); f != 0 || s != 0 {
-		t.Fatalf("a proposal changes no module: %d, %d", f, s)
-	}
+	d.heldOnly("ob-1") // a proposal holds one change set in each module (batch F): in force in neither, not even STRICT, which only tightens
 	got, err := d.confirm("ob-1")
 	if err != nil || got.Receipt.State != "COMPLETE" || len(got.Failures) != 0 || !strings.Contains(got.Receipt.Notice, "at least 3 finance staff") {
 		t.Fatalf("the confirmation: %+v, %v", got, err)
@@ -287,7 +316,7 @@ func TestAnOnboardingAppliesItsProfileInEachModule(t *testing.T) {
 		t.Fatalf("SEA's S1: %s, version %d", v, version)
 	}
 	c, ok := d.finChange("onb-ob-1-fin")
-	if !ok || c.ProposedBy != "ann" || !c.AutoApproved || c.Loosening || !strings.Contains(c.Reason, "ob-1") || len(c.Entries) != 8 {
+	if !ok || c.ProposedBy != "ann" || c.AutoApproved || c.ApprovedBy != "olga" || c.Version != 1 || c.Loosening || c.HeldForOnboarding != "ob-1" || !strings.Contains(c.Reason, "ob-1") || len(c.Entries) != 8 {
 		t.Fatalf("FIN's change set: %+v", c)
 	}
 	o := got.Onboarding
@@ -367,29 +396,36 @@ func TestARetryCompletesAModuleThatFailedAndMakesNoSecondChangeSet(t *testing.T)
 	d.legalEntity()
 	// the legal entity LE-X is one SEA does not know yet
 	overrides := map[string][]orgapi.OnboardingEntry{"SEA": {{ScopeKind: "LEGAL_ENTITY", ScopeID: "LE-X", Key: "sea.S1", Value: "WITH_REASON"}}}
-	if _, err := d.propose("ob-1", "STRICT", 5, false, overrides); err != nil {
-		t.Fatal(err)
-	}
-	got, err := d.confirm("ob-1")
-	saidKind(t, "SEA with an unknown legal entity", err, ErrOnboardingIncomplete, "SEA:", "RegisterHblSeries", "send the same ConfirmOnboarding again")
-	if len(got.Failures) != 1 || got.Failures[0].Module != "SEA" || got.Receipt.State != "CONFIRMED" {
-		t.Fatalf("the confirmation: %+v", got)
-	}
-	if got.Onboarding.Modules[0].State != "APPROVED" || got.Onboarding.Modules[1].State != "NOT_STARTED" {
-		t.Fatalf("the modules: %+v", got.Onboarding.Modules)
+	_, err := d.propose("ob-1", "STRICT", 5, false, overrides)
+	saidKind(t, "SEA with an unknown legal entity", err, ErrOnboardingIncomplete, "SEA:", "RegisterHblSeries", "send the same ProposeOnboarding again")
+	if o, _ := d.org.GetOnboarding(context.Background(), orgapi.GetOnboarding{TenantID: d.tenant, OnboardingID: "ob-1"}); o.State != "PROPOSED" || o.Modules[0].State != "PROPOSED" || o.Modules[1].State != "NOT_STARTED" {
+		t.Fatalf("FIN held its change set and SEA made nothing: %+v", o)
 	}
 	if f, s := d.count(); f != 1 || s != 0 {
 		t.Fatalf("FIN committed on its own, SEA made nothing: %d, %d", f, s)
+	}
+	// the owner cannot confirm what is not whole: nothing is recorded, and the consultant completes it
+	_, err = d.confirm("ob-1")
+	saidKind(t, "SEA holds nothing yet", err, ErrOnboardingHeld, "SEA holds no change set onb-ob-1-sea", "ProposeOnboarding", "nothing is recorded")
+	if o, _ := d.org.GetOnboarding(context.Background(), orgapi.GetOnboarding{TenantID: d.tenant, OnboardingID: "ob-1"}); o.State != "PROPOSED" {
+		t.Fatalf("a refused confirmation was recorded: %+v", o)
 	}
 	// the way out the refusal names, then the same command again
 	_, err = d.sea.RegisterHblSeries(d.as("ops-1", "sea:*"), seaapi.RegisterHblSeries{CommandID: d.command(), TenantID: d.tenant, ActorID: "ops-1", LegalEntityID: "LE-X",
 		Template: "SHAX{seq:7}", FirstNumber: 1, OccurredAt: time.Now().UTC()})
 	d.must("SEA's series of LE-X", err)
-	if got, err = d.confirm("ob-1"); err != nil || got.Receipt.State != "COMPLETE" || len(got.Failures) != 0 {
-		t.Fatalf("the retry: %+v, %v", got, err)
+	if _, err = d.propose("ob-1", "STRICT", 5, false, overrides); err != nil {
+		t.Fatalf("the same proposal again: %v", err)
 	}
 	if f, s := d.count(); f != 1 || s != 1 {
 		t.Fatalf("change sets after the retry: FIN %d, SEA %d", f, s)
+	}
+	got, err := d.confirm("ob-1")
+	if err != nil || got.Receipt.State != "COMPLETE" || len(got.Failures) != 0 {
+		t.Fatalf("the confirmation: %+v, %v", got, err)
+	}
+	if f, s := d.count(); f != 1 || s != 1 {
+		t.Fatalf("change sets after the confirmation: FIN %d, SEA %d", f, s)
 	}
 	if v, _ := d.seaValue("LEGAL_ENTITY", "LE-X"); v != "WITH_REASON" {
 		t.Fatalf("LE-X's S1: %s", v)
@@ -403,7 +439,7 @@ func TestARetryCompletesAModuleThatFailedAndMakesNoSecondChangeSet(t *testing.T)
 		t.Fatal(err)
 	}
 	got, err = onboarding.ConfirmOnboarding(d.as("olga", owner...), d.confirmCommand("ob-2"))
-	saidKind(t, "FIN's failing approval", err, ErrOnboardingIncomplete, "FIN:", "FIN is down")
+	saidKind(t, "FIN's failing approval", err, ErrOnboardingIncomplete, "FIN:", "FIN is down", "send the same ConfirmOnboarding again")
 	if got.Onboarding.Modules[0].State != "PROPOSED" || got.Onboarding.Modules[1].State != "APPROVED" {
 		t.Fatalf("FIN proposed and SEA approved: %+v", got.Onboarding.Modules)
 	}

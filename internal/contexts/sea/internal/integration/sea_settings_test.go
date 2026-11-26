@@ -21,13 +21,13 @@ import (
 
 // V2.100 on PostgreSQL, migration 000012: SEA's settings through SEA's commands, as FIN's (V2.96) are tested in FIN.
 
-// seaSettingsAuth grants the three permissions that are granted by name to the actors named, as the platform does, and
-// every other action of SEA to everyone but the "intruder".
+// seaSettingsAuth grants the permissions that are granted by name (the review of a self-approval since V2.102 batch F) to the actors
+// named, as the platform does, and every other action of SEA to everyone but the "intruder".
 type seaSettingsAuth struct{ grants map[string][]string }
 
 func (a seaSettingsAuth) AuthorizeSeaAction(_ context.Context, _, actor, action, _ string) error {
 	switch action {
-	case api.ActionConfigureSettings, api.ActionApproveSettings, api.ActionSuperviseCarrierConflicts:
+	case api.ActionConfigureSettings, api.ActionApproveSettings, api.ActionSuperviseCarrierConflicts, api.ActionReviewSettingsExceptions:
 		if !slices.Contains(a.grants[actor], action) {
 			return fmt.Errorf("%s may not %s", actor, action)
 		}
@@ -59,8 +59,8 @@ func newSettingsWorldOf(t *testing.T, legalEntities ...string) *settingsWorld {
 	m, err := seamodule.New(f.db, f.w, rw, seaSettingsAuth{grants: map[string][]string{
 		"ann": {api.ActionConfigureSettings}, "eve": {api.ActionConfigureSettings},
 		"bob": {api.ActionApproveSettings}, "carl": {api.ActionApproveSettings},
-		"dan": {api.ActionConfigureSettings, api.ActionApproveSettings}, "frank": {api.ActionConfigureSettings, api.ActionApproveSettings},
-		"sup-1": {api.ActionSuperviseCarrierConflicts}}})
+		"dan": {api.ActionConfigureSettings, api.ActionApproveSettings, api.ActionReviewSettingsExceptions}, "frank": {api.ActionConfigureSettings, api.ActionApproveSettings},
+		"sup-1": {api.ActionSuperviseCarrierConflicts}, "rita": {api.ActionReviewSettingsExceptions}, "pat": {api.ActionReviewSettingsExceptions}}})
 	if err != nil {
 		t.Fatal(err)
 	}

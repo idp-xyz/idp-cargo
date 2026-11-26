@@ -33,8 +33,12 @@ func (m *Module) ProposeSeaSettingsChange(ctx context.Context, cmd api.ProposeSe
 		return api.Receipt{}, classify(settings.Refuse(settings.ErrEffective, "the effective time is more than a year after now; choose a nearer time, "+
 			"and propose again then for a later change"))
 	}
-	r, err := m.deps(cmd.TenantID, cmd.CommandID).ProposeSettings(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, api.ActionConfigureSettings,
-		cmd.ChangeID, 0, m.clock.Now(), cmd), entriesOf(cmd.Entries), cmd.Reason, stored(cmd.EffectiveAt))
+	action := api.ActionConfigureSettings
+	if cmd.OnboardingID != "" { // held for an onboarding: the platform's onboarding alone proposes it (ConfigureSettings by name, and the platform's mark)
+		action = api.ActionProposeHeldSettings
+	}
+	r, err := m.deps(cmd.TenantID, cmd.CommandID).ProposeSettings(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, action,
+		cmd.ChangeID, 0, m.clock.Now(), cmd), entriesOf(cmd.Entries), cmd.Reason, stored(cmd.EffectiveAt), cmd.OnboardingID)
 	return receipt(r, err)
 }
 
@@ -50,6 +54,52 @@ func (m *Module) DeclareSeaSingleAdministrator(ctx context.Context, cmd api.Decl
 	r, err := m.deps(cmd.TenantID, cmd.CommandID).DeclareSingleAdministrator(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID,
 		api.ActionDeclareSingleAdministrator, cmd.OnboardingID, 0, m.clock.Now(), cmd), cmd.ProposedBy, cmd.AdministratorID)
 	return receipt(r, err)
+}
+
+// ReviewSeaSelfApprovedSettingsChange records the review of a change set that its own proposer approved as the single administrator.
+func (m *Module) ReviewSeaSelfApprovedSettingsChange(ctx context.Context, cmd api.ReviewSeaSelfApprovedSettingsChange) (api.Receipt, error) {
+	r, err := m.deps(cmd.TenantID, cmd.CommandID).ReviewSelfApproval(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, api.ActionReviewSettingsExceptions,
+		cmd.ChangeID, 0, m.clock.Now(), cmd), cmd.Conclusion, cmd.Note)
+	return receipt(r, err)
+}
+
+// ListSeaSelfApprovalReviews answers the self-approved change sets of a period with no review, and the reviewed ones with their reviewer
+// and conclusion, to a holder of ReviewSettingsExceptions.
+func (m *Module) ListSeaSelfApprovalReviews(ctx context.Context, q api.ListSeaSelfApprovalReviews) (api.SeaSelfApprovalReviews, error) {
+	if q.ActorID == "" {
+		return api.SeaSelfApprovalReviews{}, classify(application.ErrUnauthenticated)
+	}
+	if m.auth == nil || m.auth.AuthorizeSeaAction(ctx, q.TenantID, q.ActorID, api.ActionReviewSettingsExceptions, q.TenantID) != nil {
+		return api.SeaSelfApprovalReviews{}, classify(fmt.Errorf("%w: the self-approved change sets and their reviews are told to a holder of ReviewSettingsExceptions; ask for the permission, granted by name",
+			application.ErrUnauthorized))
+	}
+	got, err := m.reads(q.TenantID).SelfApprovalReviews(ctx, domain.TenantID(q.TenantID), q.From, q.To)
+	if err != nil {
+		return api.SeaSelfApprovalReviews{}, classify(err)
+	}
+	out := api.SeaSelfApprovalReviews{TenantID: q.TenantID, From: q.From, To: q.To, AsOf: got.At, Pending: []api.SeaSelfApproval{}, Reviewed: []api.SeaSelfApprovalReview{}}
+	for _, x := range got.Pending {
+		out.Pending = append(out.Pending, selfApproval(x, got.Declarations))
+	}
+	for _, x := range got.Reviewed {
+		out.Reviewed = append(out.Reviewed, api.SeaSelfApprovalReview{SeaSelfApproval: selfApproval(x.SelfApprovedLine, got.Declarations), ReviewedBy: x.Review.By,
+			ReviewedAt: x.Review.At, Conclusion: x.Review.Conclusion, Note: x.Review.Note})
+	}
+	return out, nil
+}
+
+// selfApproval is a self-approved line as the API tells it, with the declaration it relies on (its administrator and time).
+func selfApproval(x settings.SelfApprovedLine, declared []settings.Declaration) api.SeaSelfApproval {
+	line := api.SeaSelfApproval{ChangeID: x.ChangeID, ApprovedBy: x.By, ApprovedAt: x.At, Acknowledgement: x.Acknowledgement, BasisOnboardingID: x.Basis}
+	for _, d := range declared {
+		if d.OnboardingID == x.Basis {
+			line.BasisAdministrator, line.BasisDeclaredAt = d.Administrator, d.At
+		}
+	}
+	for _, e := range x.Entries {
+		line.Entries = append(line.Entries, api.SeaSettingEntryView{ScopeKind: e.Scope.Kind, ScopeID: e.Scope.ID, Key: e.Key, Value: e.Value})
+	}
+	return line
 }
 
 // GetSeaExceptionReport answers SEA's part of the exception report to a holder of ApproveSettings.
@@ -75,11 +125,7 @@ func (m *Module) GetSeaExceptionReport(ctx context.Context, q api.GetSeaExceptio
 			ThanValue: x.Standard, ChangeID: x.ChangeID, ProposedBy: x.ProposedBy, ApprovedBy: x.ApprovedBy})
 	}
 	for _, x := range got.Report.SelfApproved {
-		line := api.SeaSelfApproval{ChangeID: x.ChangeID, ApprovedBy: x.By, ApprovedAt: x.At, Acknowledgement: x.Acknowledgement}
-		for _, e := range x.Entries {
-			line.Entries = append(line.Entries, api.SeaSettingEntryView{ScopeKind: e.Scope.Kind, ScopeID: e.Scope.ID, Key: e.Key, Value: e.Value})
-		}
-		out.SelfApproved = append(out.SelfApproved, line)
+		out.SelfApproved = append(out.SelfApproved, selfApproval(x, got.Declarations))
 	}
 	for _, x := range got.Report.Changers {
 		out.Changers = append(out.Changers, api.SeaSettingsChanger{ActorID: x.Actor, Proposed: x.Proposed, Approved: x.Approved})
@@ -143,8 +189,9 @@ func (m *Module) ListSeaSettingsChanges(ctx context.Context, q api.ListSeaSettin
 		}
 		if a := c.Approval; a != nil {
 			v.ApprovedBy, v.ApprovedAt, v.Version, v.InForceAt, v.AutoApproved = a.By, a.At, a.Version, a.InForce, a.Auto
-			v.RiskAcknowledgement = a.Acknowledgement
+			v.RiskAcknowledgement, v.BasisOnboardingID = a.Acknowledgement, a.Basis
 		}
+		v.HeldForOnboarding = c.Hold
 		if x := c.Cancellation; x != nil {
 			v.CancelledBy, v.CancelledAt, v.CancelReason, v.CancelledRole = x.By, x.At, x.Reason, x.Role
 		}

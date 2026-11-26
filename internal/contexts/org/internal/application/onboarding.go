@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	bentorepo "go.idp.xyz/idp-bento-go/repository"
 	org "go.idp.xyz/idp-cargo/internal/contexts/org/internal/domain"
@@ -29,6 +30,7 @@ const (
 const (
 	eventOnboardingProposed  = "OnboardingProposed.v1"
 	eventOnboardingConfirmed = "OnboardingConfirmed.v1"
+	eventOnboardingWithdrawn = "OnboardingWithdrawn.v1"
 )
 
 // OnboardingRecord is an onboarding as stored.
@@ -39,11 +41,16 @@ type OnboardingRecord struct {
 	Confirmation *org.Confirmation
 	// ConfirmCommandID is the command that confirmed it.
 	ConfirmCommandID string
-	Modules          []org.ModuleState
+	// Withdrawal is the withdrawal of an onboarding not confirmed (V2.102, batch F), WithdrawCommandID the command that made it.
+	Withdrawal        *org.Withdrawal
+	WithdrawCommandID string
+	Modules           []org.ModuleState
 }
 
 // State is the onboarding's state.
-func (r OnboardingRecord) State() string { return org.StateOf(r.Confirmation != nil, r.Modules) }
+func (r OnboardingRecord) State() string {
+	return org.StateOf(r.Confirmation != nil, r.Withdrawal != nil, r.Modules)
+}
 
 // OnboardingStore keeps the onboardings. Lock takes the onboarding's lock until the transaction ends.
 type OnboardingStore interface {
@@ -52,7 +59,9 @@ type OnboardingStore interface {
 	List(ctx context.Context, tenant org.TenantID) ([]OnboardingRecord, error)
 	Insert(ctx context.Context, tenant org.TenantID, o org.Onboarding, commandID, hash string) error
 	InsertConfirmation(ctx context.Context, tenant org.TenantID, id string, o org.Onboarding, commandID string, c org.Confirmation) error
-	InsertModule(ctx context.Context, tenant org.TenantID, id string, confirmation org.Confirmation, m org.ModuleState, at time.Time) error
+	// InsertModule records a module row: the proposer's PROPOSED row, or the confirmer's APPROVED row (confirmation is then the confirmation).
+	InsertModule(ctx context.Context, tenant org.TenantID, id string, recordedBy string, confirmation *org.Confirmation, m org.ModuleState, at time.Time) error
+	InsertWithdrawal(ctx context.Context, tenant org.TenantID, id string, commandID string, w org.Withdrawal) error
 }
 
 // Onboardings runs the onboarding commands and queries.
@@ -91,6 +100,16 @@ type ModuleCommand struct {
 	Module       string
 	ChangeID     string
 	State        string
+	// Version is the settings version the module put in force (APPROVED only).
+	Version int
+}
+
+// WithdrawCommand is the withdrawal of an onboarding as asked.
+type WithdrawCommand struct {
+	CommandID    string
+	Scope        Scope
+	OnboardingID string
+	Reason       string
 }
 
 // OnboardingResult is the onboarding after a command, and the notice it gives.
@@ -125,10 +144,13 @@ func proposalHash(o org.Onboarding) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
-// revision counts the records an onboarding has: its proposal, its confirmation and each module row.
+// revision counts the records an onboarding has: its proposal, its confirmation or its withdrawal, and each module row.
 func revision(r OnboardingRecord) int64 {
 	n := int64(1 + len(r.Modules))
 	if r.Confirmation != nil {
+		n++
+	}
+	if r.Withdrawal != nil {
 		n++
 	}
 	return n
@@ -217,6 +239,10 @@ func (h Onboardings) Confirm(ctx context.Context, c ConfirmCommand) (OnboardingR
 		case !found:
 			return fmt.Errorf("%w: onboarding %s; list the tenant's onboardings (ListOnboardings) for the ids", bentorepo.ErrNotFound, c.OnboardingID)
 		}
+		if w := rec.Withdrawal; w != nil {
+			return fmt.Errorf("%w: onboarding %s was withdrawn by %s at %s and is never confirmed; have the consultant propose a new onboarding under another id", org.ErrInvalidOnboarding,
+				c.OnboardingID, w.By, w.At.UTC().Format(time.RFC3339))
+		}
 		if k := rec.Confirmation; k != nil {
 			if k.By != c.Scope.ActorID || k.AcknowledgedText != c.Acknowledged || k.Administrator != c.Administrator || k.PlanSHA256 != c.PlanSHA256 {
 				return fmt.Errorf("%w: onboarding %s was confirmed by %s already; read it (GetOnboarding)", ErrIdempotencyConflict, c.OnboardingID, k.By)
@@ -262,22 +288,23 @@ func (h Onboardings) Confirm(ctx context.Context, c ConfirmCommand) (OnboardingR
 	return out, err
 }
 
-// RecordModule records a module's change set and state for a confirmed onboarding, by the confirmer acting as the
-// platform (the permission RecordOnboardingModule, which no person holds), once for each state.
-// A state already recorded with the same change set answers the record again.
-func (h Onboardings) RecordModule(ctx context.Context, c ModuleCommand) (OnboardingResult, error) {
+// Withdraw records the withdrawal of an onboarding that was not confirmed, by the consultant who proposed it (the permission
+// ProposeOnboarding) or by the customer's owner (ConfirmOnboarding), with a reason of 1 to 2000 characters, once. The same person
+// with the same reason again answers the record. A confirmed onboarding is not withdrawn, and a withdrawn one is never confirmed.
+func (h Onboardings) Withdraw(ctx context.Context, c WithdrawCommand) (OnboardingResult, error) {
 	if err := ctx.Err(); err != nil {
 		return OnboardingResult{}, err
 	}
 	if err := h.ready(c.Scope, c.CommandID); err != nil {
 		return OnboardingResult{}, err
 	}
-	if !slices.Contains(org.Modules, c.Module) || (c.State != org.ModuleProposed && c.State != org.ModuleApproved) || c.OnboardingID == "" {
-		return OnboardingResult{}, fmt.Errorf("%w: a module record names its onboarding, FIN or SEA, and the state PROPOSED or APPROVED", ErrInvalidCommand)
-	}
-	if err := h.Auth.RequirePartyAction(ctx, c.Scope, ActionRecordOnboardingModule, org.PartyID(c.OnboardingID)); err != nil {
-		return OnboardingResult{}, fmt.Errorf("%w: %v; only the platform's onboarding records a module's progress, from the module's own change set, so no person does: "+
-			"send ConfirmOnboarding again, which completes what is missing", ErrUnauthorized, err)
+	switch {
+	case c.OnboardingID == "":
+		return OnboardingResult{}, fmt.Errorf("%w: a withdrawal names its onboarding", ErrInvalidCommand)
+	case !org.ValidActor(c.Scope.ActorID):
+		return OnboardingResult{}, fmt.Errorf("%w: the actor id of a withdrawal is 1 to 128 bytes, without spaces around it; give it as the identity platform names the person", org.ErrInvalidOnboarding)
+	case strings.TrimSpace(c.Reason) == "" || utf8.RuneCountInString(c.Reason) > org.MaxWithdrawReason:
+		return OnboardingResult{}, fmt.Errorf("%w: a withdrawal has a reason of 1 to %d characters; write why the onboarding is withdrawn", org.ErrInvalidOnboarding, org.MaxWithdrawReason)
 	}
 	var out OnboardingResult
 	err := h.Tx.WithinTransaction(ctx, func(txCtx context.Context) error {
@@ -288,12 +315,83 @@ func (h Onboardings) RecordModule(ctx context.Context, c ModuleCommand) (Onboard
 		switch {
 		case err != nil:
 			return err
-		case !found || rec.Confirmation == nil:
-			return fmt.Errorf("%w: onboarding %s is not confirmed; the owner confirms it first (ConfirmOnboarding)", org.ErrInvalidOnboarding, c.OnboardingID)
-		case rec.Confirmation.By != c.Scope.ActorID:
-			return fmt.Errorf("%w: the modules of onboarding %s are recorded by its confirmer, %s", org.ErrInvalidOnboarding, c.OnboardingID, rec.Confirmation.By)
+		case !found:
+			return fmt.Errorf("%w: onboarding %s; list the tenant's onboardings (ListOnboardings) for the ids", bentorepo.ErrNotFound, c.OnboardingID)
+		}
+		// the consultant who proposed it withdraws it as its proposer, the customer's owner as the one who would confirm it
+		action := ActionConfirmOnboarding
+		if c.Scope.ActorID == rec.Onboarding.ProposedBy {
+			action = ActionProposeOnboarding
+		}
+		if err := h.Auth.RequirePartyAction(txCtx, c.Scope, action, org.PartyID(c.OnboardingID)); err != nil {
+			return fmt.Errorf("%w: %v; the consultant who proposed the onboarding (ProposeOnboarding) or the customer's owner (ConfirmOnboarding) withdraws it", ErrUnauthorized, err)
+		}
+		if w := rec.Withdrawal; w != nil {
+			if w.By != c.Scope.ActorID || w.Reason != strings.TrimSpace(c.Reason) {
+				return fmt.Errorf("%w: onboarding %s was withdrawn by %s already, with another reason; read it (GetOnboarding)", ErrIdempotencyConflict, c.OnboardingID, w.By)
+			}
+			out = OnboardingResult{Record: rec, Notice: org.StrictNotice(rec.Onboarding.Profile, rec.Onboarding.FinanceStaff), Revision: revision(rec)}
+			return nil
+		}
+		if k := rec.Confirmation; k != nil {
+			return fmt.Errorf("%w: onboarding %s was confirmed by %s and is not withdrawn; change the settings with the modules' own commands (propose a change set that restores the earlier values)",
+				org.ErrInvalidOnboarding, c.OnboardingID, k.By)
+		}
+		w := org.Withdrawal{By: c.Scope.ActorID, At: h.Clock.Now().UTC().Truncate(time.Microsecond), Reason: strings.TrimSpace(c.Reason)}
+		if w.At.Before(rec.Onboarding.ProposedAt) {
+			w.At = rec.Onboarding.ProposedAt
+		}
+		if err = h.Store.InsertWithdrawal(txCtx, c.Scope.TenantID, c.OnboardingID, c.CommandID, w); err != nil {
+			return err
+		}
+		if err = h.Outbox.EnqueueORGEvent(txCtx, org.Event{Type: eventOnboardingWithdrawn, At: w.At, TenantID: c.Scope.TenantID, SubjectID: c.OnboardingID}); err != nil {
+			return err
+		}
+		rec.Withdrawal, rec.WithdrawCommandID = &w, c.CommandID
+		out = OnboardingResult{Record: rec, Notice: org.StrictNotice(rec.Onboarding.Profile, rec.Onboarding.FinanceStaff), Revision: revision(rec)}
+		return nil
+	})
+	return out, err
+}
+
+// RecordModule records a module's change set and state for an onboarding, by the platform (the permission RecordOnboardingModule,
+// which no person holds), once for each state: PROPOSED when the consultant's change set is held for the onboarding (recorded as the
+// proposer, for an onboarding not withdrawn), APPROVED, with the settings version the module put in force, once the owner has
+// confirmed it and the module approved its change set (recorded as the confirmer). A state already recorded answers the record again.
+func (h Onboardings) RecordModule(ctx context.Context, c ModuleCommand) (OnboardingResult, error) {
+	if err := ctx.Err(); err != nil {
+		return OnboardingResult{}, err
+	}
+	if err := h.ready(c.Scope, c.CommandID); err != nil {
+		return OnboardingResult{}, err
+	}
+	if !slices.Contains(org.Modules, c.Module) || (c.State != org.ModuleProposed && c.State != org.ModuleApproved) || c.OnboardingID == "" ||
+		(c.State == org.ModuleApproved) != (c.Version >= 1) {
+		return OnboardingResult{}, fmt.Errorf("%w: a module record names its onboarding, FIN or SEA, and the state PROPOSED, or APPROVED with the settings version the module put in force (1 or more)", ErrInvalidCommand)
+	}
+	if err := h.Auth.RequirePartyAction(ctx, c.Scope, ActionRecordOnboardingModule, org.PartyID(c.OnboardingID)); err != nil {
+		return OnboardingResult{}, fmt.Errorf("%w: %v; only the platform's onboarding records a module's progress, from the module's own change set, so no person does: "+
+			"send ProposeOnboarding or ConfirmOnboarding again, which completes what is missing", ErrUnauthorized, err)
+	}
+	var out OnboardingResult
+	err := h.Tx.WithinTransaction(ctx, func(txCtx context.Context) error {
+		if err := h.Store.Lock(txCtx, c.Scope.TenantID, c.OnboardingID); err != nil {
+			return err
+		}
+		rec, found, err := h.Store.Find(txCtx, c.Scope.TenantID, c.OnboardingID)
+		switch {
+		case err != nil:
+			return err
+		case !found:
+			return fmt.Errorf("%w: onboarding %s; list the tenant's onboardings (ListOnboardings) for the ids", bentorepo.ErrNotFound, c.OnboardingID)
 		case c.ChangeID != org.ModuleChangeID(c.OnboardingID, c.Module):
 			return fmt.Errorf("%w: the change set of %s for onboarding %s is %s", org.ErrInvalidOnboarding, c.Module, c.OnboardingID, org.ModuleChangeID(c.OnboardingID, c.Module))
+		case c.State == org.ModuleProposed && c.Scope.ActorID != rec.Onboarding.ProposedBy:
+			return fmt.Errorf("%w: the change set held for onboarding %s is recorded as its proposer's, %s", org.ErrInvalidOnboarding, c.OnboardingID, rec.Onboarding.ProposedBy)
+		case c.State == org.ModuleApproved && rec.Confirmation == nil:
+			return fmt.Errorf("%w: onboarding %s is not confirmed; the owner confirms it first (ConfirmOnboarding)", org.ErrInvalidOnboarding, c.OnboardingID)
+		case c.State == org.ModuleApproved && rec.Confirmation.By != c.Scope.ActorID:
+			return fmt.Errorf("%w: the approval of a module of onboarding %s is recorded as its confirmer's, %s", org.ErrInvalidOnboarding, c.OnboardingID, rec.Confirmation.By)
 		}
 		for _, m := range rec.Modules {
 			if m.Module == c.Module && m.State == c.State {
@@ -301,8 +399,11 @@ func (h Onboardings) RecordModule(ctx context.Context, c ModuleCommand) (Onboard
 				return nil
 			}
 		}
-		m := org.ModuleState{Module: c.Module, State: c.State, ChangeID: c.ChangeID}
-		if err = h.Store.InsertModule(txCtx, c.Scope.TenantID, c.OnboardingID, *rec.Confirmation, m, h.Clock.Now().UTC().Truncate(time.Microsecond)); err != nil {
+		if rec.Withdrawal != nil {
+			return fmt.Errorf("%w: onboarding %s was withdrawn, so no module is recorded for it; have the consultant propose a new onboarding under another id", org.ErrInvalidOnboarding, c.OnboardingID)
+		}
+		m := org.ModuleState{Module: c.Module, State: c.State, ChangeID: c.ChangeID, Version: c.Version}
+		if err = h.Store.InsertModule(txCtx, c.Scope.TenantID, c.OnboardingID, c.Scope.ActorID, rec.Confirmation, m, h.Clock.Now().UTC().Truncate(time.Microsecond)); err != nil {
 			return err
 		}
 		rec.Modules = append(rec.Modules, m)

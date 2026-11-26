@@ -74,8 +74,8 @@ func TestSeaTheApprovalTriggerReadsTheLatestDeclarationAtOrBeforeTheApproval(t *
 	s.must(s.propose("L1", "dan", time.Time{}, tenantEntry("WITH_REASON")))
 	self := func(id string) string {
 		return fmt.Sprintf(`INSERT INTO cargo_sea.settings_approval (tenant_id,change_id,proposed_by,proposed_at,effective_at,loosening,approved_by,approved_at,
-          version_no,in_force_at,auto,risk_acknowledgement)
-        SELECT tenant_id,change_id,proposed_by,proposed_at,effective_at,loosening,proposed_by,now(),%s,greatest(effective_at,now()),false,'I accept' FROM cargo_sea.settings_change
+          version_no,in_force_at,auto,risk_acknowledgement,basis_onboarding_id)
+        SELECT tenant_id,change_id,proposed_by,proposed_at,effective_at,loosening,proposed_by,now(),%s,greatest(effective_at,now()),false,'I accept',(SELECT onboarding_id FROM cargo_sea.single_administrator WHERE tenant_id=$1 AND declared_at <= now() ORDER BY declared_at DESC LIMIT 1) FROM cargo_sea.settings_change
         WHERE tenant_id=$1 AND change_id='%s'`, nextVersion, id)
 	}
 	declaration := func(onboarding, administrator, at string) string {

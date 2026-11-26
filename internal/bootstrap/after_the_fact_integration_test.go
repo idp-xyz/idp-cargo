@@ -58,7 +58,7 @@ func TestTheDefaultOfOneUnrestrictedPersonIsOnTheWeeksReviewListWithEveryContext
 	// a week is reviewed once it has ended: the running week is refused, whoever asks, and nothing is marked (review it from the Monday)
 	end := weekEnd(a.EnteredAt)
 	running, err := d.fin.MarkAfterTheFactReviewed(d.ctx, finapi.MarkAfterTheFactReviewed{CommandID: "lean-review-running", TenantID: d.tenant, ActorID: "head-1", LegalEntityID: "LE",
-		Week: week, Note: "reviewed while the week runs"})
+		Week: week, Conclusion: "ACCEPTED", Note: "reviewed while the week runs"})
 	said(t, "head-1 reviewing the running week", err, "FIN_AFTER_THE_FACT_WEEK_NOT_ENDED", "wait for the Monday after it", "00:00 UTC")
 	if running != (finapi.Receipt{}) || read(week).Review.Reviewed {
 		t.Fatalf("a refused review marked the running week: %+v", read(week).Review)
@@ -77,7 +77,7 @@ func TestTheDefaultOfOneUnrestrictedPersonIsOnTheWeeksReviewListWithEveryContext
 	// the person who made it does not review it; another does, once, after the week ended, and the list is the whole week's
 	review := d.finAt(end.Add(time.Hour))
 	mark := func(id, who string) (finapi.Receipt, error) {
-		return review.MarkAfterTheFactReviewed(d.ctx, finapi.MarkAfterTheFactReviewed{CommandID: id, TenantID: d.tenant, ActorID: who, LegalEntityID: "LE", Week: week,
+		return review.MarkAfterTheFactReviewed(d.ctx, finapi.MarkAfterTheFactReviewed{CommandID: id, TenantID: d.tenant, ActorID: who, LegalEntityID: "LE", Week: week, Conclusion: "ACCEPTED",
 			Note: "the default of H03 is right: the line's whole cost stays with the cargo that remains"})
 	}
 	_, err = mark("lean-review-ops-1", "ops-1")

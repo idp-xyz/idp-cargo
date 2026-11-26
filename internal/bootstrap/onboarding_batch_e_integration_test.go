@@ -230,9 +230,7 @@ func TestTheBuildIsCheckedBeforeAnythingIsRecordedAndIsNotPermanent(t *testing.T
 	if o, _ := d.org.GetOnboarding(context.Background(), orgapi.GetOnboarding{TenantID: d.tenant, OnboardingID: "ob-1"}); o.State != "PROPOSED" || o.ConfirmedBy != "" {
 		t.Fatalf("the owner's confirmation was recorded: %+v", o)
 	}
-	if f, s := d.count(); f != 0 || s != 0 {
-		t.Fatalf("change sets of a refused confirmation: %d, %d", f, s)
-	}
+	d.heldOnly("ob-1") // the refused confirmation approved nothing
 	// SEA's catalogue is checked too: the module that is not FIN
 	seaLater, err := NewOnboarding(d.org, d.fin, otherSeaBuild{d.sea})
 	d.must("the onboarding of another SEA build", err)
@@ -382,12 +380,9 @@ func TestAnActorIdNoModuleAcceptsIsRefusedBeforeAnythingIsCalled(t *testing.T) {
 	if _, err = d.propose("ob-1", "STRICT", 3, true, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = d.propose("ob-2", "STRICT", 3, false, nil); err != nil {
-		t.Fatal(err)
-	}
 	calls.n = 0
 	for name, id := range bad {
-		c := d.confirmCommand("ob-2")
+		c := d.confirmCommand("ob-1")
 		c.ActorID = id
 		_, err := counted.ConfirmOnboarding(d.as(id, owner...), c)
 		saidKind(t, "an owner that is "+name, err, ErrInvalidActor, "ONBOARDING_INVALID_ACTOR", "the owner's actor id", "nothing is recorded")
@@ -399,15 +394,13 @@ func TestAnActorIdNoModuleAcceptsIsRefusedBeforeAnythingIsCalled(t *testing.T) {
 	if calls.n != 0 {
 		t.Fatalf("%d calls were made before the refusals", calls.n)
 	}
-	for _, id := range []string{"ob-1", "ob-2"} {
-		if o, _ := d.org.GetOnboarding(context.Background(), orgapi.GetOnboarding{TenantID: d.tenant, OnboardingID: id}); o.State != "PROPOSED" {
-			t.Fatalf("%s: a refused confirmation was recorded: %+v", id, o)
-		}
+	if o, _ := d.org.GetOnboarding(context.Background(), orgapi.GetOnboarding{TenantID: d.tenant, OnboardingID: "ob-1"}); o.State != "PROPOSED" {
+		t.Fatalf("a refused confirmation was recorded: %+v", o)
 	}
 	// an owner of exactly 128 characters is accepted, and no module fails for it
 	long := strings.Repeat("o", 128)
-	got, err := d.onboarding.ConfirmOnboarding(d.as(long, owner...), orgapi.ConfirmOnboarding{CommandID: "c-long", TenantID: d.tenant, ActorID: long, OnboardingID: "ob-2",
-		AcknowledgedText: riskStatement, PlanSHA256: d.confirmCommand("ob-2").PlanSHA256})
+	got, err := d.onboarding.ConfirmOnboarding(d.as(long, owner...), orgapi.ConfirmOnboarding{CommandID: "c-long", TenantID: d.tenant, ActorID: long, OnboardingID: "ob-1",
+		AcknowledgedText: riskStatement, PlanSHA256: d.confirmCommand("ob-1").PlanSHA256, AdministratorID: "dan"})
 	if err != nil || got.Receipt.State != "COMPLETE" {
 		t.Fatalf("an owner of 128 characters: %+v, %v", got, err)
 	}
@@ -468,36 +461,40 @@ func finEntriesOf(t *testing.T, plan orgapi.ModulePlan) []finapi.FinSettingEntry
 	return f
 }
 
-// R2-F8: the change set under the derived id is the onboarding's only when its proposer, its reason and its entries all agree
-// with the onboarding's: one that differs in exactly one of the three, and agrees in the other two, is not the onboarding's and is
-// blocked with the way out; one that agrees in all three is taken for the onboarding's, and no second change set is made.
-func TestAChangeSetUnderTheDerivedIdIsTheOnboardingsOnlyWhenProposerReasonAndEntriesAllAgree(t *testing.T) {
+// R2-F8 (batch F: the proposal holds the change sets): the change set under the derived id is the onboarding's only when its proposer, its
+// reason, its hold and its entries all agree with the onboarding's: one that differs in exactly one of the four, and agrees in the others, is
+// not the onboarding's and is blocked with the way out; one that agrees in all four is taken for the onboarding's, and no second change set is made.
+// The change set is made between ORG's record of the proposal and the platform's own proposal of it, which the same ProposeOnboarding then finds.
+func TestAChangeSetUnderTheDerivedIdIsTheOnboardingsOnlyWhenProposerReasonHoldAndEntriesAllAgree(t *testing.T) {
 	for _, c := range []struct {
 		name          string
 		by            string
 		wrongReason   bool
 		fewerEntries  bool
+		notHeld       bool
 		blocked       bool
 		sayProposedBy string
+		say           string
 	}{
-		{"the proposer differs", "bob", false, false, true, "proposed by bob"},
-		{"the reason differs", "ann", true, false, true, "proposed by ann"},
-		{"the entries differ", "ann", false, true, true, "proposed by ann"},
-		{"all three agree", "ann", false, false, false, ""},
+		{"the proposer differs", "bob", false, false, false, true, "proposed by bob", "proposed by bob, not by the consultant ann"},
+		{"the reason differs", "ann", true, false, false, true, "", "its reason is not the onboarding's"},
+		{"the entries differ", "ann", false, true, false, true, "", "its entries are not the plan's"},
+		{"it is not held for the onboarding", "ann", false, false, true, true, "", "it is not held for this onboarding"},
+		{"all four agree", "ann", false, false, false, false, "", ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			d := newSettingsDay(t, "cargo-onb-e8-")
-			if _, err := d.propose("ob-1", "LEAN", 3, false, nil); err != nil {
-				t.Fatal(err)
-			}
-			// the owner's confirmation is recorded alone (as the platform), so that the change set can be made in what the onboarding's own
-			// would say, before the platform applies the modules
-			if _, err := d.org.ConfirmOnboarding(asPlatform(d.as("olga", "org:ConfirmOnboarding")), d.confirmCommand("ob-1")); err != nil {
+			cmd := orgapi.ProposeOnboarding{CommandID: "propose-ob-1", TenantID: d.tenant, ActorID: "ann", OnboardingID: "ob-1", Profile: "LEAN", RiskStatement: riskStatement, FinanceStaff: 3}
+			profile, _ := SettingsProfile("LEAN")
+			plan, err := d.onboarding.resolve(context.Background(), profile, nil)
+			d.must("the plan", err)
+			cmd.Plan = plan
+			if _, err = d.org.ProposeOnboarding(asPlatform(d.as("ann", "org:ProposeOnboarding")), cmd); err != nil { // ORG's record alone
 				t.Fatal(err)
 			}
 			onb, err := d.org.GetOnboarding(context.Background(), orgapi.GetOnboarding{TenantID: d.tenant, OnboardingID: "ob-1"})
 			d.must("the onboarding", err)
-			reason := onboardingReason("ob-1", onb.ProposedBy, onb.ProposedAt, onb.ConfirmedBy, onb.ConfirmedAt)
+			reason := heldReason("ob-1", onb.ProposedBy, onb.ProposedAt)
 			if c.wrongReason {
 				reason = "another reason"
 			}
@@ -505,54 +502,50 @@ func TestAChangeSetUnderTheDerivedIdIsTheOnboardingsOnlyWhenProposerReasonAndEnt
 			if c.fewerEntries {
 				entries = entries[:len(entries)-1]
 			}
-			_, err = d.fin.ProposeFinSettingsChange(d.as(c.by, "fin:ConfigureSettings"), finapi.ProposeFinSettingsChange{CommandID: "someone-" + c.by, TenantID: d.tenant, ActorID: c.by,
-				ChangeID: "onb-ob-1-fin", Entries: entries, Reason: reason})
+			hold := "ob-1"
+			if c.notHeld {
+				hold = ""
+			}
+			// the change set is made as the platform's onboarding would (held), or as an ordinary change set
+			_, err = d.fin.ProposeFinSettingsChange(asPlatform(d.as(c.by, "fin:ConfigureSettings")), finapi.ProposeFinSettingsChange{CommandID: "someone-" + c.by, TenantID: d.tenant, ActorID: c.by,
+				ChangeID: "onb-ob-1-fin", Entries: entries, Reason: reason, OnboardingID: hold})
 			d.must("the change set under the derived id", err)
-			got, err := d.confirm("ob-1")
+			_, err = d.onboarding.ProposeOnboarding(d.as("ann", consultant...), orgapi.ProposeOnboarding{CommandID: "propose-ob-1", TenantID: d.tenant, ActorID: "ann", OnboardingID: "ob-1",
+				Profile: "LEAN", RiskStatement: riskStatement, FinanceStaff: 3})
 			if c.blocked {
-				saidKind(t, c.name, err, ErrOnboardingBlocked, "FIN:", "change set onb-ob-1-fin of FIN exists and is not this onboarding's", c.sayProposedBy, "propose a new onboarding under another id")
-				if len(got.Failures) != 1 || !got.Failures[0].Permanent || got.Failures[0].Module != "FIN" {
-					t.Fatalf("%s: %+v", c.name, got.Failures)
-				}
+				saidKind(t, c.name, err, ErrOnboardingBlocked, "FIN:", "change set onb-ob-1-fin of FIN exists and is not this onboarding's", c.say, "propose a new onboarding under another id")
 				return
 			}
-			if err != nil || got.Receipt.State != "COMPLETE" {
-				t.Fatalf("%s: %+v, %v", c.name, got, err)
-			}
+			d.must("the proposal that finds the onboarding's own change set", err)
 			if f, s := d.count(); f != 1 || s != 1 {
 				t.Fatalf("a second change set was made: %d, %d", f, s)
+			}
+			got, err := d.confirm("ob-1")
+			if err != nil || got.Receipt.State != "COMPLETE" {
+				t.Fatalf("%s: %+v, %v", c.name, got, err)
 			}
 		})
 	}
 }
 
-// R2-F8: the reason of a change set names the onboarding and both people and must fit the 500 characters a change set's reason has,
-// whoever the owner is (up to 128 bytes): the proposal is accepted at exactly 500 characters, and the owner of 128 bytes confirms
-// it and both modules take the reason; at 501 it is refused when proposed, with the way out.
-func TestTheReasonGuardIsAtExactly500Characters(t *testing.T) {
+// R2-F8 (batch F): the reason of a held change set names the onboarding and the consultant and the time of their proposal, and must fit the 500
+// characters a change set's reason has whoever they are (an onboarding of 100 characters, a consultant of 128 bytes); the owner's confirmation
+// adds nothing to it, since the approval is the module's own record, so the longest ids propose, and an owner of 128 bytes confirms.
+func TestTheReasonOfAHeldChangeSetFitsTheLongestIds(t *testing.T) {
 	d := newSettingsDay(t, "cargo-onb-e8b-")
-	base := len(onboardingReason("", "", time.Time{}, strings.Repeat("x", 128), time.Time{}))
-	id := strings.Repeat("o", 100)
-	actor := func(total int) string { return strings.Repeat("c", total-base-len(id)) } // the reason is base + the id + the consultant's id
-	if n := len(actor(500)); n < 1 || n > 128 {
-		t.Fatalf("the test cannot reach 500 characters with an id of 100: a consultant of %d", n)
+	id, consultantID, ownerID := strings.Repeat("o", 100), strings.Repeat("c", 128), strings.Repeat("w", 128)
+	if n := len(heldReason(id, consultantID, time.Now())); n > maxReasonOfAChangeSet || n < 300 {
+		t.Fatalf("the longest reason is %d characters, and a change set's reason is at most %d", n, maxReasonOfAChangeSet)
 	}
-	exact := actor(500)
-	propose := func(consultantID, onboardingID string) (orgapi.OnboardingReceipt, error) {
-		return d.onboarding.ProposeOnboarding(d.as(consultantID, consultant...), orgapi.ProposeOnboarding{CommandID: "p-" + consultantID[:3] + onboardingID[:3], TenantID: d.tenant, ActorID: consultantID,
-			OnboardingID: onboardingID, Profile: "STANDARD", RiskStatement: riskStatement, FinanceStaff: 3})
-	}
-	if n := len(onboardingReason(id, exact, time.Time{}, strings.Repeat("x", 128), time.Time{})); n != 500 {
-		t.Fatalf("the reason is %d characters, want 500", n)
-	}
-	r, err := propose(exact, id)
-	d.must("a reason of exactly 500 characters", err)
-	_, err = propose(actor(501), id)
-	saidKind(t, "a reason of 501 characters", err, orgapi.ErrRejected, "too long for the reason of the modules' change sets", "(501 of 500 characters)", "propose under a shorter onboarding id")
-	owner128 := strings.Repeat("o", 128)
-	got, err := d.onboarding.ConfirmOnboarding(d.as(owner128, owner...), orgapi.ConfirmOnboarding{CommandID: "c-500", TenantID: d.tenant, ActorID: owner128, OnboardingID: id,
+	r, err := d.onboarding.ProposeOnboarding(d.as(consultantID, consultant...), orgapi.ProposeOnboarding{CommandID: "p-long", TenantID: d.tenant, ActorID: consultantID,
+		OnboardingID: id, Profile: "STANDARD", RiskStatement: riskStatement, FinanceStaff: 3})
+	d.must("the longest ids", err)
+	got, err := d.onboarding.ConfirmOnboarding(d.as(ownerID, owner...), orgapi.ConfirmOnboarding{CommandID: "c-long", TenantID: d.tenant, ActorID: ownerID, OnboardingID: id,
 		AcknowledgedText: riskStatement, PlanSHA256: r.PlanSHA256})
 	if err != nil || got.Receipt.State != "COMPLETE" {
-		t.Fatalf("an owner of 128 bytes confirms a reason of exactly 500 characters: %+v, %v", got, err)
+		t.Fatalf("an owner of 128 bytes confirms: %+v, %v", got, err)
 	}
 }
+
+// maxReasonOfAChangeSet is the longest reason a change set has (settings.MaxReason).
+const maxReasonOfAChangeSet = 500

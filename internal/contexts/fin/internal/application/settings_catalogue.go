@@ -19,6 +19,7 @@ const (
 	eventSettingsCancelled = "FinSettingsChangeCancelled.v1"
 	eventSettingsRefused   = "FinSettingsChangeRefused.v1"
 	eventDeclared          = "FinSingleAdministratorDeclared.v1"
+	eventSelfReviewed      = "FinSelfApprovalReviewed.v1"
 )
 
 // Keys, and the values the rules of the cross-item check and the later steps name.
@@ -177,4 +178,9 @@ func (s *SettingsEvents) Acknowledge()         { s.events = nil }
 // SingleAdministratorDeclared is the event of a declaration, with the onboarding as its subject.
 func SingleAdministratorDeclared(tenant fin.TenantID, onboarding string, at time.Time) *SettingsEvents {
 	return &SettingsEvents{events: []fin.Event{{Type: eventDeclared, At: at.UTC(), TenantID: tenant, SubjectID: onboarding}}}
+}
+
+// SelfApprovalReviewed is the event of the review of a self-approved change set, with the change set as its subject.
+func SelfApprovalReviewed(tenant fin.TenantID, id string, at time.Time) *SettingsEvents {
+	return &SettingsEvents{events: []fin.Event{{Type: eventSelfReviewed, At: at.UTC(), TenantID: tenant, SubjectID: id}}}
 }

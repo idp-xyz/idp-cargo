@@ -93,9 +93,7 @@ func TestAModuleWhoseCatalogueChangedBeforeTheConfirmationIsRefusedWithTheWayOut
 	if o, _ := d.org.GetOnboarding(context.Background(), orgapi.GetOnboarding{TenantID: d.tenant, OnboardingID: "ob-1"}); o.State != "PROPOSED" {
 		t.Fatalf("the owner's confirmation was recorded: %+v", o)
 	}
-	if f, s := d.count(); f != 0 || s != 0 {
-		t.Fatalf("change sets: FIN %d, SEA %d", f, s)
-	}
+	d.heldOnly("ob-1") // the refused confirmation approved nothing: the change sets the consultant proposed stay held
 }
 
 // F3 and F7: the owner declares the single administrator when confirming, by naming them; the declaration must agree with
@@ -115,12 +113,14 @@ func TestOnlyTheAdministratorTheOwnerNamedApprovesTheirOwnLoosening(t *testing.T
 	if o, _ := d.org.GetOnboarding(context.Background(), orgapi.GetOnboarding{TenantID: d.tenant, OnboardingID: "ob-1"}); o.State != "PROPOSED" {
 		t.Fatalf("a refused confirmation: %+v", o)
 	}
-	if _, err := d.propose("ob-2", "STRICT", 3, false, nil); err != nil {
+	// a proposal that declares none, on another tenant (a tenant has no other onboarding while one waits)
+	d2 := newSettingsDay(t, "cargo-onb-admin2-")
+	if _, err := d2.propose("ob-2", "STRICT", 3, false, nil); err != nil {
 		t.Fatal(err)
 	}
-	c2 := d.confirmCommand("ob-2")
+	c2 := d2.confirmCommand("ob-2")
 	c2.AdministratorID = "dan"
-	_, err := d.onboarding.ConfirmOnboarding(d.as("olga", owner...), c2)
+	_, err := d2.onboarding.ConfirmOnboarding(d2.as("olga", owner...), c2)
 	saidKind(t, "one named for a proposal that declares none", err, orgapi.ErrRejected, "leave AdministratorID empty")
 	if got, err := d.confirm("ob-1"); err != nil || got.Receipt.State != "COMPLETE" || got.Onboarding.AdministratorID != "dan" {
 		t.Fatalf("the confirmation: %+v, %v", got, err)
@@ -157,50 +157,57 @@ func TestOnlyTheAdministratorTheOwnerNamedApprovesTheirOwnLoosening(t *testing.T
 	}
 }
 
-// F2: the platform acts on the consultant's proposal, and the trail says so: each module's change set is proposed in the
-// consultant's name and its reason names the onboarding, the consultant and the time of their proposal, and the owner and
-// the time of the confirmation; the confirmation's receipt says the same and that the consultant's permissions were checked
-// when they proposed.
-func TestTheTrailSaysThePlatformActsOnTheConsultantsProposal(t *testing.T) {
+// F2, answered by batch F: each module's change set is proposed by the consultant in their own name and approved by the owner in theirs,
+// so the trail is each module's own record of the two people and their times, not a platform's statement that it acted for them. The
+// change set's reason names the onboarding, the consultant and the time of their proposal; the receipts say so; and an id of 100
+// characters with a consultant of 128 bytes still fits the reason.
+func TestTheTrailNamesTheConsultantAndTheOwnerAndTheirTimes(t *testing.T) {
 	d := newSettingsDay(t, "cargo-onb-trail-")
-	if _, err := d.propose("ob-1", "STRICT", 2, false, nil); err != nil {
-		t.Fatal(err)
+	r, err := d.propose("ob-1", "STRICT", 2, false, nil)
+	d.must("the proposal", err)
+	onb := d.org0("ob-1")
+	proposed := onb.ProposedAt.UTC().Format(time.RFC3339)
+	for _, want := range []string{"proposed FIN's and SEA's change sets in ann's own name", "held for the onboarding", "not approved until the customer's owner confirms it", "at least 3 finance staff"} {
+		if !strings.Contains(r.Notice, want) {
+			t.Errorf("the proposal's notice %q does not say %q", r.Notice, want)
+		}
 	}
-	got, err := d.confirm("ob-1")
-	d.must("the confirmation", err)
-	o := got.Onboarding
-	proposed, confirmed := o.ProposedAt.UTC().Format(time.RFC3339), o.ConfirmedAt.UTC().Format(time.RFC3339)
 	c, ok := d.finChange("onb-ob-1-fin")
-	if !ok || c.ProposedBy != "ann" {
+	if !ok || c.ProposedBy != "ann" || !c.ProposedAt.Before(time.Now().Add(time.Minute)) {
 		t.Fatalf("FIN's change set: %+v", c)
 	}
 	list, err := d.sea.ListSeaSettingsChanges(context.Background(), seaapi.ListSeaSettingsChanges{TenantID: d.tenant})
 	d.must("SEA's change sets", err)
 	for name, reason := range map[string]string{"FIN": c.Reason, "SEA": list[0].Reason} {
-		for _, want := range []string{"onboarding ob-1", "proposed by ann at " + proposed, "confirmed by olga at " + confirmed, "the platform applies the proposal",
-			"the consultant's permissions checked when they proposed"} {
+		for _, want := range []string{"onboarding ob-1", "proposed by ann at " + proposed, "held until the customer's owner confirms the onboarding, which approves it"} {
 			if !strings.Contains(reason, want) {
 				t.Errorf("%s's reason %q does not say %q", name, reason, want)
 			}
 		}
 	}
-	for _, want := range []string{"the platform applies the proposal of ann made at " + proposed, "as confirmed by olga at " + confirmed, "permissions were checked when they proposed, not at the confirmation",
+	got, err := d.confirm("ob-1")
+	d.must("the confirmation", err)
+	o := got.Onboarding
+	confirmed := o.ConfirmedAt.UTC().Format(time.RFC3339)
+	for _, want := range []string{"the platform approves the change sets that ann proposed at " + proposed, "in olga's own name, at the confirmation at " + confirmed, "each module's approval says its version",
 		"at least 3 finance staff"} {
 		if !strings.Contains(got.Receipt.Notice, want) {
-			t.Errorf("the receipt's notice %q does not say %q", got.Receipt.Notice, want)
+			t.Errorf("the confirmation's notice %q does not say %q", got.Receipt.Notice, want)
 		}
 	}
-	// the reason fits a change set's 500 characters whoever the owner is (up to 128 bytes): an id of 100 characters with a short
-	// consultant does, and an id of 100 characters with a consultant of 128 does not, which is refused when proposed
-	long := strings.Repeat("o", 100)
-	if _, err = d.onboarding.ProposeOnboarding(d.as("ann", consultant...), orgapi.ProposeOnboarding{CommandID: "p-long", TenantID: d.tenant, ActorID: "ann", OnboardingID: long, Profile: "STANDARD",
-		RiskStatement: riskStatement, FinanceStaff: 3}); err != nil {
-		t.Fatalf("an onboarding id of 100 characters and a short consultant: %v", err)
+	// the approval is the module's own record: who, when, and the version it made, which ORG's record repeats
+	c, _ = d.finChange("onb-ob-1-fin")
+	if c.ApprovedBy != "olga" || c.AutoApproved || c.Version != 1 || c.ApprovedAt.Before(c.ProposedAt) || o.Modules[0].Version != 1 || o.Modules[1].Version != 1 {
+		t.Fatalf("FIN's change set after the confirmation: %+v, the record %+v", c, o.Modules)
 	}
-	wordy := strings.Repeat("c", 128)
-	_, err = d.onboarding.ProposeOnboarding(d.as(wordy, consultant...), orgapi.ProposeOnboarding{CommandID: "p-long-2", TenantID: d.tenant, ActorID: wordy, OnboardingID: long, Profile: "STANDARD",
-		RiskStatement: riskStatement, FinanceStaff: 3})
-	saidKind(t, "an id and a consultant too long for the reason", err, orgapi.ErrRejected, "too long for the reason of the modules' change sets", "propose under a shorter onboarding id")
+	// the reason fits a change set's 500 characters (see TestTheReasonOfAHeldChangeSetFitsTheLongestIds): an id of 100 characters is accepted
+	// by a consultant of 128 bytes too, on a tenant of its own
+	d2 := newSettingsDay(t, "cargo-onb-trail-long-")
+	long, wordy := strings.Repeat("o", 100), strings.Repeat("c", 128)
+	if _, err = d2.onboarding.ProposeOnboarding(d2.as(wordy, consultant...), orgapi.ProposeOnboarding{CommandID: "p-long-2", TenantID: d2.tenant, ActorID: wordy, OnboardingID: long, Profile: "STANDARD",
+		RiskStatement: riskStatement, FinanceStaff: 3}); err != nil {
+		t.Fatalf("an id of 100 characters and a consultant of 128 bytes: %v", err)
+	}
 }
 
 // failingRecords makes ORG's record of a module's APPROVED fail, as a crash between the module's approval and ORG's record.
@@ -217,58 +224,61 @@ func (f *failingRecords) RecordOnboardingModule(ctx context.Context, cmd orgapi.
 	return f.ORGOnboarding.RecordOnboardingModule(ctx, cmd)
 }
 
-// F1: only the platform records a module's progress, and it trusts the module and not ORG's record. The owner calling
-// RecordOnboardingModule is refused (the review's probe B), also with the permission's name in the token (the platform's
-// mark is not in a token); a crash between a module's approval and ORG's record is completed by a retry without a second
-// change set; and a record that says APPROVED while the module made nothing (written by a loose ORG) is not believed.
+// F1: only the platform records a module's progress, and it trusts the module and not ORG's record. The owner or the consultant calling
+// RecordOnboardingModule is refused (the review's probe B), also with the permission's name in the token (the platform's mark is not in
+// a token); a crash between a module's approval and ORG's record is completed by a retry without a second change set; and a record that
+// says APPROVED while the module approved nothing (written by a loose ORG) is not believed.
 func TestOnlyThePlatformRecordsAModulesProgressAndItTrustsTheModule(t *testing.T) {
 	d := newSettingsDay(t, "cargo-onb-record-")
 	if _, err := d.propose("ob-1", "STRICT", 3, false, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.org.ConfirmOnboarding(asPlatform(d.as("olga", "org:ConfirmOnboarding")), d.confirmCommand("ob-1")); err != nil {
+	if _, err := d.org.ConfirmOnboarding(asPlatform(d.as("olga", "org:ConfirmOnboarding")), d.confirmCommand("ob-1")); err != nil { // ORG's record alone
 		t.Fatal(err)
 	}
-	record := func(ctx context.Context, m, state string) error {
-		_, err := d.org.RecordOnboardingModule(ctx, orgapi.RecordOnboardingModule{CommandID: d.command(), TenantID: d.tenant, ActorID: "olga", OnboardingID: "ob-1", Module: m,
-			ChangeID: "onb-ob-1-" + strings.ToLower(m), State: state})
+	record := func(ctx context.Context, actor, m, state string, version int) error {
+		_, err := d.org.RecordOnboardingModule(ctx, orgapi.RecordOnboardingModule{CommandID: d.command(), TenantID: d.tenant, ActorID: actor, OnboardingID: "ob-1", Module: m,
+			ChangeID: "onb-ob-1-" + strings.ToLower(m), State: state, Version: version})
 		return err
 	}
-	for name, perms := range map[string][]string{"the owner's names": owner, "the wildcards": {"*", "org:*", "fin:*", "sea:*"}, "the permission's name in a token": {"org:RecordOnboardingModule"},
-		"every name in a token": append(append([]string{"org:RecordOnboardingModule"}, owner...), consultant...)} {
+	for name, perms := range map[string][]string{"the owner's names": owner, "the consultant's names": consultant, "the wildcards": {"*", "org:*", "fin:*", "sea:*"},
+		"the permission's name in a token": {"org:RecordOnboardingModule"}, "every name in a token": append(append([]string{"org:RecordOnboardingModule"}, owner...), consultant...)} {
 		for _, m := range []string{"FIN", "SEA"} {
-			err := record(d.as("olga", perms...), m, "PROPOSED")
-			saidKind(t, name+", "+m, err, orgapi.ErrUnauthorized, "no person holds", "send ConfirmOnboarding again")
+			err := record(d.as("olga", perms...), "olga", m, "APPROVED", 1)
+			saidKind(t, name+", "+m, err, orgapi.ErrUnauthorized, "no person holds", "send ProposeOnboarding or ConfirmOnboarding again")
+			err = record(d.as("ann", perms...), "ann", m, "PROPOSED", 0)
+			saidKind(t, name+", "+m+", as the consultant", err, orgapi.ErrUnauthorized, "no person holds")
 		}
 	}
-	if o, _ := d.org.GetOnboarding(context.Background(), orgapi.GetOnboarding{TenantID: d.tenant, OnboardingID: "ob-1"}); o.Modules[0].State != "NOT_STARTED" || o.Modules[1].State != "NOT_STARTED" {
+	if o := d.org0("ob-1"); o.Modules[0].State != "PROPOSED" || o.Modules[1].State != "PROPOSED" || o.Modules[0].Version != 0 {
 		t.Fatalf("a refused record wrote: %+v", o.Modules)
 	}
-	// a loose ORG, which any caller may record in, says both modules are APPROVED while neither made a change set: the platform does not believe it
+	// a loose ORG, which any caller may record in, says both modules are APPROVED with a version of 7 while neither approved a change set: the platform does not believe it
 	loose, err := d.platform.ORG(allowAll{})
 	d.must("a loose ORG", err)
 	for _, m := range []string{"FIN", "SEA"} {
-		for _, state := range []string{"PROPOSED", "APPROVED"} {
-			_, err = loose.RecordOnboardingModule(context.Background(), orgapi.RecordOnboardingModule{CommandID: "loose-" + m + state, TenantID: d.tenant, ActorID: "olga", OnboardingID: "ob-1",
-				Module: m, ChangeID: "onb-ob-1-" + strings.ToLower(m), State: state})
-			d.must("the loose record", err)
-		}
+		_, err = loose.RecordOnboardingModule(context.Background(), orgapi.RecordOnboardingModule{CommandID: "loose-" + m, TenantID: d.tenant, ActorID: "olga", OnboardingID: "ob-1",
+			Module: m, ChangeID: "onb-ob-1-" + strings.ToLower(m), State: "APPROVED", Version: 7})
+		d.must("the loose record", err)
 	}
-	if f, s := d.count(); f != 0 || s != 0 {
-		t.Fatalf("change sets before the platform: %d, %d", f, s)
+	if c, _ := d.finChange("onb-ob-1-fin"); c.Status != finapi.SettingsProposed {
+		t.Fatalf("a record changed the module's change set: %+v", c)
 	}
 	got, err := d.confirm("ob-1")
 	if err != nil || got.Receipt.State != "COMPLETE" {
 		t.Fatalf("the platform's confirmation: %+v, %v", got, err)
 	}
 	if f, s := d.count(); f != 1 || s != 1 {
-		t.Fatalf("the platform believed ORG's record: %d, %d change sets, want 1 and 1", f, s)
+		t.Fatalf("the platform made a second change set: %d, %d change sets, want 1 and 1", f, s)
+	}
+	if c, _ := d.finChange("onb-ob-1-fin"); c.Status != finapi.SettingsInForce || c.ApprovedBy != "olga" {
+		t.Fatalf("the platform believed ORG's record and did not approve the module's change set: %+v", c)
 	}
 	if f := d.finValues("TENANT", ""); f["fin.F7"] != "BLOCKS" {
 		t.Fatalf("STRICT is not in force: %+v", f)
 	}
 
-	// a crash between the module's approval and ORG's record: the retry writes the record and makes no second change set
+	// a crash between the module's approval and ORG's record: the retry writes the record, with the version the module made, and makes no second change set
 	if _, err = d.propose("ob-2", "LEAN", 3, false, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -283,6 +293,9 @@ func TestOnlyThePlatformRecordsAModulesProgressAndItTrustsTheModule(t *testing.T
 	if got, err = onboarding.ConfirmOnboarding(d.as("olga", owner...), d.confirmCommand("ob-2")); err != nil || got.Receipt.State != "COMPLETE" || got.Onboarding.Modules[0].State != "APPROVED" {
 		t.Fatalf("the retry: %+v, %v", got, err)
 	}
+	if c, _ := d.finChange("onb-ob-2-fin"); got.Onboarding.Modules[0].Version != c.Version || c.Version != 2 {
+		t.Fatalf("ORG's record says version %d, FIN's change set made %d", got.Onboarding.Modules[0].Version, c.Version)
+	}
 	if f, s := d.count(); f != 2 || s != 2 {
 		t.Fatalf("change sets after the retry: %d, %d, want 2 and 2", f, s)
 	}
@@ -292,6 +305,14 @@ func TestOnlyThePlatformRecordsAModulesProgressAndItTrustsTheModule(t *testing.T
 // another id: the derived change set id or command id taken by another change (the review's probe D), the change set
 // refused or cancelled (probe E). A cause a retry can cure keeps "send the same ConfirmOnboarding again".
 func TestAFailureARetryCannotCureSaysSoWithTheWayOut(t *testing.T) {
+	// at the proposal, the consultant's own command answers: nothing but the error
+	cannotPropose := func(t *testing.T, what string, err error, contains ...string) {
+		t.Helper()
+		saidKind(t, what, err, ErrOnboardingBlocked, append(contains, "FIN:", "sending the same ProposeOnboarding again cannot cure FIN: propose a new onboarding under another id")...)
+		if errors.Is(err, ErrOnboardingIncomplete) || strings.Contains(err.Error(), "send the same ProposeOnboarding again, which completes") {
+			t.Fatalf("%s: the answer says to retry what a retry cannot cure: %v", what, err)
+		}
+	}
 	cannot := func(t *testing.T, what string, err error, got OnboardingConfirmation, contains ...string) {
 		t.Helper()
 		saidKind(t, what, err, ErrOnboardingBlocked, append(contains, "FIN:", "cannot cure FIN: propose a new onboarding under another id")...)
@@ -309,29 +330,26 @@ func TestAFailureARetryCannotCureSaysSoWithTheWayOut(t *testing.T) {
 	}
 	t.Run("the change set id taken by another configurer", func(t *testing.T) {
 		d := newSettingsDay(t, "cargo-onb-d1-")
-		if _, err := d.propose("ob-1", "LEAN", 3, false, nil); err != nil {
-			t.Fatal(err)
-		}
 		d.must("bob takes the id with the derived command id", bob(d, "onb-ob-1-fin-propose", "onb-ob-1-fin"))
 		for i := 0; i < 2; i++ { // and again: a retry changes nothing
-			got, err := d.confirm("ob-1")
-			cannot(t, "the id taken", err, got, "is not this onboarding's", "proposed by bob")
+			_, err := d.propose("ob-1", "LEAN", 3, false, nil)
+			cannotPropose(t, "the id taken", err, "is not this onboarding's", "proposed by bob")
 		}
-		if c, _ := d.finChange("onb-ob-1-fin"); c.Status != finapi.SettingsProposed || c.ProposedBy != "bob" || c.ApprovedBy != "" {
-			t.Fatalf("bob's change set was approved as the onboarding's: %+v", c)
+		if c, _ := d.finChange("onb-ob-1-fin"); c.Status != finapi.SettingsProposed || c.ProposedBy != "bob" || c.ApprovedBy != "" || c.HeldForOnboarding != "" {
+			t.Fatalf("bob's change set was taken for the onboarding's: %+v", c)
 		}
-		if v, _ := d.seaValue("TENANT", ""); v != "WITH_REASON" {
-			t.Fatalf("SEA goes on: %s", v)
+		if _, ok := d.finChange("onb-ob-1-sea"); ok {
+			t.Log("SEA goes on") // each module is its own
 		}
+		// the owner is not asked to confirm a change set that is not the onboarding's
+		_, err := d.confirm("ob-1")
+		saidKind(t, "the confirmation", err, ErrOnboardingHeld, "is not the onboarding's", "nothing is recorded", "WithdrawOnboarding")
 	})
 	t.Run("the derived command id taken by another change", func(t *testing.T) {
 		d := newSettingsDay(t, "cargo-onb-d2-")
-		if _, err := d.propose("ob-1", "LEAN", 3, false, nil); err != nil {
-			t.Fatal(err)
-		}
 		d.must("bob uses the derived command id for his own change set", bob(d, "onb-ob-1-fin-propose", "bob-own"))
-		got, err := d.confirm("ob-1")
-		cannot(t, "the command id taken", err, got, "a command id the onboarding derived for FIN is taken by another command")
+		_, err := d.propose("ob-1", "LEAN", 3, false, nil)
+		cannotPropose(t, "the command id taken", err, "a command id the onboarding derived for FIN is taken by another command")
 		if _, ok := d.finChange("onb-ob-1-fin"); ok {
 			t.Fatal("FIN made the onboarding's change set")
 		}

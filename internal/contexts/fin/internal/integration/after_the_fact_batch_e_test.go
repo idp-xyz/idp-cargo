@@ -10,6 +10,7 @@ import (
 	"time"
 
 	bentopg "go.idp.xyz/idp-bento-go/postgres"
+	"go.idp.xyz/idp-cargo/internal/contexts/fin/internal/domain"
 )
 
 // V2.102 batch E (R2-F10): a command stamped inside a week can commit after the week's review, so that its line is listed and was
@@ -91,11 +92,18 @@ func TestAWeekWhoseListChangedIsReviewedAgain(t *testing.T) {
 // What the database keeps of the numbering: a review is numbered the next after the latest of its legal entity and week, from 1
 // without a gap, and is refused when its size and digest are those of the latest review; each week is numbered on its own.
 func TestTheDatabaseNumbersTheReviewsOfAWeekAndRefusesTheListAlreadyReviewed(t *testing.T) {
-	u, _, _ := afterWorld(t, 1)
+	u, w, start := afterWorld(t, 1)
+	u.atTime("one", 1, start.Add(time.Hour)) // the one listed line of the world's week, which a review of size 1 covers (batch F: a review has as many lines as its size says)
 	hexA, hexB := strings.Repeat("a", 64), strings.Repeat("b", 64)
 	insert := func(week, startAt string, no, size int, digest string) string {
-		return fmt.Sprintf(`INSERT INTO cargo_fin.after_the_fact_review (tenant_id,legal_entity_id,week,review_no,week_start,reviewed_by,note,list_size,list_digest,reviewed_at)
-            VALUES ($1,'LE','%s',%d,'%s+00','head-1','a note',%d,'%s','2099-01-01 00:00:00+00')`, week, no, startAt, size, digest)
+		sql := fmt.Sprintf(`INSERT INTO cargo_fin.after_the_fact_review (tenant_id,legal_entity_id,week,review_no,week_start,reviewed_by,conclusion,note,list_size,list_digest,reviewed_at)
+            VALUES ($1,'LE','%s',%d,'%s+00','head-1','ACCEPTED','a note',%d,'%s','2099-01-01 00:00:00+00')`, week, no, startAt, size, digest)
+		if size == 1 {
+			sql += fmt.Sprintf(";\n"+`INSERT INTO cargo_fin.after_the_fact_review_line (tenant_id,legal_entity_id,week,review_no,week_start,pool_id,apportionment_no,line_no,shipment_id)
+            SELECT $1,'LE','%s',%d,'%s+00',pool_id,apportionment_no,line_no,shipment_id FROM cargo_fin.pool_apportionment_attribution WHERE tenant_id=$1
+              AND NOT carried ORDER BY pool_id,apportionment_no,line_no,shipment_id LIMIT 1`, week, no, startAt)
+		}
+		return sql
 	}
 	refused := func(name, sql, constraint string) {
 		t.Helper()
@@ -104,27 +112,27 @@ func TestTheDatabaseNumbersTheReviewsOfAWeekAndRefusesTheListAlreadyReviewed(t *
 			t.Errorf("%s: %v (state %s, constraint %s), want 23514 %s", name, err, state, got, constraint)
 		}
 	}
-	const w, monday, w2, monday2 = "2026-W48", "2026-11-23 00:00:00", "2026-W49", "2026-11-30 00:00:00"
+	monday, w2, monday2 := start.UTC().Format("2006-01-02 15:04:05"), domain.WeekOf(start.AddDate(0, 0, 7)), start.AddDate(0, 0, 7).UTC().Format("2006-01-02 15:04:05")
 	refused("a first review numbered 2", insert(w, monday, 2, 1, hexA), "after_the_fact_review_numbered")
 	refused("a first review numbered 0", insert(w, monday, 0, 1, hexA), "after_the_fact_review_numbered")
 	if err := u.rawRun(insert(w, monday, 1, 1, hexA)); err != nil {
 		t.Fatal(err)
 	}
-	refused("a review numbered 3 after 1", insert(w, monday, 3, 2, hexB), "after_the_fact_review_numbered")
-	refused("review 1 again", insert(w, monday, 1, 2, hexB), "after_the_fact_review_numbered")
+	refused("a review numbered 3 after 1", insert(w, monday, 3, 0, hexB), "after_the_fact_review_numbered")
+	refused("review 1 again", insert(w, monday, 1, 0, hexB), "after_the_fact_review_numbered")
 	refused("the list already reviewed", insert(w, monday, 2, 1, hexA), "after_the_fact_review_list_changed")
 	if err := u.rawRun(insert(w, monday, 2, 1, hexB)); err != nil { // the same size and another digest: the list changed
 		t.Fatalf("a changed digest: %v", err)
 	}
-	if err := u.rawRun(insert(w, monday, 3, 2, hexB)); err != nil { // another size, the same digest as review 2
+	if err := u.rawRun(insert(w, monday, 3, 0, hexB)); err != nil { // another size, the same digest as review 2
 		t.Fatalf("a changed size: %v", err)
 	}
-	refused("the list of review 3 again", insert(w, monday, 4, 2, hexB), "after_the_fact_review_list_changed")
+	refused("the list of review 3 again", insert(w, monday, 4, 0, hexB), "after_the_fact_review_list_changed")
 	if err := u.rawRun(insert(w, monday, 4, 1, hexA)); err != nil { // the list of review 1 is not the latest review's: it is a change
 		t.Fatalf("a list that is not the latest review's: %v", err)
 	}
 	// another week is numbered on its own
-	if err := u.rawRun(insert(w2, monday2, 1, 1, hexA)); err != nil {
+	if err := u.rawRun(insert(w2, monday2, 1, 0, hexA)); err != nil {
 		t.Fatalf("the first review of another week: %v", err)
 	}
 }

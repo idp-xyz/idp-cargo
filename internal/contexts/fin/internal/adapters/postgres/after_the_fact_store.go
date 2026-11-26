@@ -78,9 +78,9 @@ func (s AfterTheFactStore) Find(ctx context.Context, tenant fin.TenantID, legalE
 		return nil, false, err
 	}
 	st := fin.AfterTheFactReviewState{TenantID: tenant, LegalEntityID: legalEntity, Week: week}
-	err = q.QueryRow(ctx, `SELECT review_no, week_start, reviewed_by, note, list_size, list_digest, reviewed_at FROM cargo_fin.after_the_fact_review
+	err = q.QueryRow(ctx, `SELECT review_no, week_start, reviewed_by, conclusion, coalesce(note,''), list_size, list_digest, reviewed_at FROM cargo_fin.after_the_fact_review
       WHERE tenant_id = $1 AND legal_entity_id = $2 AND week = $3 ORDER BY review_no DESC LIMIT 1`, string(tenant), legalEntity, week).
-		Scan(&st.ReviewNo, &st.WeekStart, &st.ReviewedBy, &st.Note, &st.ListSize, &st.ListDigest, &st.ReviewedAt)
+		Scan(&st.ReviewNo, &st.WeekStart, &st.ReviewedBy, &st.Conclusion, &st.Note, &st.ListSize, &st.ListDigest, &st.ReviewedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, false, nil
 	}
@@ -94,7 +94,54 @@ func (s AfterTheFactStore) Insert(ctx context.Context, r *fin.AfterTheFactReview
 		return err
 	}
 	st := r.State()
-	_, err = q.Exec(ctx, `INSERT INTO cargo_fin.after_the_fact_review (tenant_id,legal_entity_id,week,review_no,week_start,reviewed_by,note,list_size,list_digest,reviewed_at)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, string(st.TenantID), st.LegalEntityID, st.Week, st.ReviewNo, st.WeekStart, st.ReviewedBy, st.Note, st.ListSize, st.ListDigest, st.ReviewedAt)
+	var note *string
+	if st.Note != "" {
+		note = &st.Note
+	}
+	if _, err = q.Exec(ctx, `INSERT INTO cargo_fin.after_the_fact_review (tenant_id,legal_entity_id,week,review_no,week_start,reviewed_by,conclusion,note,list_size,list_digest,reviewed_at)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, string(st.TenantID), st.LegalEntityID, st.Week, st.ReviewNo, st.WeekStart, st.ReviewedBy, st.Conclusion, note, st.ListSize, st.ListDigest,
+		st.ReviewedAt); err != nil {
+		return err
+	}
+	lines := r.Lines()
+	if len(lines) == 0 {
+		return nil
+	}
+	pools, apportionments, lineNos, shipments := make([]string, len(lines)), make([]int32, len(lines)), make([]int32, len(lines)), make([]string, len(lines))
+	for i, l := range lines {
+		pools[i], apportionments[i], lineNos[i], shipments[i] = l.PoolID, int32(l.ApportionmentNo), int32(l.LineNo), l.ShipmentID
+	}
+	_, err = q.Exec(ctx, `INSERT INTO cargo_fin.after_the_fact_review_line (tenant_id,legal_entity_id,week,review_no,week_start,pool_id,apportionment_no,line_no,shipment_id)
+      SELECT $1,$2,$3,$4,$5,l.pool_id,l.apportionment_no,l.line_no,l.shipment_id FROM unnest($6::text[],$7::int[],$8::int[],$9::text[]) AS l(pool_id,apportionment_no,line_no,shipment_id)`,
+		string(st.TenantID), st.LegalEntityID, st.Week, st.ReviewNo, st.WeekStart, pools, apportionments, lineNos, shipments)
 	return err
+}
+
+// Covers answers, for each line that a review of the week covers, the latest review that does.
+func (s AfterTheFactStore) Covers(ctx context.Context, tenant fin.TenantID, legalEntity, week string) (map[fin.ReviewKey]fin.ReviewCover, error) {
+	q, err := s.DB.ReadExecutor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := q.Query(ctx, `SELECT DISTINCT ON (l.pool_id, l.apportionment_no, l.line_no, l.shipment_id) l.pool_id, l.apportionment_no, l.line_no, l.shipment_id,
+        r.review_no, r.reviewed_by, r.conclusion, r.reviewed_at
+      FROM cargo_fin.after_the_fact_review_line l
+      JOIN cargo_fin.after_the_fact_review r ON r.tenant_id = l.tenant_id AND r.legal_entity_id = l.legal_entity_id AND r.week = l.week AND r.review_no = l.review_no
+      WHERE l.tenant_id = $1 AND l.legal_entity_id = $2 AND l.week = $3
+      ORDER BY l.pool_id, l.apportionment_no, l.line_no, l.shipment_id, r.review_no DESC`, string(tenant), legalEntity, week)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[fin.ReviewKey]fin.ReviewCover{}
+	for rows.Next() {
+		var k fin.ReviewKey
+		var c fin.ReviewCover
+		if err = rows.Scan(&k.PoolID, &k.ApportionmentNo, &k.LineNo, &k.ShipmentID, &c.ReviewNo, &c.ReviewedBy, &c.Conclusion, &c.ReviewedAt); err != nil {
+			return nil, err
+		}
+		c.ReviewedAt = utc(c.ReviewedAt)
+		out[k] = c
+	}
+	return out, rows.Err()
 }
