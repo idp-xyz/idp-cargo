@@ -523,6 +523,13 @@ type OpenConsolCostPool struct {
 // code, the supplier's reference (the MAWB, the co-loader or CFS booking; optional), the line's default apportionment
 // method, and the amount, converted at the ESTIMATE rate (FIN_RATE_MISSING). Cost.PartyID names the creditor (CARRIER,
 // CO_LOADER or OVERSEAS_AGENT for the pool's legal entity), or stays empty while not known.
+//
+// Since V2.104 LoadUnitNo names one container of the consolidation (1 to 999; 0, the default, is the whole
+// consolidation) in a sea LCL pool: the line is divided only over the houses loaded in that container, by what each has
+// in it, once the container is sealed (FIN_POOL_NO_BASIS before), and not by CONTAINER_COUNT or TEU (FIN_INVALID).
+// Finance may leave houses of the container out (NotUsed); no house outside it takes part. A house that changes
+// container after an apportionment follows its cargo at the next one, and finance may instead attribute its former
+// share (its own loss, or the consolidation's exception cost, with a voucher), as for a house that left.
 type RecordConsolCost struct {
 	CommandID        string
 	TenantID         string
@@ -536,6 +543,7 @@ type RecordConsolCost struct {
 	Cost             ChargeSide
 	Reason           string
 	OccurredAt       time.Time
+	LoadUnitNo       int `json:",omitempty"` // left out of the request hash when 0, so earlier commands hash as they did
 }
 
 // ReviseConsolCost writes the next version of a pool cost line with a reason; the line keeps its creditor unless
@@ -551,6 +559,10 @@ type ReviseConsolCost struct {
 	Value            ChargeSide
 	Reason           string
 	OccurredAt       time.Time
+	// MoveToLoadUnit moves the line, from this version on, to LoadUnitNo (since V2.104; 0 is the whole consolidation);
+	// without it the line keeps its container. Both are left out of the request hash when unset.
+	MoveToLoadUnit bool `json:",omitempty"`
+	LoadUnitNo     int  `json:",omitempty"`
 }
 
 // ManualShare is a hand-given share of one house shipment, in the line's currency.

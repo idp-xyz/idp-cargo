@@ -247,10 +247,18 @@ type PoolCostVersion struct {
 	By               string
 	At               time.Time
 	EnteredAt        time.Time
+	// LoadUnitNo is the container of the consolidation this version of the line belongs to (since V2.104), 0 for the whole
+	// consolidation: a line of one container is divided over the houses loaded in it, by what each has in it. A version
+	// carries it so that moving a line to another container is a revision with a reason, and supersedes its previews.
+	LoadUnitNo int
 }
 
-// PoolCostLine is one cost of the whole consolidation: a charge code, the supplier's reference (the MAWB, the
-// co-loader or CFS booking) and its versions; Method is its default apportionment method.
+// MaxLoadUnitNo is the highest container number a cost line may name.
+const MaxLoadUnitNo = 999
+
+// PoolCostLine is one cost of the whole consolidation, or of one of its containers (since V2.104, the latest version's
+// LoadUnitNo): a charge code, the supplier's reference (the MAWB, the co-loader or CFS booking) and its versions;
+// Method is its default apportionment method.
 type PoolCostLine struct {
 	No          int
 	ChargeCode  string
@@ -266,6 +274,14 @@ type PoolCostLine struct {
 	Versions    []PoolCostVersion
 }
 
+// LoadUnitNo is the container the line belongs to now (its latest version's), 0 for the whole consolidation.
+func (l PoolCostLine) LoadUnitNo() int {
+	if len(l.Versions) == 0 {
+		return 0
+	}
+	return l.Versions[len(l.Versions)-1].LoadUnitNo
+}
+
 // Share is one house job's share of a pool cost line under an apportionment: the basis quantity it was weighted by
 // and the share in the line currency and in the functional currency (each conserved by largest remainder). A house
 // that took no part in the apportionment (Used false) keeps a share of quantity 0, no unit and amounts 0.
@@ -278,6 +294,30 @@ type Share struct {
 	Unit       string
 	Amount     int64
 	Local      int64
+	// InUnit is set on a line of one container (since V2.104): whether the house had packs loaded in that container at
+	// the basis the apportionment read. A house in it takes part unless finance left it out; a house not in it takes no
+	// part. So a house that changed container shows on the line's shares: in the container at one apportionment, not at
+	// the next.
+	InUnit *bool
+	// LeftTo records a house that changed container (since V2.104): on a line of one container, a house that was in the
+	// container under the line's apportionment in force (whether it took part or finance left it out) and is not in it
+	// now has the containers it is loaded in now. Nil for every other share. (A pointer keeps a Share comparable.)
+	LeftTo *UnitMove
+}
+
+// UnitMove is where a house that left a line's container is loaded now: its containers, in unit order, empty when none.
+type UnitMove struct{ To []int }
+
+// unitsOf is the containers a house has packs loaded in, in unit order (empty, not nil, when none).
+func unitsOf(h HouseFacts) []int {
+	out := []int{}
+	for _, u := range h.Units {
+		if u.LoadedPacks > 0 {
+			out = append(out, u.UnitNo)
+		}
+	}
+	slices.Sort(out)
+	return out
 }
 
 // LineApportionment is one line's shares under an apportionment, at the line version it divided: the line's cost then
@@ -478,6 +518,32 @@ func (p *ConsolCostPool) costVersion(no int, in SideInput, reason string, conv C
 // comes later); the creditor may not be known yet. Method is the line's default apportionment method.
 func (p *ConsolCostPool) RecordCost(code, description, supplierRef, method string, in SideInput, reason string, conv Converter, by string,
 	at time.Time) error {
+	return p.RecordCostInUnit(code, description, supplierRef, method, 0, in, reason, conv, by, at)
+}
+
+// unitRefusal refuses a container number a line of this pool cannot carry with this method (since V2.104): the
+// container of a sea LCL consolidation in the forwarder's own containers, numbered from 1, and not divided by
+// CONTAINER_COUNT or TEU, which within one container give every house the same share.
+func (p *ConsolCostPool) unitRefusal(unitNo int, method string) error {
+	switch {
+	case unitNo == 0:
+		return nil
+	case unitNo < 0 || unitNo > MaxLoadUnitNo:
+		return fmt.Errorf("%w: a cost line belongs to the whole consolidation (0) or to one of its containers, numbered 1 to %d", ErrInvalid, MaxLoadUnitNo)
+	case p.state.Mode != PoolModeSeaLCL:
+		return fmt.Errorf("%w: a cost line belongs to one container only in a sea LCL consolidation in the forwarder's own containers; record it for the whole consolidation (container 0)",
+			ErrInvalid)
+	case method == MethodContainerCount || method == MethodTEU:
+		return fmt.Errorf("%w: a cost line of container %d is not divided by %s, which within one container gives every house the same share; divide it by SHIPMENT for equal shares, or by CHARGEABLE, GROSS_WEIGHT, VOLUME or PIECES",
+			ErrInvalid, unitNo, method)
+	}
+	return nil
+}
+
+// RecordCostInUnit is RecordCost for a line of one container of the consolidation (since V2.104; 0 is the whole
+// consolidation). Only the houses loaded in that container take part in its apportionments.
+func (p *ConsolCostPool) RecordCostInUnit(code, description, supplierRef, method string, unitNo int, in SideInput, reason string, conv Converter,
+	by string, at time.Time) error {
 	if err := p.open(by, at); err != nil {
 		return err
 	}
@@ -487,10 +553,14 @@ func (p *ConsolCostPool) RecordCost(code, description, supplierRef, method strin
 	case !validLineMethod(method):
 		return fmt.Errorf("%w: apportionment method %q", ErrInvalid, method)
 	}
+	if err := p.unitRefusal(unitNo, method); err != nil {
+		return err
+	}
 	v, err := p.costVersion(1, in, "", conv, by, at)
 	if err != nil {
 		return err
 	}
+	v.LoadUnitNo = unitNo
 	line := PoolCostLine{No: len(p.state.Lines) + 1, ChargeCode: code, Description: description, SupplierRef: supplierRef, Method: method,
 		By: by, At: at.UTC(), Versions: []PoolCostVersion{v}}
 	p.state.Lines = append(p.state.Lines, line)
@@ -536,7 +606,19 @@ func (p *ConsolCostPool) RecordEstimate(basisID string, lines []EstimateLine, me
 
 // ReviseCost writes the next version of a cost line with a reason, while it is neither matched final nor released;
 // once creditor invoices consume part of it, the new version stays in their currency and not below what they consume.
+// The line stays in its container.
 func (p *ConsolCostPool) ReviseCost(lineNo, expected int, in SideInput, reason string, conv Converter, by string, at time.Time) error {
+	unitNo := 0
+	if lineNo >= 1 && lineNo <= len(p.state.Lines) {
+		unitNo = p.state.Lines[lineNo-1].LoadUnitNo()
+	}
+	return p.ReviseCostInUnit(lineNo, expected, unitNo, in, reason, conv, by, at)
+}
+
+// ReviseCostInUnit is ReviseCost that also names the container the line belongs to from this version on (since V2.104;
+// 0 is the whole consolidation): moving a line to another container, or to the whole consolidation, is a revision with
+// a reason, so that the line has to be apportioned again.
+func (p *ConsolCostPool) ReviseCostInUnit(lineNo, expected, unitNo int, in SideInput, reason string, conv Converter, by string, at time.Time) error {
 	if err := p.open(by, at); err != nil {
 		return err
 	}
@@ -544,6 +626,9 @@ func (p *ConsolCostPool) ReviseCost(lineNo, expected int, in SideInput, reason s
 		return fmt.Errorf("%w: a revision names a cost line of the pool and a reason", ErrInvalid)
 	}
 	line := &p.state.Lines[lineNo-1]
+	if err := p.unitRefusal(unitNo, line.Method); err != nil {
+		return err
+	}
 	if expected != len(line.Versions) {
 		return fmt.Errorf("%w: cost line %d is at version %d", ErrCostVersion, lineNo, len(line.Versions))
 	}
@@ -559,6 +644,7 @@ func (p *ConsolCostPool) ReviseCost(lineNo, expected int, in SideInput, reason s
 	if err != nil {
 		return err
 	}
+	v.LoadUnitNo = unitNo
 	line.Versions = append(line.Versions, v)
 	p.record(eventPoolCostRevised, at, lineNo)
 	return nil
@@ -583,7 +669,7 @@ func (p *ConsolCostPool) ReleaseCost(lineNo, expected int, reason string, by str
 	}
 	last := line.Versions[len(line.Versions)-1]
 	v := PoolCostVersion{No: expected + 1, CreditorPartyID: last.CreditorPartyID, CreditorRevision: last.CreditorRevision,
-		Amount: kernel.Money{Currency: last.Amount.Currency}, Status: StatusReleased, Reason: reason, By: by, At: at.UTC()}
+		Amount: kernel.Money{Currency: last.Amount.Currency}, Status: StatusReleased, Reason: reason, By: by, At: at.UTC(), LoadUnitNo: last.LoadUnitNo}
 	line.Versions = append(line.Versions, v)
 	p.pending = append(p.pending, Event{Type: eventAccrualReleased, At: at.UTC(), TenantID: p.state.TenantID, SubjectID: p.state.PoolID,
 		LegalEntityID: p.state.LegalEntityID, Version: v.No, ShipmentID: p.state.ConsolidationID, LineNo: lineNo})
@@ -669,10 +755,50 @@ func (p *ConsolCostPool) apportionment(in ApportionInput, basis CostBasis, by st
 		return Apportionment{}, err
 	}
 	// each line's houses left out: those named, or with none named (and not AllHouses) those its latest apportionment left
-	// out that are still live; the stage is PLANNED while a house that takes part in any of the lines is not loaded
+	// out that are still live; the stage is PLANNED while a house that takes part in any of the lines of the whole
+	// consolidation is not loaded. A line of one container (since V2.104) takes the houses loaded in it, by what each has
+	// in it, and needs the container sealed: finance may leave houses of the container out, and no other house takes part.
 	leftOut := map[int]map[string]bool{}
+	inUnit := map[int]map[string]HouseFacts{} // per line of one container, the houses loaded in it, with their facts in it
 	stage := BasisActual
 	for _, no := range lineNos {
+		line := p.state.Lines[no-1]
+		method := line.Method
+		if in.Method != "" {
+			method = in.Method
+		}
+		if unitNo := line.LoadUnitNo(); unitNo > 0 {
+			if err := p.unitRefusal(unitNo, method); err != nil {
+				return Apportionment{}, err
+			}
+			if err := unitBasisRefusal(basis, no, unitNo); err != nil {
+				return Apportionment{}, err
+			}
+			inUnit[no] = map[string]HouseFacts{}
+			for _, h := range houses {
+				if f, ok := unitFacts(h, unitNo); ok {
+					inUnit[no][h.ShipmentID] = f
+				}
+			}
+			out := map[string]bool{}
+			switch {
+			case len(in.NotUsed) > 0:
+				for id := range named {
+					if _, ok := inUnit[no][id]; ok {
+						out[id] = true
+					}
+				}
+			case !in.AllHouses:
+				if out, err = p.carriedLeftOutOfUnit(no, inUnit[no]); err != nil {
+					return Apportionment{}, err
+				}
+			}
+			if len(inUnit[no]) > 0 && len(out) == len(inUnit[no]) {
+				return Apportionment{}, fmt.Errorf("%w: every house loaded in container %d is left out of line %d; leave fewer out, or ask for all", ErrInvalid, unitNo, no)
+			}
+			leftOut[no] = out
+			continue
+		}
 		leftOut[no] = named
 		if len(in.NotUsed) == 0 && !in.AllHouses {
 			if leftOut[no], err = p.carriedLeftOut(no, houses); err != nil {
@@ -708,10 +834,28 @@ func (p *ConsolCostPool) apportionment(in ApportionInput, basis CostBasis, by st
 		// what remains after the attributions is divided over the houses that take part
 		remainder, remainderLocal := attributed[no].remainder, attributed[no].remainderLocal
 		notUsed := leftOut[no]
+		unitLine := inUnit[no] != nil
+		lineStage := stage
 		var taking []HouseFacts // the houses that take part in this line, in shipment order
 		for _, h := range houses {
-			if !notUsed[h.ShipmentID] {
+			switch {
+			case !unitLine && !notUsed[h.ShipmentID]:
 				taking = append(taking, h)
+			case unitLine && !notUsed[h.ShipmentID]:
+				if f, ok := inUnit[no][h.ShipmentID]; ok {
+					taking = append(taking, f) // its facts in the container
+				}
+			}
+		}
+		wasIn := map[string]bool{} // on a line of one container, the houses in it under the apportionment in force (left out or not)
+		if unitLine {
+			lineStage = BasisActual // the container is sealed and every house in it is loaded
+			if _, held, ok := p.SharesOfLine(no); ok && p.inForceForItsUnit(no) {
+				for _, s := range held.Shares {
+					if s.InUnit != nil && *s.InUnit {
+						wasIn[s.ShipmentID] = true
+					}
+				}
 			}
 		}
 		if len(taking) == 0 {
@@ -747,7 +891,7 @@ func (p *ConsolCostPool) apportionment(in ApportionInput, basis CostBasis, by st
 			}
 			unit = UnitRevenueMinor
 		} else {
-			if quantities, unit, err = methodQuantities(method, p.state.Mode, stage, taking, basis.LoadUnits); err != nil {
+			if quantities, unit, err = methodQuantities(method, p.state.Mode, lineStage, taking, basis.LoadUnits); err != nil {
 				return Apportionment{}, err
 			}
 		}
@@ -762,7 +906,16 @@ func (p *ConsolCostPool) apportionment(in ApportionInput, basis CostBasis, by st
 		k := 0 // the next house that takes part
 		for i, h := range houses {
 			share := Share{No: i + 1, ShipmentID: h.ShipmentID, JobID: jobs[i]}
-			if !notUsed[h.ShipmentID] {
+			takes := !notUsed[h.ShipmentID]
+			if unitLine {
+				_, in := inUnit[no][h.ShipmentID]
+				share.InUnit = &in
+				takes = takes && in
+				if !in && wasIn[h.ShipmentID] {
+					share.LeftTo = &UnitMove{To: unitsOf(h)}
+				}
+			}
+			if takes {
 				share.Used, share.Quantity, share.Unit, share.Amount, share.Local = true, quantities[k], unit, amounts[k], locals[k]
 				k++
 			}
@@ -779,7 +932,7 @@ func (p *ConsolCostPool) apportionment(in ApportionInput, basis CostBasis, by st
 func (p *ConsolCostPool) carriedLeftOut(lineNo int, houses []HouseFacts) (map[string]bool, error) {
 	out := map[string]bool{}
 	_, la, ok := p.SharesOfLine(lineNo)
-	if !ok {
+	if !ok || !p.inForceForItsUnit(lineNo) {
 		return out, nil
 	}
 	for _, s := range la.Shares {
@@ -791,6 +944,77 @@ func (p *ConsolCostPool) carriedLeftOut(lineNo int, houses []HouseFacts) (map[st
 		return nil, fmt.Errorf("%w: every house still live was left out of line %d; name the houses that take part or ask for all", ErrInvalid, lineNo)
 	}
 	return out, nil
+}
+
+// carriedLeftOutOfUnit is, for a line of one container, the houses finance left out of its latest apportionment that
+// are still loaded in the container: a house that was not in the container then, or is not now, is not among them.
+func (p *ConsolCostPool) carriedLeftOutOfUnit(lineNo int, inUnit map[string]HouseFacts) (map[string]bool, error) {
+	out := map[string]bool{}
+	_, la, ok := p.SharesOfLine(lineNo)
+	if !ok || !p.inForceForItsUnit(lineNo) {
+		return out, nil
+	}
+	for _, s := range la.Shares {
+		if _, still := inUnit[s.ShipmentID]; still && !s.Used && s.InUnit != nil && *s.InUnit {
+			out[s.ShipmentID] = true
+		}
+	}
+	return out, nil
+}
+
+// inForceForItsUnit says whether the line's apportionment in force divided it for the container it belongs to now (the
+// whole consolidation alike): only then are the houses that apportionment left out carried to the next. A line moved to
+// another container, or to or from the whole consolidation, starts again with every house of where it belongs now:
+// houses not in the old container were not left out by finance (since V2.104).
+func (p *ConsolCostPool) inForceForItsUnit(lineNo int) bool {
+	line := p.state.Lines[lineNo-1]
+	_, la, ok := p.SharesOfLine(lineNo)
+	if !ok {
+		return true
+	}
+	return la.LineVersion >= 1 && la.LineVersion <= len(line.Versions) && line.Versions[la.LineVersion-1].LoadUnitNo == line.LoadUnitNo()
+}
+
+// unitText names where a line belongs: the whole consolidation, or one of its containers.
+func unitText(unitNo int) string {
+	if unitNo == 0 {
+		return "the whole consolidation"
+	}
+	return fmt.Sprintf("container %d", unitNo)
+}
+
+// unitFacts is a house's facts in one container (since V2.104): its packs, weight and volume loaded in it, as the
+// loaded facts and as the plan alike, and whether it has packs there.
+func unitFacts(h HouseFacts, unitNo int) (HouseFacts, bool) {
+	for _, u := range h.Units {
+		if u.UnitNo == unitNo && u.LoadedPacks > 0 {
+			f := h
+			f.Packs, f.GrossWeight, f.Volume = u.LoadedPacks, u.LoadedGrossWeight, u.LoadedVolume
+			f.LoadedPacks, f.LoadedGrossWeight, f.LoadedVolume = u.LoadedPacks, u.LoadedGrossWeight, u.LoadedVolume
+			f.Units = []HouseUnitFacts{u}
+			return f, true
+		}
+	}
+	return HouseFacts{}, false
+}
+
+// unitBasisRefusal refuses to divide a line of one container until PHY's basis has that container sealed (since
+// V2.104): what is in a container is known once it is sealed, as the warehouse's actuals decide.
+func unitBasisRefusal(basis CostBasis, lineNo, unitNo int) error {
+	if basis.Kind != "SEA_LCL_OWN" {
+		return fmt.Errorf("%w: line %d belongs to container %d, and consolidation %s is %s, not a sea LCL consolidation in the forwarder's own containers; revise the line for the whole consolidation (container 0)",
+			ErrInvalid, lineNo, unitNo, basis.ConsolidationID, basis.Kind)
+	}
+	k := slices.IndexFunc(basis.LoadUnits, func(u LoadUnitFacts) bool { return u.UnitNo == unitNo })
+	switch {
+	case k < 0:
+		return fmt.Errorf("%w: line %d belongs to container %d, which consolidation %s does not have; revise the line for one of its containers or for the whole consolidation (container 0)",
+			ErrInvalid, lineNo, unitNo, basis.ConsolidationID)
+	case basis.LoadUnits[k].Status != LoadUnitClosed:
+		return fmt.Errorf("%w: line %d belongs to container %d, which is %s and not sealed: who is in it is known once it is sealed; seal the container first, or apportion the other lines (name them)",
+			ErrPoolNoBasis, lineNo, unitNo, basis.LoadUnits[k].Status)
+	}
+	return nil
 }
 
 // notUsedHouses reads the houses an apportionment leaves out: each a live house once, and not every house.
@@ -1270,6 +1494,10 @@ func (p *ConsolCostPool) lineRefusal(l PoolCostLine, basis CostBasis, houses []H
 	case la.Amount != cost || la.Local != local:
 		return pendingLineNotApportioned, fmt.Errorf("%w: cost line %d was apportioned at %d (%d local); its final cost is %d (%d local)", ErrPoolNotClosable, l.No, la.Amount,
 			la.Local, cost, local)
+	case (la.ToAllocate != 0 || la.ToAllocateLocal != 0) && l.LoadUnitNo() > 0:
+		return pendingToBeAllocated, fmt.Errorf("%w: cost line %d has %d to be allocated, as no house is loaded in container %d; attribute it as a loss or an exception cost "+
+			"of a house that left the container, or move the line to another container or to the whole consolidation (a revision), and apportion it again",
+			ErrPoolNotClosable, l.No, la.ToAllocate, l.LoadUnitNo())
 	case la.ToAllocate != 0 || la.ToAllocateLocal != 0:
 		return pendingToBeAllocated, fmt.Errorf("%w: cost line %d has %d to be allocated, as no house of the consolidation is live; add cargo and apportion the line again, or "+
 			"attribute it as a loss or an exception cost of a house that left, or cancel the consolidation and retain it", ErrPoolNotClosable, l.No, la.ToAllocate)
@@ -1280,13 +1508,40 @@ func (p *ConsolCostPool) lineRefusal(l PoolCostLine, basis CostBasis, houses []H
 		return pendingLineNotOnBasis, fmt.Errorf("%w: cost line %d is retained on the consolidation while PHY reports houses on it", ErrPoolNotClosable, l.No)
 	case cost == 0 && local == 0, gone:
 		return "", nil // every share is zero, or no basis is left to compare
-	case a.Stage != BasisActual || len(la.Shares) != len(houses) || !usedLoaded(la.Shares, houses):
+	}
+	// a line of one container (since V2.104) is compared with what is in that container now, and with the container it
+	// belongs to now: a line moved to another container is apportioned again
+	unitNo := 0
+	if la.LineVersion >= 1 && la.LineVersion <= len(l.Versions) {
+		unitNo = l.Versions[la.LineVersion-1].LoadUnitNo
+	}
+	if unitNo != l.LoadUnitNo() {
+		return pendingLineNotOnBasis, fmt.Errorf("%w: cost line %d was apportioned for %s and belongs to %s now; apportion it again", ErrPoolNotClosable, l.No,
+			unitText(unitNo), unitText(l.LoadUnitNo()))
+	}
+	if unitNo > 0 {
+		if err := unitBasisRefusal(basis, l.No, unitNo); err != nil {
+			return pendingLineNotOnBasis, fmt.Errorf("%w: %w", ErrPoolNotClosable, err)
+		}
+	}
+	if (unitNo == 0 && a.Stage != BasisActual) || len(la.Shares) != len(houses) || !usedLoaded(la.Shares, houses) {
 		return pendingLineNotOnBasis, fmt.Errorf("%w: cost line %d is not apportioned on the current loaded basis", ErrPoolNotClosable, l.No)
 	}
-	var taking []HouseFacts // the houses the apportionment used
+	var taking []HouseFacts // the houses the apportionment used, with their facts in the line's container for a line of one
 	for i, h := range houses {
 		if la.Shares[i].ShipmentID != h.ShipmentID {
 			return pendingLineNotOnBasis, fmt.Errorf("%w: cost line %d is not apportioned on the current loaded basis (house %s)", ErrPoolNotClosable, l.No, h.ShipmentID)
+		}
+		if unitNo > 0 {
+			f, in := unitFacts(h, unitNo)
+			if s := la.Shares[i]; s.InUnit == nil || *s.InUnit != in || (s.Used && !in) {
+				return pendingLineNotOnBasis, fmt.Errorf("%w: cost line %d belongs to container %d, and what is loaded in it has changed since it was apportioned (house %s); apportion it again",
+					ErrPoolNotClosable, l.No, unitNo, h.ShipmentID)
+			}
+			if la.Shares[i].Used {
+				taking = append(taking, f)
+			}
+			continue
 		}
 		if la.Shares[i].Used {
 			taking = append(taking, h)

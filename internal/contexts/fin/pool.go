@@ -24,15 +24,25 @@ func (m *Module) OpenConsolCostPool(ctx context.Context, cmd api.OpenConsolCostP
 func (m *Module) RecordConsolCost(ctx context.Context, cmd api.RecordConsolCost) (api.Receipt, error) {
 	r, err := m.deps(cmd.TenantID, cmd.CommandID).RecordPoolCost(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, api.ActionRecordConsolCost,
 		cmd.PoolID, cmd.ExpectedRevision, cmd.OccurredAt, cmd), application.PoolCostAsk{ChargeCode: cmd.ChargeCode, Description: cmd.Description,
-		SupplierRef: cmd.SupplierRef, Method: cmd.Method, Cost: domain.SideInput{PartyID: cmd.Cost.PartyID, Amount: cmd.Cost.Amount}, Reason: cmd.Reason})
+		SupplierRef: cmd.SupplierRef, Method: cmd.Method, Cost: domain.SideInput{PartyID: cmd.Cost.PartyID, Amount: cmd.Cost.Amount}, Reason: cmd.Reason,
+		LoadUnitNo: cmd.LoadUnitNo})
 	return receipt(r, err)
 }
 
 func (m *Module) ReviseConsolCost(ctx context.Context, cmd api.ReviseConsolCost) (api.Receipt, error) {
 	r, err := m.deps(cmd.TenantID, cmd.CommandID).RevisePoolCost(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, api.ActionReviseConsolCost,
 		cmd.PoolID, cmd.ExpectedRevision, cmd.OccurredAt, cmd), application.RevisePoolCostAsk{LineNo: cmd.LineNo, Expected: cmd.ExpectedVersion,
-		Value: domain.SideInput{PartyID: cmd.Value.PartyID, Amount: cmd.Value.Amount}, Reason: cmd.Reason})
+		Value: domain.SideInput{PartyID: cmd.Value.PartyID, Amount: cmd.Value.Amount}, Reason: cmd.Reason, MoveTo: moveTo(cmd)})
 	return receipt(r, err)
+}
+
+// moveTo is the container a revision moves its line to (since V2.104), nil when it keeps the line's.
+func moveTo(cmd api.ReviseConsolCost) *int {
+	if !cmd.MoveToLoadUnit {
+		return nil
+	}
+	n := cmd.LoadUnitNo
+	return &n
 }
 
 func (m *Module) PreviewConsolCostApportionment(ctx context.Context, cmd api.PreviewConsolCostApportionment) (api.Receipt, error) {
@@ -91,11 +101,11 @@ func poolView(p *domain.ConsolCostPool, revision int64) api.ConsolCostPool {
 		line := api.PoolCostLine{LineNo: l.No, ChargeCode: l.ChargeCode, Description: l.Description, SupplierRef: l.SupplierRef, Method: l.Method,
 			Source: source, BasisID: l.BasisID, BasisLineNo: l.BasisLineNo,
 			RecordedAt: l.At, EnteredAt: l.EnteredAt, Status: p.LineStatus(l.No), Matched: kernel.Money{Currency: currency, Minor: c.Amount},
-			MatchedLocal: local(c.Local), Cost: kernel.Money{Currency: currency, Minor: cost}, CostLocal: local(costLocal)}
+			MatchedLocal: local(c.Local), Cost: kernel.Money{Currency: currency, Minor: cost}, CostLocal: local(costLocal), LoadUnitNo: l.LoadUnitNo()}
 		for _, v := range l.Versions {
 			line.Versions = append(line.Versions, api.PoolCostVersion{Version: v.No, CreditorPartyID: v.CreditorPartyID,
 				CreditorRevision: v.CreditorRevision, Amount: v.Amount, Local: local(v.Local), Status: v.Status, Reason: v.Reason, RecordedAt: v.At,
-				EnteredAt: v.EnteredAt})
+				EnteredAt: v.EnteredAt, LoadUnitNo: v.LoadUnitNo})
 		}
 		out.Lines = append(out.Lines, line)
 	}
@@ -113,7 +123,7 @@ func poolView(p *domain.ConsolCostPool, revision int64) api.ConsolCostPool {
 			}
 			for _, s := range la.Shares {
 				lv.Shares = append(lv.Shares, api.PoolShare{ShareNo: s.No, ShipmentID: s.ShipmentID, JobID: s.JobID, NotUsed: !s.Used, Quantity: s.Quantity, Unit: s.Unit,
-					Amount: kernel.Money{Currency: currency, Minor: s.Amount}, Local: local(s.Local)})
+					Amount: kernel.Money{Currency: currency, Minor: s.Amount}, Local: local(s.Local), InUnit: s.InUnit, LeftTo: unitMoveView(s.LeftTo)})
 			}
 			out = append(out, lv)
 		}
@@ -366,4 +376,12 @@ func poolShareViews(shares []application.PoolShare, currency kernel.CurrencyCode
 		return a.LineNo - b.LineNo
 	})
 	return out, total
+}
+
+// unitMoveView is the record of a house that changed container, as FIN answers it.
+func unitMoveView(m *domain.UnitMove) *api.PoolUnitMove {
+	if m == nil {
+		return nil
+	}
+	return &api.PoolUnitMove{ToUnits: append([]int{}, m.To...)}
 }

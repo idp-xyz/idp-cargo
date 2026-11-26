@@ -247,6 +247,76 @@ func scaled(amount, then, now int64) int64 {
 	return q.Int64()
 }
 
+// movedHouse is a house still in the consolidation that left the container of a line of one container (since V2.104):
+// the share it held on the line's apportionment in force (used, in the container then), and when it left.
+type movedHouse struct {
+	share      Share
+	departedAt time.Time
+}
+
+// movedOutOfUnit is, for a line of one container, the live houses that are not loaded in the container now and either
+// took part in the line's apportionment in force while they were in it, or bear an attribution in force on it: those
+// finance may attribute (a loss of the house's own job, or an exception cost of the consolidation, with a voucher),
+// and whose share otherwise follows the cargo that remains in the container. A line whose apportionment in force
+// divided it for another container (it was moved) has none: it is apportioned anew. Their departure is the end of
+// the latest rework of the line's container, or, without one, when the house was last loaded.
+func (p *ConsolCostPool) movedOutOfUnit(lineNo int, basis CostBasis) map[string]movedHouse {
+	out := map[string]movedHouse{}
+	if lineNo < 1 || lineNo > len(p.state.Lines) {
+		return out
+	}
+	line := p.state.Lines[lineNo-1]
+	unitNo := line.LoadUnitNo()
+	_, la, ok := p.SharesOfLine(lineNo)
+	if unitNo == 0 || !ok || la.LineVersion < 1 || la.LineVersion > len(line.Versions) || line.Versions[la.LineVersion-1].LoadUnitNo != unitNo {
+		return out
+	}
+	var ended time.Time
+	for _, l := range basis.PackingLists {
+		if l.UnitNo == unitNo {
+			for _, r := range l.Reworks {
+				if r.EndedAt.After(ended) {
+					ended = r.EndedAt
+				}
+			}
+		}
+	}
+	live := map[string]HouseFacts{}
+	for _, h := range basis.Houses {
+		live[h.ShipmentID] = h
+	}
+	gone := func(ship string) (HouseFacts, bool) {
+		h, isLive := live[ship]
+		if !isLive {
+			return HouseFacts{}, false
+		}
+		_, in := unitFacts(h, unitNo)
+		return h, !in
+	}
+	departure := func(h HouseFacts) time.Time {
+		if !ended.IsZero() {
+			return ended.UTC()
+		}
+		return h.LastLoadedAt.UTC()
+	}
+	for _, s := range la.Shares {
+		if h, left := gone(s.ShipmentID); left && s.Used && s.InUnit != nil && *s.InUnit {
+			out[s.ShipmentID] = movedHouse{share: s, departedAt: departure(h)}
+		}
+	}
+	for _, a := range la.Attributions {
+		if _, former := basis.Former(a.ShipmentID); former {
+			continue
+		}
+		if _, left := gone(a.ShipmentID); left {
+			if _, seen := out[a.ShipmentID]; !seen {
+				out[a.ShipmentID] = movedHouse{share: Share{ShipmentID: a.ShipmentID, JobID: a.JobID}, departedAt: a.DepartedAt.UTC()}
+			}
+		}
+	}
+	return out
+}
+
 // lineAttributions is what a preview gives a line: the attributions it carries and the cost left after them, in the
 // line's currency and in the functional currency.
 type lineAttributions struct {
@@ -282,7 +352,10 @@ func (p *ConsolCostPool) attribute(in ApportionInput, basis CostBasis, lineNos [
 			return nil, fmt.Errorf("%w: the attribution of house %s on line %d names its voucher%s", ErrInvalid, a.ShipmentID, a.LineNo, voucherWayOut(in.Settings, a))
 		}
 		if _, former := basis.Former(a.ShipmentID); !former {
-			return nil, fmt.Errorf("%w: house %s is not a house PHY reports as having left the consolidation", ErrInvalid, a.ShipmentID)
+			if _, moved := p.movedOutOfUnit(a.LineNo, basis)[a.ShipmentID]; !moved {
+				return nil, fmt.Errorf("%w: house %s is not a house PHY reports as having left the consolidation, nor one that left the container of line %d", ErrInvalid,
+					a.ShipmentID, a.LineNo)
+			}
 		}
 		if stated[a.LineNo] == nil {
 			stated[a.LineNo] = map[string]AttributionInput{}
@@ -305,6 +378,12 @@ func (p *ConsolCostPool) attribute(in ApportionInput, basis CostBasis, lineNos [
 		for _, a := range la.Attributions {
 			inForce[a.ShipmentID] = a
 		}
+		moved := p.movedOutOfUnit(no, basis)
+		for ship, m := range moved {
+			if m.share.Used {
+				pending[ship] = m.share
+			}
+		}
 		for _, ship := range slices.Sorted(maps.Keys(stated[no])) {
 			if _, hold := pending[ship]; !hold {
 				if _, hold = inForce[ship]; !hold {
@@ -314,12 +393,23 @@ func (p *ConsolCostPool) attribute(in ApportionInput, basis CostBasis, lineNos [
 		}
 		var rows []Attribution
 		var carried bool
-		for _, f := range basis.FormerHouses {
+		// the houses that left the consolidation, then (since V2.104) those still in it that left the line's container: for
+		// these an attribution is finance's choice, and with none stated or in force their share goes to the cargo that
+		// remains in the container
+		candidates := slices.Clone(basis.FormerHouses)
+		for _, ship := range slices.Sorted(maps.Keys(moved)) {
+			candidates = append(candidates, FormerHouseFacts{ShipmentID: ship, EndedAt: moved[ship].departedAt})
+		}
+		for _, f := range candidates {
 			share, owes := pending[f.ShipmentID]
 			held, has := inForce[f.ShipmentID]
 			a, isStated := stated[no][f.ShipmentID]
 			if !owes && !has {
 				continue
+			}
+			_, left := moved[f.ShipmentID]
+			if left && !has && !isStated {
+				continue // the share follows the cargo that remains in the container: no attribution
 			}
 			var then stating
 			var changed bool

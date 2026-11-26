@@ -582,6 +582,7 @@ type PoolCostVersion struct {
 	Reason           string
 	RecordedAt       time.Time
 	EnteredAt        time.Time
+	LoadUnitNo       int // since V2.104: the container this version belongs to, 0 the whole consolidation
 }
 
 // PoolCostLine is one cost of the whole consolidation: a charge code, the supplier's reference (the MAWB, the
@@ -605,6 +606,9 @@ type PoolCostLine struct {
 	MatchedLocal kernel.Money
 	Cost         kernel.Money
 	CostLocal    kernel.Money
+	// LoadUnitNo is the container of the consolidation the line belongs to now (since V2.104), 0 the whole consolidation:
+	// its latest version's.
+	LoadUnitNo int
 }
 
 // PoolShare is one house job's share of a pool cost line under an apportionment: the basis quantity it was weighted
@@ -620,7 +624,20 @@ type PoolShare struct {
 	Unit       string
 	Amount     kernel.Money
 	Local      kernel.Money
+	// InUnit, on a line of one container (since V2.104), says whether the house had packs loaded in that container at the
+	// basis the apportionment read (nil on a line of the whole consolidation): a house out of it took no part, and a house
+	// that changed container shows as in it under one apportionment and out of it under the next. Quantity is what the
+	// house had in that container.
+	InUnit *bool
+	// LeftTo records a house that changed container: on a line of one container, a house that was in the container under
+	// the line's previous apportionment (whether it took part or was left out) and is not in it now has the containers it
+	// is loaded in now (empty when none). The apportionment's By and At say who divided the line and when. Nil for every other share.
+	LeftTo *PoolUnitMove
 }
+
+// PoolUnitMove is where a house that left a line's container is loaded now (since V2.104): its containers, in unit
+// order, empty when none.
+type PoolUnitMove struct{ ToUnits []int }
 
 // PoolAttribution is who bears one house's former share of one cost line under an apportionment (FIN V2.93): the loss
 // the house's own job bears and the consolidation's exception cost with the party responsible for it (empty when it is

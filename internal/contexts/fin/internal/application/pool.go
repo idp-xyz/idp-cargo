@@ -122,6 +122,7 @@ type PoolCostAsk struct {
 	Method      string
 	Cost        fin.SideInput
 	Reason      string
+	LoadUnitNo  int // since V2.104: one container of the consolidation, 0 the whole consolidation
 }
 
 // RecordPoolCost adds a cost line of the whole consolidation: ORG confirms a creditor it names first (T3).
@@ -137,7 +138,7 @@ func (d Deps) RecordPoolCost(ctx context.Context, c Command, in PoolCostAsk) (Re
 			c.OccurredAt)
 		return err
 	}, func(_ context.Context, pool *fin.ConsolCostPool, p *fin.FinancePolicy) (Receipt, error) {
-		err := pool.RecordCost(in.ChargeCode, in.Description, in.SupplierRef, in.Method, in.Cost, in.Reason, p, c.Scope.ActorID, c.OccurredAt)
+		err := pool.RecordCostInUnit(in.ChargeCode, in.Description, in.SupplierRef, in.Method, in.LoadUnitNo, in.Cost, in.Reason, p, c.Scope.ActorID, c.OccurredAt)
 		return Receipt{Version: len(pool.State().Lines)}, err
 	})
 }
@@ -148,6 +149,9 @@ type RevisePoolCostAsk struct {
 	Expected int
 	Value    fin.SideInput
 	Reason   string
+	// MoveTo names the container the line belongs to from this version on (since V2.104; 0 the whole consolidation);
+	// nil keeps its container.
+	MoveTo *int
 }
 
 // RevisePoolCost writes the next version of a cost line: ORG confirms a creditor it names (T3).
@@ -169,7 +173,12 @@ func (d Deps) RevisePoolCost(ctx context.Context, c Command, in RevisePoolCostAs
 		in.Value.PartyRevision, err = d.Directory.PartyInRole(ctx, c.Scope.TenantID, in.Value.PartyID, st.LegalEntityID, CreditorRoles, c.OccurredAt)
 		return err
 	}, func(_ context.Context, pool *fin.ConsolCostPool, p *fin.FinancePolicy) (Receipt, error) {
-		err := pool.ReviseCost(in.LineNo, in.Expected, in.Value, in.Reason, p, c.Scope.ActorID, c.OccurredAt)
+		var err error
+		if in.MoveTo != nil {
+			err = pool.ReviseCostInUnit(in.LineNo, in.Expected, *in.MoveTo, in.Value, in.Reason, p, c.Scope.ActorID, c.OccurredAt)
+		} else {
+			err = pool.ReviseCost(in.LineNo, in.Expected, in.Value, in.Reason, p, c.Scope.ActorID, c.OccurredAt)
+		}
 		return Receipt{Version: in.Expected + 1}, err
 	})
 }
