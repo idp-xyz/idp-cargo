@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	comapi "go.idp.xyz/idp-cargo/internal/contexts/com/api"
 	finapi "go.idp.xyz/idp-cargo/internal/contexts/fin/api"
 	orgapi "go.idp.xyz/idp-cargo/internal/contexts/org/api"
 	seaapi "go.idp.xyz/idp-cargo/internal/contexts/sea/api"
@@ -38,8 +39,8 @@ func (c APIConfig) verifier() identity.HS256Verifier {
 // principal (identity.Authorize), and answers the handler: RATE's catalogue, with ORG for RATE's party checks,
 // SEA's ocean movements and container visits, with BOOK's bookings and FUL's plans, which SEA reads, and FIN's profit
 // and cost review (V2.99), with FUL's and PHY's facts, which FIN reads; ORG's parties, legal entities, address books,
-// contact transfer register and onboardings, with the platform's onboarding commands (V2.106). COM, FUL, PHY, BOOK,
-// AIR and DOC have no routes yet.
+// contact transfer register and onboardings, with the platform's onboarding commands (V2.106); COM's orders and FUL's
+// shipments (V2.107). PHY, BOOK, AIR and DOC have no routes yet.
 func (p *Platform) API(cfg APIConfig) (http.Handler, error) {
 	switch {
 	case len(cfg.TokenKey) < 32 || cfg.TokenIssuer == "" || cfg.TokenAudience == "":
@@ -82,7 +83,7 @@ func (p *Platform) API(cfg APIConfig) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	return transport.NewHandler(transport.Config{Verifier: cfg.verifier(), Logger: cfg.Logger, Ready: p.pool.Ping}, apiRegistrars(rate, sea, fin, org, onboarding)...)
+	return transport.NewHandler(transport.Config{Verifier: cfg.verifier(), Logger: cfg.Logger, Ready: p.pool.Ping}, apiRegistrars(rate, sea, fin, org, com, ful, onboarding)...)
 }
 
 // APIServer is an http.Server for the API's handler with Cargo's timeouts; its requests run under base.
@@ -164,6 +165,11 @@ func (permissions) AuthorizeQuoteAction(ctx context.Context, tenant, actor, acti
 }
 
 func (permissions) AuthorizeOrderAction(ctx context.Context, tenant, actor, action, _ string) error {
+	switch action {
+	case comapi.ActionReadOrderContacts, comapi.ActionReadRestrictedOrderContacts, comapi.ActionEraseOrderContacts, comapi.ActionReadContactAccessLog:
+		// an order's contacts, their erasure and the log of who read them (since V2.107): by name only, as ORG's
+		return identity.AuthorizeNamed(ctx, "com", tenant, actor, action)
+	}
 	return identity.Authorize(ctx, "com", tenant, actor, action)
 }
 
