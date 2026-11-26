@@ -15,8 +15,9 @@ import (
 //   - ops: the operator: parties' address books and contacts, quotes, ocean movements and containers.
 //   - warehouse: the warehouse (CFS) staff.
 //   - docs: the documentation staff: contacts for a dispatch, the contact transfer register's reservations.
-//   - finance: the finance staff: the job profit and a cost review request.
-//   - finance-manager: the finance manager: resolving a cost review.
+//   - finance: the finance staff: jobs, receivables, payables, credit, fapiao, the profit and cost reviews.
+//   - finance-manager: the finance manager: as the staff, and by name the approval of one's own variance, the
+//     after-the-fact review, the review of settings exceptions and the credit override of a document.
 //   - privacy: the privacy officer: who read a contact, erasures, consents, transfer safeguards.
 //   - admin: the customer's administrator: master data (parties, roles, legal entities), and the owner's confirmation
 //     of an onboarding.
@@ -24,14 +25,15 @@ import (
 var Roles = map[string][]string{
 	"ops": {"org:Read", "org:AddPartyAddress", "org:ChangePartyAddress", "org:DeactivatePartyAddress", "org:SetDefaultPartyAddress",
 		"org:AddPartyContact", "org:ChangePartyContact", "org:DeactivatePartyContact", "org:SetDefaultPartyContact", "org:ReadPartyContacts",
-		"rate:*", "sea:*", "com:*", "com:ReadOrderContacts", "ful:*", "phy:*"},
-	"warehouse": {"org:Read", "sea:Read", "com:Read", "ful:Read", "phy:*"},
+		"rate:*", "sea:*", "com:*", "com:ReadOrderContacts", "ful:*", "phy:*", "book:*", "air:*", "doc:Read", "fin:Read"},
+	"warehouse": {"org:Read", "sea:Read", "com:Read", "ful:Read", "phy:*", "book:Read", "air:Read", "doc:Read"},
 	"docs": {"org:Read", "org:ReadPartyContacts", "org:ReserveContactTransfers", "org:ReleaseContactTransfers", "sea:Read",
-		"com:Read", "com:ReadOrderContacts", "com:LockOrderParties", "com:ReleaseOrderPartyLock", "ful:Read", "phy:Read"},
-	"finance":         {"org:Read", "rate:Read", "sea:Read", "com:Read", "ful:Read", "phy:Read", "fin:ReadProfit", "fin:RequestCostReview"},
-	"finance-manager": {"org:Read", "rate:Read", "sea:Read", "com:Read", "ful:Read", "phy:Read", "fin:ReadProfit", "fin:ResolveCostReview"},
+		"com:Read", "com:ReadOrderContacts", "com:LockOrderParties", "com:ReleaseOrderPartyLock", "ful:Read", "phy:Read", "book:Read", "air:Read", "doc:*"},
+	"finance": {"org:Read", "rate:Read", "sea:Read", "com:Read", "ful:Read", "phy:Read", "book:Read", "air:Read", "doc:Read", "fin:*"},
+	"finance-manager": {"org:Read", "rate:Read", "sea:Read", "com:Read", "ful:Read", "phy:Read", "book:Read", "air:Read", "doc:Read", "doc:OverrideCreditCheck", "fin:*",
+		"fin:ApproveOwnCostVariance", "fin:ReviewAfterTheFact", "fin:ReviewSettingsExceptions"},
 	"privacy": {"org:Read", "org:ReadContactAccessLog", "org:ErasePartyContact", "org:RecordContactConsent", "org:RecordTransferSafeguard",
-		"org:ReadPartyContacts", "com:Read", "com:ReadContactAccessLog", "com:EraseOrderContacts", "com:ReadRestrictedOrderContacts"},
+		"org:ReadPartyContacts", "com:Read", "com:ReadContactAccessLog", "com:EraseOrderContacts", "com:ReadRestrictedOrderContacts", "doc:Read", "doc:ReadProvisionRecords"},
 	"admin":      {"org:*", "org:ConfirmOnboarding", "fin:ApproveSettings", "sea:ApproveSettings", "com:Read", "com:SetOrderPolicy"},
 	"consultant": {"org:Read", "org:ReadOnboarding", "org:ProposeOnboarding", "fin:ConfigureSettings", "sea:ConfigureSettings"},
 }

@@ -8,14 +8,26 @@ import (
 	"sort"
 	"testing"
 
+	"go.idp.xyz/idp-cargo/internal/contexts/air"
+	airapi "go.idp.xyz/idp-cargo/internal/contexts/air/api"
+	"go.idp.xyz/idp-cargo/internal/contexts/book"
+	bookapi "go.idp.xyz/idp-cargo/internal/contexts/book/api"
 	"go.idp.xyz/idp-cargo/internal/contexts/com"
 	comapi "go.idp.xyz/idp-cargo/internal/contexts/com/api"
+	"go.idp.xyz/idp-cargo/internal/contexts/doc"
+	docapi "go.idp.xyz/idp-cargo/internal/contexts/doc/api"
+	"go.idp.xyz/idp-cargo/internal/contexts/fin"
+	finapi "go.idp.xyz/idp-cargo/internal/contexts/fin/api"
 	"go.idp.xyz/idp-cargo/internal/contexts/ful"
 	fulapi "go.idp.xyz/idp-cargo/internal/contexts/ful/api"
 	"go.idp.xyz/idp-cargo/internal/contexts/org"
 	orgapi "go.idp.xyz/idp-cargo/internal/contexts/org/api"
 	"go.idp.xyz/idp-cargo/internal/contexts/phy"
 	phyapi "go.idp.xyz/idp-cargo/internal/contexts/phy/api"
+	"go.idp.xyz/idp-cargo/internal/contexts/rate"
+	rateapi "go.idp.xyz/idp-cargo/internal/contexts/rate/api"
+	"go.idp.xyz/idp-cargo/internal/contexts/sea"
+	seaapi "go.idp.xyz/idp-cargo/internal/contexts/sea/api"
 	"go.idp.xyz/idp-cargo/internal/foundation/httpapi"
 )
 
@@ -42,6 +54,8 @@ type coverage struct {
 	module     any
 	interfaces []reflect.Type
 	internal   map[string]string // method -> why it has no route
+	later      map[string]string // method -> the version of stage 3 that routes it
+	legacy     map[string]string // a hand-written route ("GET /v1/...") -> the method it calls
 }
 
 // The contexts whose routes are done, each with every public method routed once and the internal ones not at all
@@ -85,11 +99,93 @@ var covered = []coverage{
 		"GetPhysicalLoadEvidence": "FUL's read of the verified load evidence",
 		"GetPhysicalCostBasis":    "FIN's read of the actuals it apportions by",
 	}},
+	{context: "book", module: (*book.Module)(nil), interfaces: []reflect.Type{reflect.TypeFor[bookapi.Commands](), reflect.TypeFor[bookapi.Queries]()}},
+	{context: "air", module: (*air.Module)(nil), interfaces: []reflect.Type{reflect.TypeFor[airapi.Commands](), reflect.TypeFor[airapi.Queries](),
+		reflect.TypeFor[airapi.AirDocFactsQueries]()}},
+	{context: "doc", module: (*doc.Module)(nil), interfaces: []reflect.Type{
+		reflect.TypeFor[docapi.Commands](), reflect.TypeFor[docapi.Queries](), reflect.TypeFor[docapi.PendingQueries](), reflect.TypeFor[docapi.CarrierCommands](),
+		reflect.TypeFor[docapi.CarrierQueries](), reflect.TypeFor[docapi.DispatchCommands](), reflect.TypeFor[docapi.DispatchQueries](),
+		reflect.TypeFor[docapi.TransportDocumentSnapshotQueries](),
+	}, internal: map[string]string{"GetHouseDocumentSnapshot": "FIN's read of the house bill a debit note is on"}},
+	{context: "fin", module: (*fin.Module)(nil), interfaces: []reflect.Type{
+		reflect.TypeFor[finapi.Commands](), reflect.TypeFor[finapi.Queries](), reflect.TypeFor[finapi.CreditStatusQueries](),
+	}, internal: map[string]string{
+		"DeclareFinSingleAdministrator": "the platform's own declaration at an onboarding",
+		"GetCreditStatus":               "DOC's check of a customer's credit before it issues",
+	}, legacy: map[string]string{
+		"GET /v1/fin/legal-entities/{legalEntityId}/job-profits": "ListJobProfits", "GET /v1/fin/jobs/{jobId}/profit": "GetJobProfit",
+		"POST /v1/fin/cost-review-requests": "RequestCostReview", "GET /v1/fin/cost-review-requests/{requestId}": "GetCostReviewRequest",
+		"GET /v1/fin/jobs/{jobId}/cost-review-requests": "ListCostReviewRequests", "POST /v1/fin/cost-review-requests/{requestId}/resolution": "ResolveCostReview",
+	}},
+	{context: "sea", module: (*sea.Module)(nil), interfaces: []reflect.Type{
+		reflect.TypeFor[seaapi.Commands](), reflect.TypeFor[seaapi.Queries](), reflect.TypeFor[seaapi.VgmQueries](), reflect.TypeFor[seaapi.PendingQueries](),
+		reflect.TypeFor[seaapi.SettingsCommands](), reflect.TypeFor[seaapi.SettingsQueries](),
+	}, internal: map[string]string{"DeclareSeaSingleAdministrator": "the platform's own declaration at an onboarding"}, legacy: map[string]string{
+		"POST /v1/ocean-movements": "OpenOceanMovement", "GET /v1/ocean-movements": "FindOceanMovementByMasterBill",
+		"GET /v1/ocean-movements/{movement}": "GetOceanMovement", "POST /v1/ocean-movements/{movement}/link-carrier-booking": "LinkCarrierBooking",
+		"POST /v1/ocean-movements/{movement}/master-bills": "RecordMasterBill", "POST /v1/ocean-movements/{movement}/house-bills": "AssociateHouseBill",
+		"POST /v1/ocean-movements/{movement}/house-bills/{shipment}/refresh": "RefreshHouseBillFacts",
+		"POST /v1/ocean-movements/{movement}/house-bills/{shipment}/end":     "EndHouseBillAssociation",
+		"POST /v1/ocean-movements/{movement}/finalize-doc-facts":             "FinalizeOceanDocFacts", "GET /v1/ocean-movements/{movement}/doc-facts": "GetOceanDocFacts",
+		"GET /v1/ocean-movements/{movement}/doc-facts/{version}": "GetOceanDocFacts", "POST /v1/ocean-movements/{movement}/carrier-facts": "RecordOceanCarrierFact",
+		"GET /v1/ocean-movements/{movement}/carrier-facts": "GetOceanMovement", "GET /v1/ocean-movements/{movement}/container-visits": "ListContainerVisits",
+		"POST /v1/ocean-movements/{movement}/cancel": "CancelOceanMovement", "POST /v1/hbl-series": "RegisterHblSeries",
+		"GET /v1/hbl-series/{legal_entity}": "GetHblSeries", "GET /v1/house-bills/{legal_entity}/{hbl}": "FindHouseBill",
+		"POST /v1/container-visits": "AssignContainer", "GET /v1/container-visits": "FindLiveContainerVisit", "GET /v1/container-visits/{visit}": "GetContainerVisit",
+		"POST /v1/container-visits/{visit}/seals": "RecordContainerSeal", "POST /v1/container-visits/{visit}/stuffing-done": "RecordStuffingDone",
+		"POST /v1/container-visits/{visit}/release": "ReleaseContainer", "POST /v1/container-visits/{visit}/vgm-assertions": "AssertVgm",
+		"POST /v1/container-visits/{visit}/vgm-response": "RecordVgmResponse", "POST /v1/container-visits/{visit}/events": "RecordContainerEvent",
+		"POST /v1/container-visits/{visit}/vgm-assertions/{version}/signatory-reads": "ReadVgmSignatory",
+		"GET /v1/container-visits/{visit}/vgm-assertions/{version}/signatory-reads":  "ReadVgmSignatoryAccess",
+	}},
+	{context: "rate", module: (*rate.Module)(nil), interfaces: []reflect.Type{
+		reflect.TypeFor[rateapi.Commands](), reflect.TypeFor[rateapi.QuoteQueries](), reflect.TypeFor[rateapi.QuoteSnapshotV3Queries](), reflect.TypeFor[rateapi.Queries](),
+		reflect.TypeFor[rateapi.RateCardCommands](), reflect.TypeFor[rateapi.RateCardQueries](), reflect.TypeFor[rateapi.PricingBasisQueries](),
+		reflect.TypeFor[rateapi.PricingBasisCommands](),
+	}, internal: map[string]string{
+		"GetQuoteSnapshot":     "COM's read of an accepted quote, v1",
+		"GetQuoteSnapshotV2":   "the quote snapshot v2, kept published; people read v3",
+		"GetServiceLevel":      "COM's check of a service level",
+		"GetPricingBasis":      "FIN's read of a job's pricing basis",
+		"RateShipmentEstimate": "FIN's rating of a job",
+		"RateConsolCost":       "FIN's rating of a cost pool",
+	}, legacy: map[string]string{
+		"GET /v1/rate-cards": "ListRateCards", "POST /v1/rate-cards": "CreateRateCard", "GET /v1/rate-cards/{card}": "GetRateCard",
+		"POST /v1/rate-cards/{card}/versions": "DraftRateCardVersion", "GET /v1/rate-cards/{card}/versions/{version}": "GetRateCardVersion",
+		"PUT /v1/rate-cards/{card}/versions/{version}/entries": "SetRateCardEntries", "POST /v1/rate-cards/{card}/versions/{version}/publish": "PublishRateCardVersion",
+		"POST /v1/rate-cards/{card}/versions/{version}/withdraw": "WithdrawRateCardVersion", "POST /v1/rate-evaluations": "EvaluateRates",
+		"GET /v1/rate-snapshots/{snapshot}": "GetRateSnapshot", "GET /v1/charge-codes": "ListChargeCodes", "POST /v1/charge-codes": "DefineChargeCode",
+		"GET /v1/charge-codes/{code}": "GetChargeCode", "POST /v1/charge-codes/{code}/revise": "ReviseChargeCode",
+		"POST /v1/charge-codes/{code}/deactivate": "DeactivateChargeCode", "POST /v1/charge-codes/{code}/reactivate": "ReactivateChargeCode",
+		"GET /v1/service-levels": "ListServiceLevels", "POST /v1/quotes": "CreateQuote", "GET /v1/quotes/{quote}": "GetQuote",
+		"GET /v1/quotes/{quote}/snapshot": "GetQuoteSnapshotV3", "POST /v1/quotes/{quote}/approve-price": "ApproveQuotePrice",
+		"POST /v1/quotes/{quote}/accept": "AcceptQuote", "POST /v1/quotes/{quote}/expire": "ExpireQuote",
+	}},
+}
+
+// generic counts the routes that are not hand-written.
+func generic(ops []httpapi.Op) int {
+	n := 0
+	for _, op := range ops {
+		if !op.Legacy {
+			n++
+		}
+	}
+	return n
 }
 
 func TestEveryPublicMethodOfARoutedContextHasOneRoute(t *testing.T) {
 	routes := map[string][]httpapi.Op{}
+	legacy := map[string]string{}
+	for _, c := range covered {
+		for pattern, method := range c.legacy {
+			legacy[c.context+" "+pattern] = method
+		}
+	}
 	for _, op := range APIRoutes() {
+		if op.Legacy && op.Calls == "" {
+			op.Calls = legacy[op.Context+" "+op.Method+" "+op.Path]
+		}
 		routes[op.Context+"."+op.Calls] = append(routes[op.Context+"."+op.Calls], op)
 	}
 	for _, c := range covered {
@@ -106,11 +202,19 @@ func TestEveryPublicMethodOfARoutedContextHasOneRoute(t *testing.T) {
 				seen[name] = true
 				got := routes[c.context+"."+name]
 				_, internal := c.internal[name]
+				if version, later := c.later[name]; later {
+					if len(got) > 0 {
+						t.Errorf("%s.%s is listed for %s but has a route", c.context, name, version)
+					}
+					continue
+				}
 				switch {
 				case internal && len(got) > 0:
 					t.Errorf("%s.%s stays in process (%s) but has a route: %s %s", c.context, name, c.internal[name], got[0].Method, got[0].Path)
-				case !internal && len(got) != 1:
-					t.Errorf("%s.%s has %d routes, not 1", c.context, name, len(got))
+				case !internal && len(got) == 0:
+					t.Errorf("%s.%s has no route", c.context, name)
+				case !internal && generic(got) > 1:
+					t.Errorf("%s.%s has %d generic routes, not 1", c.context, name, generic(got))
 				}
 			}
 		}
@@ -121,7 +225,7 @@ func TestEveryPublicMethodOfARoutedContextHasOneRoute(t *testing.T) {
 		}
 		var stray []string
 		for key, ops := range routes {
-			if ops[0].Context == c.context && !ops[0].Legacy && !seen[ops[0].Calls] {
+			if ops[0].Context == c.context && !seen[ops[0].Calls] {
 				stray = append(stray, key)
 			}
 		}

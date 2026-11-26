@@ -57,8 +57,12 @@ type Module struct {
 	scanWindow int
 }
 
-// RegisterHTTP registers FIN's inbound HTTP routes (V2.99); the composition root calls it.
-func (m *Module) RegisterHTTP(r *httpapi.Routes) { finhttp.Register(r.LegacyMux("fin"), m) }
+// RegisterHTTP registers FIN's inbound HTTP routes: the six of V2.99 that EII's contract describes, written by hand, and
+// the generic ones (since V2.108); the composition root calls it.
+func (m *Module) RegisterHTTP(r *httpapi.Routes) {
+	finhttp.Register(r.LegacyMux("fin"), m)
+	finhttp.RegisterGeneric(r, m)
+}
 
 // Option configures a Module.
 type Option func(*Module)

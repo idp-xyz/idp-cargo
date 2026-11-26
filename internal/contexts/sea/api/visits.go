@@ -210,6 +210,9 @@ type VisitCommands interface {
 	RecordVgmResponse(ctx context.Context, cmd RecordVgmResponse) (Receipt, error)
 	RecordContainerEvent(ctx context.Context, cmd RecordContainerEvent) (Receipt, error)
 	AcceptCarrierLoadingConflict(ctx context.Context, cmd AcceptCarrierLoadingConflict) (Receipt, error)
+	// RollContainerToMovement moves a sealed container that is not on board to another movement of its consolidation
+	// (V2.105; in the interface since V2.108).
+	RollContainerToMovement(ctx context.Context, cmd RollContainerToMovement) (Receipt, error)
 }
 
 // Actions of container visits; the subject is the visit.
