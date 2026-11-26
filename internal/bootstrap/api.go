@@ -42,7 +42,8 @@ func (c APIConfig) verifier() identity.HS256Verifier {
 // and cost review (V2.99), with FUL's and PHY's facts, which FIN reads; ORG's parties, legal entities, address books,
 // contact transfer register and onboardings, with the platform's onboarding commands (V2.106); COM's orders and FUL's
 // shipments (V2.107); PHY's consolidations, cargo lots and load executions (V2.107); BOOK's bookings and AIR's movements
-// (V2.108); DOC's transport documents, carrier documents and dispatches (V2.109).
+// (V2.108); DOC's transport documents, carrier documents and dispatches (V2.109); FIN's policy, jobs,
+// receivables, payables, credit and fapiao (V2.110).
 func (p *Platform) API(cfg APIConfig) (http.Handler, error) {
 	switch {
 	case len(cfg.TokenKey) < 32 || cfg.TokenIssuer == "" || cfg.TokenAudience == "":
@@ -256,7 +257,7 @@ func (permissions) AuthorizeFinAction(ctx context.Context, tenant, actor, action
 		return identity.AuthorizeNamed(ctx, "fin", tenant, actor, action)
 	}
 	if action == finapi.ActionConfigureSettings || action == finapi.ActionApproveSettings || action == finapi.ActionReviewAfterTheFact ||
-		action == finapi.ActionReviewSettingsExceptions {
+		action == finapi.ActionReviewSettingsExceptions || action == finapi.ActionApproveOwnCostVariance { // approving one's own variance (since V2.110)
 		return identity.AuthorizeNamed(ctx, "fin", tenant, actor, action)
 	}
 	return identity.Authorize(ctx, "fin", tenant, actor, action)

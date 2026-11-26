@@ -16,6 +16,8 @@ import (
 	comapi "go.idp.xyz/idp-cargo/internal/contexts/com/api"
 	"go.idp.xyz/idp-cargo/internal/contexts/doc"
 	docapi "go.idp.xyz/idp-cargo/internal/contexts/doc/api"
+	"go.idp.xyz/idp-cargo/internal/contexts/fin"
+	finapi "go.idp.xyz/idp-cargo/internal/contexts/fin/api"
 	"go.idp.xyz/idp-cargo/internal/contexts/ful"
 	fulapi "go.idp.xyz/idp-cargo/internal/contexts/ful/api"
 	"go.idp.xyz/idp-cargo/internal/contexts/org"
@@ -48,6 +50,8 @@ type coverage struct {
 	module     any
 	interfaces []reflect.Type
 	internal   map[string]string // method -> why it has no route
+	later      map[string]string // method -> the version of stage 3 that routes it
+	legacy     map[string]string // a hand-written route ("GET /v1/...") -> the method it calls
 }
 
 // The contexts whose routes are done, each with every public method routed once and the internal ones not at all
@@ -99,11 +103,45 @@ var covered = []coverage{
 		reflect.TypeFor[docapi.CarrierQueries](), reflect.TypeFor[docapi.DispatchCommands](), reflect.TypeFor[docapi.DispatchQueries](),
 		reflect.TypeFor[docapi.TransportDocumentSnapshotQueries](),
 	}, internal: map[string]string{"GetHouseDocumentSnapshot": "FIN's read of the house bill a debit note is on"}},
+	{context: "fin", module: (*fin.Module)(nil), interfaces: []reflect.Type{
+		reflect.TypeFor[finapi.Commands](), reflect.TypeFor[finapi.Queries](), reflect.TypeFor[finapi.CreditStatusQueries](),
+	}, internal: map[string]string{
+		"DeclareFinSingleAdministrator": "the platform's own declaration at an onboarding",
+		"GetCreditStatus":               "DOC's check of a customer's credit before it issues",
+	}, legacy: map[string]string{
+		"GET /v1/fin/legal-entities/{legalEntityId}/job-profits": "ListJobProfits", "GET /v1/fin/jobs/{jobId}/profit": "GetJobProfit",
+		"POST /v1/fin/cost-review-requests": "RequestCostReview", "GET /v1/fin/cost-review-requests/{requestId}": "GetCostReviewRequest",
+		"GET /v1/fin/jobs/{jobId}/cost-review-requests": "ListCostReviewRequests", "POST /v1/fin/cost-review-requests/{requestId}/resolution": "ResolveCostReview",
+	}, later: finLater},
 }
+
+// finLater are FIN's methods of the cost pools, the settings and the reviews, which V2.111 routes.
+var finLater = func() map[string]string {
+	out := map[string]string{}
+	for _, m := range []string{"RateConsolCostPool", "OpenConsolCostPool", "RecordConsolCost", "ReviseConsolCost", "PreviewConsolCostApportionment",
+		"SubmitConsolCostApportionment", "ApportionConsolCostInOneStep", "SetCostVarianceThreshold", "ApproveCostVarianceThreshold",
+		"RefuseCostVarianceThreshold", "ReleasePoolAccrual", "CloseConsolCostPool", "ReopenConsolCostPool", "ProposeFinSettingsChange",
+		"ApproveFinSettingsChange", "CancelFinSettingsChange", "RefuseFinSettingsChange", "ReviewFinSelfApprovedSettingsChange", "MarkAfterTheFactReviewed",
+		"GetConsolCostPool", "GetConsolProfit", "GetConsolCostPoolPendingItems", "GetConsolCostPreviewEffect", "GetFinSettings", "ListFinSettingsChanges",
+		"GetFinSettingsCatalogue", "GetFinExceptionReport", "GetFinSettingsChangeImpact", "GetAfterTheFactReview", "ListAfterTheFactPending",
+		"ListFinSelfApprovalReviews"} {
+		out[m] = "V2.111"
+	}
+	return out
+}()
 
 func TestEveryPublicMethodOfARoutedContextHasOneRoute(t *testing.T) {
 	routes := map[string][]httpapi.Op{}
+	legacy := map[string]string{}
+	for _, c := range covered {
+		for pattern, method := range c.legacy {
+			legacy[c.context+" "+pattern] = method
+		}
+	}
 	for _, op := range APIRoutes() {
+		if op.Legacy && op.Calls == "" {
+			op.Calls = legacy[op.Context+" "+op.Method+" "+op.Path]
+		}
 		routes[op.Context+"."+op.Calls] = append(routes[op.Context+"."+op.Calls], op)
 	}
 	for _, c := range covered {
@@ -120,6 +158,12 @@ func TestEveryPublicMethodOfARoutedContextHasOneRoute(t *testing.T) {
 				seen[name] = true
 				got := routes[c.context+"."+name]
 				_, internal := c.internal[name]
+				if version, later := c.later[name]; later {
+					if len(got) > 0 {
+						t.Errorf("%s.%s is listed for %s but has a route", c.context, name, version)
+					}
+					continue
+				}
 				switch {
 				case internal && len(got) > 0:
 					t.Errorf("%s.%s stays in process (%s) but has a route: %s %s", c.context, name, c.internal[name], got[0].Method, got[0].Path)
@@ -135,7 +179,7 @@ func TestEveryPublicMethodOfARoutedContextHasOneRoute(t *testing.T) {
 		}
 		var stray []string
 		for key, ops := range routes {
-			if ops[0].Context == c.context && !ops[0].Legacy && !seen[ops[0].Calls] {
+			if ops[0].Context == c.context && !seen[ops[0].Calls] {
 				stray = append(stray, key)
 			}
 		}

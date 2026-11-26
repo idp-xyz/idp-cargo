@@ -3102,6 +3102,2007 @@
         },
         "type": "object"
       },
+      "fin.AccrualRef": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "line_no": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "fin.AppliedBasis": {
+        "additionalProperties": false,
+        "properties": {
+          "applied_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "applied_by": {
+            "type": "string"
+          },
+          "basis_id": {
+            "type": "string"
+          },
+          "basis_no": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "order_id": {
+            "type": "string"
+          },
+          "plan_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "purpose": {
+            "type": "string"
+          },
+          "quote_id": {
+            "type": "string"
+          },
+          "quote_revision": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "fin.BillingProfile": {
+        "additionalProperties": false,
+        "properties": {
+          "debtor_party_id": {
+            "type": "string"
+          },
+          "versions": {
+            "items": {
+              "$ref": "#/components/schemas/fin.BillingProfileVersion"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "fin.BillingProfileVersion": {
+        "additionalProperties": false,
+        "properties": {
+          "bank_account": {
+            "type": "string"
+          },
+          "bank_name": {
+            "type": "string"
+          },
+          "buyer_kind": {
+            "type": "string"
+          },
+          "evidence_ref": {
+            "type": "string"
+          },
+          "party_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "registered_address": {
+            "type": "string"
+          },
+          "registered_phone": {
+            "type": "string"
+          },
+          "set_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "set_by": {
+            "type": "string"
+          },
+          "taxpayer_number": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "version": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "fin.ChargeLine": {
+        "additionalProperties": false,
+        "properties": {
+          "basis_no": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "charge_code": {
+            "type": "string"
+          },
+          "cost": {
+            "items": {
+              "$ref": "#/components/schemas/fin.SideVersion"
+            },
+            "type": "array"
+          },
+          "cost_matched": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "cost_matched_local": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "cost_status": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "line_no": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "quote_line_no": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "sell": {
+            "items": {
+              "$ref": "#/components/schemas/fin.SideVersion"
+            },
+            "type": "array"
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "fin.ChargeSide": {
+        "additionalProperties": false,
+        "properties": {
+          "amount": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "party_id": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "fin.ChargeTaxTreatment": {
+        "additionalProperties": false,
+        "properties": {
+          "charge_code": {
+            "type": "string"
+          },
+          "effective_from": {
+            "type": "string"
+          },
+          "rate_bp": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "set_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "set_by": {
+            "type": "string"
+          },
+          "treatment": {
+            "type": "string"
+          },
+          "version": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "fin.CreditAccount": {
+        "additionalProperties": false,
+        "properties": {
+          "billed": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "debtor_party_id": {
+            "type": "string"
+          },
+          "exposure": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "holds": {
+            "items": {
+              "$ref": "#/components/schemas/fin.CreditHold"
+            },
+            "type": "array"
+          },
+          "legal_entity_id": {
+            "type": "string"
+          },
+          "on_account": {
+            "items": {
+              "$ref": "#/components/schemas/kernel.Money"
+            },
+            "type": "array"
+          },
+          "over_limit": {
+            "type": "boolean"
+          },
+          "revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "status": {
+            "type": "string"
+          },
+          "terms": {
+            "items": {
+              "$ref": "#/components/schemas/fin.CreditTerms"
+            },
+            "type": "array"
+          },
+          "unbilled": {
+            "$ref": "#/components/schemas/kernel.Money"
+          }
+        },
+        "type": "object"
+      },
+      "fin.CreditHold": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "hold_no": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "placed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "placed_by": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "release_reason": {
+            "type": "string"
+          },
+          "released_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "released_by": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "fin.CreditTerms": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "payment_basis": {
+            "type": "string"
+          },
+          "payment_days": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "set_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "set_by": {
+            "type": "string"
+          },
+          "version": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "fin.CreditorAccount": {
+        "additionalProperties": false,
+        "properties": {
+          "creditor_party_id": {
+            "type": "string"
+          },
+          "legal_entity_id": {
+            "type": "string"
+          },
+          "on_account": {
+            "items": {
+              "$ref": "#/components/schemas/kernel.Money"
+            },
+            "type": "array"
+          },
+          "open": {
+            "items": {
+              "$ref": "#/components/schemas/kernel.Money"
+            },
+            "type": "array"
+          },
+          "open_items": {
+            "items": {
+              "$ref": "#/components/schemas/fin.CreditorOpenItem"
+            },
+            "type": "array"
+          },
+          "stated_on": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "fin.CreditorInvoice": {
+        "additionalProperties": false,
+        "properties": {
+          "approval_reason": {
+            "type": "string"
+          },
+          "approval_required": {
+            "type": "boolean"
+          },
+          "approved_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "approved_by": {
+            "type": "string"
+          },
+          "awaiting_approval": {
+            "type": "boolean"
+          },
+          "cancel_reason": {
+            "type": "string"
+          },
+          "cancelled_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "cancelled_by": {
+            "type": "string"
+          },
+          "creditor_party_id": {
+            "type": "string"
+          },
+          "creditor_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "disputes": {
+            "items": {
+              "$ref": "#/components/schemas/fin.CreditorInvoiceDispute"
+            },
+            "type": "array"
+          },
+          "invoice_date": {
+            "type": "string"
+          },
+          "invoice_id": {
+            "type": "string"
+          },
+          "legal_entity_id": {
+            "type": "string"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/fin.CreditorInvoiceLine"
+            },
+            "type": "array"
+          },
+          "matched_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "matched_by": {
+            "type": "string"
+          },
+          "matches": {
+            "items": {
+              "$ref": "#/components/schemas/fin.CreditorInvoiceMatch"
+            },
+            "type": "array"
+          },
+          "open": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "paid": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "payments": {
+            "items": {
+              "$ref": "#/components/schemas/fin.CreditorInvoicePayment"
+            },
+            "type": "array"
+          },
+          "recorded_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "recorded_by": {
+            "type": "string"
+          },
+          "revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "self_approved": {
+            "type": "boolean"
+          },
+          "state": {
+            "type": "string"
+          },
+          "supplier_invoice_no": {
+            "type": "string"
+          },
+          "tax_document_kind": {
+            "type": "string"
+          },
+          "tax_document_number": {
+            "type": "string"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "threshold_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "total": {
+            "$ref": "#/components/schemas/kernel.Money"
+          }
+        },
+        "type": "object"
+      },
+      "fin.CreditorInvoiceDispute": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "by": {
+            "type": "string"
+          },
+          "dispute_no": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "from_state": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "resolve_reason": {
+            "type": "string"
+          },
+          "resolved_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "resolved_by": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "fin.CreditorInvoiceLine": {
+        "additionalProperties": false,
+        "properties": {
+          "amount": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "charge_code": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "supplier_ref": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "fin.CreditorInvoiceMatch": {
+        "additionalProperties": false,
+        "properties": {
+          "accrual": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "accrual_local": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "amount": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "final": {
+            "type": "boolean"
+          },
+          "fx": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/fin.FxSnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "line_no": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "local": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "match_no": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "prior": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "prior_local": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "target": {
+            "$ref": "#/components/schemas/fin.AccrualRef"
+          },
+          "target_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "variance": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "variance_local": {
+            "$ref": "#/components/schemas/kernel.Money"
+          }
+        },
+        "type": "object"
+      },
+      "fin.CreditorInvoicePayment": {
+        "additionalProperties": false,
+        "properties": {
+          "allocation_no": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "amount": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "date": {
+            "type": "string"
+          },
+          "payment_id": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "fin.CreditorMatch": {
+        "additionalProperties": false,
+        "properties": {
+          "amount": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "final": {
+            "type": "boolean"
+          },
+          "line_no": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "target": {
+            "$ref": "#/components/schemas/fin.AccrualRef"
+          }
+        },
+        "type": "object"
+      },
+      "fin.CreditorOpenItem": {
+        "additionalProperties": false,
+        "properties": {
+          "awaiting_approval": {
+            "type": "boolean"
+          },
+          "days_since_invoice": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "invoice_date": {
+            "type": "string"
+          },
+          "invoice_id": {
+            "type": "string"
+          },
+          "open": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "paid": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "payable": {
+            "type": "boolean"
+          },
+          "state": {
+            "type": "string"
+          },
+          "supplier_invoice_no": {
+            "type": "string"
+          },
+          "total": {
+            "$ref": "#/components/schemas/kernel.Money"
+          }
+        },
+        "type": "object"
+      },
+      "fin.CreditorPayment": {
+        "additionalProperties": false,
+        "properties": {
+          "allocations": {
+            "items": {
+              "$ref": "#/components/schemas/fin.CreditorPaymentAllocation"
+            },
+            "type": "array"
+          },
+          "amount": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "cancel_reason": {
+            "type": "string"
+          },
+          "cancelled_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "cancelled_by": {
+            "type": "string"
+          },
+          "cancelled_on": {
+            "type": "string"
+          },
+          "creditor_party_id": {
+            "type": "string"
+          },
+          "creditor_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "evidence_ref": {
+            "type": "string"
+          },
+          "evidence_source": {
+            "type": "string"
+          },
+          "legal_entity_id": {
+            "type": "string"
+          },
+          "paid_on": {
+            "type": "string"
+          },
+          "payment_id": {
+            "type": "string"
+          },
+          "recorded_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "recorded_by": {
+            "type": "string"
+          },
+          "revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "state": {
+            "type": "string"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "unallocated": {
+            "$ref": "#/components/schemas/kernel.Money"
+          }
+        },
+        "type": "object"
+      },
+      "fin.CreditorPaymentAllocation": {
+        "additionalProperties": false,
+        "properties": {
+          "allocated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "allocated_by": {
+            "type": "string"
+          },
+          "allocation_no": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "amount": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "date": {
+            "type": "string"
+          },
+          "invoice_id": {
+            "type": "string"
+          },
+          "reverse_reason": {
+            "type": "string"
+          },
+          "reversed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "reversed_by": {
+            "type": "string"
+          },
+          "reversed_on": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "fin.CurrencyStatement": {
+        "additionalProperties": false,
+        "properties": {
+          "ageing": {
+            "$ref": "#/components/schemas/fin.StatementAgeing"
+          },
+          "closing": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/fin.StatementEntry"
+            },
+            "type": "array"
+          },
+          "on_account": {
+            "items": {
+              "$ref": "#/components/schemas/fin.StatementReceipt"
+            },
+            "type": "array"
+          },
+          "open_items": {
+            "items": {
+              "$ref": "#/components/schemas/fin.StatementItem"
+            },
+            "type": "array"
+          },
+          "opening": {
+            "$ref": "#/components/schemas/kernel.Money"
+          }
+        },
+        "type": "object"
+      },
+      "fin.DebtorInvoice": {
+        "additionalProperties": false,
+        "properties": {
+          "billing_profile": {
+            "$ref": "#/components/schemas/fin.BillingProfileVersion"
+          },
+          "credit_notes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "credits_invoice_id": {
+            "type": "string"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "debtor_party_id": {
+            "type": "string"
+          },
+          "debtor_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "document": {
+            "$ref": "#/components/schemas/fin.DocumentRef"
+          },
+          "due_date": {
+            "type": "string"
+          },
+          "invoice_date": {
+            "type": "string"
+          },
+          "invoice_id": {
+            "type": "string"
+          },
+          "issued_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "issued_by": {
+            "type": "string"
+          },
+          "job_id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "legal_entity_id": {
+            "type": "string"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/fin.DebtorInvoiceLine"
+            },
+            "type": "array"
+          },
+          "local_total": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "number": {
+            "type": "string"
+          },
+          "open": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "payment_basis": {
+            "type": "string"
+          },
+          "payment_days": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "settled": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "settlements": {
+            "items": {
+              "$ref": "#/components/schemas/fin.InvoiceSettlement"
+            },
+            "type": "array"
+          },
+          "shipment_id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "tax_totals": {
+            "items": {
+              "$ref": "#/components/schemas/fin.TaxTotal"
+            },
+            "type": "array"
+          },
+          "terms_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "total": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "write_off": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "fin.DebtorInvoiceLine": {
+        "additionalProperties": false,
+        "properties": {
+          "amount": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "charge_code": {
+            "type": "string"
+          },
+          "credits_line_no": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "fx": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/fin.FxSnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "invoiced": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "job_line_no": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "line_no": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "local": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "rate_bp": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "side_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "tax_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "treatment": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "fin.DebtorReceipt": {
+        "additionalProperties": false,
+        "properties": {
+          "allocations": {
+            "items": {
+              "$ref": "#/components/schemas/fin.DebtorReceiptAllocation"
+            },
+            "type": "array"
+          },
+          "amount": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "bank_charges": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "cancel_reason": {
+            "type": "string"
+          },
+          "cancelled_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "cancelled_by": {
+            "type": "string"
+          },
+          "cancelled_on": {
+            "type": "string"
+          },
+          "debtor_party_id": {
+            "type": "string"
+          },
+          "debtor_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "evidence_ref": {
+            "type": "string"
+          },
+          "evidence_source": {
+            "type": "string"
+          },
+          "legal_entity_id": {
+            "type": "string"
+          },
+          "receipt_id": {
+            "type": "string"
+          },
+          "received_on": {
+            "type": "string"
+          },
+          "recorded_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "recorded_by": {
+            "type": "string"
+          },
+          "revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "state": {
+            "type": "string"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "unallocated": {
+            "$ref": "#/components/schemas/kernel.Money"
+          }
+        },
+        "type": "object"
+      },
+      "fin.DebtorReceiptAllocation": {
+        "additionalProperties": false,
+        "properties": {
+          "allocated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "allocated_by": {
+            "type": "string"
+          },
+          "allocation_no": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "amount": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "date": {
+            "type": "string"
+          },
+          "invoice_id": {
+            "type": "string"
+          },
+          "reverse_reason": {
+            "type": "string"
+          },
+          "reversed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "reversed_by": {
+            "type": "string"
+          },
+          "reversed_on": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "fin.DebtorStatement": {
+        "additionalProperties": false,
+        "properties": {
+          "currencies": {
+            "items": {
+              "$ref": "#/components/schemas/fin.CurrencyStatement"
+            },
+            "type": "array"
+          },
+          "debtor_party_id": {
+            "type": "string"
+          },
+          "from": {
+            "type": "string"
+          },
+          "legal_entity_id": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "fin.DocumentChange": {
+        "additionalProperties": false,
+        "properties": {
+          "billed": {
+            "$ref": "#/components/schemas/fin.DocumentRef"
+          },
+          "change": {
+            "type": "string"
+          },
+          "current": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/fin.DocumentRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "debtor_party_id": {
+            "type": "string"
+          },
+          "invoice_id": {
+            "type": "string"
+          },
+          "job_id": {
+            "type": "string"
+          },
+          "number": {
+            "type": "string"
+          },
+          "shipment_id": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "fin.DocumentRef": {
+        "additionalProperties": false,
+        "properties": {
+          "document_id": {
+            "type": "string"
+          },
+          "issued_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "master_number": {
+            "type": "string"
+          },
+          "number": {
+            "type": "string"
+          },
+          "version": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "fin.ExchangeRateEntry": {
+        "additionalProperties": false,
+        "properties": {
+          "end_reason": {
+            "type": "string"
+          },
+          "ended_by": {
+            "type": "string"
+          },
+          "entry_no": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "from": {
+            "type": "string"
+          },
+          "from_digits": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "rate": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "rate_type": {
+            "type": "string"
+          },
+          "recorded_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "recorded_by": {
+            "type": "string"
+          },
+          "scale": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "source": {
+            "type": "string"
+          },
+          "to_digits": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "valid_from": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "valid_until": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "fin.FapiaoAmount": {
+        "additionalProperties": false,
+        "properties": {
+          "amount": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "rate_bp": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "treatment": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "fin.FapiaoCoveredNote": {
+        "additionalProperties": false,
+        "properties": {
+          "amounts": {
+            "items": {
+              "$ref": "#/components/schemas/fin.FapiaoAmount"
+            },
+            "type": "array"
+          },
+          "invoice_date": {
+            "type": "string"
+          },
+          "invoice_id": {
+            "type": "string"
+          },
+          "number": {
+            "type": "string"
+          },
+          "released": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "fin.FapiaoEvidence": {
+        "additionalProperties": false,
+        "properties": {
+          "date": {
+            "type": "string"
+          },
+          "evidence_ref": {
+            "type": "string"
+          },
+          "number": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "fin.FapiaoLine": {
+        "additionalProperties": false,
+        "properties": {
+          "gross": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "net": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "rate_bp": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "treatment": {
+            "type": "string"
+          },
+          "vat": {
+            "$ref": "#/components/schemas/kernel.Money"
+          }
+        },
+        "type": "object"
+      },
+      "fin.FapiaoRecord": {
+        "additionalProperties": false,
+        "properties": {
+          "bank_account": {
+            "type": "string"
+          },
+          "bank_name": {
+            "type": "string"
+          },
+          "buyer_address": {
+            "type": "string"
+          },
+          "buyer_phone": {
+            "type": "string"
+          },
+          "buyer_title": {
+            "type": "string"
+          },
+          "debtor_party_id": {
+            "type": "string"
+          },
+          "debtor_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "fail_reason": {
+            "type": "string"
+          },
+          "failed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "failed_by": {
+            "type": "string"
+          },
+          "fapiao_id": {
+            "type": "string"
+          },
+          "gross": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "issued": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/fin.FapiaoRecordEvidence"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "legal_entity_id": {
+            "type": "string"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/fin.FapiaoLine"
+            },
+            "type": "array"
+          },
+          "notes": {
+            "items": {
+              "$ref": "#/components/schemas/fin.FapiaoCoveredNote"
+            },
+            "type": "array"
+          },
+          "profile_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "red_letter": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/fin.FapiaoRecordEvidence"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "red_reason": {
+            "type": "string"
+          },
+          "requested_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "requested_by": {
+            "type": "string"
+          },
+          "revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "state": {
+            "type": "string"
+          },
+          "taxpayer_number": {
+            "type": "string"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "vat": {
+            "$ref": "#/components/schemas/kernel.Money"
+          }
+        },
+        "type": "object"
+      },
+      "fin.FapiaoRecordEvidence": {
+        "additionalProperties": false,
+        "properties": {
+          "confirmation_ref": {
+            "type": "string"
+          },
+          "date": {
+            "type": "string"
+          },
+          "evidence_ref": {
+            "type": "string"
+          },
+          "number": {
+            "type": "string"
+          },
+          "recorded_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "recorded_by": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "fin.FinancePolicy": {
+        "additionalProperties": false,
+        "properties": {
+          "book_code": {
+            "type": "string"
+          },
+          "functional_currency": {
+            "type": "string"
+          },
+          "in_force_threshold": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "legal_entity_id": {
+            "type": "string"
+          },
+          "proposed_threshold": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "rates": {
+            "items": {
+              "$ref": "#/components/schemas/fin.ExchangeRateEntry"
+            },
+            "type": "array"
+          },
+          "revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "series": {
+            "items": {
+              "$ref": "#/components/schemas/fin.InvoiceSeries"
+            },
+            "type": "array"
+          },
+          "tax_treatments": {
+            "items": {
+              "$ref": "#/components/schemas/fin.ChargeTaxTreatment"
+            },
+            "type": "array"
+          },
+          "variance_thresholds": {
+            "items": {
+              "$ref": "#/components/schemas/fin.VarianceThreshold"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "fin.FreightJob": {
+        "additionalProperties": false,
+        "properties": {
+          "bases": {
+            "items": {
+              "$ref": "#/components/schemas/fin.AppliedBasis"
+            },
+            "type": "array"
+          },
+          "book_code": {
+            "type": "string"
+          },
+          "cancel_reason": {
+            "type": "string"
+          },
+          "cancelled_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "customer_party_id": {
+            "type": "string"
+          },
+          "functional_currency": {
+            "type": "string"
+          },
+          "job_id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "legal_entity_id": {
+            "type": "string"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/fin.ChargeLine"
+            },
+            "type": "array"
+          },
+          "notes": {
+            "items": {
+              "$ref": "#/components/schemas/fin.NoteSummary"
+            },
+            "type": "array"
+          },
+          "opened_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "plan_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "shipment_id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "tenant_id": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "fin.FxSnapshot": {
+        "additionalProperties": false,
+        "properties": {
+          "entry_no": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "from_digits": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "rate": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "rate_type": {
+            "type": "string"
+          },
+          "scale": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "source": {
+            "type": "string"
+          },
+          "to_digits": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "fin.InvoiceSeries": {
+        "additionalProperties": false,
+        "properties": {
+          "first_number": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "last": {
+            "items": {
+              "$ref": "#/components/schemas/fin.NumberPeriod"
+            },
+            "type": "array"
+          },
+          "template": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "fin.InvoiceSettlement": {
+        "additionalProperties": false,
+        "properties": {
+          "allocation_no": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "amount": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "date": {
+            "type": "string"
+          },
+          "receipt_id": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "fin.NoteSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "debtor_party_id": {
+            "type": "string"
+          },
+          "invoice_id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "number": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "total": {
+            "$ref": "#/components/schemas/kernel.Money"
+          }
+        },
+        "type": "object"
+      },
+      "fin.NumberPeriod": {
+        "additionalProperties": false,
+        "properties": {
+          "last": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "period": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "fin.OpenAccrual": {
+        "additionalProperties": false,
+        "properties": {
+          "amount": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "charge_code": {
+            "type": "string"
+          },
+          "creditor_party_id": {
+            "type": "string"
+          },
+          "local": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "matched": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "matched_local": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "open": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "open_local": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "reference": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "supplier_ref": {
+            "type": "string"
+          },
+          "target": {
+            "$ref": "#/components/schemas/fin.AccrualRef"
+          },
+          "version": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "fin.PaymentAllocation": {
+        "additionalProperties": false,
+        "properties": {
+          "amount": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "invoice_id": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "fin.Receipt": {
+        "additionalProperties": false,
+        "properties": {
+          "command_id": {
+            "type": "string"
+          },
+          "new_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "notice": {
+            "type": "string"
+          },
+          "number": {
+            "type": "string"
+          },
+          "subject_id": {
+            "type": "string"
+          },
+          "version": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "fin.ReceiptAllocation": {
+        "additionalProperties": false,
+        "properties": {
+          "amount": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "invoice_id": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "fin.SideVersion": {
+        "additionalProperties": false,
+        "properties": {
+          "amount": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "converted_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "fx": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/fin.FxSnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "invoice_id": {
+            "type": "string"
+          },
+          "invoice_line_no": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "local": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "party_id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "recorded_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "recorded_by": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "version": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "fin.StatementAgeing": {
+        "additionalProperties": false,
+        "properties": {
+          "days1_to30": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "days31_to60": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "days61_to90": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "not_due": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "over90": {
+            "$ref": "#/components/schemas/kernel.Money"
+          }
+        },
+        "type": "object"
+      },
+      "fin.StatementEntry": {
+        "additionalProperties": false,
+        "properties": {
+          "amount": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "balance": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "date": {
+            "type": "string"
+          },
+          "document_number": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "number": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "fin.StatementItem": {
+        "additionalProperties": false,
+        "properties": {
+          "credited": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "days_overdue": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "document_number": {
+            "type": "string"
+          },
+          "due_date": {
+            "type": "string"
+          },
+          "invoice_date": {
+            "type": "string"
+          },
+          "invoice_id": {
+            "type": "string"
+          },
+          "number": {
+            "type": "string"
+          },
+          "open": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "settled": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "total": {
+            "$ref": "#/components/schemas/kernel.Money"
+          }
+        },
+        "type": "object"
+      },
+      "fin.StatementReceipt": {
+        "additionalProperties": false,
+        "properties": {
+          "credited": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "evidence_ref": {
+            "type": "string"
+          },
+          "evidence_source": {
+            "type": "string"
+          },
+          "receipt_id": {
+            "type": "string"
+          },
+          "received_on": {
+            "type": "string"
+          },
+          "unallocated": {
+            "$ref": "#/components/schemas/kernel.Money"
+          }
+        },
+        "type": "object"
+      },
+      "fin.TaxTotal": {
+        "additionalProperties": false,
+        "properties": {
+          "amount": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "local": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "rate_bp": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "treatment": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "fin.VarianceThreshold": {
+        "additionalProperties": false,
+        "properties": {
+          "amount": {
+            "$ref": "#/components/schemas/kernel.Money"
+          },
+          "automatic": {
+            "type": "boolean"
+          },
+          "decided_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "decided_by": {
+            "type": "string"
+          },
+          "in_force_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "looser": {
+            "type": "boolean"
+          },
+          "proposed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "rate_bp": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "refuse_reason": {
+            "type": "string"
+          },
+          "set_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "set_by": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "version": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
       "ful.PlannedPart": {
         "additionalProperties": false,
         "properties": {
@@ -3243,6 +5244,19 @@
           },
           "scheme": {
             "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "kernel.Money": {
+        "additionalProperties": false,
+        "properties": {
+          "currency": {
+            "type": "string"
+          },
+          "minor": {
+            "format": "int64",
+            "type": "integer"
           }
         },
         "type": "object"
@@ -5090,7 +7104,7 @@
   "info": {
     "description": "Cargo's HTTP API. Every /v1 call carries a bearer token; the tenant and the actor come only from it. A command carries Idempotency-Key (its command id) and, when it changes a resource at a revision, If-Match \"n\"; it states its business time in occurred_at. Errors are RFC 9457 problems with a business code.",
     "title": "IDP Cargo API",
-    "version": "2.109"
+    "version": "2.110"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -12195,6 +14209,146 @@
         "x-permission": "doc:Read"
       }
     },
+    "/v1/fin/billing-profiles/{debtor_party_id}": {
+      "get": {
+        "operationId": "fin.GetBillingProfile",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "debtor_party_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fin.BillingProfile"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "A debtor's billing profile",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "GetBillingProfile",
+        "x-permission": "fin:Read"
+      },
+      "post": {
+        "operationId": "fin.SetBillingProfile",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "debtor_party_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "bank_account": {
+                    "type": "string"
+                  },
+                  "bank_name": {
+                    "type": "string"
+                  },
+                  "buyer_kind": {
+                    "type": "string"
+                  },
+                  "evidence_ref": {
+                    "type": "string"
+                  },
+                  "expected_version": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "registered_address": {
+                    "type": "string"
+                  },
+                  "registered_phone": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fin.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Set a debtor's billing profile",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "SetBillingProfile",
+        "x-permission": "fin:SetBillingProfile"
+      }
+    },
     "/v1/fin/cost-review-requests": {
       "post": {
         "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
@@ -12261,6 +14415,1625 @@
         "x-calls": ""
       }
     },
+    "/v1/fin/creditor-invoices": {
+      "get": {
+        "operationId": "fin.ListCreditorInvoices",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "legal_entity_id",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "creditor_party_id",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "awaiting_approval",
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "items": {
+                      "items": {
+                        "$ref": "#/components/schemas/fin.CreditorInvoice"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "A legal entity's creditor invoices: fin:ReadProfit",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "ListCreditorInvoices",
+        "x-permission": "fin:ReadProfit"
+      },
+      "post": {
+        "operationId": "fin.RecordCreditorInvoice",
+        "parameters": [
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "creditor_party_id": {
+                    "type": "string"
+                  },
+                  "currency": {
+                    "type": "string"
+                  },
+                  "invoice_date": {
+                    "type": "string"
+                  },
+                  "invoice_id": {
+                    "type": "string"
+                  },
+                  "legal_entity_id": {
+                    "type": "string"
+                  },
+                  "lines": {
+                    "items": {
+                      "$ref": "#/components/schemas/fin.CreditorInvoiceLine"
+                    },
+                    "type": "array"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "supplier_invoice_no": {
+                    "type": "string"
+                  },
+                  "tax_document_kind": {
+                    "type": "string"
+                  },
+                  "tax_document_number": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fin.Receipt"
+                }
+              }
+            },
+            "description": "Created",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Record a creditor's invoice",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "RecordCreditorInvoice",
+        "x-permission": "fin:RecordCreditorInvoice"
+      }
+    },
+    "/v1/fin/creditor-invoices/{invoice_id}": {
+      "get": {
+        "operationId": "fin.GetCreditorInvoice",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "invoice_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fin.CreditorInvoice"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "A creditor invoice: fin:ReadProfit",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "GetCreditorInvoice",
+        "x-permission": "fin:ReadProfit"
+      }
+    },
+    "/v1/fin/creditor-invoices/{invoice_id}/approve-variance": {
+      "post": {
+        "operationId": "fin.ApproveCostVariance",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "invoice_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fin.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Approve the variance (not the matcher's, unless fin:ApproveOwnCostVariance by name)",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "ApproveCostVariance",
+        "x-permission": "fin:ApproveCostVariance"
+      }
+    },
+    "/v1/fin/creditor-invoices/{invoice_id}/cancel": {
+      "post": {
+        "operationId": "fin.CancelCreditorInvoice",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "invoice_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fin.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Cancel it",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "CancelCreditorInvoice",
+        "x-permission": "fin:CancelCreditorInvoice"
+      }
+    },
+    "/v1/fin/creditor-invoices/{invoice_id}/dispute": {
+      "post": {
+        "operationId": "fin.DisputeCreditorInvoice",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "invoice_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fin.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Dispute it",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "DisputeCreditorInvoice",
+        "x-permission": "fin:DisputeCreditorInvoice"
+      }
+    },
+    "/v1/fin/creditor-invoices/{invoice_id}/match": {
+      "post": {
+        "operationId": "fin.MatchCreditorInvoice",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "invoice_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "matches": {
+                    "items": {
+                      "$ref": "#/components/schemas/fin.CreditorMatch"
+                    },
+                    "type": "array"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fin.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Match it to accrued cost lines",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "MatchCreditorInvoice",
+        "x-permission": "fin:MatchCreditorInvoice"
+      }
+    },
+    "/v1/fin/creditor-invoices/{invoice_id}/resolve-dispute": {
+      "post": {
+        "operationId": "fin.ResolveCreditorInvoiceDispute",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "invoice_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fin.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Resolve the dispute",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "ResolveCreditorInvoiceDispute",
+        "x-permission": "fin:ResolveCreditorInvoiceDispute"
+      }
+    },
+    "/v1/fin/creditor-payments": {
+      "post": {
+        "operationId": "fin.RecordCreditorPayment",
+        "parameters": [
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "amount": {
+                    "$ref": "#/components/schemas/kernel.Money"
+                  },
+                  "creditor_party_id": {
+                    "type": "string"
+                  },
+                  "evidence_ref": {
+                    "type": "string"
+                  },
+                  "evidence_source": {
+                    "type": "string"
+                  },
+                  "legal_entity_id": {
+                    "type": "string"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "paid_on": {
+                    "type": "string"
+                  },
+                  "payment_id": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fin.Receipt"
+                }
+              }
+            },
+            "description": "Created",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Record a payment to a creditor",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "RecordCreditorPayment",
+        "x-permission": "fin:RecordCreditorPayment"
+      }
+    },
+    "/v1/fin/creditor-payments/{payment_id}": {
+      "get": {
+        "operationId": "fin.GetCreditorPayment",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "payment_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fin.CreditorPayment"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "A creditor payment: fin:ReadProfit",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "GetCreditorPayment",
+        "x-permission": "fin:ReadProfit"
+      }
+    },
+    "/v1/fin/creditor-payments/{payment_id}/allocations": {
+      "post": {
+        "operationId": "fin.AllocateCreditorPayment",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "payment_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "allocations": {
+                    "items": {
+                      "$ref": "#/components/schemas/fin.PaymentAllocation"
+                    },
+                    "type": "array"
+                  },
+                  "date": {
+                    "type": "string"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fin.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Allocate a payment to invoices",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "AllocateCreditorPayment",
+        "x-permission": "fin:AllocateCreditorPayment"
+      }
+    },
+    "/v1/fin/creditor-payments/{payment_id}/allocations/{allocation_no}/reverse": {
+      "post": {
+        "operationId": "fin.ReverseCreditorPaymentAllocation",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "payment_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "allocation_no",
+            "required": true,
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "date": {
+                    "type": "string"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fin.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Reverse an allocation",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "ReverseCreditorPaymentAllocation",
+        "x-permission": "fin:ReverseCreditorPaymentAllocation"
+      }
+    },
+    "/v1/fin/creditor-payments/{payment_id}/cancel": {
+      "post": {
+        "operationId": "fin.CancelCreditorPayment",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "payment_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "date": {
+                    "type": "string"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fin.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Cancel a payment",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "CancelCreditorPayment",
+        "x-permission": "fin:CancelCreditorPayment"
+      }
+    },
+    "/v1/fin/debtor-invoices/{invoice_id}": {
+      "get": {
+        "operationId": "fin.GetDebtorInvoice",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "invoice_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fin.DebtorInvoice"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "A debit or credit note",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "GetDebtorInvoice",
+        "x-permission": "fin:Read"
+      }
+    },
+    "/v1/fin/fapiao": {
+      "post": {
+        "operationId": "fin.RequestFapiao",
+        "parameters": [
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "debtor_party_id": {
+                    "type": "string"
+                  },
+                  "fapiao_id": {
+                    "type": "string"
+                  },
+                  "invoice_ids": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "legal_entity_id": {
+                    "type": "string"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fin.Receipt"
+                }
+              }
+            },
+            "description": "Created",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Request a fapiao for debit notes",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "RequestFapiao",
+        "x-permission": "fin:RequestFapiao"
+      }
+    },
+    "/v1/fin/fapiao/{fapiao_id}": {
+      "get": {
+        "operationId": "fin.GetFapiaoRecord",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "fapiao_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fin.FapiaoRecord"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "A fapiao record",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "GetFapiaoRecord",
+        "x-permission": "fin:Read"
+      }
+    },
+    "/v1/fin/fapiao/{fapiao_id}/failed": {
+      "post": {
+        "operationId": "fin.RecordFapiaoFailed",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "fapiao_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fin.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Record the tax platform's failure",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "RecordFapiaoFailed",
+        "x-permission": "fin:RecordFapiaoFailed"
+      }
+    },
+    "/v1/fin/fapiao/{fapiao_id}/issued": {
+      "post": {
+        "operationId": "fin.RecordFapiaoIssued",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "fapiao_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "fapiao": {
+                    "$ref": "#/components/schemas/fin.FapiaoEvidence"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fin.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Record the tax platform's issue",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "RecordFapiaoIssued",
+        "x-permission": "fin:RecordFapiaoIssued"
+      }
+    },
+    "/v1/fin/fapiao/{fapiao_id}/red-letter": {
+      "post": {
+        "operationId": "fin.RecordRedLetter",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "fapiao_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "confirmation_ref": {
+                    "type": "string"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  },
+                  "red_letter": {
+                    "$ref": "#/components/schemas/fin.FapiaoEvidence"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fin.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Record a red-letter fapiao",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "RecordRedLetter",
+        "x-permission": "fin:RecordRedLetter"
+      }
+    },
+    "/v1/fin/jobs": {
+      "post": {
+        "operationId": "fin.OpenFreightJob",
+        "parameters": [
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "job_id": {
+                    "type": "string"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "shipment_id": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fin.Receipt"
+                }
+              }
+            },
+            "description": "Created",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Open a shipment's freight job",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "OpenFreightJob",
+        "x-permission": "fin:OpenFreightJob"
+      }
+    },
     "/v1/fin/jobs/{jobId}/cost-review-requests": {
       "get": {
         "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
@@ -12305,6 +16078,914 @@
         "x-calls": ""
       }
     },
+    "/v1/fin/jobs/{job_id}": {
+      "get": {
+        "operationId": "fin.GetFreightJob",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fin.FreightJob"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "A job: its charge lines with their costs: fin:ReadProfit",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "GetFreightJob",
+        "x-permission": "fin:ReadProfit"
+      }
+    },
+    "/v1/fin/jobs/{job_id}/cancel": {
+      "post": {
+        "operationId": "fin.CancelFreightJob",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fin.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Cancel the job",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "CancelFreightJob",
+        "x-permission": "fin:CancelFreightJob"
+      }
+    },
+    "/v1/fin/jobs/{job_id}/charge-lines": {
+      "post": {
+        "operationId": "fin.RecordChargeLine",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "charge_code": {
+                    "type": "string"
+                  },
+                  "cost": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/fin.ChargeSide"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  },
+                  "sell": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/fin.ChargeSide"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fin.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Record a charge line: its sell and cost sides",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "RecordChargeLine",
+        "x-permission": "fin:RecordChargeLine"
+      }
+    },
+    "/v1/fin/jobs/{job_id}/charge-lines/{line_no}/release-accrual": {
+      "post": {
+        "operationId": "fin.ReleaseJobAccrual",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "line_no",
+            "required": true,
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "expected_side_version": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fin.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Release a cost line's accrual no invoice will match",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "ReleaseJobAccrual",
+        "x-permission": "fin:ReleaseJobAccrual"
+      }
+    },
+    "/v1/fin/jobs/{job_id}/charge-lines/{line_no}/revise": {
+      "post": {
+        "operationId": "fin.ReviseChargeSide",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "line_no",
+            "required": true,
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "expected_side_version": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  },
+                  "side": {
+                    "type": "string"
+                  },
+                  "value": {
+                    "$ref": "#/components/schemas/fin.ChargeSide"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fin.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Revise a side of a line, with a reason",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "ReviseChargeSide",
+        "x-permission": "fin:ReviseChargeSide"
+      }
+    },
+    "/v1/fin/jobs/{job_id}/credit-notes": {
+      "post": {
+        "operationId": "fin.IssueCreditNote",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "debit_note_id": {
+                    "type": "string"
+                  },
+                  "invoice_date": {
+                    "type": "string"
+                  },
+                  "invoice_id": {
+                    "type": "string"
+                  },
+                  "line_nos": {
+                    "items": {
+                      "format": "int64",
+                      "type": "integer"
+                    },
+                    "type": "array"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  },
+                  "write_off": {
+                    "type": "boolean"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fin.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Issue a credit note against a debit note",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "IssueCreditNote",
+        "x-permission": "fin:IssueCreditNote"
+      }
+    },
+    "/v1/fin/jobs/{job_id}/debit-notes": {
+      "post": {
+        "operationId": "fin.IssueDebitNote",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "currency": {
+                    "type": "string"
+                  },
+                  "debtor_party_id": {
+                    "type": "string"
+                  },
+                  "invoice_date": {
+                    "type": "string"
+                  },
+                  "invoice_id": {
+                    "type": "string"
+                  },
+                  "line_nos": {
+                    "items": {
+                      "format": "int64",
+                      "type": "integer"
+                    },
+                    "type": "array"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fin.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Issue a debit note on the house's bill",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "IssueDebitNote",
+        "x-permission": "fin:IssueDebitNote"
+      }
+    },
+    "/v1/fin/jobs/{job_id}/legal-entity": {
+      "get": {
+        "operationId": "fin.GetJobLegalEntity",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "The job's legal entity: fin:ReadProfit",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "GetJobLegalEntity",
+        "x-permission": "checked by the context"
+      }
+    },
+    "/v1/fin/jobs/{job_id}/pricing-basis": {
+      "post": {
+        "operationId": "fin.ApplyPricingBasis",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "order_id": {
+                    "type": "string"
+                  },
+                  "quote_id": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fin.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Apply the accepted quote and the order",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "ApplyPricingBasis",
+        "x-permission": "fin:ApplyPricingBasis"
+      }
+    },
+    "/v1/fin/jobs/{job_id}/rate": {
+      "post": {
+        "operationId": "fin.RateFreightJob",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "carrier": {
+                    "type": "string"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "service_level": {
+                    "type": "string"
+                  },
+                  "via": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fin.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Rate the job from RATE's tariffs",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "RateFreightJob",
+        "x-permission": "fin:RateFreightJob"
+      }
+    },
     "/v1/fin/legal-entities/{legalEntityId}/job-profits": {
       "get": {
         "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
@@ -12325,6 +17006,1921 @@
           "fin"
         ],
         "x-calls": ""
+      }
+    },
+    "/v1/fin/legal-entities/{legal_entity_id}/credit-exposure": {
+      "get": {
+        "operationId": "fin.ListCreditExposure",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "legal_entity_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "items": {
+                      "items": {
+                        "$ref": "#/components/schemas/fin.CreditAccount"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Every debtor's credit exposure",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "ListCreditExposure",
+        "x-permission": "fin:Read"
+      }
+    },
+    "/v1/fin/legal-entities/{legal_entity_id}/creditors/{creditor_party_id}/account": {
+      "get": {
+        "operationId": "fin.GetCreditorAccount",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "legal_entity_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "creditor_party_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fin.CreditorAccount"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "The creditor's account: fin:ReadProfit",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "GetCreditorAccount",
+        "x-permission": "fin:ReadProfit"
+      }
+    },
+    "/v1/fin/legal-entities/{legal_entity_id}/creditors/{creditor_party_id}/accruals": {
+      "get": {
+        "operationId": "fin.ListOpenAccruals",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "legal_entity_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "creditor_party_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "items": {
+                      "items": {
+                        "$ref": "#/components/schemas/fin.OpenAccrual"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "The open accruals: fin:ReadProfit",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "ListOpenAccruals",
+        "x-permission": "fin:ReadProfit"
+      }
+    },
+    "/v1/fin/legal-entities/{legal_entity_id}/creditors/{creditor_party_id}/payments": {
+      "get": {
+        "operationId": "fin.ListCreditorPayments",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "legal_entity_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "creditor_party_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "items": {
+                      "items": {
+                        "$ref": "#/components/schemas/fin.CreditorPayment"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "The payments: fin:ReadProfit",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "ListCreditorPayments",
+        "x-permission": "fin:ReadProfit"
+      }
+    },
+    "/v1/fin/legal-entities/{legal_entity_id}/debit-notes-on-changed-documents": {
+      "get": {
+        "operationId": "fin.ListDebitNotesOnChangedDocuments",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "legal_entity_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "items": {
+                      "items": {
+                        "$ref": "#/components/schemas/fin.DocumentChange"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Open debit notes whose house document changed after",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "ListDebitNotesOnChangedDocuments",
+        "x-permission": "fin:Read"
+      }
+    },
+    "/v1/fin/legal-entities/{legal_entity_id}/debtors/{debtor_party_id}/credit": {
+      "get": {
+        "operationId": "fin.GetCreditAccount",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "legal_entity_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "debtor_party_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fin.CreditAccount"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "The debtor's credit account",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "GetCreditAccount",
+        "x-permission": "fin:Read"
+      }
+    },
+    "/v1/fin/legal-entities/{legal_entity_id}/debtors/{debtor_party_id}/credit-holds": {
+      "post": {
+        "operationId": "fin.PlaceCreditHold",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "legal_entity_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "debtor_party_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "code": {
+                    "type": "string"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fin.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Place a credit hold",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "PlaceCreditHold",
+        "x-permission": "fin:PlaceCreditHold"
+      }
+    },
+    "/v1/fin/legal-entities/{legal_entity_id}/debtors/{debtor_party_id}/credit-holds/release": {
+      "post": {
+        "operationId": "fin.ReleaseCreditHold",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "legal_entity_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "debtor_party_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fin.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Release the credit hold",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "ReleaseCreditHold",
+        "x-permission": "fin:ReleaseCreditHold"
+      }
+    },
+    "/v1/fin/legal-entities/{legal_entity_id}/debtors/{debtor_party_id}/credit-terms": {
+      "post": {
+        "operationId": "fin.SetCreditTerms",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "legal_entity_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "debtor_party_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "limit": {
+                    "$ref": "#/components/schemas/kernel.Money"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "payment_basis": {
+                    "type": "string"
+                  },
+                  "payment_days": {
+                    "format": "int64",
+                    "type": "integer"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fin.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Set the debtor's credit terms",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "SetCreditTerms",
+        "x-permission": "fin:SetCreditTerms"
+      }
+    },
+    "/v1/fin/legal-entities/{legal_entity_id}/debtors/{debtor_party_id}/fapiao": {
+      "get": {
+        "operationId": "fin.ListFapiaoRecords",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "legal_entity_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "debtor_party_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "items": {
+                      "items": {
+                        "$ref": "#/components/schemas/fin.FapiaoRecord"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "The debtor's fapiao",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "ListFapiaoRecords",
+        "x-permission": "fin:Read"
+      }
+    },
+    "/v1/fin/legal-entities/{legal_entity_id}/debtors/{debtor_party_id}/open-items": {
+      "get": {
+        "operationId": "fin.ListOpenDebtorItems",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "legal_entity_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "debtor_party_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "items": {
+                      "items": {
+                        "$ref": "#/components/schemas/fin.DebtorInvoice"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "The debtor's open invoices and notes",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "ListOpenDebtorItems",
+        "x-permission": "fin:Read"
+      }
+    },
+    "/v1/fin/legal-entities/{legal_entity_id}/debtors/{debtor_party_id}/receipts": {
+      "get": {
+        "operationId": "fin.ListDebtorReceipts",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "legal_entity_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "debtor_party_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "items": {
+                      "items": {
+                        "$ref": "#/components/schemas/fin.DebtorReceipt"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "The debtor's receipts",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "ListDebtorReceipts",
+        "x-permission": "fin:Read"
+      }
+    },
+    "/v1/fin/legal-entities/{legal_entity_id}/debtors/{debtor_party_id}/statement": {
+      "get": {
+        "operationId": "fin.GetDebtorStatement",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "legal_entity_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "debtor_party_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "from",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fin.DebtorStatement"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "The debtor's statement (from, to)",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "GetDebtorStatement",
+        "x-permission": "fin:Read"
+      }
+    },
+    "/v1/fin/legal-entities/{legal_entity_id}/exchange-rates": {
+      "post": {
+        "operationId": "fin.RecordExchangeRate",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "legal_entity_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "from": {
+                    "type": "string"
+                  },
+                  "from_digits": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "rate": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "rate_type": {
+                    "type": "string"
+                  },
+                  "scale": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "source": {
+                    "type": "string"
+                  },
+                  "to_digits": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "valid_from": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "valid_until": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fin.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Record an exchange rate with its source",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "RecordExchangeRate",
+        "x-permission": "fin:RecordExchangeRate"
+      }
+    },
+    "/v1/fin/legal-entities/{legal_entity_id}/exchange-rates/{entry_no}/end": {
+      "post": {
+        "operationId": "fin.EndExchangeRate",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "legal_entity_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "entry_no",
+            "required": true,
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  },
+                  "valid_until": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fin.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "End an exchange rate",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "EndExchangeRate",
+        "x-permission": "fin:EndExchangeRate"
+      }
+    },
+    "/v1/fin/legal-entities/{legal_entity_id}/invoice-series": {
+      "post": {
+        "operationId": "fin.RegisterInvoiceSeries",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "legal_entity_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "first_number": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "first_period_date": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "type": "string"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "template": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fin.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Register the invoice number series",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "RegisterInvoiceSeries",
+        "x-permission": "fin:RegisterInvoiceSeries"
+      }
+    },
+    "/v1/fin/legal-entities/{legal_entity_id}/policy": {
+      "get": {
+        "operationId": "fin.GetFinancePolicy",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "legal_entity_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fin.FinancePolicy"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "The finance policy, its rates, tax treatments and series",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "GetFinancePolicy",
+        "x-permission": "fin:Read"
+      },
+      "post": {
+        "operationId": "fin.OpenFinancePolicy",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "legal_entity_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "book_code": {
+                    "type": "string"
+                  },
+                  "functional_currency": {
+                    "type": "string"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fin.Receipt"
+                }
+              }
+            },
+            "description": "Created",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Open the finance policy: functional currency and book",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "OpenFinancePolicy",
+        "x-permission": "fin:OpenFinancePolicy"
+      }
+    },
+    "/v1/fin/legal-entities/{legal_entity_id}/tax-treatments": {
+      "post": {
+        "operationId": "fin.SetChargeTaxTreatment",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "legal_entity_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "charge_code": {
+                    "type": "string"
+                  },
+                  "effective_from": {
+                    "type": "string"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "rate_bp": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "treatment": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fin.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Set a charge code's tax treatment",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "SetChargeTaxTreatment",
+        "x-permission": "fin:SetChargeTaxTreatment"
+      }
+    },
+    "/v1/fin/receipts": {
+      "post": {
+        "operationId": "fin.RecordDebtorReceipt",
+        "parameters": [
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "amount": {
+                    "$ref": "#/components/schemas/kernel.Money"
+                  },
+                  "bank_charges": {
+                    "$ref": "#/components/schemas/kernel.Money"
+                  },
+                  "debtor_party_id": {
+                    "type": "string"
+                  },
+                  "evidence_ref": {
+                    "type": "string"
+                  },
+                  "evidence_source": {
+                    "type": "string"
+                  },
+                  "legal_entity_id": {
+                    "type": "string"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "receipt_id": {
+                    "type": "string"
+                  },
+                  "received_on": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fin.Receipt"
+                }
+              }
+            },
+            "description": "Created",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Record money received",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "RecordDebtorReceipt",
+        "x-permission": "fin:RecordDebtorReceipt"
+      }
+    },
+    "/v1/fin/receipts/{receipt_id}": {
+      "get": {
+        "operationId": "fin.GetDebtorReceipt",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "receipt_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fin.DebtorReceipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "A receipt and its allocations",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "GetDebtorReceipt",
+        "x-permission": "fin:Read"
+      }
+    },
+    "/v1/fin/receipts/{receipt_id}/allocations": {
+      "post": {
+        "operationId": "fin.AllocateDebtorReceipt",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "receipt_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "allocations": {
+                    "items": {
+                      "$ref": "#/components/schemas/fin.ReceiptAllocation"
+                    },
+                    "type": "array"
+                  },
+                  "date": {
+                    "type": "string"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fin.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Allocate a receipt to open items",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "AllocateDebtorReceipt",
+        "x-permission": "fin:AllocateDebtorReceipt"
+      }
+    },
+    "/v1/fin/receipts/{receipt_id}/allocations/{allocation_no}/reverse": {
+      "post": {
+        "operationId": "fin.ReverseDebtorReceiptAllocation",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "receipt_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "allocation_no",
+            "required": true,
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "date": {
+                    "type": "string"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fin.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Reverse an allocation",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "ReverseDebtorReceiptAllocation",
+        "x-permission": "fin:ReverseDebtorReceiptAllocation"
+      }
+    },
+    "/v1/fin/receipts/{receipt_id}/cancel": {
+      "post": {
+        "operationId": "fin.CancelDebtorReceipt",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "receipt_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "date": {
+                    "type": "string"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/fin.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Cancel a receipt",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "CancelDebtorReceipt",
+        "x-permission": "fin:CancelDebtorReceipt"
+      }
+    },
+    "/v1/fin/shipments/{shipment_id}/jobs": {
+      "get": {
+        "operationId": "fin.ListJobsForShipment",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "shipment_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "items": {
+                      "items": {
+                        "$ref": "#/components/schemas/fin.FreightJob"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "A shipment's jobs: fin:ReadProfit",
+        "tags": [
+          "fin"
+        ],
+        "x-calls": "ListJobsForShipment",
+        "x-permission": "fin:ReadProfit"
       }
     },
     "/v1/hawb-series/{legal_entity_id}": {
