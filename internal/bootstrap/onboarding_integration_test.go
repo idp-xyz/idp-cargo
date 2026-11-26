@@ -123,8 +123,14 @@ func (d *settingsDay) propose(id, profile string, staff int, single bool, overri
 		Profile: profile, Overrides: overrides, RiskStatement: riskStatement, FinanceStaff: staff, SingleAdministrator: single})
 }
 
+// confirmCommand is the owner's confirmation; when the proposal says the customer declares a single administrator, the
+// owner names dan, who is neither the consultant nor the owner.
 func (d *settingsDay) confirmCommand(id string) orgapi.ConfirmOnboarding {
-	return orgapi.ConfirmOnboarding{CommandID: "confirm-" + id, TenantID: d.tenant, ActorID: "olga", OnboardingID: id, AcknowledgedText: riskStatement}
+	c := orgapi.ConfirmOnboarding{CommandID: "confirm-" + id, TenantID: d.tenant, ActorID: "olga", OnboardingID: id, AcknowledgedText: riskStatement}
+	if o, err := d.org.GetOnboarding(context.Background(), orgapi.GetOnboarding{TenantID: d.tenant, OnboardingID: id}); err == nil && o.SingleAdministrator {
+		c.AdministratorID = "dan"
+	}
+	return c
 }
 
 func (d *settingsDay) confirm(id string) (OnboardingConfirmation, error) {

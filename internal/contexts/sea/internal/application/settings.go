@@ -221,7 +221,7 @@ func (d Deps) ApproveSettingsAs(ctx context.Context, c Command, acknowledgement 
 		if err != nil {
 			return Receipt{}, nil, err
 		}
-		a, err := ledger.ApproveAs(SeaSettingsCatalogue(), c.Subject, c.Scope.ActorID, now, settings.Own{Declared: len(declared) > 0, Acknowledgement: acknowledgement})
+		a, err := ledger.ApproveAs(SeaSettingsCatalogue(), c.Subject, c.Scope.ActorID, now, settings.Own{Administrators: administratorsOf(declared), Acknowledgement: acknowledgement})
 		if err != nil {
 			return Receipt{}, nil, err
 		}
@@ -230,6 +230,17 @@ func (d Deps) ApproveSettingsAs(ctx context.Context, c Command, acknowledgement 
 		}
 		return Receipt{SubjectID: c.Subject, NewRevision: 2, SettingsVersion: a.Version}, SettingsApproved(c.Scope.TenantID, c.Subject, a), nil
 	})
+}
+
+// administratorsOf are the single administrators the declarations name.
+func administratorsOf(declared []settings.Declaration) []string {
+	var out []string
+	for _, d := range declared {
+		if !slices.Contains(out, d.Administrator) {
+			out = append(out, d.Administrator)
+		}
+	}
+	return out
 }
 
 // CancelSettings cancels a change set that is not in force yet, with a reason.
@@ -510,8 +521,9 @@ func (r Reads) openConflicts(txCtx context.Context, tenant sea.TenantID, legalEn
 }
 
 // DeclareSingleAdministrator records that the tenant declared a single administrator in an onboarding, proposed by one
-// person and confirmed by another (the command's actor, the customer's owner), at SEA's clock under the settings lock.
-func (d Deps) DeclareSingleAdministrator(ctx context.Context, c Command, proposedBy string) (Receipt, error) {
+// person and confirmed by another (the command's actor, the customer's owner), who named the administrator (not the
+// consultant who proposed it), at SEA's clock under the settings lock.
+func (d Deps) DeclareSingleAdministrator(ctx context.Context, c Command, proposedBy, administrator string) (Receipt, error) {
 	if d.Settings == nil {
 		return Receipt{}, ErrMissingDependency
 	}
@@ -520,11 +532,12 @@ func (d Deps) DeclareSingleAdministrator(ctx context.Context, c Command, propose
 		return stored, err
 	}
 	return d.writeSettings(ctx, c, hash, func(txCtx context.Context, now time.Time) (Receipt, aggregate, error) {
-		if strings.TrimSpace(c.Subject) == "" || strings.TrimSpace(proposedBy) == "" || proposedBy == c.Scope.ActorID {
-			return Receipt{}, nil, fmt.Errorf("%w: a declaration names its onboarding and two different people, the consultant who proposed it and the owner who "+
-				"confirmed it; the platform's onboarding makes it, so ask its owners if you see this", sea.ErrInvalidChange)
+		if strings.TrimSpace(c.Subject) == "" || strings.TrimSpace(proposedBy) == "" || proposedBy == c.Scope.ActorID ||
+			strings.TrimSpace(administrator) == "" || administrator == proposedBy {
+			return Receipt{}, nil, fmt.Errorf("%w: a declaration names its onboarding, two different people, the consultant who proposed it and the owner who "+
+				"confirmed it, and the administrator, who is not the consultant; the platform's onboarding makes it, so ask its owners if you see this", sea.ErrInvalidChange)
 		}
-		d1 := settings.Declaration{OnboardingID: c.Subject, ProposedBy: proposedBy, ConfirmedBy: c.Scope.ActorID, At: now}
+		d1 := settings.Declaration{OnboardingID: c.Subject, ProposedBy: proposedBy, ConfirmedBy: c.Scope.ActorID, Administrator: administrator, At: now}
 		if err := d.Settings.InsertDeclaration(txCtx, c.Scope.TenantID, d1); err != nil {
 			return Receipt{}, nil, err
 		}

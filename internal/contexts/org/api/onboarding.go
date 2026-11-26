@@ -6,15 +6,19 @@ import (
 )
 
 // Customer onboarding (V2.102, design section 9): ORG holds the record of who proposed the profile of the rules for a
-// customer, who confirmed it and what the owner acknowledged. ORG does not apply the profile: the platform's
-// onboarding does that in FIN and SEA through their own settings commands once the owner has confirmed, and records here
-// the change set and the state of each module. ORG knows two different people, not who the customer's owner is.
+// customer, what the proposal makes of it in each module, who confirmed it and what the owner acknowledged. ORG does not
+// apply the profile: the platform's onboarding does that in FIN and SEA through their own settings commands once the
+// owner has confirmed, and applies exactly the entries stored in the proposal, with the catalogue version each was
+// resolved against; it records here the change set and the state of each module. ORG knows different people, not who the
+// customer's owner or administrator is.
 
-// Actions an Authorizer decides on (AuthorizePartyAction); the subject is the onboarding. Both are granted by name
-// only: "org:*" and "*" grant neither.
+// Actions an Authorizer decides on (AuthorizePartyAction); the subject is the onboarding. All are granted by name
+// only: "org:*" and "*" grant none. ActionRecordOnboardingModule is the platform's own: the principal the bootstrap
+// builds for the onboarding holds it, and no person's role does.
 const (
-	ActionProposeOnboarding = "ProposeOnboarding"
-	ActionConfirmOnboarding = "ConfirmOnboarding"
+	ActionProposeOnboarding      = "ProposeOnboarding"
+	ActionConfirmOnboarding      = "ConfirmOnboarding"
+	ActionRecordOnboardingModule = "RecordOnboardingModule"
 )
 
 // Events; the onboarding is the subject.
@@ -58,9 +62,18 @@ type OnboardingEntry struct {
 	ThresholdCurrency string `json:",omitempty"`
 }
 
+// ModulePlan is what an onboarding applies to a module: the entries the profile and the overrides make of it, resolved
+// when the consultant proposes, and the version of the module's catalogue they were resolved against.
+type ModulePlan struct {
+	CatalogueVersion string
+	Entries          []OnboardingEntry
+}
+
 // ProposeOnboarding records the consultant's proposal: the profile, the overrides by module (ModuleFIN, ModuleSEA; each
-// override replaces the profile's value of its item at its scope, or adds a legal entity's), the risk statement (1 to
-// 2000 characters) that the customer's owner will acknowledge, the customer's declared number of finance staff (1 to
+// override replaces the profile's value of its item at its scope, or adds a legal entity's), the plan, which is the
+// entries of each module that the profile and the overrides resolve to (1 to 64 for each, with the module's catalogue
+// version: the platform's onboarding fills it, ORG does not know the profiles), the risk statement (1 to 2000
+// characters) that the customer's owner will acknowledge, the customer's declared number of finance staff (1 to
 // 10,000) and whether the customer declares a single administrator. OnboardingID names it (1 to 100 characters). The
 // actor needs the permission ProposeOnboarding, granted by name only. A proposal is idempotent by command id; the same
 // onboarding id with another content is refused. Receipt.Notice says that the STRICT profile wants at least three
@@ -72,26 +85,30 @@ type ProposeOnboarding struct {
 	OnboardingID        string
 	Profile             string
 	Overrides           map[string][]OnboardingEntry
+	Plan                map[string]ModulePlan
 	RiskStatement       string
 	FinanceStaff        int
 	SingleAdministrator bool
 }
 
 // ConfirmOnboarding records the owner's confirmation and acknowledgement of the risk statement: AcknowledgedText must
-// be the proposal's risk statement exactly, and is kept as acknowledged. The actor is not the proposer and needs the
-// permission ConfirmOnboarding, granted by name only. A retry by the same actor with the same text answers the record
-// again.
+// be the proposal's risk statement exactly, and is kept as acknowledged. AdministratorID is the owner's own declaration
+// of the customer's one administrator: it is named if and only if the proposal says the customer declares a single
+// administrator, and it is not the proposer. The actor is not the proposer and needs the permission ConfirmOnboarding,
+// granted by name only. A retry by the same actor with the same text and administrator answers the record again.
 type ConfirmOnboarding struct {
 	CommandID        string
 	TenantID         string
 	ActorID          string
 	OnboardingID     string
 	AcknowledgedText string
+	AdministratorID  string
 }
 
 // RecordOnboardingModule records the change set a module made for the confirmed onboarding and its state (ModuleProposed,
-// then ModuleApproved), once each. The change set is 'onb-<onboarding>-fin' or 'onb-<onboarding>-sea'. The actor is the
-// confirmer (the permission ConfirmOnboarding); it is the platform's onboarding that records it, on the module's receipt.
+// then ModuleApproved), once each. The change set is 'onb-<onboarding>-fin' or 'onb-<onboarding>-sea'. Only the
+// platform's onboarding records it, on the module's own change set: it needs the permission RecordOnboardingModule,
+// granted by name only and held by the principal the bootstrap builds for it, and the actor is the confirmer.
 type RecordOnboardingModule struct {
 	CommandID    string
 	TenantID     string
@@ -125,6 +142,7 @@ type Onboarding struct {
 	State               string
 	Profile             string
 	Overrides           map[string][]OnboardingEntry
+	Plan                map[string]ModulePlan
 	RiskStatement       string
 	FinanceStaff        int
 	SingleAdministrator bool
@@ -133,8 +151,10 @@ type Onboarding struct {
 	ConfirmedBy         string
 	ConfirmedAt         time.Time
 	AcknowledgedText    string
-	Modules             []OnboardingModule
-	Notice              string
+	// AdministratorID is the single administrator the owner declared when confirming; empty when the customer declares none.
+	AdministratorID string
+	Modules         []OnboardingModule
+	Notice          string
 }
 
 // GetOnboarding asks for one onboarding of the tenant (ErrNotFound for an unknown one); ListOnboardings for all of

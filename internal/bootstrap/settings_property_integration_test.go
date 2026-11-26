@@ -24,7 +24,8 @@ import (
 // settings change in the middle, revisions of the freight, closes). After every step it checks the four invariants:
 // amounts are conserved, the trail is complete (every preview and apportionment records the version the ledger says was in
 // force at its recorded time), a preview of an earlier settings version is refused at submission as stale, and every
-// refusal follows the convention (settingstest.Check). A failure prints its seed; replay it with FIN_PG_PROPERTY_SEED.
+// refusal follows the convention (settingstest.Check), which is a heuristic by the form of the sentence: a listed verb used
+// as a noun ("..., cost cannot be moved") passes it, and it does not judge whether the way out is right. A failure prints its seed; replay it with FIN_PG_PROPERTY_SEED.
 
 type propertyRun struct {
 	t         *testing.T

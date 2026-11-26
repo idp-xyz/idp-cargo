@@ -406,15 +406,15 @@ func TestAWeekIsReviewedOnceByAnotherPersonAndReplayedOnPostgres(t *testing.T) {
 	}
 }
 
-// The digest: a week reviewed while it runs matches its list until an attribution is recorded in it afterwards, and then
-// the answer says the list does not match, with the size now; an attribution at the next Monday, in the week after, does
-// not change it. (A list cannot change once the week is over, because an apportionment is stamped with the system time
-// of its recording: only an attribution recorded within the week after the review can change what was reviewed.)
+// The digest: a week reviewed after it ended matches its list until an attribution stamped within it is recorded later (the
+// stand-in clock makes that possible; a command that waited behind another is stamped before the review and may commit
+// after it), and then the answer says the list does not match, with the size now; an attribution at the next Monday, in the
+// week after, does not change it.
 func TestTheDigestTellsAListThatChangedAfterItsReviewOnPostgres(t *testing.T) {
 	u, week, start := afterWorld(t, 4)
 	end := start.AddDate(0, 0, 7)
 	u.atTime("one", 1, start.Add(time.Hour))
-	review := u.onClock(start.Add(24 * time.Hour))
+	review := u.onClock(end)
 	review.must(review.module.MarkAfterTheFactReviewed(review.ctx, review.markCmd("review", "head-1", week)))
 	if m := u.listPage(week, 10, "").Review; !m.Reviewed || m.ListSize != 1 || m.CurrentSize != 1 || !m.Matches {
 		t.Fatalf("the review before the change: %+v", m)
@@ -429,7 +429,7 @@ func TestTheDigestTellsAListThatChangedAfterItsReviewOnPostgres(t *testing.T) {
 		t.Fatalf("an attribution of the week after changed this week's list: %+v", m2)
 	}
 	// a week reviewed after it ended, with a list that does not change, matches at every later read
-	next := u.onClock(end.Add(time.Hour))
+	next := u.onClock(end.AddDate(0, 0, 7).Add(time.Hour))
 	next.must(next.module.MarkAfterTheFactReviewed(next.ctx, next.markCmd("review-next", "head-1", domain.WeekOf(end))))
 	u.atTime("later", 4, end.AddDate(0, 0, 7))
 	if m3 := u.listPage(domain.WeekOf(end), 10, "").Review; !m3.Reviewed || m3.ListSize != 1 || !m3.Matches {
@@ -606,9 +606,9 @@ func TestTheDatabaseKeepsTheReviewRulesOnPostgres(t *testing.T) {
 	}
 }
 
-// The list is read with ReadProfit and the review is made with ReviewAfterTheFact, each alone: a module whose authorizer
-// allows only ReadProfit reads the list and cannot review, and one that allows only ReviewAfterTheFact reviews and cannot
-// read it. A refused review writes nothing, and a command id a refused person used is refused again once it is allowed
+// The list is read with ReadProfit and the review is made with both ReviewAfterTheFact and ReadProfit (the reviewer signs
+// what they can read): a module whose authorizer allows only ReadProfit reads the list and cannot review, one that allows
+// only ReviewAfterTheFact can neither read it nor review, and one that allows both does. A refused review writes nothing, and a command id a refused person used is refused again once it is allowed
 // for another (the receipt is not answered to someone who may not make the command).
 func TestTheListNeedsReadProfitAndTheReviewItsOwnPermissionOnPostgres(t *testing.T) {
 	u, week, start := afterWorld(t, 1)
@@ -620,7 +620,7 @@ func TestTheListNeedsReadProfitAndTheReviewItsOwnPermissionOnPostgres(t *testing
 		}
 		return m
 	}
-	reader, reviewer := build(onlyActions{api.ActionReadProfit}), build(onlyActions{api.ActionReviewAfterTheFact})
+	reader, reviewer, both := build(onlyActions{api.ActionReadProfit}), build(onlyActions{api.ActionReviewAfterTheFact}), build(onlyActions{api.ActionReadProfit, api.ActionReviewAfterTheFact})
 	q := api.GetAfterTheFactReview{TenantID: u.tenant, ActorID: "alice", LegalEntityID: "LE", Week: week, Limit: 10}
 	if p, err := reader.GetAfterTheFactReview(u.ctx, q); err != nil || len(p.Lines) != 1 {
 		t.Fatalf("a module that allows ReadProfit reads the list: %+v %v", p, err)
@@ -635,10 +635,20 @@ func TestTheListNeedsReadProfitAndTheReviewItsOwnPermissionOnPostgres(t *testing
 	if p := u.listPage(week, 10, ""); p.Review.Reviewed {
 		t.Fatalf("a refused review marked the week: %+v", p.Review)
 	}
-	if r, err := reviewer.MarkAfterTheFactReviewed(u.ctx, cmd); err != nil || r.SubjectID != "LE/"+week {
-		t.Fatalf("ReviewAfterTheFact reviews: %+v %v", r, err)
+	// the reviewer signs the list they read: ReviewAfterTheFact alone is refused too, naming ReadProfit as the way out
+	_, err := reviewer.MarkAfterTheFactReviewed(u.ctx, cmd)
+	if !errors.Is(err, api.ErrUnauthorized) || !strings.Contains(err.Error(), "they need ReadProfit as well as ReviewAfterTheFact: ask for it") {
+		t.Fatalf("ReviewAfterTheFact alone reviews: %v", err)
 	}
-	if _, err := reader.MarkAfterTheFactReviewed(u.ctx, cmd); !errors.Is(err, api.ErrUnauthorized) {
-		t.Fatalf("a replay by a module that may not review answers the receipt: %v", err)
+	if p := u.listPage(week, 10, ""); p.Review.Reviewed {
+		t.Fatalf("a refused review marked the week: %+v", p.Review)
+	}
+	if r, err := both.MarkAfterTheFactReviewed(u.ctx, cmd); err != nil || r.SubjectID != "LE/"+week {
+		t.Fatalf("both permissions review: %+v %v", r, err)
+	}
+	for name, m := range map[string]*finmodule.Module{"ReadProfit alone": reader, "ReviewAfterTheFact alone": reviewer} {
+		if _, err := m.MarkAfterTheFactReviewed(u.ctx, cmd); !errors.Is(err, api.ErrUnauthorized) {
+			t.Fatalf("a replay by a module with %s answers the receipt: %v", name, err)
+		}
 	}
 }

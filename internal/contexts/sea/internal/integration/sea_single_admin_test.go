@@ -15,9 +15,9 @@ import (
 // V2.102 on PostgreSQL, migration 000013: a single administrator approves their own loosening, with a written risk
 // acknowledgement, in a tenant that declared one.
 
-func (s *settingsWorld) declare(command, onboarding, proposer, confirmer string) (api.Receipt, error) {
+func (s *settingsWorld) declare(command, onboarding, proposer, confirmer, administrator string) (api.Receipt, error) {
 	return s.module.DeclareSeaSingleAdministrator(context.Background(), api.DeclareSeaSingleAdministrator{CommandID: command, TenantID: s.tenant, ActorID: confirmer,
-		OnboardingID: onboarding, ProposedBy: proposer})
+		OnboardingID: onboarding, ProposedBy: proposer, AdministratorID: administrator})
 }
 
 func (s *settingsWorld) approveWith(command, id, actor, acknowledgement string) (api.Receipt, error) {
@@ -53,19 +53,30 @@ func TestSeaASingleAdministratorApprovesTheirOwnLoosening(t *testing.T) {
 	s.refusedWith("an acknowledgement without the declaration", r, err, api.ErrRejected, "SETTINGS_SAME_ACTOR", "has not declared a single administrator")
 
 	// the declaration: two different people, idempotent by command id, by the owner who confirmed
-	r, err = s.declare("decl-1", "ob-1", "dan", "dan")
+	r, err = s.declare("decl-1", "ob-1", "dan", "dan", "dan")
 	s.refusedWith("one person for both", r, err, api.ErrRejected, "two different people")
-	first := s.must(s.declare("decl-2", "ob-1", "consultant-1", "owner-1"))
+	r, err = s.declare("decl-1b", "ob-1", "consultant-1", "owner-1", "consultant-1")
+	s.refusedWith("the consultant as the administrator", r, err, api.ErrRejected, "who is not the consultant")
+	r, err = s.declare("decl-1c", "ob-1", "consultant-1", "owner-1", " ")
+	s.refusedWith("no administrator", r, err, api.ErrRejected, "the administrator")
+	first := s.must(s.declare("decl-2", "ob-1", "consultant-1", "owner-1", "dan"))
 	if first.ChangeID != "ob-1" || first.NewRevision != 1 {
 		t.Fatalf("the declaration's receipt: %+v", first)
 	}
-	if again := s.must(s.declare("decl-2", "ob-1", "consultant-1", "owner-1")); again != first {
+	if again := s.must(s.declare("decl-2", "ob-1", "consultant-1", "owner-1", "dan")); again != first {
 		t.Fatalf("a replay: %+v, want %+v", again, first)
 	}
-	if r, err = s.declare("decl-3", "ob-1", "consultant-1", "owner-1"); err == nil {
+	if r, err = s.declare("decl-3", "ob-1", "consultant-1", "owner-1", "dan"); err == nil {
 		t.Fatalf("a second declaration of the same onboarding: %+v", r)
 	}
 
+	// the declaration names dan: another proposer who holds the permissions is not the administrator, with or without an acknowledgement
+	s.must(s.propose("L9", "frank", time.Time{}, tenantEntry("WITH_REASON")))
+	for _, ack := range []string{"", "I accept it"} {
+		r, err = s.approveWith(s.command(), "L9", "frank", ack)
+		s.refusedWith("a proposer who is not the declared administrator, acknowledgement "+ack, r, err, api.ErrRejected, "SETTINGS_SAME_ACTOR",
+			"not the single administrator this tenant declared (dan)", "have the declared administrator propose it")
+	}
 	r, err = s.approveWith(s.command(), "L1", "dan", "")
 	s.refusedWith("without an acknowledgement", r, err, api.ErrRejected, "SETTINGS_ACKNOWLEDGEMENT", "written risk acknowledgement of 1 to 2000 characters")
 	r, err = s.approveWith(s.command(), "L1", "dan", " \n ")
@@ -118,7 +129,7 @@ func TestSeaASingleAdministratorApprovesTheirOwnLoosening(t *testing.T) {
 		rep.SelfApproved[0].Acknowledgement != "I am the only administrator and accept the risk." || len(rep.SelfApproved[0].Entries) != 1 {
 		t.Fatalf("self approved: %+v", rep.SelfApproved)
 	}
-	if len(rep.Declarations) != 1 || rep.Declarations[0].OnboardingID != "ob-1" || rep.Declarations[0].ProposedBy != "consultant-1" || rep.Declarations[0].ConfirmedBy != "owner-1" {
+	if len(rep.Declarations) != 1 || rep.Declarations[0].OnboardingID != "ob-1" || rep.Declarations[0].ProposedBy != "consultant-1" || rep.Declarations[0].ConfirmedBy != "owner-1" || rep.Declarations[0].AdministratorID != "dan" {
 		t.Fatalf("declarations: %+v", rep.Declarations)
 	}
 	ask.ActorID = "ann"
@@ -145,7 +156,7 @@ func TestSeaSingleAdministratorDatabaseRulesRefuseRawWrites(t *testing.T) {
 		return strings.Replace(self(id, ack), "proposed_by,now(),", "'bob',now(),", 1)
 	}
 	declaration := func(onboarding, proposer, confirmer, at string) string {
-		return fmt.Sprintf(`INSERT INTO cargo_sea.single_administrator (tenant_id,onboarding_id,proposed_by,confirmed_by,declared_at) VALUES ($1,'%s','%s','%s',%s)`,
+		return fmt.Sprintf(`INSERT INTO cargo_sea.single_administrator (tenant_id,onboarding_id,proposed_by,confirmed_by,administrator,declared_at) VALUES ($1,'%s','%s','%s','dan',%s)`,
 			onboarding, proposer, confirmer, at)
 	}
 	check := func(name string, stmts []string, state, constraint string) {
@@ -158,14 +169,21 @@ func TestSeaSingleAdministratorDatabaseRulesRefuseRawWrites(t *testing.T) {
 	check("an approval by the proposer in a tenant with no declaration", []string{self("L1", "'I accept'")}, "23514", "settings_approval_single_administrator")
 	check("a declaration recorded after the approval", []string{declaration("ob-late", "consultant-1", "owner-1", "now() + interval '1 hour'"), self("L1", "'I accept'")},
 		"23514", "settings_approval_single_administrator")
-	check("a declaration of one person", []string{declaration("ob-1", "dan", "dan", "now()")}, "23514", "single_administrator_two_people")
+	check("a declaration of one person", []string{strings.Replace(declaration("ob-1", "dan", "dan", "now()"), "'dan',now()", "'eve',now()", 1)}, "23514", "single_administrator_two_people")
+	check("a declaration whose administrator is the consultant", []string{declaration("ob-1", "dan", "owner-1", "now()")}, "23514", "single_administrator_not_the_consultant")
+	check("a declaration with a blank administrator", []string{strings.Replace(declaration("ob-1", "consultant-1", "owner-1", "now()"), "'dan',now()", "' ',now()", 1)}, "23514",
+		"single_administrator_administrator_check")
 	check("a declaration of an onboarding that is no identifier", []string{declaration("-x", "a", "b", "now()")}, "23514", "single_administrator_onboarding_id_check")
-	check("another tenant's declaration", []string{`INSERT INTO cargo_sea.single_administrator (tenant_id,onboarding_id,proposed_by,confirmed_by,declared_at)
-      VALUES ($1 || '-other','ob-1','a','b',now())`}, "42501", "")
-	s.must(s.declare("decl-1", "ob-1", "consultant-1", "owner-1"))
+	check("another tenant's declaration", []string{`INSERT INTO cargo_sea.single_administrator (tenant_id,onboarding_id,proposed_by,confirmed_by,administrator,declared_at)
+      VALUES ($1 || '-other','ob-1','a','b','c',now())`}, "42501", "")
+	s.must(s.declare("decl-1", "ob-1", "consultant-1", "owner-1", "dan"))
+	s.must(s.propose("L8", "frank", time.Time{}, tenantEntry("WITH_REASON")))
+	check("an approval by a proposer the declaration does not name", []string{self("L8", "'I accept'")}, "23514", "settings_approval_single_administrator")
 	check("an approval by the proposer without an acknowledgement", []string{self("L1", "NULL")}, "23514", "settings_approval_other_actor")
 	check("a blank acknowledgement", []string{self("L1", "'  '")}, "23514", "settings_approval_acknowledgement_length")
 	check("an acknowledgement of 2001 characters", []string{self("L1", "repeat('x',2001)")}, "23514", "settings_approval_acknowledgement_length")
+	// bob is declared an administrator too (by another onboarding), so that the trigger lets his row through to the check on its own
+	s.must(s.declare("decl-bob", "ob-bob", "consultant-1", "owner-1", "bob"))
 	check("an acknowledgement on another person's approval", []string{byAnother("L1", "'I accept'")}, "23514", "settings_approval_acknowledgement_self")
 	check("an acknowledgement on an automatic approval", []string{rawChange("R9", "dan", "now()", true), rawEntry("R9", 1, "LEGAL_ENTITY", "LE", "sea.S1", "SUPERVISOR_ONLY"),
 		strings.Replace(self("R9", "'I accept'"), "false,'I accept'", "true,'I accept'", 1)}, "23514", "settings_approval_acknowledgement_self")
@@ -180,7 +198,7 @@ func TestSeaSingleAdministratorDatabaseRulesRefuseRawWrites(t *testing.T) {
 	if err := s.rawTx(t, self("L1", "'I accept'")); err != nil {
 		t.Fatalf("a self approval with an acknowledgement and a declaration: %v", err)
 	}
-	if s.count("single_administrator") != 1 {
+	if s.count("single_administrator") != 2 {
 		t.Errorf("%d declarations", s.count("single_administrator"))
 	}
 }

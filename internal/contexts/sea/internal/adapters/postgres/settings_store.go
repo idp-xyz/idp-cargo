@@ -280,7 +280,7 @@ func (s SettingsStore) DeclarationsForWrite(ctx context.Context, tenant sea.Tena
 }
 
 func readDeclarations(ctx context.Context, q bentopg.Querier, tenant sea.TenantID) ([]settings.Declaration, error) {
-	rows, err := q.Query(ctx, `SELECT onboarding_id,proposed_by,confirmed_by,declared_at FROM cargo_sea.single_administrator WHERE tenant_id=$1
+	rows, err := q.Query(ctx, `SELECT onboarding_id,proposed_by,confirmed_by,administrator,declared_at FROM cargo_sea.single_administrator WHERE tenant_id=$1
       ORDER BY declared_at, onboarding_id`, string(tenant))
 	if err != nil {
 		return nil, err
@@ -289,7 +289,7 @@ func readDeclarations(ctx context.Context, q bentopg.Querier, tenant sea.TenantI
 	var out []settings.Declaration
 	for rows.Next() {
 		var d settings.Declaration
-		if err = rows.Scan(&d.OnboardingID, &d.ProposedBy, &d.ConfirmedBy, &d.At); err != nil {
+		if err = rows.Scan(&d.OnboardingID, &d.ProposedBy, &d.ConfirmedBy, &d.Administrator, &d.At); err != nil {
 			return nil, err
 		}
 		d.At = utc(d.At)
@@ -304,8 +304,8 @@ func (s SettingsStore) InsertDeclaration(ctx context.Context, tenant sea.TenantI
 	if err != nil {
 		return err
 	}
-	_, err = q.Exec(ctx, `INSERT INTO cargo_sea.single_administrator (tenant_id,onboarding_id,proposed_by,confirmed_by,declared_at) VALUES ($1,$2,$3,$4,$5)`,
-		string(tenant), d.OnboardingID, d.ProposedBy, d.ConfirmedBy, d.At)
+	_, err = q.Exec(ctx, `INSERT INTO cargo_sea.single_administrator (tenant_id,onboarding_id,proposed_by,confirmed_by,administrator,declared_at) VALUES ($1,$2,$3,$4,$5,$6)`,
+		string(tenant), d.OnboardingID, d.ProposedBy, d.ConfirmedBy, d.Administrator, d.At)
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 		return fmt.Errorf("%w: the declaration of onboarding %s", bentorepo.ErrAlreadyExists, d.OnboardingID)

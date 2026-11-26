@@ -79,8 +79,8 @@ var profiles = []Profile{
 		"confirmed again when its cost changes; and only a supervisor releases a carrier's contradiction.",
 		Items: derived(map[string]string{"fin.F2": "SUBMITTER_AND_PREVIEWER", "fin.F7": "BLOCKS", "fin.F9": "RECONFIRM", "sea.S1": "SUPERVISOR_ONLY"})},
 	{ID: "LEAN", TitleEN: "Lean", TitleZH: "精简", For: "For a small team of one or two finance staff: no separation of duties for confirming an attribution, a voucher only when an " +
-		"amount moves, a one-step apportionment when no house opened or left, and a missing attribution defaults to the cargo that remains. The compensation, " +
-		"a weekly after-the-fact review list, is batch B.",
+		"amount moves, a one-step apportionment when no house opened or left, and a missing attribution defaults to the cargo that remains. The compensation " +
+		"is a weekly after-the-fact review list: the attributions of a week that have no second person, no voucher or were made by default, which finance's head reviews once the week has ended.",
 		Items: derived(map[string]string{"fin.F1": "UNRESTRICTED", "fin.F3": "ONLY_WHEN_AMOUNT_MOVES", "fin.F4": "ONE_STEP_WITHOUT_OPENED_OR_LEFT", "fin.F8": "DEFAULT_TO_REMAINING"})},
 }
 

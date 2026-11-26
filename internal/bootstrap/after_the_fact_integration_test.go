@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	finapi "go.idp.xyz/idp-cargo/internal/contexts/fin/api"
 )
@@ -54,9 +55,29 @@ func TestTheDefaultOfOneUnrestrictedPersonIsOnTheWeeksReviewListWithEveryContext
 		t.Fatalf("the line: %+v", l)
 	}
 
-	// the person who made it does not review it; another does, once
+	// a week is reviewed once it has ended: the running week is refused, whoever asks, and nothing is marked (review it from the Monday)
+	end := weekEnd(a.EnteredAt)
+	running, err := d.fin.MarkAfterTheFactReviewed(d.ctx, finapi.MarkAfterTheFactReviewed{CommandID: "lean-review-running", TenantID: d.tenant, ActorID: "head-1", LegalEntityID: "LE",
+		Week: week, Note: "reviewed while the week runs"})
+	said(t, "head-1 reviewing the running week", err, "FIN_AFTER_THE_FACT_WEEK_NOT_ENDED", "wait for the Monday after it", "00:00 UTC")
+	if running != (finapi.Receipt{}) || read(week).Review.Reviewed {
+		t.Fatalf("a refused review marked the running week: %+v", read(week).Review)
+	}
+	// a second attribution of the same week, made after that refusal, is in the list the review signs
+	st := statement("H03", 5_000, 5_000, finapi.PartyCarrier)
+	st.Reason = "a correction"
+	pre2, err := d.previewWith("ops-2", "lean-pre-2", st)
+	d.must("ops-2 previews a correction", err)
+	_, err = d.submitBy("ops-2", "lean-sub-2", pre2.Version)
+	d.must("ops-2 submits it", err)
+	if got := len(read(week).Lines); got != 2 {
+		t.Fatalf("the week's list has %d lines, want 2", got)
+	}
+
+	// the person who made it does not review it; another does, once, after the week ended, and the list is the whole week's
+	review := d.finAt(end.Add(time.Hour))
 	mark := func(id, who string) (finapi.Receipt, error) {
-		return d.fin.MarkAfterTheFactReviewed(d.ctx, finapi.MarkAfterTheFactReviewed{CommandID: id, TenantID: d.tenant, ActorID: who, LegalEntityID: "LE", Week: week,
+		return review.MarkAfterTheFactReviewed(d.ctx, finapi.MarkAfterTheFactReviewed{CommandID: id, TenantID: d.tenant, ActorID: who, LegalEntityID: "LE", Week: week,
 			Note: "the default of H03 is right: the line's whole cost stays with the cargo that remains"})
 	}
 	_, err = mark("lean-review-ops-1", "ops-1")
@@ -72,11 +93,17 @@ func TestTheDefaultOfOneUnrestrictedPersonIsOnTheWeeksReviewListWithEveryContext
 	}
 	_, err = mark("lean-review-2", "head-2")
 	said(t, "a second review", err, "FIN_AFTER_THE_FACT_REVIEWED", "reviewed by head-1")
-	if r.SubjectID != "LE/"+week || r.Version != 1 {
+	if r.SubjectID != "LE/"+week || r.Version != 2 {
 		t.Fatalf("the receipt: %+v", r)
 	}
 	m := read(week).Review
-	if !m.Reviewed || m.ReviewedBy != "head-1" || m.ReviewedAt.IsZero() || m.ListSize != 1 || m.CurrentSize != 1 || !m.Matches || m.CurrentDigest != m.ListDigest || len(m.ListDigest) != 64 {
+	if !m.Reviewed || m.ReviewedBy != "head-1" || m.ReviewedAt.IsZero() || m.ListSize != 2 || m.CurrentSize != 2 || !m.Matches || m.CurrentDigest != m.ListDigest || len(m.ListDigest) != 64 {
 		t.Fatalf("the week reviewed: %+v", m)
 	}
+}
+
+// weekEnd is the Monday at 00:00 UTC after the week that contains the time.
+func weekEnd(at time.Time) time.Time {
+	day := at.UTC().Truncate(24 * time.Hour)
+	return day.AddDate(0, 0, 7-(int(day.Weekday())+6)%7)
 }

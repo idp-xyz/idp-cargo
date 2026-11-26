@@ -785,16 +785,18 @@ type ApproveFinSettingsChange struct {
 }
 
 // DeclareFinSingleAdministrator records that the tenant declared a single administrator in the onboarding OnboardingID,
-// proposed by ProposedBy and confirmed by ActorID, the customer's owner (two different people). It is the platform's
+// proposed by ProposedBy and confirmed by ActorID, the customer's owner (two different people), who named AdministratorID
+// as the one administrator (not the consultant ProposedBy). Only that administrator may approve their own loosening. It is the platform's
 // onboarding that calls it, once the owner has confirmed; it needs the permission DeclareSingleAdministrator, granted by
 // name only and not by ConfigureSettings, so that a configurer alone cannot make it. It is recorded once for each
 // onboarding, never withdrawn, and idempotent by command id. Receipt.SubjectID is the onboarding.
 type DeclareFinSingleAdministrator struct {
-	CommandID    string
-	TenantID     string
-	ActorID      string
-	OnboardingID string
-	ProposedBy   string
+	CommandID       string
+	TenantID        string
+	ActorID         string
+	OnboardingID    string
+	ProposedBy      string
+	AdministratorID string
 }
 
 // RefuseFinSettingsChange is an approver's refusal of a change set that waits for approval, with a reason: it is
@@ -863,8 +865,10 @@ type ResolveCostReview struct {
 // and the digest of the week's list as it is then, so that a list that changes later is visible in
 // GetAfterTheFactReview. The reviewer is neither the submitter nor the previewer of any line of that list
 // (FIN_AFTER_THE_FACT_REVIEWER: another person reviews), the week is reviewed once (FIN_AFTER_THE_FACT_REVIEWED) and
-// only once it has begun (FIN_AFTER_THE_FACT_WEEK_NOT_BEGUN). The receipt's SubjectID is "<legal entity>/<week>", its
-// NewRevision 1 and its Version the list's size. It needs the permission ReviewAfterTheFact, granted by name only.
+// only once it has ended, from the next Monday at 00:00 UTC by FIN's clock (FIN_AFTER_THE_FACT_WEEK_NOT_ENDED: review it
+// from that Monday; a week that has not begun is FIN_AFTER_THE_FACT_WEEK_NOT_BEGUN). The receipt's SubjectID is "<legal entity>/<week>", its
+// NewRevision 1 and its Version the list's size. It needs the permission ReviewAfterTheFact, granted by name only, and
+// ReadProfit as well, so that the reviewer can read the list they sign.
 type MarkAfterTheFactReviewed struct {
 	CommandID     string
 	TenantID      string

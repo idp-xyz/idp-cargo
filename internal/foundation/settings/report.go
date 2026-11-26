@@ -127,10 +127,12 @@ func (l *Ledger) ExceptionReport(cat *Catalogue, at, from, to time.Time) Report 
 }
 
 // Declaration is a tenant's declaration of a single administrator: the onboarding that made it, the consultant who
-// proposed that onboarding, the customer's owner who confirmed it, and when the context recorded it.
+// proposed that onboarding, the customer's owner who confirmed it, the administrator the owner named (not the
+// consultant), and when the context recorded it.
 type Declaration struct {
-	OnboardingID string
-	ProposedBy   string
-	ConfirmedBy  string
-	At           time.Time
+	OnboardingID  string
+	ProposedBy    string
+	ConfirmedBy   string
+	Administrator string
+	At            time.Time
 }

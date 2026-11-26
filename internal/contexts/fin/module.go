@@ -894,7 +894,7 @@ func classify(err error) error {
 		errors.Is(err, domain.ErrFinalBehind), errors.Is(err, domain.ErrNotPayable), errors.Is(err, domain.ErrInvoicePaid),
 		errors.Is(err, domain.ErrReviewJobNotOpen), errors.Is(err, domain.ErrReviewNotLoss), errors.Is(err, domain.ErrReviewStale), errors.Is(err, domain.ErrReviewOpen),
 		errors.Is(err, domain.ErrReviewSameActor), errors.Is(err, domain.ErrReviewClockBehind), errors.Is(err, domain.ErrReviewResolved),
-		errors.Is(err, domain.ErrAfterTheFactReviewer), errors.Is(err, domain.ErrAfterTheFactReviewed), errors.Is(err, domain.ErrAfterTheFactBegun),
+		errors.Is(err, domain.ErrAfterTheFactReviewer), errors.Is(err, domain.ErrAfterTheFactReviewed), errors.Is(err, domain.ErrAfterTheFactBegun), errors.Is(err, domain.ErrAfterTheFactNotEnded),
 		errors.Is(err, domain.ErrFapiaoCovers), errors.Is(err, domain.ErrFapiaoNumber), errors.Is(err, domain.ErrNotFapiaoable),
 		errors.Is(err, settings.ErrRefused):
 		kind = api.ErrRejected

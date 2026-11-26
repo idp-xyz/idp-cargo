@@ -147,25 +147,68 @@ type SettingsExport struct {
 	TenantID   string                    `json:"tenant"`
 	ExportedAt time.Time                 `json:"exportedAt"`
 	Modules    map[string]ExportedModule `json:"modules"`
+	// LeftOut are the modules the caller may not see, which the export does not carry, and why.
+	LeftOut []LeftOut `json:"leftOut,omitempty"`
 }
 
-// ExportSettings answers a tenant's whole configuration in force, per module, with each catalogue's version. The actor
-// needs ConfigureSettings or ApproveSettings, by name, in each module.
+// LeftOut is a module an export or a diff does not answer, and why: the caller may not see it.
+type LeftOut struct {
+	Module string `json:"module"`
+	Reason string `json:"reason"`
+}
+
+// visibleModules says which of FIN and SEA the caller may see, that is holds ConfigureSettings or ApproveSettings, by name,
+// in that module, and which are left out and why. A caller who may see neither is refused.
+func visibleModules(ctx context.Context, tenant, actor string) (fin, sea bool, left []LeftOut, err error) {
+	for _, m := range []struct {
+		module, bc string
+		actions    []string
+		ok         *bool
+	}{{ModuleFIN, "fin", []string{finapi.ActionConfigureSettings, finapi.ActionApproveSettings}, &fin}, {ModuleSEA, "sea", []string{seaapi.ActionConfigureSettings, seaapi.ActionApproveSettings}, &sea}} {
+		if holdsEither(ctx, tenant, actor, m.bc, m.actions...) == nil {
+			*m.ok = true
+			continue
+		}
+		left = append(left, LeftOut{Module: m.module, Reason: fmt.Sprintf("the caller holds neither %s:%s nor %s:%s, by name; ask for one of them to see %s's configuration",
+			m.bc, m.actions[0], m.bc, m.actions[1], m.module)})
+	}
+	if !fin && !sea {
+		return false, false, left, fmt.Errorf("%w: the configuration of a module is told to a holder of ConfigureSettings or ApproveSettings, by name, in that module, and the caller holds "+
+			"neither in FIN or in SEA; ask for fin:ConfigureSettings, fin:ApproveSettings, sea:ConfigureSettings or sea:ApproveSettings", orgapi.ErrUnauthorized)
+	}
+	return fin, sea, left, nil
+}
+
+// ExportSettings answers a tenant's whole configuration in force, per module, with each catalogue's version, for each
+// module the caller may see: a holder of ConfigureSettings or ApproveSettings, by name, in that module. The answer says
+// which modules it left out and why; a caller who may see neither is refused.
 func (t *SettingsTools) ExportSettings(ctx context.Context, tenant, actor string) (SettingsExport, error) {
-	if err := holdsEither(ctx, tenant, actor, "fin", finapi.ActionConfigureSettings, finapi.ActionApproveSettings); err != nil {
+	seeFin, seeSea, left, err := visibleModules(ctx, tenant, actor)
+	if err != nil {
 		return SettingsExport{}, err
 	}
-	if err := holdsEither(ctx, tenant, actor, "sea", seaapi.ActionConfigureSettings, seaapi.ActionApproveSettings); err != nil {
-		return SettingsExport{}, err
+	out := SettingsExport{Format: ExportFormat, TenantID: tenant, ExportedAt: time.Now().UTC().Truncate(time.Microsecond), Modules: map[string]ExportedModule{}, LeftOut: left}
+	if seeFin {
+		if out.Modules[ModuleFIN], err = t.exportFin(ctx, tenant); err != nil {
+			return out, err
+		}
 	}
-	out := SettingsExport{Format: ExportFormat, TenantID: tenant, ExportedAt: time.Now().UTC().Truncate(time.Microsecond), Modules: map[string]ExportedModule{}}
+	if seeSea {
+		if out.Modules[ModuleSEA], err = t.exportSea(ctx, tenant); err != nil {
+			return out, err
+		}
+	}
+	return out, nil
+}
+
+func (t *SettingsTools) exportFin(ctx context.Context, tenant string) (ExportedModule, error) {
 	cat, err := t.fin.GetFinSettingsCatalogue(ctx, finapi.GetFinSettingsCatalogue{})
 	if err != nil {
-		return out, err
+		return ExportedModule{}, err
 	}
 	changes, err := t.fin.ListFinSettingsChanges(ctx, finapi.ListFinSettingsChanges{TenantID: tenant})
 	if err != nil {
-		return out, err
+		return ExportedModule{}, err
 	}
 	var entities []string
 	for _, c := range changes {
@@ -184,7 +227,7 @@ func (t *SettingsTools) ExportSettings(ctx context.Context, tenant, actor string
 		}
 		got, err := t.fin.GetFinSettings(ctx, finapi.GetFinSettings{TenantID: tenant, ScopeKind: kind, ScopeID: scope})
 		if err != nil {
-			return out, err
+			return module, err
 		}
 		module.SettingsVersion = max(module.SettingsVersion, got.Version)
 		s := ExportedScope{ScopeKind: kind, ScopeID: scope, Items: []ExportedItem{}}
@@ -203,18 +246,20 @@ func (t *SettingsTools) ExportSettings(ctx context.Context, tenant, actor string
 			module.Scopes = append(module.Scopes, s)
 		}
 	}
-	out.Modules[ModuleFIN] = module
+	return module, nil
+}
 
-	seaCat, err := t.sea.GetSeaSettingsCatalogue(ctx, seaapi.GetSeaSettingsCatalogue{})
+func (t *SettingsTools) exportSea(ctx context.Context, tenant string) (ExportedModule, error) {
+	cat, err := t.sea.GetSeaSettingsCatalogue(ctx, seaapi.GetSeaSettingsCatalogue{})
 	if err != nil {
-		return out, err
+		return ExportedModule{}, err
 	}
-	seaChanges, err := t.sea.ListSeaSettingsChanges(ctx, seaapi.ListSeaSettingsChanges{TenantID: tenant})
+	changes, err := t.sea.ListSeaSettingsChanges(ctx, seaapi.ListSeaSettingsChanges{TenantID: tenant})
 	if err != nil {
-		return out, err
+		return ExportedModule{}, err
 	}
-	entities = nil
-	for _, c := range seaChanges {
+	var entities []string
+	for _, c := range changes {
 		for _, e := range c.Entries {
 			if e.ScopeKind == "LEGAL_ENTITY" && !slices.Contains(entities, e.ScopeID) {
 				entities = append(entities, e.ScopeID)
@@ -222,7 +267,7 @@ func (t *SettingsTools) ExportSettings(ctx context.Context, tenant, actor string
 		}
 	}
 	slices.Sort(entities)
-	module = ExportedModule{CatalogueVersion: seaCat.Version}
+	module := ExportedModule{CatalogueVersion: cat.Version}
 	for _, scope := range append([]string{""}, entities...) {
 		kind := "TENANT"
 		if scope != "" {
@@ -230,7 +275,7 @@ func (t *SettingsTools) ExportSettings(ctx context.Context, tenant, actor string
 		}
 		got, err := t.sea.GetSeaSettings(ctx, seaapi.GetSeaSettings{TenantID: tenant, ScopeKind: kind, ScopeID: scope})
 		if err != nil {
-			return out, err
+			return module, err
 		}
 		module.SettingsVersion = max(module.SettingsVersion, got.Version)
 		s := ExportedScope{ScopeKind: kind, ScopeID: scope, Items: []ExportedItem{}}
@@ -244,8 +289,7 @@ func (t *SettingsTools) ExportSettings(ctx context.Context, tenant, actor string
 			module.Scopes = append(module.Scopes, s)
 		}
 	}
-	out.Modules[ModuleSEA] = module
-	return out, nil
+	return module, nil
 }
 
 // ExportSettingsJSON is ExportSettings as JSON.
@@ -278,19 +322,24 @@ type UnknownItem struct {
 
 // SettingsDiff is what an import of an exported configuration would change in this environment for the tenant: the
 // entries that differ from what is in force, as entries a proposal takes (propose them with ProposeFinSettingsChange and
-// ProposeSeaSettingsChange: the usual approval applies), the items this environment does not know, and notes on
-// catalogues that are not at the version the file was exported from. It proposes nothing.
+// ProposeSeaSettingsChange: the usual approval applies), the items this environment does not know, notes on
+// catalogues that are not at the version the file was exported from, and the modules left out because the caller may not
+// see them. It proposes nothing.
 type SettingsDiff struct {
 	Fin     []finapi.FinSettingEntry
 	Sea     []seaapi.SeaSettingEntry
 	Unknown []UnknownItem
 	Notes   []string
+	LeftOut []LeftOut
 }
 
 // DiffSettingsImport reads an exported configuration and answers the entries that differ from what is in force for the
-// tenant, per module, and the items unknown here. Entries are compared at their scope against what is in force there
-// (a legal entity's against its own value, else the company's, else the default). The file is refused when it is not
-// JSON of this format. The actor needs ConfigureSettings or ApproveSettings, by name, in each module.
+// tenant, per module the caller may see, and the items unknown here. The comparison is scope by scope: the company's
+// entry against what is in force for the company (its own value, else the default), and a legal entity's entry against
+// that legal entity's own entry, so that an entry the file has at a legal entity stays that legal entity's own, even when
+// its value equals the company's here, unless this environment has the same entry at that legal entity. The file is
+// refused when it is not JSON of this format. The caller sees the modules where they hold ConfigureSettings or
+// ApproveSettings, by name; the answer says which it left out and why, and a caller who may see neither is refused.
 func (t *SettingsTools) DiffSettingsImport(ctx context.Context, tenant, actor string, file []byte) (SettingsDiff, error) {
 	var in SettingsExport
 	dec := json.NewDecoder(bytes.NewReader(file))
@@ -301,93 +350,113 @@ func (t *SettingsTools) DiffSettingsImport(ctx context.Context, tenant, actor st
 	if in.Format != ExportFormat {
 		return SettingsDiff{}, fmt.Errorf("%w: the file's format is %q, and this environment reads %q; export it again from a release that writes %q", orgapi.ErrRejected, in.Format, ExportFormat, ExportFormat)
 	}
-	if err := holdsEither(ctx, tenant, actor, "fin", finapi.ActionConfigureSettings, finapi.ActionApproveSettings); err != nil {
+	seeFin, seeSea, left, err := visibleModules(ctx, tenant, actor)
+	if err != nil {
 		return SettingsDiff{}, err
 	}
-	if err := holdsEither(ctx, tenant, actor, "sea", seaapi.ActionConfigureSettings, seaapi.ActionApproveSettings); err != nil {
-		return SettingsDiff{}, err
-	}
-	var out SettingsDiff
+	out := SettingsDiff{LeftOut: left}
 	for module := range in.Modules {
 		if module != ModuleFIN && module != ModuleSEA {
 			out.Unknown = append(out.Unknown, UnknownItem{Module: module, Reason: "this environment has no module " + module + "; remove it from the file"})
 		}
 	}
-	if m, ok := in.Modules[ModuleFIN]; ok {
-		cat, err := t.fin.GetFinSettingsCatalogue(ctx, finapi.GetFinSettingsCatalogue{})
-		if err != nil {
+	if m, ok := in.Modules[ModuleFIN]; ok && seeFin {
+		if err := t.diffFin(ctx, tenant, m, &out); err != nil {
 			return out, err
-		}
-		if m.CatalogueVersion != cat.Version {
-			out.Notes = append(out.Notes, fmt.Sprintf("FIN's catalogue here is version %s, the file's is %s: the entries are checked against this one", cat.Version, m.CatalogueVersion))
-		}
-		known := map[string]map[string]bool{}
-		for _, it := range cat.Items {
-			known[it.Key] = map[string]bool{}
-			for _, v := range it.Values {
-				known[it.Key][v.ID] = true
-			}
-		}
-		for _, sc := range m.Scopes {
-			now, err := t.fin.GetFinSettings(ctx, finapi.GetFinSettings{TenantID: tenant, ScopeKind: sc.ScopeKind, ScopeID: sc.ScopeID})
-			if err != nil {
-				return out, err
-			}
-			for _, it := range sc.Items {
-				if why := unknownWhy("FIN", cat.Version, it, known); why != "" {
-					out.Unknown = append(out.Unknown, UnknownItem{Module: ModuleFIN, Key: it.Key, Value: it.Value, Reason: why})
-					continue
-				}
-				i := slices.IndexFunc(now.Items, func(c finapi.FinSetting) bool { return c.Key == it.Key })
-				if i >= 0 && now.Items[i].Value == it.Value && sameThreshold(now.Items[i].Threshold, it) {
-					continue
-				}
-				entry := finapi.FinSettingEntry{ScopeKind: sc.ScopeKind, ScopeID: sc.ScopeID, Key: it.Key, Value: it.Value}
-				if it.ThresholdMinor != nil {
-					entry.Threshold = &kernel.Money{Currency: kernel.CurrencyCode(it.ThresholdCurrency), Minor: *it.ThresholdMinor}
-				}
-				out.Fin = append(out.Fin, entry)
-			}
 		}
 	}
-	if m, ok := in.Modules[ModuleSEA]; ok {
-		cat, err := t.sea.GetSeaSettingsCatalogue(ctx, seaapi.GetSeaSettingsCatalogue{})
-		if err != nil {
+	if m, ok := in.Modules[ModuleSEA]; ok && seeSea {
+		if err := t.diffSea(ctx, tenant, m, &out); err != nil {
 			return out, err
-		}
-		if m.CatalogueVersion != cat.Version {
-			out.Notes = append(out.Notes, fmt.Sprintf("SEA's catalogue here is version %s, the file's is %s: the entries are checked against this one", cat.Version, m.CatalogueVersion))
-		}
-		known := map[string]map[string]bool{}
-		for _, it := range cat.Items {
-			known[it.Key] = map[string]bool{}
-			for _, v := range it.Values {
-				known[it.Key][v.ID] = true
-			}
-		}
-		for _, sc := range m.Scopes {
-			now, err := t.sea.GetSeaSettings(ctx, seaapi.GetSeaSettings{TenantID: tenant, ScopeKind: sc.ScopeKind, ScopeID: sc.ScopeID})
-			if err != nil {
-				return out, err
-			}
-			for _, it := range sc.Items {
-				if why := unknownWhy("SEA", cat.Version, it, known); why != "" {
-					out.Unknown = append(out.Unknown, UnknownItem{Module: ModuleSEA, Key: it.Key, Value: it.Value, Reason: why})
-					continue
-				}
-				if it.ThresholdMinor != nil {
-					out.Unknown = append(out.Unknown, UnknownItem{Module: ModuleSEA, Key: it.Key, Value: it.Value, Reason: "SEA's items take no parameter; remove the threshold from the file"})
-					continue
-				}
-				i := slices.IndexFunc(now.Items, func(c seaapi.SeaSetting) bool { return c.Key == it.Key })
-				if i >= 0 && now.Items[i].Value == it.Value {
-					continue
-				}
-				out.Sea = append(out.Sea, seaapi.SeaSettingEntry{ScopeKind: sc.ScopeKind, ScopeID: sc.ScopeID, Key: it.Key, Value: it.Value})
-			}
 		}
 	}
 	return out, nil
+}
+
+// ownEntryHere says whether what is in force here for the item may stand for the file's entry at the scope: for the
+// company, what is in force for it (its own value, else the default); for a legal entity, only its own entry, not the
+// company's value that it inherits and not a default.
+func ownEntryHere(kind, id string, fromKind, fromID string, isDefault bool) bool {
+	return kind == "TENANT" || (!isDefault && fromKind == kind && fromID == id)
+}
+
+func (t *SettingsTools) diffFin(ctx context.Context, tenant string, m ExportedModule, out *SettingsDiff) error {
+	cat, err := t.fin.GetFinSettingsCatalogue(ctx, finapi.GetFinSettingsCatalogue{})
+	if err != nil {
+		return err
+	}
+	if m.CatalogueVersion != cat.Version {
+		out.Notes = append(out.Notes, fmt.Sprintf("FIN's catalogue here is version %s, the file's is %s: the entries are checked against this one", cat.Version, m.CatalogueVersion))
+	}
+	known := map[string]map[string]bool{}
+	for _, it := range cat.Items {
+		known[it.Key] = map[string]bool{}
+		for _, v := range it.Values {
+			known[it.Key][v.ID] = true
+		}
+	}
+	for _, sc := range m.Scopes {
+		now, err := t.fin.GetFinSettings(ctx, finapi.GetFinSettings{TenantID: tenant, ScopeKind: sc.ScopeKind, ScopeID: sc.ScopeID})
+		if err != nil {
+			return err
+		}
+		for _, it := range sc.Items {
+			if why := unknownWhy("FIN", cat.Version, it, known); why != "" {
+				out.Unknown = append(out.Unknown, UnknownItem{Module: ModuleFIN, Key: it.Key, Value: it.Value, Reason: why})
+				continue
+			}
+			i := slices.IndexFunc(now.Items, func(c finapi.FinSetting) bool { return c.Key == it.Key })
+			if i >= 0 && ownEntryHere(sc.ScopeKind, sc.ScopeID, now.Items[i].FromScopeKind, now.Items[i].FromScopeID, now.Items[i].Default) &&
+				now.Items[i].Value == it.Value && sameThreshold(now.Items[i].Threshold, it) {
+				continue
+			}
+			entry := finapi.FinSettingEntry{ScopeKind: sc.ScopeKind, ScopeID: sc.ScopeID, Key: it.Key, Value: it.Value}
+			if it.ThresholdMinor != nil {
+				entry.Threshold = &kernel.Money{Currency: kernel.CurrencyCode(it.ThresholdCurrency), Minor: *it.ThresholdMinor}
+			}
+			out.Fin = append(out.Fin, entry)
+		}
+	}
+	return nil
+}
+
+func (t *SettingsTools) diffSea(ctx context.Context, tenant string, m ExportedModule, out *SettingsDiff) error {
+	cat, err := t.sea.GetSeaSettingsCatalogue(ctx, seaapi.GetSeaSettingsCatalogue{})
+	if err != nil {
+		return err
+	}
+	if m.CatalogueVersion != cat.Version {
+		out.Notes = append(out.Notes, fmt.Sprintf("SEA's catalogue here is version %s, the file's is %s: the entries are checked against this one", cat.Version, m.CatalogueVersion))
+	}
+	known := map[string]map[string]bool{}
+	for _, it := range cat.Items {
+		known[it.Key] = map[string]bool{}
+		for _, v := range it.Values {
+			known[it.Key][v.ID] = true
+		}
+	}
+	for _, sc := range m.Scopes {
+		now, err := t.sea.GetSeaSettings(ctx, seaapi.GetSeaSettings{TenantID: tenant, ScopeKind: sc.ScopeKind, ScopeID: sc.ScopeID})
+		if err != nil {
+			return err
+		}
+		for _, it := range sc.Items {
+			if why := unknownWhy("SEA", cat.Version, it, known); why != "" {
+				out.Unknown = append(out.Unknown, UnknownItem{Module: ModuleSEA, Key: it.Key, Value: it.Value, Reason: why})
+				continue
+			}
+			if it.ThresholdMinor != nil {
+				out.Unknown = append(out.Unknown, UnknownItem{Module: ModuleSEA, Key: it.Key, Value: it.Value, Reason: "SEA's items take no parameter; remove the threshold from the file"})
+				continue
+			}
+			i := slices.IndexFunc(now.Items, func(c seaapi.SeaSetting) bool { return c.Key == it.Key })
+			if i >= 0 && ownEntryHere(sc.ScopeKind, sc.ScopeID, now.Items[i].FromScopeKind, now.Items[i].FromScopeID, now.Items[i].Default) && now.Items[i].Value == it.Value {
+				continue
+			}
+			out.Sea = append(out.Sea, seaapi.SeaSettingEntry{ScopeKind: sc.ScopeKind, ScopeID: sc.ScopeID, Key: it.Key, Value: it.Value})
+		}
+	}
+	return nil
 }
 
 func unknownWhy(module, version string, it ExportedItem, known map[string]map[string]bool) string {

@@ -48,7 +48,8 @@ const (
 var (
 	ErrAfterTheFactReviewer = errors.New("fin: FIN_AFTER_THE_FACT_REVIEWER: the reviewer of a week is neither the submitter nor the previewer of any line of its list: another person reviews it")
 	ErrAfterTheFactReviewed = errors.New("fin: FIN_AFTER_THE_FACT_REVIEWED: the week is reviewed already: read it (GetAfterTheFactReview); a week is reviewed once")
-	ErrAfterTheFactBegun    = errors.New("fin: FIN_AFTER_THE_FACT_WEEK_NOT_BEGUN: the week has not begun: review it once it has, or name a week that has")
+	ErrAfterTheFactBegun    = errors.New("fin: FIN_AFTER_THE_FACT_WEEK_NOT_BEGUN: the week has not begun: review it once it has ended, or name a week that has")
+	ErrAfterTheFactNotEnded = errors.New("fin: FIN_AFTER_THE_FACT_WEEK_NOT_ENDED: the week has not ended: wait for the Monday after it, at 00:00 UTC, and review it from then, so that the list you sign is the whole week's")
 )
 
 // MaxReviewNote is the longest note of a review, in characters.
@@ -164,7 +165,7 @@ func ReviewSubject(legalEntity, week string) string { return legalEntity + "/" +
 // is neither the submitter nor the previewer of any line; a refusal names the first line of the list that says
 // otherwise.
 func ReviewAfterTheFact(tenant TenantID, legalEntity, week string, lines []ReviewLine, done *AfterTheFactReviewState, reviewer, note string, at time.Time) (*AfterTheFactReview, error) {
-	start, _, err := ParseWeek(week)
+	start, end, err := ParseWeek(week)
 	switch {
 	case err != nil:
 		return nil, err
@@ -176,6 +177,8 @@ func ReviewAfterTheFact(tenant TenantID, legalEntity, week string, lines []Revie
 		return nil, fmt.Errorf("%w (%s of %s was reviewed by %s at %s)", ErrAfterTheFactReviewed, week, legalEntity, done.ReviewedBy, done.ReviewedAt.UTC().Format(time.RFC3339))
 	case at.Before(start):
 		return nil, fmt.Errorf("%w (%s begins at %s, this server's time is %s)", ErrAfterTheFactBegun, week, start.Format(time.RFC3339), at.UTC().Format(time.RFC3339))
+	case at.Before(end):
+		return nil, fmt.Errorf("%w (%s ends at %s, this server's time is %s)", ErrAfterTheFactNotEnded, week, end.Format(time.RFC3339), at.UTC().Format(time.RFC3339))
 	}
 	for _, l := range lines {
 		role := ""

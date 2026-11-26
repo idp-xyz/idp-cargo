@@ -251,8 +251,9 @@ func TestAnExportedConfigurationDiffsOnAnotherTenantAndProposesCleanly(t *testin
 	if !strings.Contains(string(file), `"thresholdMinor": 50000`) || !strings.Contains(string(file), `"scopeId": "LE"`) {
 		t.Fatalf("the legal entity's threshold is exported: %s", file)
 	}
-	if _, err = src.tools.ExportSettings(src.as("ann", "fin:ConfigureSettings"), src.tenant, "ann"); err == nil {
-		t.Fatal("an export by someone who holds no name in SEA")
+	// a caller who sees FIN only gets FIN's part, and the answer says SEA was left out and why (the new tests below read it)
+	if part, err := src.tools.ExportSettings(src.as("ann", "fin:ConfigureSettings"), src.tenant, "ann"); err != nil || len(part.Modules) != 1 || len(part.LeftOut) != 1 || part.LeftOut[0].Module != ModuleSEA {
+		t.Fatalf("an export by someone who holds no name in SEA: %+v, %v", part, err)
 	}
 
 	dst := newSettingsDay(t, "cargo-export-dst-")

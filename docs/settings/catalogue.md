@@ -8,7 +8,7 @@ Each item has values ordered from strict to loose; moving an item to a looser va
 
 - **STANDARD** (Standard / 标准): The default, for most freight forwarders: every item takes its default, which is how the system behaved before the settings.
 - **STRICT** (Strict / 严格): For a company audited or with demanding internal control: both the submitter and the previewer of an apportionment are checked against its confirmer, which wants at least three finance staff; a pending attribution blocks closing a pool; a confirmed attribution is confirmed again when its cost changes; and only a supervisor releases a carrier's contradiction.
-- **LEAN** (Lean / 精简): For a small team of one or two finance staff: no separation of duties for confirming an attribution, a voucher only when an amount moves, a one-step apportionment when no house opened or left, and a missing attribution defaults to the cargo that remains. The compensation, a weekly after-the-fact review list, is batch B.
+- **LEAN** (Lean / 精简): For a small team of one or two finance staff: no separation of duties for confirming an attribution, a voucher only when an amount moves, a one-step apportionment when no house opened or left, and a missing attribution defaults to the cargo that remains. The compensation is a weekly after-the-fact review list: the attributions of a week that have no second person, no voucher or were made by default, which finance's head reviews once the week has ended.
 
 The value each profile gives an item is in the profile's column of the tables below.
 

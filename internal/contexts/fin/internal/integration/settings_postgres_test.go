@@ -56,7 +56,7 @@ func settingsModule(t *testing.T, f *fixture, opts ...finmodule.Option) *finmodu
 	m, err := finmodule.New(f.db, f.w, f.w, f.w, f.w, f.w, settingsAuth{grants: map[string][]string{
 		"ann": {api.ActionConfigureSettings}, "eve": {api.ActionConfigureSettings},
 		"bob": {api.ActionApproveSettings}, "carl": {api.ActionApproveSettings},
-		"dan": {api.ActionConfigureSettings, api.ActionApproveSettings}}}, opts...)
+		"dan": {api.ActionConfigureSettings, api.ActionApproveSettings}, "frank": {api.ActionConfigureSettings, api.ActionApproveSettings}}}, opts...)
 	if err != nil {
 		t.Fatal(err)
 	}

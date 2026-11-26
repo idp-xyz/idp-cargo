@@ -5,8 +5,8 @@
 --
 -- Added: the table single_administrator, the declaration, and on settings_approval the column risk_acknowledgement.
 -- A declaration names the tenant, the onboarding that made it (ORG's record, which SEA does not read), the consultant
--- who proposed that onboarding and the customer's owner who confirmed it (two different people), and when SEA recorded
--- it. It is only inserted (immutable, row security enabled and forced, written at READ COMMITTED) and is written by
+-- who proposed that onboarding and the customer's owner who confirmed it (two different people), the administrator the
+-- owner named (one person, who is not the consultant; the owner may name themselves), and when SEA recorded it. It is only inserted (immutable, row security enabled and forced, written at READ COMMITTED) and is written by
 -- SEA's command DeclareSeaSingleAdministrator, which the platform's bootstrap calls once the owner has confirmed the
 -- onboarding; a tenant has as many declarations as onboardings that made one, and one is enough. There is no way to
 -- withdraw one yet.
@@ -19,16 +19,17 @@
 --
 -- Changed: the approval's rule "the approver is the proposer exactly when the approval is the automatic one of a
 -- change set that only tightens" (settings_approval_other_actor, the same name) now also lets the approver be the
--- proposer when the approval carries a risk acknowledgement; the acknowledgement is of 1 to 2000 characters, only on
+-- proposer when the approval carries a risk acknowledgement, and the trigger lets that happen only when the approver is
+-- the administrator a declaration of the tenant names; the acknowledgement is of 1 to 2000 characters, only on
 -- such an approval, and only of a change set that loosens (settings_approval_acknowledgement_*). The approval's trigger
--- refuses such an approval of a tenant with no declaration recorded at or before it
--- (settings_approval_single_administrator; it looks at the acknowledgement, so that a proposer's approval without one is still
+-- refuses such an approval of a tenant with no declaration recorded at or before it that names the approver as its
+-- administrator (settings_approval_single_administrator; it looks at the acknowledgement, so that a proposer's approval without one is still
 -- refused by settings_approval_other_actor, as before). Everything else about approvals is as 000012 has it. The ALTER TABLE
 -- takes an ACCESS EXCLUSIVE lock on settings_approval for its own duration and checks its rows once (reasoned, not
 -- measured); no column has a default, so no table is rewritten.
 --
 -- What the schema does not know, and only the domain keeps: that the approver holds the permission ApproveSettings; that
--- the declaration comes from a confirmed onboarding; that the acknowledgement is not blank beyond its length (the
+-- the declaration comes from a confirmed onboarding and names the administrator that the owner named there; that the acknowledgement is not blank beyond its length (the
 -- database checks the trimmed length).
 
 CREATE TABLE cargo_sea.single_administrator (
@@ -36,9 +37,11 @@ CREATE TABLE cargo_sea.single_administrator (
  onboarding_id text NOT NULL CHECK (onboarding_id ~ '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$'),
  proposed_by text NOT NULL CHECK (length(btrim(proposed_by)) BETWEEN 1 AND 128),
  confirmed_by text NOT NULL CHECK (length(btrim(confirmed_by)) BETWEEN 1 AND 128),
+ administrator text NOT NULL CHECK (length(btrim(administrator)) BETWEEN 1 AND 128),
  declared_at timestamptz NOT NULL,
  PRIMARY KEY (tenant_id, onboarding_id),
- CONSTRAINT single_administrator_two_people CHECK (confirmed_by <> proposed_by)
+ CONSTRAINT single_administrator_two_people CHECK (confirmed_by <> proposed_by),
+ CONSTRAINT single_administrator_not_the_consultant CHECK (administrator <> proposed_by)
 );
 CREATE TRIGGER single_administrator_immutable BEFORE UPDATE OR DELETE ON cargo_sea.single_administrator
   FOR EACH ROW EXECUTE FUNCTION cargo_sea.reject_row_change();
@@ -75,8 +78,8 @@ BEGIN
       USING ERRCODE = 'check_violation', CONSTRAINT = 'settings_approval_loosening';
   END IF;
   IF NEW.risk_acknowledgement IS NOT NULL AND NOT EXISTS (SELECT 1 FROM cargo_sea.single_administrator d
-       WHERE d.tenant_id = NEW.tenant_id AND d.declared_at <= NEW.approved_at) THEN
-    RAISE EXCEPTION 'cargo_sea: tenant % declared no single administrator, so the proposer of change set % may not approve it', NEW.tenant_id, NEW.change_id
+       WHERE d.tenant_id = NEW.tenant_id AND d.administrator = NEW.approved_by AND d.declared_at <= NEW.approved_at) THEN
+    RAISE EXCEPTION 'cargo_sea: tenant % declared no single administrator named %, so the proposer of change set % may not approve it', NEW.tenant_id, NEW.approved_by, NEW.change_id
       USING ERRCODE = 'check_violation', CONSTRAINT = 'settings_approval_single_administrator';
   END IF;
   RETURN NEW;

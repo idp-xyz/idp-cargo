@@ -16,6 +16,12 @@ import (
 // FIN_ONE_STEP_REFUSED, or the package prefix "fin:", "sea:", "settings:" or "org:") and, after the first clause, a verb from
 // the list below that opens a clause, or "another/a <person> <verb>s". It does not judge whether the way out is right; the tests that name a way out say that.
 //
+// The checker is a heuristic by the form of the sentence, not an understanding of it. It cannot tell a listed verb used
+// as a noun, or as part of the cause, from a way out: "fin: the pool is closed, cost cannot be moved" and "fin: refused,
+// change" pass because "cost" and "change" are on the list and follow a comma, though neither says what to do. It
+// does not read what the way out asks, so a wrong way out passes too. A message that has the form is accepted; the tests
+// that name a way out ("review it from that Monday") are what hold a message to its way out.
+//
 //go:embed testdata/refusal.txt
 var patterns string
 

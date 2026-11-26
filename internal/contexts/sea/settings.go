@@ -48,7 +48,7 @@ func (m *Module) ApproveSeaSettingsChange(ctx context.Context, cmd api.ApproveSe
 // DeclareSeaSingleAdministrator records the tenant's declaration of a single administrator (V2.102).
 func (m *Module) DeclareSeaSingleAdministrator(ctx context.Context, cmd api.DeclareSeaSingleAdministrator) (api.Receipt, error) {
 	r, err := m.deps(cmd.TenantID, cmd.CommandID).DeclareSingleAdministrator(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID,
-		api.ActionDeclareSingleAdministrator, cmd.OnboardingID, 0, m.clock.Now(), cmd), cmd.ProposedBy)
+		api.ActionDeclareSingleAdministrator, cmd.OnboardingID, 0, m.clock.Now(), cmd), cmd.ProposedBy, cmd.AdministratorID)
 	return receipt(r, err)
 }
 
@@ -86,7 +86,7 @@ func (m *Module) GetSeaExceptionReport(ctx context.Context, q api.GetSeaExceptio
 	}
 	for _, x := range got.Declarations {
 		out.Declarations = append(out.Declarations, api.SeaSingleAdministratorDeclaration{OnboardingID: x.OnboardingID, ProposedBy: x.ProposedBy,
-			ConfirmedBy: x.ConfirmedBy, DeclaredAt: x.At})
+			ConfirmedBy: x.ConfirmedBy, AdministratorID: x.Administrator, DeclaredAt: x.At})
 	}
 	return out, nil
 }

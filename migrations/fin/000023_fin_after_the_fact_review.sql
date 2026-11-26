@@ -13,7 +13,9 @@
 -- What the database refuses: a second review of one legal entity and week (the primary key); a legal entity with no
 -- finance policy (a foreign key); a week that is not written YYYY-Www with a week from 01 to 53, or one that does not
 -- exist (week 53 of a year that has 52, which to_char reads as week 01 of the next year); a week_start that is not
--- that week's Monday at 00:00 UTC; a review made before its week began; a note of less than 1 or more than 2000
+-- that week's Monday at 00:00 UTC; a review made before its week began, or before it has ended (a week is reviewed at or
+-- after the next Monday at 00:00 UTC, in UTC whatever the session's time zone, so that the list the review signs is the
+-- whole week's, not the part that has run); a note of less than 1 or more than 2000
 -- characters; a reviewer of less than 1 or more than 128 characters; a negative list size; a digest that is not a
 -- SHA-256 in lower-case hexadecimal; a row changed or removed.
 --
@@ -21,7 +23,7 @@
 -- previewer of any line of the week's list (the list is a query over other tables, and a check at commit that read it
 -- would take a lock on every apportionment of the week), what the list is (so that the size and the digest are those of
 -- the list at the time, and that a list still matches its digest is read by the query), that the reviewer holds the
--- permission ReviewAfterTheFact, and that the actor is the token's actor.
+-- permissions ReviewAfterTheFact and ReadProfit, and that the actor is the token's actor.
 
 CREATE TABLE cargo_fin.after_the_fact_review (
  tenant_id text NOT NULL CHECK (length(btrim(tenant_id)) BETWEEN 1 AND 128),
@@ -39,7 +41,8 @@ CREATE TABLE cargo_fin.after_the_fact_review (
  CONSTRAINT after_the_fact_review_week_start CHECK (
    week_start = date_trunc('week', week_start AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
    AND week = to_char(week_start AT TIME ZONE 'UTC', 'IYYY-"W"IW')),
- CONSTRAINT after_the_fact_review_week_begun CHECK (reviewed_at >= week_start)
+ CONSTRAINT after_the_fact_review_week_begun CHECK (reviewed_at >= week_start),
+ CONSTRAINT after_the_fact_review_week_ended CHECK ((reviewed_at AT TIME ZONE 'UTC') >= (week_start AT TIME ZONE 'UTC') + interval '7 days')
 );
 
 ALTER TABLE cargo_fin.command_receipt DROP CONSTRAINT command_receipt_result_type_check,

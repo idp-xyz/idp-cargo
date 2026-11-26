@@ -46,3 +46,28 @@ func TestOnboardingAndDeclarationPermissionsAreGrantedByNameOnly(t *testing.T) {
 		t.Errorf("org:* for another action: %v", err)
 	}
 }
+
+// V2.102 batch D: org:RecordOnboardingModule is the platform's own. It is granted by name only ("org:*" and "*" do not grant
+// it), and only to the principal the onboarding builds: a token that carries the name has not the platform's mark, and the
+// mark without the name is not enough.
+func TestRecordOnboardingModuleIsHeldOnlyByThePrincipalTheOnboardingBuilds(t *testing.T) {
+	as := func(p ...string) context.Context {
+		return identity.WithPrincipal(context.Background(), identity.Principal{TenantID: "t1", ActorID: "olga", Permissions: p})
+	}
+	ask := func(ctx context.Context) error {
+		return permissions{}.AuthorizePartyAction(ctx, "t1", "olga", orgapi.ActionRecordOnboardingModule, "ob")
+	}
+	for name, ctx := range map[string]context.Context{
+		"the wildcards": as("*", "org:*"), "the owner's names": as("org:ConfirmOnboarding", "fin:ApproveSettings", "sea:ApproveSettings"),
+		"the name in a person's token": as("org:RecordOnboardingModule"), "every name": as("org:*", "org:ConfirmOnboarding", "org:ProposeOnboarding", "org:RecordOnboardingModule"),
+		"the mark without the name": context.WithValue(as("org:ConfirmOnboarding"), platformRecorder{}, true),
+		"another tenant":            recordingAsPlatform(context.Background(), "t2", "olga"), "another actor": recordingAsPlatform(context.Background(), "t1", "ann"),
+	} {
+		if err := ask(ctx); !errors.Is(err, identity.ErrDenied) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if err := ask(recordingAsPlatform(context.Background(), "t1", "olga")); err != nil {
+		t.Errorf("the principal the onboarding builds: %v", err)
+	}
+}

@@ -43,7 +43,7 @@ func (m *Module) ApproveFinSettingsChange(ctx context.Context, cmd api.ApproveFi
 // DeclareFinSingleAdministrator records the tenant's declaration of a single administrator (V2.102).
 func (m *Module) DeclareFinSingleAdministrator(ctx context.Context, cmd api.DeclareFinSingleAdministrator) (api.Receipt, error) {
 	r, err := m.deps(cmd.TenantID, cmd.CommandID).DeclareSingleAdministrator(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID,
-		api.ActionDeclareSingleAdministrator, cmd.OnboardingID, 0, m.clock.Now(), cmd), cmd.ProposedBy)
+		api.ActionDeclareSingleAdministrator, cmd.OnboardingID, 0, m.clock.Now(), cmd), cmd.ProposedBy, cmd.AdministratorID)
 	return receipt(r, err)
 }
 
@@ -81,7 +81,7 @@ func (m *Module) GetFinExceptionReport(ctx context.Context, q api.GetFinExceptio
 	}
 	for _, x := range got.Declarations {
 		out.Declarations = append(out.Declarations, api.FinSingleAdministratorDeclaration{OnboardingID: x.OnboardingID, ProposedBy: x.ProposedBy,
-			ConfirmedBy: x.ConfirmedBy, DeclaredAt: x.At})
+			ConfirmedBy: x.ConfirmedBy, AdministratorID: x.Administrator, DeclaredAt: x.At})
 	}
 	for _, w := range got.Work {
 		out.Work = append(out.Work, api.FinActorWork{ActorID: w.Actor, Submitted: w.Submitted, Confirmed: w.Confirmed})

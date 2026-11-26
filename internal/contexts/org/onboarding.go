@@ -59,8 +59,12 @@ func (m *Module) ProposeOnboarding(ctx context.Context, cmd api.ProposeOnboardin
 	for module, entries := range cmd.Overrides {
 		overrides[module] = entriesIn(entries)
 	}
+	plan := map[string]domain.ModulePlan{}
+	for module, p := range cmd.Plan {
+		plan[module] = domain.ModulePlan{CatalogueVersion: p.CatalogueVersion, Entries: entriesIn(p.Entries)}
+	}
 	r, err := m.onboardings(cmd.TenantID, cmd.CommandID).Propose(ctx, application.ProposeCommand{CommandID: cmd.CommandID, Scope: bookScope(cmd.TenantID, cmd.ActorID),
-		Onboarding: domain.Onboarding{ID: cmd.OnboardingID, Profile: cmd.Profile, Overrides: overrides, RiskStatement: cmd.RiskStatement, FinanceStaff: cmd.FinanceStaff,
+		Onboarding: domain.Onboarding{ID: cmd.OnboardingID, Profile: cmd.Profile, Overrides: overrides, Plan: plan, RiskStatement: cmd.RiskStatement, FinanceStaff: cmd.FinanceStaff,
 			SingleAdministrator: cmd.SingleAdministrator}})
 	return onboardingReceipt(cmd.CommandID, r, err)
 }
@@ -68,7 +72,7 @@ func (m *Module) ProposeOnboarding(ctx context.Context, cmd api.ProposeOnboardin
 // ConfirmOnboarding records the owner's confirmation and acknowledgement.
 func (m *Module) ConfirmOnboarding(ctx context.Context, cmd api.ConfirmOnboarding) (api.OnboardingReceipt, error) {
 	r, err := m.onboardings(cmd.TenantID, cmd.CommandID).Confirm(ctx, application.ConfirmCommand{CommandID: cmd.CommandID, Scope: bookScope(cmd.TenantID, cmd.ActorID),
-		OnboardingID: cmd.OnboardingID, Acknowledged: cmd.AcknowledgedText})
+		OnboardingID: cmd.OnboardingID, Acknowledged: cmd.AcknowledgedText, Administrator: cmd.AdministratorID})
 	return onboardingReceipt(cmd.CommandID, r, err)
 }
 
@@ -81,14 +85,18 @@ func (m *Module) RecordOnboardingModule(ctx context.Context, cmd api.RecordOnboa
 
 func onboardingView(tenant string, r application.OnboardingRecord) api.Onboarding {
 	o := r.Onboarding
-	out := api.Onboarding{TenantID: tenant, OnboardingID: o.ID, State: r.State(), Profile: o.Profile, Overrides: map[string][]api.OnboardingEntry{}, RiskStatement: o.RiskStatement,
+	out := api.Onboarding{TenantID: tenant, OnboardingID: o.ID, State: r.State(), Profile: o.Profile, Overrides: map[string][]api.OnboardingEntry{},
+		Plan: map[string]api.ModulePlan{}, RiskStatement: o.RiskStatement,
 		FinanceStaff: o.FinanceStaff, SingleAdministrator: o.SingleAdministrator, ProposedBy: o.ProposedBy, ProposedAt: o.ProposedAt,
 		Notice: domain.StrictNotice(o.Profile, o.FinanceStaff)}
 	for module, entries := range o.Overrides {
 		out.Overrides[module] = entriesOut(entries)
 	}
+	for module, p := range o.Plan {
+		out.Plan[module] = api.ModulePlan{CatalogueVersion: p.CatalogueVersion, Entries: entriesOut(p.Entries)}
+	}
 	if k := r.Confirmation; k != nil {
-		out.ConfirmedBy, out.ConfirmedAt, out.AcknowledgedText = k.By, k.At, k.AcknowledgedText
+		out.ConfirmedBy, out.ConfirmedAt, out.AcknowledgedText, out.AdministratorID = k.By, k.At, k.AcknowledgedText, k.Administrator
 	}
 	for _, module := range domain.Modules {
 		v := api.OnboardingModule{Module: module, State: domain.ModuleStateOf(r.Modules, module)}

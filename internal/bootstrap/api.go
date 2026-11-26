@@ -3,6 +3,7 @@ package bootstrap
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
@@ -105,11 +106,19 @@ func (permissions) AuthorizeRoleApproval(ctx context.Context, tenant, actor, _, 
 	return identity.Authorize(ctx, "org", tenant, actor, "ApproveRole")
 }
 
-// AuthorizePartyAction covers ORG's party actions. The two actions of customer onboarding (V2.102), "org:ProposeOnboarding"
-// (the implementation consultant's proposal) and "org:ConfirmOnboarding" (the customer's owner's confirmation, which also
-// records what each module made of it), are granted by name only: "org:*" and "*" grant neither, so that a general
-// grant never lets a person choose how a customer's controls are set or confirm that choice.
+// AuthorizePartyAction covers ORG's party actions. The actions of customer onboarding (V2.102), "org:ProposeOnboarding"
+// (the implementation consultant's proposal), "org:ConfirmOnboarding" (the customer's owner's confirmation) and
+// "org:RecordOnboardingModule" (the platform's record of what each module made of it), are granted by name only: "org:*"
+// and "*" grant none, so that a general grant never lets a person choose how a customer's controls are set, confirm that
+// choice or write its progress. The last is held only by the principal the onboarding builds, which carries a mark no
+// token can carry, so no person's role holds it.
 func (permissions) AuthorizePartyAction(ctx context.Context, tenant, actor, action, _ string) error {
+	if action == orgapi.ActionRecordOnboardingModule {
+		if ctx.Value(platformRecorder{}) == nil { // the principal the onboarding builds, not a person's token that carries the permission
+			return fmt.Errorf("%w: org:%s is the platform's own, which no person holds", identity.ErrDenied, action)
+		}
+		return identity.AuthorizeNamed(ctx, "org", tenant, actor, action)
+	}
 	if action == orgapi.ActionProposeOnboarding || action == orgapi.ActionConfirmOnboarding {
 		return identity.AuthorizeNamed(ctx, "org", tenant, actor, action)
 	}

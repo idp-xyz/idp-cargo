@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	finapi "go.idp.xyz/idp-cargo/internal/contexts/fin/api"
 	"go.idp.xyz/idp-cargo/internal/kernel"
@@ -233,8 +234,9 @@ func TestBoxAUnderTheLeanProfile(t *testing.T) {
 		strings.Join(list.Lines[0].Reasons, ",") != finapi.ReviewReasonNoSecondPerson+","+finapi.ReviewReasonNoVoucher+","+finapi.ReviewReasonMadeByDefault {
 		t.Fatalf("the week's list: %+v", list)
 	}
+	review := d.finAt(weekEnd(a.EnteredAt).Add(time.Hour)) // a week is reviewed once it has ended
 	mark := func(id, who string) (finapi.Receipt, error) {
-		return d.fin.MarkAfterTheFactReviewed(d.ctx, finapi.MarkAfterTheFactReviewed{CommandID: id, TenantID: d.tenant, ActorID: who, LegalEntityID: "LE", Week: week,
+		return review.MarkAfterTheFactReviewed(d.ctx, finapi.MarkAfterTheFactReviewed{CommandID: id, TenantID: d.tenant, ActorID: who, LegalEntityID: "LE", Week: week,
 			Note: "the default of H03 is right: the line's whole cost stays with the cargo that remains"})
 	}
 	_, err = mark("lean-review-ops-1", "ops-1")

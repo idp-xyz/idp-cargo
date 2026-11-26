@@ -18,11 +18,13 @@ import (
 // V2.102, migration org/000012: customer onboarding, the record of a consultant's proposal, the owner's confirmation and
 // each module's change set and state.
 
-// onboardingAuth grants the two actions by name: ann proposes, olga confirms, dan does both, and nobody else does.
+// onboardingAuth grants the actions by name: ann proposes, olga confirms, dan does both, olga and dan record a module (as the
+// platform does for the confirmer), and nobody else does anything.
 type onboardingAuth struct{ testAuthorizer }
 
 func (onboardingAuth) AuthorizePartyAction(_ context.Context, _, actor, action, _ string) error {
-	grants := map[string][]string{"ann": {api.ActionProposeOnboarding}, "olga": {api.ActionConfirmOnboarding}, "dan": {api.ActionProposeOnboarding, api.ActionConfirmOnboarding}}
+	grants := map[string][]string{"ann": {api.ActionProposeOnboarding}, "olga": {api.ActionConfirmOnboarding, api.ActionRecordOnboardingModule},
+		"dan": {api.ActionProposeOnboarding, api.ActionConfirmOnboarding, api.ActionRecordOnboardingModule}}
 	for _, a := range grants[actor] {
 		if a == action {
 			return nil
@@ -71,13 +73,30 @@ func (w *onboardingWorld) command() string {
 
 const riskText = "The customer accepts that the STRICT profile blocks closing a pool while an attribution is pending."
 
-func (w *onboardingWorld) propose(id, actor, profile string, staff int, single bool) (api.OnboardingReceipt, error) {
-	return w.module.ProposeOnboarding(context.Background(), api.ProposeOnboarding{CommandID: "p-" + id, TenantID: w.tenant, ActorID: actor, OnboardingID: id, Profile: profile,
-		RiskStatement: riskText, FinanceStaff: staff, SingleAdministrator: single})
+// plan is a plan as the platform's onboarding resolves it: ORG keeps it and does not read it.
+func plan(entries ...api.OnboardingEntry) map[string]api.ModulePlan {
+	if len(entries) == 0 {
+		entries = []api.OnboardingEntry{{ScopeKind: "TENANT", Key: "fin.F7", Value: "BLOCKS"}}
+	}
+	return map[string]api.ModulePlan{"FIN": {CatalogueVersion: "fin-v1", Entries: entries}, "SEA": {CatalogueVersion: "sea-v1", Entries: []api.OnboardingEntry{{ScopeKind: "TENANT", Key: "sea.S1", Value: "WITH_REASON"}}}}
 }
 
+func (w *onboardingWorld) propose(id, actor, profile string, staff int, single bool) (api.OnboardingReceipt, error) {
+	return w.module.ProposeOnboarding(context.Background(), api.ProposeOnboarding{CommandID: "p-" + id, TenantID: w.tenant, ActorID: actor, OnboardingID: id, Profile: profile,
+		Plan: plan(), RiskStatement: riskText, FinanceStaff: staff, SingleAdministrator: single})
+}
+
+// confirm is the owner's confirmation; a proposal that declares a single administrator is confirmed naming dan.
 func (w *onboardingWorld) confirm(command, id, actor, text string) (api.OnboardingReceipt, error) {
-	return w.module.ConfirmOnboarding(context.Background(), api.ConfirmOnboarding{CommandID: command, TenantID: w.tenant, ActorID: actor, OnboardingID: id, AcknowledgedText: text})
+	admin := ""
+	if o, err := w.module.GetOnboarding(context.Background(), api.GetOnboarding{TenantID: w.tenant, OnboardingID: id}); err == nil && o.SingleAdministrator {
+		admin = "dan"
+	}
+	return w.confirmNaming(command, id, actor, text, admin)
+}
+
+func (w *onboardingWorld) confirmNaming(command, id, actor, text, admin string) (api.OnboardingReceipt, error) {
+	return w.module.ConfirmOnboarding(context.Background(), api.ConfirmOnboarding{CommandID: command, TenantID: w.tenant, ActorID: actor, OnboardingID: id, AcknowledgedText: text, AdministratorID: admin})
 }
 
 func (w *onboardingWorld) record(id, actor, module, state string) (api.OnboardingReceipt, error) {
@@ -132,10 +151,10 @@ func TestOnboardingIsProposedConfirmedAndRecordedPerModule(t *testing.T) {
 	}
 	// the same onboarding with another content, or by another command, is not a replay
 	_, err = w.module.ProposeOnboarding(context.Background(), api.ProposeOnboarding{CommandID: "p-ob-1", TenantID: w.tenant, ActorID: "ann", OnboardingID: "ob-1", Profile: "STRICT",
-		RiskStatement: riskText, FinanceStaff: 5})
+		Plan: plan(), RiskStatement: riskText, FinanceStaff: 5})
 	said(t, "another content", err, api.ErrIdempotencyConflict, "propose with another onboarding id")
 	_, err = w.module.ProposeOnboarding(context.Background(), api.ProposeOnboarding{CommandID: "p-other", TenantID: w.tenant, ActorID: "ann", OnboardingID: "ob-1", Profile: "STRICT",
-		RiskStatement: riskText, FinanceStaff: 2, SingleAdministrator: true})
+		Plan: plan(), RiskStatement: riskText, FinanceStaff: 2, SingleAdministrator: true})
 	said(t, "another command for the same content", err, api.ErrIdempotencyConflict)
 
 	// what a proposal must be
@@ -154,6 +173,9 @@ func TestOnboardingIsProposedConfirmedAndRecordedPerModule(t *testing.T) {
 			"FIN": {{ScopeKind: "LEGAL_ENTITY", ScopeID: "LE", Key: "a", Value: "b", ThresholdMinor: new(int64)}}}},
 	} {
 		c.CommandID, c.TenantID, c.ActorID = w.command(), w.tenant, "ann"
+		if c.Plan == nil {
+			c.Plan = plan()
+		}
 		_, err = w.module.ProposeOnboarding(context.Background(), c)
 		said(t, name, err, api.ErrRejected, "ORG_INVALID_ONBOARDING")
 	}
@@ -250,21 +272,28 @@ func TestOnboardingIsProposedConfirmedAndRecordedPerModule(t *testing.T) {
 func TestOnboardingDatabaseRulesRefuseRawWrites(t *testing.T) {
 	w := newOnboardingWorld(t)
 	const hash = "0000000000000000000000000000000000000000000000000000000000000000"
+	const entry = `{"ScopeKind":"TENANT","ScopeID":"","Key":"fin.F7","Value":"BLOCKS"}`
+	const goodPlan = `{"FIN":{"CatalogueVersion":"v1","Entries":[` + entry + `]},"SEA":{"CatalogueVersion":"v1","Entries":[` + entry + `]}}`
+	many := func(n int) string { return strings.TrimSuffix(strings.Repeat(entry+",", n), ",") }
 	proposal := func(id, by, cmd, extra string) string { // extra overrides a column: "profile='FANCY'"
 		cols := map[string]string{"profile": "'LEAN'", "overrides": "'{}'", "risk_statement": "'the statement'", "finance_staff": "2", "single_administrator": "false",
-			"proposed_by": "'" + by + "'", "command_id": "'" + cmd + "'", "onboarding_id": "'" + id + "'"}
+			"proposed_by": "'" + by + "'", "command_id": "'" + cmd + "'", "onboarding_id": "'" + id + "'", "plan": "'" + goodPlan + "'"}
 		if extra != "" {
 			kv := strings.SplitN(extra, "=", 2)
 			cols[kv[0]] = kv[1]
 		}
-		return fmt.Sprintf(`INSERT INTO cargo_org.onboarding (tenant_id,onboarding_id,command_id,request_hash,profile,overrides,risk_statement,finance_staff,single_administrator,
-        proposed_by,proposed_at) VALUES ($1,%s,%s,'%s',%s,%s,%s,%s,%s,%s,now())`, cols["onboarding_id"], cols["command_id"], hash, cols["profile"], cols["overrides"],
+		return fmt.Sprintf(`INSERT INTO cargo_org.onboarding (tenant_id,onboarding_id,command_id,request_hash,profile,overrides,plan,risk_statement,finance_staff,single_administrator,
+        proposed_by,proposed_at) VALUES ($1,%s,%s,'%s',%s,%s,%s,%s,%s,%s,%s,now())`, cols["onboarding_id"], cols["command_id"], hash, cols["profile"], cols["overrides"], cols["plan"],
 			cols["risk_statement"], cols["finance_staff"], cols["single_administrator"], cols["proposed_by"])
 	}
+	// confirmationBy confirms with the proposal's own flag and the administrator named ("NULL" or a quoted id)
+	confirmationBy := func(id, proposer, confirmer, text, at, administrator string) string {
+		return fmt.Sprintf(`INSERT INTO cargo_org.onboarding_confirmation (tenant_id,onboarding_id,command_id,proposed_by,proposed_at,confirmed_by,confirmed_at,acknowledged_text,
+        single_administrator,administrator) SELECT tenant_id,onboarding_id,'c-'||onboarding_id,'%s',proposed_at,'%s',%s,'%s',single_administrator,%s
+        FROM cargo_org.onboarding WHERE tenant_id=$1 AND onboarding_id='%s'`, proposer, confirmer, at, text, administrator, id)
+	}
 	confirmation := func(id, proposer, confirmer, text, at string) string {
-		return fmt.Sprintf(`INSERT INTO cargo_org.onboarding_confirmation (tenant_id,onboarding_id,command_id,proposed_by,proposed_at,confirmed_by,confirmed_at,acknowledged_text)
-        SELECT tenant_id,onboarding_id,'c-'||onboarding_id,'%s',proposed_at,'%s',%s,'%s' FROM cargo_org.onboarding WHERE tenant_id=$1 AND onboarding_id='%s'`,
-			proposer, confirmer, at, text, id)
+		return confirmationBy(id, proposer, confirmer, text, at, "NULL")
 	}
 	module := func(id, by, mod, state, change, at string) string {
 		return fmt.Sprintf(`INSERT INTO cargo_org.onboarding_module (tenant_id,onboarding_id,module,state,change_id,recorded_by,confirmed_at,recorded_at)
@@ -281,6 +310,16 @@ func TestOnboardingDatabaseRulesRefuseRawWrites(t *testing.T) {
 		{"another profile", []string{proposal("a", "ann", "c1", "profile='FANCY'")}, "23514", "onboarding_profile"},
 		{"overrides that are not an object", []string{proposal("a", "ann", "c1", "overrides='[]'")}, "23514", "onboarding_overrides"},
 		{"overrides of another module", []string{proposal("a", "ann", "c1", `overrides='{"AIR":[]}'`)}, "23514", "onboarding_overrides"},
+		{"a plan that is not an object", []string{proposal("a", "ann", "c1", `plan='[]'`)}, "23514", "onboarding_plan"},
+		{"a plan without SEA", []string{proposal("a", "ann", "c1", `plan='{"FIN":{"CatalogueVersion":"v","Entries":[`+entry+`]}}'`)}, "23514", "onboarding_plan"},
+		{"a plan of another module", []string{proposal("a", "ann", "c1", `plan='{"AIR":{},"FIN":{"CatalogueVersion":"v","Entries":[`+entry+`]},"SEA":{"CatalogueVersion":"v","Entries":[`+entry+`]}}'`)},
+			"23514", "onboarding_plan"},
+		{"a plan with no catalogue version", []string{proposal("a", "ann", "c1", `plan='{"FIN":{"CatalogueVersion":" ","Entries":[`+entry+`]},"SEA":{"CatalogueVersion":"v","Entries":[`+entry+`]}}'`)},
+			"23514", "onboarding_plan"},
+		{"a plan with no entries", []string{proposal("a", "ann", "c1", `plan='{"FIN":{"CatalogueVersion":"v","Entries":[]},"SEA":{"CatalogueVersion":"v","Entries":[`+entry+`]}}'`)},
+			"23514", "onboarding_plan"},
+		{"a plan of 65 entries", []string{proposal("a", "ann", "c1", `plan='{"FIN":{"CatalogueVersion":"v","Entries":[`+many(65)+`]},"SEA":{"CatalogueVersion":"v","Entries":[`+entry+`]}}'`)},
+			"23514", "onboarding_plan"},
 		{"a blank risk statement", []string{proposal("a", "ann", "c1", "risk_statement='  '")}, "23514", "onboarding_risk_statement"},
 		{"a risk statement of 2001 characters", []string{proposal("a", "ann", "c1", "risk_statement='"+long+"'")}, "23514", "onboarding_risk_statement"},
 		{"no finance staff", []string{proposal("a", "ann", "c1", "finance_staff=0")}, "23514", "onboarding_finance_staff"},
@@ -293,6 +332,16 @@ func TestOnboardingDatabaseRulesRefuseRawWrites(t *testing.T) {
 		{"a confirmation that names another proposer", []string{proposal("a", "ann", "c1", ""), confirmation("a", "zed", "olga", "the statement", "proposed_at")}, "23503",
 			"onboarding_confirmation_matches_proposal"},
 		{"a confirmation of another text", []string{proposal("a", "ann", "c1", ""), confirmation("a", "ann", "olga", "the statement ", "proposed_at")}, "23503", "onboarding_confirmation_matches_proposal"},
+		{"an administrator named when the proposal declares none", []string{proposal("a", "ann", "c1", ""), confirmationBy("a", "ann", "olga", "the statement", "proposed_at", "'dan'")}, "23514",
+			"onboarding_administrator_declared"},
+		{"no administrator named when the proposal declares one", []string{proposal("a", "ann", "c1", "single_administrator=true"), confirmationBy("a", "ann", "olga", "the statement", "proposed_at", "NULL")},
+			"23514", "onboarding_administrator_declared"},
+		{"a flag that differs from the proposal's", []string{proposal("a", "ann", "c1", ""), strings.Replace(confirmationBy("a", "ann", "olga", "the statement", "proposed_at", "'dan'"),
+			"single_administrator,'dan'", "true,'dan'", 1)}, "23503", "onboarding_confirmation_matches_proposal"},
+		{"the consultant as the administrator", []string{proposal("a", "ann", "c1", "single_administrator=true"), confirmationBy("a", "ann", "olga", "the statement", "proposed_at", "'ann'")},
+			"23514", "onboarding_administrator_not_proposer"},
+		{"an administrator with spaces around the id", []string{proposal("a", "ann", "c1", "single_administrator=true"), confirmationBy("a", "ann", "olga", "the statement", "proposed_at", "' dan'")},
+			"23514", "onboarding_administrator_length"},
 		{"a confirmation before the proposal", []string{proposal("a", "ann", "c1", ""), confirmation("a", "ann", "olga", "the statement", "proposed_at - interval '1 second'")}, "23514",
 			"onboarding_confirmation_after_proposal"},
 		{"a second confirmation", []string{proposal("a", "ann", "c1", ""), confirmation("a", "ann", "olga", "the statement", "proposed_at"),
@@ -314,7 +363,7 @@ func TestOnboardingDatabaseRulesRefuseRawWrites(t *testing.T) {
 		{"approved before proposed", []string{proposal("a", "ann", "c1", ""), confirmation("a", "ann", "olga", "the statement", "proposed_at"),
 			module("a", "olga", "FIN", "APPROVED", "onb-a-fin", "now()")}, "23514", "onboarding_module_approved_after_proposed"},
 		{"another tenant's onboarding", []string{`INSERT INTO cargo_org.onboarding (tenant_id,onboarding_id,command_id,request_hash,profile,overrides,risk_statement,finance_staff,
-          single_administrator,proposed_by,proposed_at) VALUES ($1 || '-other','a','c1','` + hash + `','LEAN','{}','s',1,false,'ann',now())`}, "42501", ""},
+          plan,single_administrator,proposed_by,proposed_at) VALUES ($1 || '-other','a','c1','` + hash + `','LEAN','{}','s',1,'` + goodPlan + `',false,'ann',now())`}, "42501", ""},
 	} {
 		err := w.raw(c.stmts...)
 		var pgErr *pgconn.PgError
@@ -326,6 +375,10 @@ func TestOnboardingDatabaseRulesRefuseRawWrites(t *testing.T) {
 	if err := w.raw(proposal("ok", "ann", "c-ok", ""), confirmation("ok", "ann", "olga", "the statement", "proposed_at"), module("ok", "olga", "FIN", "PROPOSED", "onb-ok-fin", "now()"),
 		module("ok", "olga", "FIN", "APPROVED", "onb-ok-fin", "now()")); err != nil {
 		t.Fatalf("an onboarding written as ORG writes it: %v", err)
+	}
+	if err := w.raw(proposal("ok2", "ann", "c-ok2", "single_administrator=true"), confirmationBy("ok2", "ann", "olga", "the statement", "proposed_at", "'olga'"),
+		proposal("ok3", "ann", "c-ok3", `plan='{"FIN":{"CatalogueVersion":"v","Entries":[`+many(64)+`]},"SEA":{"CatalogueVersion":"v","Entries":[`+many(64)+`]}}'`)); err != nil {
+		t.Fatalf("an owner who names themselves as the administrator, and plans of 64 entries: %v", err)
 	}
 	// the rows are only inserted
 	for _, table := range []string{"onboarding", "onboarding_confirmation", "onboarding_module"} {

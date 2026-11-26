@@ -14,6 +14,9 @@ import (
 // the week, waits for the first and then answers its receipt or is refused as done; reads the list under that lock, in
 // one statement, and writes the mark with the list's size and digest.
 
+// actionReadProfit is the permission that reads the list (api.ActionReadProfit).
+const actionReadProfit Action = "ReadProfit"
+
 // AfterTheFactStore keeps the marks of the weeks reviewed (rows are only inserted) and reads the list.
 type AfterTheFactStore interface {
 	// Lock takes the week's lock until the transaction ends.
@@ -87,6 +90,10 @@ func (d Deps) MarkAfterTheFactReviewed(ctx context.Context, c Command, legalEnti
 	}
 	if err := d.authorizeFirst(ctx, c); err != nil {
 		return Receipt{}, err
+	}
+	// the reviewer signs the list, so they read it: ReadProfit as well as ReviewAfterTheFact
+	if err := d.Auth.RequireFinAction(ctx, c.Scope, actionReadProfit, c.Subject); err != nil {
+		return Receipt{}, fmt.Errorf("%w: %v; the reviewer reads the list they sign, so they need ReadProfit as well as ReviewAfterTheFact: ask for it", ErrUnauthorized, err)
 	}
 	from, to, err := fin.ParseWeek(week)
 	if err != nil {

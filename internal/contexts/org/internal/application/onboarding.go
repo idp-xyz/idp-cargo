@@ -18,10 +18,12 @@ import (
 // change set and state. Every command takes the onboarding's lock first, so that a retry that overlaps its first try
 // waits for it and answers what it did.
 
-// Actions an authorizer decides on; the subject is the onboarding. RecordOnboardingModule needs ConfirmOnboarding.
+// Actions an authorizer decides on; the subject is the onboarding. RecordOnboardingModule is the platform's own, not the
+// owner's: it is a permission of its own.
 const (
-	ActionProposeOnboarding = "ProposeOnboarding"
-	ActionConfirmOnboarding = "ConfirmOnboarding"
+	ActionProposeOnboarding      = "ProposeOnboarding"
+	ActionConfirmOnboarding      = "ConfirmOnboarding"
+	ActionRecordOnboardingModule = "RecordOnboardingModule"
 )
 
 const (
@@ -75,6 +77,8 @@ type ConfirmCommand struct {
 	Scope        Scope
 	OnboardingID string
 	Acknowledged string
+	// Administrator is the owner's declaration of the customer's single administrator, or empty.
+	Administrator string
 }
 
 // ModuleCommand records what a module did for a confirmed onboarding.
@@ -178,7 +182,8 @@ func (h Onboardings) Propose(ctx context.Context, c ProposeCommand) (OnboardingR
 }
 
 // Confirm records the owner's confirmation. The confirmer is not the proposer, and acknowledges the risk statement
-// exactly as proposed. The same actor with the same text again answers the record, whatever the command id.
+// exactly as proposed; they declare a single administrator, who is not the proposer, if and only if the proposal says
+// the customer does. The same actor with the same text and administrator again answers the record, whatever the command id.
 func (h Onboardings) Confirm(ctx context.Context, c ConfirmCommand) (OnboardingResult, error) {
 	if err := ctx.Err(); err != nil {
 		return OnboardingResult{}, err
@@ -205,7 +210,7 @@ func (h Onboardings) Confirm(ctx context.Context, c ConfirmCommand) (OnboardingR
 			return fmt.Errorf("%w: onboarding %s; list the tenant's onboardings (ListOnboardings) for the ids", bentorepo.ErrNotFound, c.OnboardingID)
 		}
 		if k := rec.Confirmation; k != nil {
-			if k.By != c.Scope.ActorID || k.AcknowledgedText != c.Acknowledged {
+			if k.By != c.Scope.ActorID || k.AcknowledgedText != c.Acknowledged || k.Administrator != c.Administrator {
 				return fmt.Errorf("%w: onboarding %s was confirmed by %s already; read it (GetOnboarding)", ErrIdempotencyConflict, c.OnboardingID, k.By)
 			}
 			out = OnboardingResult{Record: rec, Notice: org.StrictNotice(rec.Onboarding.Profile, rec.Onboarding.FinanceStaff), Revision: revision(rec)}
@@ -217,8 +222,19 @@ func (h Onboardings) Confirm(ctx context.Context, c ConfirmCommand) (OnboardingR
 				c.OnboardingID, c.Scope.ActorID)
 		case c.Acknowledged != rec.Onboarding.RiskStatement:
 			return fmt.Errorf("%w: the text acknowledged is not the risk statement proposed; read the statement (GetOnboarding), and acknowledge it exactly as it is", org.ErrInvalidOnboarding)
+		case rec.Onboarding.SingleAdministrator && strings.TrimSpace(c.Administrator) == "":
+			return fmt.Errorf("%w: the proposal says the customer declares a single administrator, and the owner names them when confirming; give the administrator's actor id "+
+				"(AdministratorID), or have the consultant propose a new onboarding, under another id, that declares none", org.ErrInvalidOnboarding)
+		case !rec.Onboarding.SingleAdministrator && c.Administrator != "":
+			return fmt.Errorf("%w: the proposal does not say the customer declares a single administrator, so none is named when confirming; leave AdministratorID empty, or have "+
+				"the consultant propose a new onboarding, under another id, that declares one", org.ErrInvalidOnboarding)
+		case rec.Onboarding.SingleAdministrator && (strings.TrimSpace(c.Administrator) != c.Administrator || len(c.Administrator) > 128):
+			return fmt.Errorf("%w: the administrator is an actor id of 1 to 128 bytes, without spaces around it; give it as the identity platform names the person", org.ErrInvalidOnboarding)
+		case rec.Onboarding.SingleAdministrator && c.Administrator == rec.Onboarding.ProposedBy:
+			return fmt.Errorf("%w: the administrator the owner names is not the consultant %s who proposed the onboarding; name the customer's own administrator", org.ErrInvalidOnboarding,
+				rec.Onboarding.ProposedBy)
 		}
-		k := org.Confirmation{By: c.Scope.ActorID, At: h.Clock.Now().UTC().Truncate(time.Microsecond), AcknowledgedText: c.Acknowledged}
+		k := org.Confirmation{By: c.Scope.ActorID, At: h.Clock.Now().UTC().Truncate(time.Microsecond), AcknowledgedText: c.Acknowledged, Administrator: c.Administrator}
 		if k.At.Before(rec.Onboarding.ProposedAt) {
 			k.At = rec.Onboarding.ProposedAt
 		}
@@ -235,7 +251,8 @@ func (h Onboardings) Confirm(ctx context.Context, c ConfirmCommand) (OnboardingR
 	return out, err
 }
 
-// RecordModule records a module's change set and state for a confirmed onboarding, by the confirmer, once for each state.
+// RecordModule records a module's change set and state for a confirmed onboarding, by the confirmer acting as the
+// platform (the permission RecordOnboardingModule, which no person holds), once for each state.
 // A state already recorded with the same change set answers the record again.
 func (h Onboardings) RecordModule(ctx context.Context, c ModuleCommand) (OnboardingResult, error) {
 	if err := ctx.Err(); err != nil {
@@ -247,8 +264,9 @@ func (h Onboardings) RecordModule(ctx context.Context, c ModuleCommand) (Onboard
 	if !slices.Contains(org.Modules, c.Module) || (c.State != org.ModuleProposed && c.State != org.ModuleApproved) || c.OnboardingID == "" {
 		return OnboardingResult{}, fmt.Errorf("%w: a module record names its onboarding, FIN or SEA, and the state PROPOSED or APPROVED", ErrInvalidCommand)
 	}
-	if err := h.Auth.RequirePartyAction(ctx, c.Scope, ActionConfirmOnboarding, org.PartyID(c.OnboardingID)); err != nil {
-		return OnboardingResult{}, fmt.Errorf("%w: %v", ErrUnauthorized, err)
+	if err := h.Auth.RequirePartyAction(ctx, c.Scope, ActionRecordOnboardingModule, org.PartyID(c.OnboardingID)); err != nil {
+		return OnboardingResult{}, fmt.Errorf("%w: %v; only the platform's onboarding records a module's progress, from the module's own change set, so no person does: "+
+			"send ConfirmOnboarding again, which completes what is missing", ErrUnauthorized, err)
 	}
 	var out OnboardingResult
 	err := h.Tx.WithinTransaction(ctx, func(txCtx context.Context) error {

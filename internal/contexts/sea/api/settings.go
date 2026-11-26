@@ -55,16 +55,18 @@ type ApproveSeaSettingsChange struct {
 }
 
 // DeclareSeaSingleAdministrator records that the tenant declared a single administrator in the onboarding OnboardingID,
-// proposed by ProposedBy and confirmed by ActorID, the customer's owner (two different people). It is the platform's
+// proposed by ProposedBy and confirmed by ActorID, the customer's owner (two different people), who named AdministratorID
+// as the one administrator (not the consultant ProposedBy). Only that administrator may approve their own loosening. It is the platform's
 // onboarding that calls it, once the owner has confirmed; it needs the permission DeclareSingleAdministrator, granted by
 // name only and not by ConfigureSettings, so that a configurer alone cannot make it. It is recorded once for each
 // onboarding, never withdrawn, and idempotent by command id. Receipt.ChangeID is the onboarding.
 type DeclareSeaSingleAdministrator struct {
-	CommandID    string
-	TenantID     string
-	ActorID      string
-	OnboardingID string
-	ProposedBy   string
+	CommandID       string
+	TenantID        string
+	ActorID         string
+	OnboardingID    string
+	ProposedBy      string
+	AdministratorID string
 }
 
 // RefuseSeaSettingsChange is an approver's refusal of a change set that waits for approval, with a reason: it is
@@ -329,10 +331,11 @@ type SeaSettingsChanger struct {
 
 // SeaSingleAdministratorDeclaration is a declaration of a single administrator.
 type SeaSingleAdministratorDeclaration struct {
-	OnboardingID string
-	ProposedBy   string
-	ConfirmedBy  string
-	DeclaredAt   time.Time
+	OnboardingID    string
+	ProposedBy      string
+	ConfirmedBy     string
+	AdministratorID string
+	DeclaredAt      time.Time
 }
 
 // SeaExceptionReport is SEA's part of the exception report.

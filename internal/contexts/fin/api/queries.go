@@ -1506,10 +1506,11 @@ type FinActorWork struct {
 
 // FinSingleAdministratorDeclaration is a declaration of a single administrator.
 type FinSingleAdministratorDeclaration struct {
-	OnboardingID string
-	ProposedBy   string
-	ConfirmedBy  string
-	DeclaredAt   time.Time
+	OnboardingID    string
+	ProposedBy      string
+	ConfirmedBy     string
+	AdministratorID string
+	DeclaredAt      time.Time
 }
 
 // FinExceptionReport is FIN's part of the exception report.

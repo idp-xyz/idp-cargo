@@ -31,26 +31,28 @@ func TestAProposerApprovesTheirOwnLooseningOnlyWithTheDeclarationAndAnAcknowledg
 	}{
 		"without the declaration":                          {"ann", Own{}, ErrSameActor, "have another approver approve it"},
 		"without the declaration, with an acknowledgement": {"ann", Own{Acknowledgement: "I accept"}, ErrSameActor, "has not declared a single administrator"},
-		"with the declaration, without an acknowledgement": {"ann", Own{Declared: true}, ErrAcknowledgement, "give it, or have another approver"},
-		"with a blank acknowledgement":                     {"ann", Own{Declared: true, Acknowledgement: "  \n "}, ErrAcknowledgement, "1 to 2000 characters"},
-		"with too long an acknowledgement":                 {"ann", Own{Declared: true, Acknowledgement: long}, ErrAcknowledgement, "shorten it"},
-		"another approver with an acknowledgement":         {"bob", Own{Declared: true, Acknowledgement: "I accept"}, ErrAcknowledgement, "leave it out"},
+		"with the declaration, without an acknowledgement": {"ann", Own{Administrators: []string{"ann"}}, ErrAcknowledgement, "give it, or have another approver"},
+		"with a blank acknowledgement":                     {"ann", Own{Administrators: []string{"ann"}, Acknowledgement: "  \n "}, ErrAcknowledgement, "1 to 2000 characters"},
+		"with too long an acknowledgement":                 {"ann", Own{Administrators: []string{"ann"}, Acknowledgement: long}, ErrAcknowledgement, "shorten it"},
+		"the declared administrator is another person":     {"ann", Own{Administrators: []string{"dan"}, Acknowledgement: "I accept"}, ErrSameActor, "not the single administrator this tenant declared (dan)"},
+		"another person declared, without acknowledgement": {"ann", Own{Administrators: []string{"dan", "eve"}}, ErrSameActor, "(dan, eve)"},
+		"another approver with an acknowledgement":         {"bob", Own{Administrators: []string{"ann"}, Acknowledgement: "I accept"}, ErrAcknowledgement, "leave it out"},
 	} {
 		a, err := l.ApproveAs(cat, "L1", c.by, hours(2), c.own)
 		if !errors.Is(err, c.kind) || !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), c.say) || a != (Approval{}) {
 			t.Errorf("%s: %+v, %v", name, a, err)
 		}
 	}
-	a, err := l.ApproveAs(cat, "L1", "ann", hours(2), Own{Declared: true, Acknowledgement: "  I accept the risk, being the only administrator.  "})
+	a, err := l.ApproveAs(cat, "L1", "ann", hours(2), Own{Administrators: []string{"ann"}, Acknowledgement: "  I accept the risk, being the only administrator.  "})
 	if err != nil || a.Acknowledgement != "I accept the risk, being the only administrator." || a.Auto || !a.SelfApproved() || a.Version != 1 {
 		t.Fatalf("the approval: %+v, %v", a, err)
 	}
 	exact := strings.Repeat("é", MaxAcknowledgement)
-	if a, err = l.ApproveAs(cat, "L1", "ann", hours(2), Own{Declared: true, Acknowledgement: exact}); err != nil || a.Acknowledgement != exact {
+	if a, err = l.ApproveAs(cat, "L1", "ann", hours(2), Own{Administrators: []string{"ann"}, Acknowledgement: exact}); err != nil || a.Acknowledgement != exact {
 		t.Fatalf("an acknowledgement of exactly %d characters: %v", MaxAcknowledgement, err)
 	}
 	// another approver as before; the declaration changes nothing for them
-	if a, err = l.ApproveAs(cat, "L1", "bob", hours(2), Own{Declared: true}); err != nil || a.SelfApproved() || a.Acknowledgement != "" {
+	if a, err = l.ApproveAs(cat, "L1", "bob", hours(2), Own{Administrators: []string{"ann"}}); err != nil || a.SelfApproved() || a.Acknowledgement != "" {
 		t.Fatalf("another approver: %+v, %v", a, err)
 	}
 	// Approve is ApproveAs with nothing declared: the proposer is refused as before V2.102
@@ -64,7 +66,7 @@ func TestTheReportListsExceptionsLooserItemsSelfApprovalsAndChangers(t *testing.
 	l := NewLedger(nil)
 	// ann proposes tst.A at the company looser (X2) and a tighter entity value; she approves the loosening herself as the single administrator
 	l, _ = propose(t, l, "L1", "ann", 1, -1, entry(TenantScope, "tst.A", "X2"))
-	a, err := l.ApproveAs(cat, "L1", "ann", hours(2), Own{Declared: true, Acknowledgement: "accepted"})
+	a, err := l.ApproveAs(cat, "L1", "ann", hours(2), Own{Administrators: []string{"ann"}, Acknowledgement: "accepted"})
 	if err != nil {
 		t.Fatal(err)
 	}

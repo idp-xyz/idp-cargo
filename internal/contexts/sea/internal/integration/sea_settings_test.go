@@ -59,7 +59,7 @@ func newSettingsWorldOf(t *testing.T, legalEntities ...string) *settingsWorld {
 	m, err := seamodule.New(f.db, f.w, rw, seaSettingsAuth{grants: map[string][]string{
 		"ann": {api.ActionConfigureSettings}, "eve": {api.ActionConfigureSettings},
 		"bob": {api.ActionApproveSettings}, "carl": {api.ActionApproveSettings},
-		"dan":   {api.ActionConfigureSettings, api.ActionApproveSettings},
+		"dan": {api.ActionConfigureSettings, api.ActionApproveSettings}, "frank": {api.ActionConfigureSettings, api.ActionApproveSettings},
 		"sup-1": {api.ActionSuperviseCarrierConflicts}}})
 	if err != nil {
 		t.Fatal(err)

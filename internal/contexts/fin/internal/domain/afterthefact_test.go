@@ -91,9 +91,9 @@ func TestTheDigestOfAListTellsAnyChange(t *testing.T) {
 	}
 }
 
-func TestAReviewIsMadeByAnotherPersonOnceAfterTheWeekBegan(t *testing.T) {
+func TestAReviewIsMadeByAnotherPersonOnceTheWeekHasEnded(t *testing.T) {
 	week := "2026-W48"
-	start, _, _ := ParseWeek(week)
+	start, end, _ := ParseWeek(week)
 	lines := []ReviewLine{
 		{ReviewKey: ReviewKey{PoolID: "P-1", ApportionmentNo: 2, LineNo: 1, ShipmentID: "SH-C"}, SubmittedBy: "fin-2", PreviewedBy: "ops-2"},
 		{ReviewKey: ReviewKey{PoolID: "P-1", ApportionmentNo: 3, LineNo: 2, ShipmentID: "SH-D"}, SubmittedBy: "fin-3", PreviewedBy: "fin-3"},
@@ -101,7 +101,7 @@ func TestAReviewIsMadeByAnotherPersonOnceAfterTheWeekBegan(t *testing.T) {
 	review := func(lines []ReviewLine, done *AfterTheFactReviewState, reviewer, note string, at time.Time) (*AfterTheFactReview, error) {
 		return ReviewAfterTheFact("t", "LE", week, lines, done, reviewer, note, at)
 	}
-	r, err := review(lines, nil, "head-1", "checked the vouchers", start.Add(time.Hour))
+	r, err := review(lines, nil, "head-1", "checked the vouchers", end.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,8 +116,8 @@ func TestAReviewIsMadeByAnotherPersonOnceAfterTheWeekBegan(t *testing.T) {
 	if len(r.Pending()) != 0 {
 		t.Fatal("an acknowledged event is pending")
 	}
-	if e, err := review(nil, nil, "head-1", "nothing to review", start); err != nil || e.State().ListSize != 0 || e.State().ListDigest != ListDigest(nil) {
-		t.Fatalf("a week with an empty list, at the instant it begins: %+v %v", e, err)
+	if e, err := review(nil, nil, "head-1", "nothing to review", end); err != nil || e.State().ListSize != 0 || e.State().ListDigest != ListDigest(nil) {
+		t.Fatalf("a week with an empty list, at the instant it ends: %+v %v", e, err)
 	}
 	for _, c := range []struct {
 		name     string
@@ -126,34 +126,52 @@ func TestAReviewIsMadeByAnotherPersonOnceAfterTheWeekBegan(t *testing.T) {
 	}{{"the submitter of the first line", "fin-2", "fin-2 submitted apportionment 2 of pool P-1, which lists line 1 of house SH-C"},
 		{"the previewer of the first line", "ops-2", "ops-2 previewed apportionment 2 of pool P-1, which lists line 1 of house SH-C"},
 		{"who submitted and previewed the second", "fin-3", "fin-3 submitted and previewed apportionment 3 of pool P-1, which lists line 2 of house SH-D"}} {
-		_, err := review(lines, nil, c.reviewer, "x", start.Add(time.Hour))
+		_, err := review(lines, nil, c.reviewer, "x", end.Add(time.Hour))
 		if !errors.Is(err, ErrAfterTheFactReviewer) || !strings.Contains(err.Error(), c.want) || !strings.Contains(err.Error(), "another person reviews it") {
 			t.Errorf("%s: %v", c.name, err)
 		}
 	}
 	done := r.State()
-	if _, err = review(lines, &done, "head-2", "again", start.Add(time.Hour)); !errors.Is(err, ErrAfterTheFactReviewed) || !strings.Contains(err.Error(), "reviewed by head-1") {
+	if _, err = review(lines, &done, "head-2", "again", end.Add(time.Hour)); !errors.Is(err, ErrAfterTheFactReviewed) || !strings.Contains(err.Error(), "reviewed by head-1") {
 		t.Errorf("a second review: %v", err)
 	}
 	if _, err = review(lines, nil, "head-1", "early", start.Add(-time.Nanosecond)); !errors.Is(err, ErrAfterTheFactBegun) {
 		t.Errorf("a week that has not begun: %v", err)
 	}
+	// a week is reviewed from the Monday after it at 00:00 UTC, whatever zone the time is written in: 08:00 on that Monday in
+	// China, 7:59:59.999999999 a moment before
+	shanghai := time.FixedZone("CST", 8*3600)
+	if _, err = review(lines, nil, "head-1", "x", end.Add(-time.Nanosecond)); !errors.Is(err, ErrAfterTheFactNotEnded) || !strings.Contains(err.Error(), "wait for the Monday after it") {
+		t.Errorf("a week that has not ended, a moment before it: %v", err)
+	}
+	if _, err = review(lines, nil, "head-1", "x", start.Add(24*time.Hour)); !errors.Is(err, ErrAfterTheFactNotEnded) {
+		t.Errorf("a week that is running: %v", err)
+	}
+	if _, err = review(lines, nil, "head-1", "x", end.In(shanghai).Add(-time.Nanosecond)); !errors.Is(err, ErrAfterTheFactNotEnded) {
+		t.Errorf("a week that has not ended, in China time: %v", err)
+	}
+	if r, err = review(lines, nil, "head-1", "x", end.In(shanghai)); err != nil || !r.State().ReviewedAt.Equal(end) || r.State().ReviewedAt.Location() != time.UTC {
+		t.Errorf("a week that has just ended, in China time (08:00): %+v, %v", r, err)
+	}
+	if _, err = review(nil, nil, "head-1", "x", end.Add(-8*time.Hour+time.Second).In(shanghai)); !errors.Is(err, ErrAfterTheFactNotEnded) { // 00:00:01 Monday in China is Sunday 16:00:01 UTC
+		t.Errorf("a week that ends at 00:00 UTC, not at 00:00 in China: %v", err)
+	}
 	long := strings.Repeat("n", 2000)
-	if _, err = review(nil, nil, "head-1", long, start); err != nil {
+	if _, err = review(nil, nil, "head-1", long, end); err != nil {
 		t.Errorf("a note of %d characters: %v", MaxReviewNote, err)
 	}
-	if _, err = review(nil, nil, "head-1", strings.Repeat("语", 2000), start); err != nil {
+	if _, err = review(nil, nil, "head-1", strings.Repeat("语", 2000), end); err != nil {
 		t.Errorf("a note of %d characters of 3 bytes: %v", MaxReviewNote, err)
 	}
 	for name, note := range map[string]string{"empty": "", "blank": "  \n", "long": long + "n"} {
-		if _, err = review(nil, nil, "head-1", note, start); !errors.Is(err, ErrInvalid) {
+		if _, err = review(nil, nil, "head-1", note, end); !errors.Is(err, ErrInvalid) {
 			t.Errorf("a %s note: %v", name, err)
 		}
 	}
-	if _, err = review(nil, nil, " ", "x", start); !errors.Is(err, ErrInvalid) {
+	if _, err = review(nil, nil, " ", "x", end); !errors.Is(err, ErrInvalid) {
 		t.Errorf("a blank reviewer: %v", err)
 	}
-	if _, err = ReviewAfterTheFact("t", "LE", "2026-W54", nil, nil, "head-1", "x", start); !errors.Is(err, ErrInvalid) {
+	if _, err = ReviewAfterTheFact("t", "LE", "2026-W54", nil, nil, "head-1", "x", end); !errors.Is(err, ErrInvalid) {
 		t.Errorf("a week that is not one: %v", err)
 	}
 }

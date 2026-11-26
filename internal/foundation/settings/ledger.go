@@ -609,15 +609,16 @@ func (l *Ledger) Approve(cat *Catalogue, id, by string, at time.Time) (Approval,
 	return l.ApproveAs(cat, id, by, at, Own{})
 }
 
-// Own is what lets a proposer approve their own change set: the tenant declared a single administrator (the caller
-// reads that from its own records, never from the command) and the approval carries a written risk acknowledgement.
+// Own is what lets a proposer approve their own change set: the tenant declared a single administrator, who is that
+// proposer (the caller reads the administrators the tenant declared from its own records, never from the command), and
+// the approval carries a written risk acknowledgement.
 type Own struct {
-	Declared        bool
+	Administrators  []string
 	Acknowledgement string
 }
 
 // ApproveAs is Approve, with the single administrator's way (V2.102): the proposer approves their own loosening only
-// when the tenant declared a single administrator and the approval carries an acknowledgement of 1 to 2000
+// when the tenant declared them its single administrator and the approval carries an acknowledgement of 1 to 2000
 // characters. Another approver gives no acknowledgement.
 func (l *Ledger) ApproveAs(cat *Catalogue, id, by string, at time.Time, own Own) (Approval, error) {
 	cs, ok := l.Find(id)
@@ -634,13 +635,16 @@ func (l *Ledger) ApproveAs(cat *Catalogue, id, by string, at time.Time, own Own)
 	case by != cs.By && ack != "":
 		return Approval{}, Refuse(ErrAcknowledgement, "change set %s was proposed by %s; a risk acknowledgement is for a single administrator approving their own "+
 			"proposal only, so leave it out", id, cs.By)
-	case by == cs.By && !own.Declared && ack != "":
+	case by == cs.By && len(own.Administrators) == 0 && ack != "":
 		return Approval{}, Refuse(ErrSameActor, "change set %s was proposed by %s, who may not approve it, and this tenant has not declared a single administrator "+
 			"(the customer's owner declares one when confirming an onboarding); have another approver approve it", id, by)
-	case by == cs.By && !own.Declared:
+	case by == cs.By && len(own.Administrators) == 0:
 		return Approval{}, Refuse(ErrSameActor, "change set %s was proposed by %s, who may not approve it; have another approver approve it", id, by)
+	case by == cs.By && !slices.Contains(own.Administrators, by):
+		return Approval{}, Refuse(ErrSameActor, "change set %s was proposed by %s, who is not the single administrator this tenant declared (%s), so may not approve it; "+
+			"have another approver approve it, or have the declared administrator propose it and approve it with a risk acknowledgement", id, by, strings.Join(own.Administrators, ", "))
 	case by == cs.By && utf8.RuneCountInString(ack) < 1:
-		return Approval{}, Refuse(ErrAcknowledgement, "this tenant declared a single administrator, who may approve their own loosening (change set %s) with a "+
+		return Approval{}, Refuse(ErrAcknowledgement, "this tenant declared you its single administrator, who may approve their own loosening (change set %s) with a "+
 			"written risk acknowledgement of 1 to %d characters; give it, or have another approver approve the change set", id, MaxAcknowledgement)
 	case by == cs.By && utf8.RuneCountInString(ack) > MaxAcknowledgement:
 		return Approval{}, Refuse(ErrAcknowledgement, "the risk acknowledgement is 1 to %d characters; shorten it", MaxAcknowledgement)

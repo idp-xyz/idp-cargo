@@ -57,11 +57,19 @@ type OnboardingEntry struct {
 	ThresholdCurrency string `json:",omitempty"`
 }
 
+// ModulePlan is what an onboarding applies to a module: the entries the profile and the overrides resolve to, and the
+// version of the module's catalogue they were resolved against.
+type ModulePlan struct {
+	CatalogueVersion string
+	Entries          []OnboardingEntry
+}
+
 // Onboarding is a consultant's proposal.
 type Onboarding struct {
 	ID                  string
 	Profile             string
 	Overrides           map[string][]OnboardingEntry
+	Plan                map[string]ModulePlan
 	RiskStatement       string
 	FinanceStaff        int
 	SingleAdministrator bool
@@ -69,11 +77,13 @@ type Onboarding struct {
 	ProposedAt          time.Time
 }
 
-// Confirmation is the owner's.
+// Confirmation is the owner's. Administrator is the single administrator the owner declared, empty when the proposal
+// says the customer declares none.
 type Confirmation struct {
 	By               string
 	At               time.Time
 	AcknowledgedText string
+	Administrator    string
 }
 
 // ModuleState is what an onboarding recorded for a module: the state and its change set.
@@ -110,17 +120,44 @@ func (o Onboarding) Validate() error {
 			return refuse("overrides of %s are at most %d entries; leave the rest to the module's own settings commands after the onboarding", module, MaxEntries)
 		}
 		for _, e := range entries {
-			switch {
-			case e.Key == "" || e.Value == "":
-				return refuse("an override of %s names its item and its value; give both", module)
-			case e.ScopeKind != "TENANT" && e.ScopeKind != "LEGAL_ENTITY":
-				return refuse("an override of %s %s is at scope TENANT or LEGAL_ENTITY, not %q; choose one", module, e.Key, e.ScopeKind)
-			case (e.ScopeKind == "TENANT") != (e.ScopeID == ""):
-				return refuse("an override of %s %s names a legal entity for scope LEGAL_ENTITY and none for TENANT; fix it", module, e.Key)
-			case (e.ThresholdMinor != nil) != (e.ThresholdCurrency != ""):
-				return refuse("an override of %s %s gives a threshold with its currency, or neither; fix it", module, e.Key)
+			if err := e.validate("an override of " + module); err != nil {
+				return err
 			}
 		}
+	}
+	for _, module := range Modules {
+		p, ok := o.Plan[module]
+		switch {
+		case !ok || strings.TrimSpace(p.CatalogueVersion) == "" || len(p.CatalogueVersion) > 64:
+			return refuse("the plan names the catalogue version of %s (1 to 64 characters), which the platform's onboarding fills in; propose through it", module)
+		case len(p.Entries) < 1 || len(p.Entries) > MaxEntries:
+			return refuse("the plan of %s is 1 to %d entries, resolved from the profile and the overrides; shorten the overrides, or propose the rest through the module's own settings commands after the onboarding", module, MaxEntries)
+		}
+		for _, e := range p.Entries {
+			if err := e.validate("the plan of " + module); err != nil {
+				return err
+			}
+		}
+	}
+	for module := range o.Plan {
+		if !slices.Contains(Modules, module) {
+			return refuse("the plan is for FIN and SEA, not %q; propose through the platform's onboarding", module)
+		}
+	}
+	return nil
+}
+
+// validate checks an entry's shape; what names it ("an override of FIN") begins the refusal.
+func (e OnboardingEntry) validate(what string) error {
+	switch {
+	case e.Key == "" || e.Value == "":
+		return refuse("%s names its item and its value; give both", what)
+	case e.ScopeKind != "TENANT" && e.ScopeKind != "LEGAL_ENTITY":
+		return refuse("%s %s is at scope TENANT or LEGAL_ENTITY, not %q; choose one", what, e.Key, e.ScopeKind)
+	case (e.ScopeKind == "TENANT") != (e.ScopeID == ""):
+		return refuse("%s %s names a legal entity for scope LEGAL_ENTITY and none for TENANT; fix it", what, e.Key)
+	case (e.ThresholdMinor != nil) != (e.ThresholdCurrency != ""):
+		return refuse("%s %s gives a threshold with its currency, or neither; fix it", what, e.Key)
 	}
 	return nil
 }
