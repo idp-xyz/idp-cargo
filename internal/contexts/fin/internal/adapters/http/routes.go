@@ -7,7 +7,7 @@ import (
 	"go.idp.xyz/idp-cargo/internal/foundation/httpapi"
 )
 
-// The generic routes of FIN (since V2.110), beside the six hand-written ones of V2.99 that EII's contract (docs/api/
+// The generic routes of FIN (since V2.108), beside the six hand-written ones of V2.99 that EII's contract (docs/api/
 // fin-eii.md) describes, which stay as they are. FIN authorizes its commands itself, before it replays one. Its reads
 // take no actor, so the route checks: a read that shows a cost (a job's charge lines, the payables, the accruals, a
 // creditor's account and payments) is "fin:ReadProfit", as the profit is; the receivables, the policy, the billing
@@ -112,4 +112,68 @@ func RegisterGeneric(r *httpapi.Routes, s Generic) {
 	httpapi.Command(r, k, cmd(fp+"/issued", "RecordFapiaoIssued", "Record the tax platform's issue"), s.RecordFapiaoIssued)
 	httpapi.Command(r, k, cmd(fp+"/failed", "RecordFapiaoFailed", "Record the tax platform's failure"), s.RecordFapiaoFailed)
 	httpapi.Command(r, k, cmd(fp+"/red-letter", "RecordRedLetter", "Record a red-letter fapiao"), s.RecordRedLetter)
+
+	registerPoolsAndSettings(r, s)
+}
+
+// registerPoolsAndSettings registers the cost pools, the variance thresholds, the settings and the reviews (since
+// V2.108). A pool's figures are costs: "fin:ReadProfit". The settings commands are authorized by FIN with the
+// permissions by name ("fin:ConfigureSettings", "fin:ApproveSettings", "fin:ReviewSettingsExceptions",
+// "fin:ReviewAfterTheFact"); a change set held for an onboarding is the platform's (its onboarding_id is refused here).
+func registerPoolsAndSettings(r *httpapi.Routes, s Generic) {
+	k := Kinds
+	cmd := func(path, calls, summary string) httpapi.Op {
+		return httpapi.Op{Method: "POST", Path: path, Context: bc, Calls: calls, Action: calls, Summary: summary}
+	}
+	read := func(path, calls, summary string) httpapi.Op {
+		return httpapi.Op{Method: "GET", Path: path, Context: bc, Calls: calls, Summary: summary}
+	}
+	cost := func(o httpapi.Op) httpapi.Op { o.Action = api.ActionReadProfit; return o }
+	checked := func(o httpapi.Op) httpapi.Op { o.ContextChecks, o.Action = true, ""; return o }
+	const pool, le, change = "/v1/fin/pools/{pool_id}", "/v1/fin/legal-entities/{legal_entity_id}", "/v1/fin/settings-changes/{change_id}"
+
+	// the consolidation cost pools
+	open := cmd("/v1/fin/pools", "OpenConsolCostPool", "Open a consolidation's cost pool")
+	open.Status = nethttp.StatusCreated
+	httpapi.Command(r, k, open, s.OpenConsolCostPool)
+	httpapi.Query(r, k, cost(read(pool, "GetConsolCostPool", "A pool: its lines, apportionments and shares: fin:ReadProfit")), s.GetConsolCostPool)
+	httpapi.Query(r, k, cost(read(pool+"/pending", "GetConsolCostPoolPendingItems", "What the pool waits for: fin:ReadProfit")), s.GetConsolCostPoolPendingItems)
+	httpapi.Command(r, k, cmd(pool+"/rate", "RateConsolCostPool", "Rate the pool from RATE's tariffs"), s.RateConsolCostPool)
+	httpapi.Command(r, k, cmd(pool+"/costs", "RecordConsolCost", "Record a cost line (of the consolidation or one container)"), s.RecordConsolCost)
+	httpapi.Command(r, k, cmd(pool+"/costs/{line_no}/revise", "ReviseConsolCost", "Revise a cost line, with a reason"), s.ReviseConsolCost)
+	httpapi.Command(r, k, cmd(pool+"/costs/{line_no}/release-accrual", "ReleasePoolAccrual", "Release a line's accrual"), s.ReleasePoolAccrual)
+	httpapi.Command(r, k, cmd(pool+"/previews", "PreviewConsolCostApportionment", "Preview an apportionment of lines"), s.PreviewConsolCostApportionment)
+	httpapi.Query(r, k, cost(read(pool+"/previews/{preview_no}/effect", "GetConsolCostPreviewEffect", "What a preview would change: fin:ReadProfit")), s.GetConsolCostPreviewEffect)
+	httpapi.Command(r, k, cmd(pool+"/previews/{preview_no}/submit", "SubmitConsolCostApportionment", "Submit a preview (by another person when the settings ask it)"), s.SubmitConsolCostApportionment)
+	httpapi.Command(r, k, cmd(pool+"/apportion-in-one-step", "ApportionConsolCostInOneStep", "Preview and submit at once, when the settings allow it"), s.ApportionConsolCostInOneStep)
+	httpapi.Command(r, k, cmd(pool+"/close", "CloseConsolCostPool", "Close the pool"), s.CloseConsolCostPool)
+	httpapi.Command(r, k, cmd(pool+"/reopen", "ReopenConsolCostPool", "Reopen the pool"), s.ReopenConsolCostPool)
+	httpapi.Query(r, k, cost(read("/v1/fin/consolidations/{consolidation_id}/profit", "GetConsolProfit", "A consolidation's economics through its pool: fin:ReadProfit")), s.GetConsolProfit)
+
+	// the cost variance threshold of a legal entity
+	httpapi.Command(r, k, cmd(le+"/variance-thresholds", "SetCostVarianceThreshold", "Propose a cost variance threshold"), s.SetCostVarianceThreshold)
+	httpapi.Command(r, k, cmd(le+"/variance-thresholds/{version}/approve", "ApproveCostVarianceThreshold", "Approve it (not by its setter; fin:ApproveSettings by name)"), s.ApproveCostVarianceThreshold)
+	httpapi.Command(r, k, cmd(le+"/variance-thresholds/{version}/refuse", "RefuseCostVarianceThreshold", "Refuse it (fin:ApproveSettings by name)"), s.RefuseCostVarianceThreshold)
+
+	// the settings: a change proposed, approved by another person, refused, cancelled; the self-approvals reviewed
+	propose := cmd("/v1/fin/settings-changes", "ProposeFinSettingsChange", "Propose a settings change: fin:ConfigureSettings by name")
+	propose.Status, propose.Deny = nethttp.StatusCreated, []string{"onboarding_id"}
+	httpapi.Command(r, k, propose, s.ProposeFinSettingsChange)
+	httpapi.Query(r, k, read("/v1/fin/settings-changes", "ListFinSettingsChanges", "The settings changes"), s.ListFinSettingsChanges)
+	impact := checked(read(change+"/impact", "GetFinSettingsChangeImpact", "What a proposed change would change: figures only with fin:ReadProfit"))
+	impact.Deny = []string{"entries"}
+	httpapi.Query(r, k, impact, s.GetFinSettingsChangeImpact)
+	httpapi.Command(r, k, cmd(change+"/approve", "ApproveFinSettingsChange", "Approve it (not by its proposer): fin:ApproveSettings by name"), s.ApproveFinSettingsChange)
+	httpapi.Command(r, k, cmd(change+"/refuse", "RefuseFinSettingsChange", "Refuse it: fin:ApproveSettings by name"), s.RefuseFinSettingsChange)
+	httpapi.Command(r, k, cmd(change+"/cancel", "CancelFinSettingsChange", "Cancel it: fin:ConfigureSettings or fin:ApproveSettings by name"), s.CancelFinSettingsChange)
+	httpapi.Command(r, k, cmd(change+"/review-self-approval", "ReviewFinSelfApprovedSettingsChange", "Review a single administrator's own approval: fin:ReviewSettingsExceptions by name"), s.ReviewFinSelfApprovedSettingsChange)
+	httpapi.Query(r, k, read("/v1/fin/settings", "GetFinSettings", "The settings in force for a scope (scope_kind, scope_id, as_of)"), s.GetFinSettings)
+	httpapi.Query(r, k, read("/v1/fin/settings-catalogue", "GetFinSettingsCatalogue", "The catalogue of FIN's settings"), s.GetFinSettingsCatalogue)
+	httpapi.Query(r, k, checked(read("/v1/fin/settings-exceptions", "GetFinExceptionReport", "The exception report: fin:ApproveSettings by name")), s.GetFinExceptionReport)
+	httpapi.Query(r, k, checked(read("/v1/fin/settings-self-approvals", "ListFinSelfApprovalReviews", "Self-approvals and their reviews: fin:ReviewSettingsExceptions by name")), s.ListFinSelfApprovalReviews)
+
+	// the after-the-fact review list of a legal entity, by week
+	httpapi.Query(r, k, checked(read(le+"/after-the-fact/{week}", "GetAfterTheFactReview", "A week's list: fin:ReadProfit")), s.GetAfterTheFactReview)
+	httpapi.Command(r, k, cmd(le+"/after-the-fact/{week}/reviewed", "MarkAfterTheFactReviewed", "Mark the week reviewed, with a conclusion (fin:ReviewAfterTheFact by name)"), s.MarkAfterTheFactReviewed)
+	httpapi.Query(r, k, checked(read(le+"/after-the-fact-pending", "ListAfterTheFactPending", "Weeks that wait for review: fin:ReviewAfterTheFact by name")), s.ListAfterTheFactPending)
 }

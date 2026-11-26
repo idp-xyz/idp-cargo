@@ -58,7 +58,7 @@ type Module struct {
 }
 
 // RegisterHTTP registers FIN's inbound HTTP routes: the six of V2.99 that EII's contract describes, written by hand, and
-// the generic ones (since V2.110); the composition root calls it.
+// the generic ones (since V2.108); the composition root calls it.
 func (m *Module) RegisterHTTP(r *httpapi.Routes) {
 	finhttp.Register(r.LegacyMux("fin"), m)
 	finhttp.RegisterGeneric(r, m)

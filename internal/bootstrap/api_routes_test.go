@@ -24,6 +24,10 @@ import (
 	orgapi "go.idp.xyz/idp-cargo/internal/contexts/org/api"
 	"go.idp.xyz/idp-cargo/internal/contexts/phy"
 	phyapi "go.idp.xyz/idp-cargo/internal/contexts/phy/api"
+	"go.idp.xyz/idp-cargo/internal/contexts/rate"
+	rateapi "go.idp.xyz/idp-cargo/internal/contexts/rate/api"
+	"go.idp.xyz/idp-cargo/internal/contexts/sea"
+	seaapi "go.idp.xyz/idp-cargo/internal/contexts/sea/api"
 	"go.idp.xyz/idp-cargo/internal/foundation/httpapi"
 )
 
@@ -112,23 +116,63 @@ var covered = []coverage{
 		"GET /v1/fin/legal-entities/{legalEntityId}/job-profits": "ListJobProfits", "GET /v1/fin/jobs/{jobId}/profit": "GetJobProfit",
 		"POST /v1/fin/cost-review-requests": "RequestCostReview", "GET /v1/fin/cost-review-requests/{requestId}": "GetCostReviewRequest",
 		"GET /v1/fin/jobs/{jobId}/cost-review-requests": "ListCostReviewRequests", "POST /v1/fin/cost-review-requests/{requestId}/resolution": "ResolveCostReview",
-	}, later: finLater},
+	}},
+	{context: "sea", module: (*sea.Module)(nil), interfaces: []reflect.Type{
+		reflect.TypeFor[seaapi.Commands](), reflect.TypeFor[seaapi.Queries](), reflect.TypeFor[seaapi.VgmQueries](), reflect.TypeFor[seaapi.PendingQueries](),
+		reflect.TypeFor[seaapi.SettingsCommands](), reflect.TypeFor[seaapi.SettingsQueries](),
+	}, internal: map[string]string{"DeclareSeaSingleAdministrator": "the platform's own declaration at an onboarding"}, legacy: map[string]string{
+		"POST /v1/ocean-movements": "OpenOceanMovement", "GET /v1/ocean-movements": "FindOceanMovementByMasterBill",
+		"GET /v1/ocean-movements/{movement}": "GetOceanMovement", "POST /v1/ocean-movements/{movement}/link-carrier-booking": "LinkCarrierBooking",
+		"POST /v1/ocean-movements/{movement}/master-bills": "RecordMasterBill", "POST /v1/ocean-movements/{movement}/house-bills": "AssociateHouseBill",
+		"POST /v1/ocean-movements/{movement}/house-bills/{shipment}/refresh": "RefreshHouseBillFacts",
+		"POST /v1/ocean-movements/{movement}/house-bills/{shipment}/end":     "EndHouseBillAssociation",
+		"POST /v1/ocean-movements/{movement}/finalize-doc-facts":             "FinalizeOceanDocFacts", "GET /v1/ocean-movements/{movement}/doc-facts": "GetOceanDocFacts",
+		"GET /v1/ocean-movements/{movement}/doc-facts/{version}": "GetOceanDocFacts", "POST /v1/ocean-movements/{movement}/carrier-facts": "RecordOceanCarrierFact",
+		"GET /v1/ocean-movements/{movement}/carrier-facts": "GetOceanMovement", "GET /v1/ocean-movements/{movement}/container-visits": "ListContainerVisits",
+		"POST /v1/ocean-movements/{movement}/cancel": "CancelOceanMovement", "POST /v1/hbl-series": "RegisterHblSeries",
+		"GET /v1/hbl-series/{legal_entity}": "GetHblSeries", "GET /v1/house-bills/{legal_entity}/{hbl}": "FindHouseBill",
+		"POST /v1/container-visits": "AssignContainer", "GET /v1/container-visits": "FindLiveContainerVisit", "GET /v1/container-visits/{visit}": "GetContainerVisit",
+		"POST /v1/container-visits/{visit}/seals": "RecordContainerSeal", "POST /v1/container-visits/{visit}/stuffing-done": "RecordStuffingDone",
+		"POST /v1/container-visits/{visit}/release": "ReleaseContainer", "POST /v1/container-visits/{visit}/vgm-assertions": "AssertVgm",
+		"POST /v1/container-visits/{visit}/vgm-response": "RecordVgmResponse", "POST /v1/container-visits/{visit}/events": "RecordContainerEvent",
+		"POST /v1/container-visits/{visit}/vgm-assertions/{version}/signatory-reads": "ReadVgmSignatory",
+		"GET /v1/container-visits/{visit}/vgm-assertions/{version}/signatory-reads":  "ReadVgmSignatoryAccess",
+	}},
+	{context: "rate", module: (*rate.Module)(nil), interfaces: []reflect.Type{
+		reflect.TypeFor[rateapi.Commands](), reflect.TypeFor[rateapi.QuoteQueries](), reflect.TypeFor[rateapi.QuoteSnapshotV3Queries](), reflect.TypeFor[rateapi.Queries](),
+		reflect.TypeFor[rateapi.RateCardCommands](), reflect.TypeFor[rateapi.RateCardQueries](), reflect.TypeFor[rateapi.PricingBasisQueries](),
+		reflect.TypeFor[rateapi.PricingBasisCommands](),
+	}, internal: map[string]string{
+		"GetQuoteSnapshot":     "COM's read of an accepted quote, v1",
+		"GetQuoteSnapshotV2":   "the quote snapshot v2, kept published; people read v3",
+		"GetServiceLevel":      "COM's check of a service level",
+		"GetPricingBasis":      "FIN's read of a job's pricing basis",
+		"RateShipmentEstimate": "FIN's rating of a job",
+		"RateConsolCost":       "FIN's rating of a cost pool",
+	}, legacy: map[string]string{
+		"GET /v1/rate-cards": "ListRateCards", "POST /v1/rate-cards": "CreateRateCard", "GET /v1/rate-cards/{card}": "GetRateCard",
+		"POST /v1/rate-cards/{card}/versions": "DraftRateCardVersion", "GET /v1/rate-cards/{card}/versions/{version}": "GetRateCardVersion",
+		"PUT /v1/rate-cards/{card}/versions/{version}/entries": "SetRateCardEntries", "POST /v1/rate-cards/{card}/versions/{version}/publish": "PublishRateCardVersion",
+		"POST /v1/rate-cards/{card}/versions/{version}/withdraw": "WithdrawRateCardVersion", "POST /v1/rate-evaluations": "EvaluateRates",
+		"GET /v1/rate-snapshots/{snapshot}": "GetRateSnapshot", "GET /v1/charge-codes": "ListChargeCodes", "POST /v1/charge-codes": "DefineChargeCode",
+		"GET /v1/charge-codes/{code}": "GetChargeCode", "POST /v1/charge-codes/{code}/revise": "ReviseChargeCode",
+		"POST /v1/charge-codes/{code}/deactivate": "DeactivateChargeCode", "POST /v1/charge-codes/{code}/reactivate": "ReactivateChargeCode",
+		"GET /v1/service-levels": "ListServiceLevels", "POST /v1/quotes": "CreateQuote", "GET /v1/quotes/{quote}": "GetQuote",
+		"GET /v1/quotes/{quote}/snapshot": "GetQuoteSnapshotV3", "POST /v1/quotes/{quote}/approve-price": "ApproveQuotePrice",
+		"POST /v1/quotes/{quote}/accept": "AcceptQuote", "POST /v1/quotes/{quote}/expire": "ExpireQuote",
+	}},
 }
 
-// finLater are FIN's methods of the cost pools, the settings and the reviews, which V2.111 routes.
-var finLater = func() map[string]string {
-	out := map[string]string{}
-	for _, m := range []string{"RateConsolCostPool", "OpenConsolCostPool", "RecordConsolCost", "ReviseConsolCost", "PreviewConsolCostApportionment",
-		"SubmitConsolCostApportionment", "ApportionConsolCostInOneStep", "SetCostVarianceThreshold", "ApproveCostVarianceThreshold",
-		"RefuseCostVarianceThreshold", "ReleasePoolAccrual", "CloseConsolCostPool", "ReopenConsolCostPool", "ProposeFinSettingsChange",
-		"ApproveFinSettingsChange", "CancelFinSettingsChange", "RefuseFinSettingsChange", "ReviewFinSelfApprovedSettingsChange", "MarkAfterTheFactReviewed",
-		"GetConsolCostPool", "GetConsolProfit", "GetConsolCostPoolPendingItems", "GetConsolCostPreviewEffect", "GetFinSettings", "ListFinSettingsChanges",
-		"GetFinSettingsCatalogue", "GetFinExceptionReport", "GetFinSettingsChangeImpact", "GetAfterTheFactReview", "ListAfterTheFactPending",
-		"ListFinSelfApprovalReviews"} {
-		out[m] = "V2.111"
+// generic counts the routes that are not hand-written.
+func generic(ops []httpapi.Op) int {
+	n := 0
+	for _, op := range ops {
+		if !op.Legacy {
+			n++
+		}
 	}
-	return out
-}()
+	return n
+}
 
 func TestEveryPublicMethodOfARoutedContextHasOneRoute(t *testing.T) {
 	routes := map[string][]httpapi.Op{}
@@ -167,8 +211,10 @@ func TestEveryPublicMethodOfARoutedContextHasOneRoute(t *testing.T) {
 				switch {
 				case internal && len(got) > 0:
 					t.Errorf("%s.%s stays in process (%s) but has a route: %s %s", c.context, name, c.internal[name], got[0].Method, got[0].Path)
-				case !internal && len(got) != 1:
-					t.Errorf("%s.%s has %d routes, not 1", c.context, name, len(got))
+				case !internal && len(got) == 0:
+					t.Errorf("%s.%s has no route", c.context, name)
+				case !internal && generic(got) > 1:
+					t.Errorf("%s.%s has %d generic routes, not 1", c.context, name, generic(got))
 				}
 			}
 		}

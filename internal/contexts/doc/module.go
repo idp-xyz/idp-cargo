@@ -432,5 +432,5 @@ func classify(err error) error {
 	return fmt.Errorf("%w: %w", kind, err)
 }
 
-// RegisterHTTP registers DOC's inbound HTTP routes (since V2.109); the composition root calls it.
+// RegisterHTTP registers DOC's inbound HTTP routes (since V2.108); the composition root calls it.
 func (m *Module) RegisterHTTP(r *httpapi.Routes) { dochttp.Register(r, m) }

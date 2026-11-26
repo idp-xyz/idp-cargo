@@ -1,4 +1,4 @@
-// Package http is DOC's inbound HTTP adapter (since V2.109): each route binds the body or the query string to DOC's own
+// Package http is DOC's inbound HTTP adapter (since V2.108): each route binds the body or the query string to DOC's own
 // api command or query, with the tenant and actor of the verified principal, and holds no business rules. DOC
 // authorizes its commands itself, before it replays one; the reads are "doc:Read", except the dispatch copy (it
 // carries contacts, read with the actor's own COM and ORG rights) and the contact provision records

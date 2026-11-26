@@ -14,7 +14,7 @@ import (
 	comapi "go.idp.xyz/idp-cargo/internal/contexts/com/api"
 )
 
-// DOC through HTTP (stage 3, V2.109), on PostgreSQL, with the job roles' tokens: the owner's two boxes sealed, loaded
+// DOC through HTTP (stage 3, V2.108), on PostgreSQL, with the job roles' tokens: the owner's two boxes sealed, loaded
 // and OM-1 finalized in process; then through HTTP the HBL of H04 drafted by the documentation staff, refused to its
 // own drafter without the permission by name and approved by a colleague, the order's parties locked for it through
 // COM's route, issued over the missing credit account by a person who holds doc:OverrideCreditCheck by name (the

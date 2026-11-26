@@ -87,7 +87,7 @@ var orgKinds = httpapi.Errors{Unauthenticated: orgapi.ErrUnauthenticated, Unauth
 	Conflict: orgapi.ErrConflict, IdempotencyConflict: orgapi.ErrIdempotencyConflict, Rejected: orgapi.ErrRejected}
 
 // APIVersion is the version the OpenAPI document states: the archive version that last changed the routes.
-const APIVersion = "2.110"
+const APIVersion = "2.108"
 
 // OpenAPIDocument answers the API's OpenAPI document.
 func OpenAPIDocument() ([]byte, error) {

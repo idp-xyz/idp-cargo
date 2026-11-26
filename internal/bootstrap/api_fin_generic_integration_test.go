@@ -18,7 +18,7 @@ import (
 	orgapi "go.idp.xyz/idp-cargo/internal/contexts/org/api"
 )
 
-// FIN's generic routes (stage 3, V2.110), on PostgreSQL, with the job roles' tokens: a job's cost lines are seen only
+// FIN's generic routes (stage 3, V2.108), on PostgreSQL, with the job roles' tokens: a job's cost lines are seen only
 // with fin:ReadProfit (the finance staff can; the operator's fin:Read and the documentation staff cannot), a charge
 // line recorded and the job read again, the policy read by the operator, a debtor's credit terms set and its account
 // read, a creditor's invoice recorded and read only with fin:ReadProfit; the job, the debtor and the creditor of

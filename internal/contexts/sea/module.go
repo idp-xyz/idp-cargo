@@ -58,7 +58,10 @@ var (
 )
 
 // RegisterHTTP registers SEA's inbound HTTP routes; the composition root calls it.
-func (m *Module) RegisterHTTP(r *httpapi.Routes) { seahttp.Register(r.LegacyMux("sea"), m) }
+func (m *Module) RegisterHTTP(r *httpapi.Routes) {
+	seahttp.Register(r.LegacyMux("sea"), m)
+	seahttp.RegisterGeneric(r, m) // since V2.108
+}
 
 // New assembles SEA. book answers CarrierBooking v1 (relationship 6) and ful OceanOperationPlan v1 and
 // OceanEvidenceCurrency v1 (relationship 10); SEA writes to neither.
