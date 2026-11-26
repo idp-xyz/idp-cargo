@@ -55,6 +55,7 @@ type (
 		By               string    `json:"recorded_by"`
 		At               time.Time `json:"recorded_at"`
 		EnteredAt        time.Time `json:"entered_at"`
+		LoadUnitNo       *int      `json:"load_unit_no"` // since V2.104; NULL is the whole consolidation
 	}
 	apportionmentRow struct {
 		No            int       `json:"apportionment_no"`
@@ -130,6 +131,7 @@ type (
 		Unit       string `json:"unit,omitempty"`
 		Amount     int64  `json:"amount_minor"`
 		Local      int64  `json:"local_minor"`
+		InUnit     *bool  `json:"in_unit,omitempty"` // since V2.104, on a line of one container
 	}
 	closureRow struct {
 		No              int        `json:"closure_no"`
@@ -153,6 +155,7 @@ type (
 		Unit            string `json:"unit"`
 		Amount          int64  `json:"amount_minor"`
 		Local           int64  `json:"local_minor"`
+		InUnit          *bool  `json:"in_unit"` // since V2.104, on a line of one container
 	}
 )
 
@@ -211,7 +214,7 @@ func scanPool(row pgx.Row, tenant fin.TenantID) (*fin.ConsolCostPool, int64, err
 		st.Lines[v.LineNo-1].Versions = append(st.Lines[v.LineNo-1].Versions, fin.PoolCostVersion{No: v.No, CreditorPartyID: deref(v.CreditorPartyID),
 			CreditorRevision: v.CreditorRevision, Amount: kernel.Money{Currency: kernel.CurrencyCode(v.Currency), Minor: v.Amount}, Local: v.Local,
 			FX: fxOf(v.RateEntryNo, v.RateType, v.Rate, v.Scale, v.FromDigits, v.ToDigits, v.RateSource), Status: v.Status, Reason: deref(v.Reason),
-			By: v.By, At: utc(v.At), EnteredAt: utc(v.EnteredAt)})
+			By: v.By, At: utc(v.At), EnteredAt: utc(v.EnteredAt), LoadUnitNo: deref(v.LoadUnitNo)})
 	}
 	for _, a := range ar {
 		st.Apportionments = append(st.Apportionments, fin.Apportionment{No: a.No, BasisRevision: a.BasisRevision, Stage: a.Stage, By: a.By, At: utc(a.At),
@@ -232,7 +235,7 @@ func scanPool(row pgx.Row, tenant fin.TenantID) (*fin.ConsolCostPool, int64, err
 			}
 			for _, sh := range f.Shares {
 				la.Shares = append(la.Shares, fin.Share{No: sh.No, ShipmentID: sh.ShipmentID, JobID: sh.JobID, Used: sh.Used, Quantity: sh.Quantity, Unit: sh.Unit,
-					Amount: sh.Amount, Local: sh.Local})
+					Amount: sh.Amount, Local: sh.Local, InUnit: sh.InUnit})
 			}
 			preview.Lines = append(preview.Lines, la)
 		}
@@ -263,7 +266,7 @@ func scanPool(row pgx.Row, tenant fin.TenantID) (*fin.ConsolCostPool, int64, err
 		for i := range a.Lines {
 			if a.Lines[i].LineNo == s.LineNo {
 				a.Lines[i].Shares = append(a.Lines[i].Shares, fin.Share{No: s.No, ShipmentID: s.ShipmentID, JobID: s.JobID, Used: s.Used, Quantity: s.Quantity,
-					Unit: s.Unit, Amount: s.Amount, Local: s.Local})
+					Unit: s.Unit, Amount: s.Amount, Local: s.Local, InUnit: s.InUnit})
 				placed = true
 			}
 		}
@@ -468,10 +471,14 @@ func writePool(ctx context.Context, q bentopg.Executor, p *fin.ConsolCostPool) e
 	for i, v := range versions {
 		args := append([]any{lineOf[i], v.No, orNull(v.CreditorPartyID), v.CreditorRevision, string(v.Amount.Currency), v.Amount.Minor, v.Local},
 			fxArgs(v.FX)...)
-		args = append(args, v.Status, orNull(v.Reason), v.By, v.At, v.EnteredAt)
+		var unitNo any
+		if v.LoadUnitNo > 0 {
+			unitNo = v.LoadUnitNo
+		}
+		args = append(args, v.Status, orNull(v.Reason), v.By, v.At, v.EnteredAt, unitNo)
 		if err := exec(`INSERT INTO cargo_fin.pool_cost_version (tenant_id,pool_id,line_no,version_no,creditor_party_id,creditor_revision,currency,
-            amount_minor,local_minor,rate_entry_no,rate_type,rate,scale,from_digits,to_digits,rate_source,status,reason,recorded_by,recorded_at,entered_at)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`, args...); err != nil {
+            amount_minor,local_minor,rate_entry_no,rate_type,rate,scale,from_digits,to_digits,rate_source,status,reason,recorded_by,recorded_at,entered_at,load_unit_no)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`, args...); err != nil {
 			return err
 		}
 	}
@@ -485,7 +492,7 @@ func writePool(ctx context.Context, q bentopg.Executor, p *fin.ConsolCostPool) e
 			}
 			for _, sh := range la.Shares {
 				f.Shares = append(f.Shares, figureShare{No: sh.No, ShipmentID: sh.ShipmentID, JobID: sh.JobID, Used: sh.Used, Quantity: sh.Quantity, Unit: sh.Unit,
-					Amount: sh.Amount, Local: sh.Local})
+					Amount: sh.Amount, Local: sh.Local, InUnit: sh.InUnit})
 			}
 			figures = append(figures, f)
 		}
@@ -529,8 +536,8 @@ func writePool(ctx context.Context, q bentopg.Executor, p *fin.ConsolCostPool) e
 			}
 			for _, sh := range la.Shares {
 				if err := exec(`INSERT INTO cargo_fin.pool_apportionment_share (tenant_id,pool_id,apportionment_no,line_no,share_no,shipment_id,job_id,
-                    used,quantity,unit,amount_minor,local_minor) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, a.No, la.LineNo, sh.No, sh.ShipmentID,
-					sh.JobID, sh.Used, sh.Quantity, orNull(sh.Unit), sh.Amount, sh.Local); err != nil {
+                    used,quantity,unit,amount_minor,local_minor,in_unit) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`, a.No, la.LineNo, sh.No, sh.ShipmentID,
+					sh.JobID, sh.Used, sh.Quantity, orNull(sh.Unit), sh.Amount, sh.Local, sh.InUnit); err != nil {
 					return err
 				}
 			}
