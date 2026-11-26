@@ -301,3 +301,30 @@ func (s *syncWriter) Write(b []byte) (int, error) {
 	defer s.mu.Unlock()
 	return s.w.Write(b)
 }
+
+// The page and the document are served without a token (since V2.109); the routes still need one.
+func TestTheDocumentationIsServedWithoutAToken(t *testing.T) {
+	h, err := NewHandler(Config{Verifier: refuseAll{}, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Ready: func(context.Context) error { return nil },
+		OpenAPI: []byte(`{"openapi":"3.1.0"}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for path, want := range map[string]string{"/docs": "swagger-ui-dist@5.17.14", "/docs/openapi.json": `"openapi":"3.1.0"`} {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
+		if w.Code != 200 || !strings.Contains(w.Body.String(), want) {
+			t.Errorf("%s: %d %s", path, w.Code, w.Body)
+		}
+	}
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/v1/anything", nil))
+	if w.Code != 401 {
+		t.Fatalf("a route without a token: %d", w.Code)
+	}
+}
+
+type refuseAll struct{}
+
+func (refuseAll) Verify(context.Context, string) (identity.Principal, error) {
+	return identity.Principal{}, identity.ErrInvalidToken
+}

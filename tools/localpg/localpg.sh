@@ -9,12 +9,13 @@
 #   25435  demo     the test tenant eii-test that tools/demo/eii-test.sh seeds and serves (long-lived)
 #   25436  dev2     a second developer's integration runs
 #   25437  dev3    a third developer's integration runs
-#   25438-25439     reserved
+#   25438  trial   the tenant "trial" that tools/demo/trial.sh serves for trying the API by hand (long-lived)
+#   25439           reserved
 # Each port is served only by its own container, idp-cargo-pg16-<role>, labelled org.idp-cargo.localpg=<role>.
 # The script refuses to start, print a DSN or stop anything when the port is held by something else, so tests
 # and migrations never reach another program's server.
 #
-# Usage: tools/localpg/localpg.sh up|env|grants|down <dev|dev2|dev3|upgrade|empty|demo>
+# Usage: tools/localpg/localpg.sh up|env|grants|down <dev|dev2|dev3|upgrade|empty|demo|trial>
 #   up      start the container (postgres:16.15) unless it runs already, and wait until it accepts connections
 #   env     print export lines for IDP_CARGO_MIGRATOR_DSN and IDP_CARGO_POSTGRES_DSN, as CI sets them
 #   grants  create the application role and apply the grants of the CI workflow (run after the migrations)
@@ -31,7 +32,8 @@ case "$role" in
   demo) port=25435 ;;
   dev2) port=25436 ;;
   dev3) port=25437 ;;
-  *) echo "usage: $0 up|env|grants|down <dev|dev2|dev3|upgrade|empty|demo>" >&2; exit 2 ;;
+  trial) port=25438 ;;
+  *) echo "usage: $0 up|env|grants|down <dev|dev2|dev3|upgrade|empty|demo|trial>" >&2; exit 2 ;;
 esac
 name=idp-cargo-pg16-$role
 label=org.idp-cargo.localpg
@@ -90,5 +92,5 @@ case "$action" in
     ours || { echo "localpg: $name lacks the $label label; refusing" >&2; exit 1; }
     docker rm -f "$name" >/dev/null
     echo "localpg: $name removed" ;;
-  *) echo "usage: $0 up|env|grants|down <dev|dev2|dev3|upgrade|empty|demo>" >&2; exit 2 ;;
+  *) echo "usage: $0 up|env|grants|down <dev|dev2|dev3|upgrade|empty|demo|trial>" >&2; exit 2 ;;
 esac

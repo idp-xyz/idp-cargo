@@ -38,11 +38,28 @@ func Table(registrars ...Registrar) []httpapi.Op {
 }
 
 // Config is what the handler needs: the token verifier, a logger, and Ready for /readyz (the database answering).
+// OpenAPI, when set, is the document served at /docs/openapi.json, with a page at /docs that shows it and lets a
+// reader try the routes with a token of their own (since V2.109); neither needs a token.
 type Config struct {
 	Verifier identity.Verifier
 	Logger   *slog.Logger
 	Ready    func(context.Context) error
+	OpenAPI  []byte
 }
+
+// docsPage shows the OpenAPI document with Swagger UI, loaded from unpkg at a fixed version; "Authorize" takes a bearer
+// token, and "Try it out" sends a request to this server.
+const docsPage = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IDP Cargo API</title>
+<link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5.17.14/swagger-ui.css">
+<style>body{margin:0;background:#fff}</style></head>
+<body><div id="api"></div>
+<script src="https://unpkg.com/swagger-ui-dist@5.17.14/swagger-ui-bundle.js" crossorigin></script>
+<script>window.ui = SwaggerUIBundle({url: "/docs/openapi.json", dom_id: "#api", persistAuthorization: true, tryItOutEnabled: true,
+  displayRequestDuration: true, docExpansion: "none", filter: true});</script>
+</body></html>
+`
 
 // NewHandler builds the handler with every registrar's routes.
 func NewHandler(cfg Config, registrars ...Registrar) (nethttp.Handler, error) {
@@ -68,6 +85,16 @@ func NewHandler(cfg Config, registrars ...Registrar) (nethttp.Handler, error) {
 		}
 		httpapi.WriteJSON(w, nethttp.StatusOK, map[string]string{"status": "ready"})
 	})
+	if cfg.OpenAPI != nil {
+		open.HandleFunc("GET /docs", func(w nethttp.ResponseWriter, _ *nethttp.Request) {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte(docsPage))
+		})
+		open.HandleFunc("GET /docs/openapi.json", func(w nethttp.ResponseWriter, _ *nethttp.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(cfg.OpenAPI)
+		})
+	}
 	open.Handle("/v1/", authenticate(cfg.Verifier, routed(api)))
 	open.Handle("/", routed(nethttp.NewServeMux()))
 	return correlate(logRequests(cfg.Logger, recoverPanic(cfg.Logger, open))), nil

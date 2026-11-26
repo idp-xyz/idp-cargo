@@ -9954,7 +9954,7 @@
   "info": {
     "description": "Cargo's HTTP API. Every /v1 call carries a bearer token; the tenant and the actor come only from it. A command carries Idempotency-Key (its command id) and, when it changes a resource at a revision, If-Match \"n\"; it states its business time in occurred_at. Errors are RFC 9457 problems with a business code.",
     "title": "IDP Cargo API",
-    "version": "2.108"
+    "version": "2.109"
   },
   "openapi": "3.1.0",
   "paths": {

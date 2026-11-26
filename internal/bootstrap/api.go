@@ -95,7 +95,11 @@ func (p *Platform) API(cfg APIConfig) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	return transport.NewHandler(transport.Config{Verifier: cfg.verifier(), Logger: cfg.Logger, Ready: p.pool.Ping}, apiRegistrars(rate, sea, fin, org, com, ful, phy, book, air, doc, onboarding)...)
+	openapi, err := OpenAPIDocument()
+	if err != nil {
+		return nil, err
+	}
+	return transport.NewHandler(transport.Config{Verifier: cfg.verifier(), Logger: cfg.Logger, Ready: p.pool.Ping, OpenAPI: openapi}, apiRegistrars(rate, sea, fin, org, com, ful, phy, book, air, doc, onboarding)...)
 }
 
 // APIServer is an http.Server for the API's handler with Cargo's timeouts; its requests run under base.
