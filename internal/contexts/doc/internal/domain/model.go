@@ -24,7 +24,7 @@ var (
 	ErrConflict          = errors.New("doc: concurrent revision conflict")
 	ErrSourceNotFinal    = errors.New("doc: DOC_SOURCE_NOT_FINAL: the latest facts version is not FINAL; the movement's facts are finalized first")
 	ErrSourceStale       = errors.New("doc: DOC_SOURCE_STALE: the version was built on facts or parties that changed since; refresh it")
-	ErrMasterMismatch    = errors.New("doc: DOC_MASTER_MISMATCH: AIR's facts no longer show the shipment under the master")
+	ErrMasterMismatch    = errors.New("doc: DOC_MASTER_MISMATCH: the movement's facts no longer show the shipment under the master")
 	ErrPartiesDiverge    = errors.New("doc: DOC_PARTIES_DIVERGE: the orders of the house name different shippers, consignees or notify parties")
 	ErrIncomplete        = errors.New("doc: DOC_INCOMPLETE: the document lacks what its kind needs")
 	ErrNotLocked         = errors.New("doc: DOC_PARTIES_NOT_LOCKED: COM does not report the order's parties locked for the document (C12)")

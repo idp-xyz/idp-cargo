@@ -109,18 +109,19 @@ func readVisit(ctx context.Context, q queryRower, tenant sea.TenantID, id sea.Vi
 	var stuffedAt, releasedAt, phySealedAt *time.Time
 	var phySeal *string
 	var revision int64
-	var seals, assertions, events, releases []byte
+	var seals, assertions, events, releases, rolls []byte
 	err := q.QueryRow(ctx, `SELECT v.movement_id,v.consolidation_id,v.load_unit_no,v.container_number,v.size_type,v.tare_kg,v.max_gross_kg,v.plate_source,
       v.status,v.execution_id,v.difference_reason,v.stuffed_by,v.stuffed_at,v.stuffed_phy_seal,v.stuffed_phy_sealed_at,v.release_reason,v.released_by,v.released_at,v.assigned_by,v.assigned_at,
       v.entered_at,v.revision,
       (SELECT coalesce(json_agg(s ORDER BY s.seal_no), '[]') FROM cargo_sea.container_seal s WHERE s.tenant_id=v.tenant_id AND s.visit_id=v.visit_id),
       (SELECT coalesce(json_agg(a ORDER BY a.version), '[]') FROM cargo_sea.vgm_assertion a WHERE a.tenant_id=v.tenant_id AND a.visit_id=v.visit_id),
       (SELECT coalesce(json_agg(e ORDER BY e.event_no), '[]') FROM cargo_sea.container_event e WHERE e.tenant_id=v.tenant_id AND e.visit_id=v.visit_id),
-      (SELECT coalesce(json_agg(r ORDER BY r.release_no), '[]') FROM cargo_sea.carrier_conflict_release r WHERE r.tenant_id=v.tenant_id AND r.visit_id=v.visit_id)
+      (SELECT coalesce(json_agg(r ORDER BY r.release_no), '[]') FROM cargo_sea.carrier_conflict_release r WHERE r.tenant_id=v.tenant_id AND r.visit_id=v.visit_id),
+      (SELECT coalesce(json_agg(r ORDER BY r.roll_no), '[]') FROM cargo_sea.container_visit_roll r WHERE r.tenant_id=v.tenant_id AND r.visit_id=v.visit_id)
       FROM cargo_sea.container_visit v WHERE v.tenant_id=$1 AND v.visit_id=$2`, string(tenant), string(id)).Scan(
 		&st.MovementID, &st.ConsolidationID, &st.LoadUnitNo, &st.Number, &st.SizeType, &tare, &maxGross, &plate, &st.Status,
 		&execution, &difference, &stuffedBy, &stuffedAt, &phySeal, &phySealedAt, &releaseReason, &releasedBy, &releasedAt, &st.AssignedBy, &st.AssignedAt, &st.EnteredAt,
-		&revision, &seals, &assertions, &events, &releases)
+		&revision, &seals, &assertions, &events, &releases, &rolls)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, 0, fmt.Errorf("%w: visit %s", bentorepo.ErrNotFound, id)
 	}
@@ -173,6 +174,14 @@ func readVisit(ctx context.Context, q queryRower, tenant sea.TenantID, id sea.Vi
 		}
 		st.Releases = append(st.Releases, release)
 	}
+	var rolled []rollRow
+	if err = json.Unmarshal(rolls, &rolled); err != nil {
+		return nil, 0, err
+	}
+	for _, r := range rolled {
+		st.Rolls = append(st.Rolls, sea.VisitRoll{No: r.RollNo, FromMovement: sea.MovementID(r.FromMovement), ToMovement: sea.MovementID(r.ToMovement),
+			Reason: r.Reason, By: r.RecordedBy, At: utc(r.RecordedAt), EnteredAt: utc(r.EnteredAt)})
+	}
 	v, err := sea.RestoreVisit(st)
 	return v, revision, err
 }
@@ -211,13 +220,22 @@ func (s VisitStore) Save(ctx context.Context, v *sea.Visit, expected int64) (int
 		return 0, err
 	}
 	st := v.State()
+	// a roll (since V2.105) is recorded before the visit's movement changes: the database lets the movement change only
+	// with its roll
+	for _, r := range v.AddedRolls() {
+		if _, err := q.Exec(ctx, `INSERT INTO cargo_sea.container_visit_roll (tenant_id,visit_id,roll_no,from_movement_id,to_movement_id,reason,recorded_by,
+        recorded_at,entered_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, string(st.TenantID), string(st.VisitID), r.No, string(r.FromMovement),
+			string(r.ToMovement), r.Reason, r.By, r.At, r.EnteredAt); err != nil {
+			return 0, visitWriteErr(err, st)
+		}
+	}
 	var revision int64
 	err = q.QueryRow(ctx, `UPDATE cargo_sea.container_visit SET status=$3, execution_id=$4, difference_reason=$5, stuffed_by=$6, stuffed_at=$7,
-      release_reason=$8, released_by=$9, released_at=$10, stuffed_phy_seal=$12, stuffed_phy_sealed_at=$13, revision=revision+1, updated_at=now()
+      release_reason=$8, released_by=$9, released_at=$10, stuffed_phy_seal=$12, stuffed_phy_sealed_at=$13, movement_id=$14, revision=revision+1, updated_at=now()
       WHERE tenant_id=$1 AND visit_id=$2 AND revision=$11 RETURNING revision`,
 		string(st.TenantID), string(st.VisitID), string(st.Status), orNull(st.ExecutionID), orNull(st.DifferenceReason), orNull(st.StuffedBy),
 		orNull(st.StuffedAt), orNull(st.ReleaseReason), orNull(st.ReleasedBy), orNull(st.ReleasedAt), expected,
-		orNull(st.StuffedPhySeal), orNull(st.StuffedPhySealedAt)).Scan(&revision)
+		orNull(st.StuffedPhySeal), orNull(st.StuffedPhySealedAt), string(st.MovementID)).Scan(&revision)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, fmt.Errorf("%w: visit %s", bentorepo.ErrConflict, st.VisitID)
 	}
@@ -237,6 +255,17 @@ func (s VisitStore) Save(ctx context.Context, v *sea.Visit, expected int64) (int
 		return 0, err
 	}
 	return revision, nil
+}
+
+// rollRow is a stored roll of a container to another movement (since V2.105).
+type rollRow struct {
+	RollNo       int       `json:"roll_no"`
+	FromMovement string    `json:"from_movement_id"`
+	ToMovement   string    `json:"to_movement_id"`
+	Reason       string    `json:"reason"`
+	RecordedBy   string    `json:"recorded_by"`
+	RecordedAt   time.Time `json:"recorded_at"`
+	EnteredAt    time.Time `json:"entered_at"`
 }
 
 func writeReleases(ctx context.Context, q bentopg.Executor, v *sea.Visit) error {

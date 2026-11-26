@@ -18,6 +18,34 @@ import (
 // live visit in the tenant, and a load unit of a movement one live container. LoadUnitNo is the number PHY gave
 // the planned unit; SEA does not ask PHY for it, and RecordStuffingDone checks it against what FUL relays. The
 // assignment is dated not before the movement was opened; the visit then has its own history.
+// ContainerRoll is one move of a container to another movement of its consolidation (since V2.105).
+type ContainerRoll struct {
+	RollNo         int
+	FromMovementID string
+	ToMovementID   string
+	Reason         string
+	By             string
+	At             time.Time
+}
+
+// RollContainerToMovement moves a sealed container that is not loaded (STUFFED, VGM_SUBMITTED or GATED_IN) to another
+// movement of its consolidation (since V2.105): the carrier rolled it to a later vessel. Open that movement first, on
+// the new booking or on the line of the same booking that names the later vessel. The container keeps its number, its
+// seals, its VGM, its stuffing and its events; every house loaded in it moves with it, keeping its HBL and the facts
+// SEA froze: its entry ends ROLLED_WITH_CONTAINER in the one movement and starts so in the other. A house loaded in this
+// container and another cannot sail in two movements and is refused, naming it. Both movements return to OPEN when
+// FINAL, and are finalized again each on its own. ExpectedRevision is the visit's.
+type RollContainerToMovement struct {
+	CommandID        string
+	TenantID         string
+	ActorID          string
+	VisitID          string
+	ExpectedRevision int64
+	ToMovementID     string
+	Reason           string
+	OccurredAt       time.Time
+}
+
 type AssignContainer struct {
 	CommandID       string
 	TenantID        string
@@ -187,6 +215,7 @@ type VisitCommands interface {
 // Actions of container visits; the subject is the visit.
 const (
 	ActionAssignContainer              = "AssignContainer"
+	ActionRollContainerToMovement      = "RollContainerToMovement"
 	ActionRecordContainerSeal          = "RecordContainerSeal"
 	ActionRecordStuffingDone           = "RecordStuffingDone"
 	ActionReleaseContainer             = "ReleaseContainer"
@@ -276,7 +305,10 @@ type ContainerVisit struct {
 	Assertions      []VgmAssertion           // latest first; none carries the signatory's name
 	Events          []ContainerEvent         // latest first
 	Releases        []CarrierConflictRelease // latest first
-	ExecutionID     string                   // PHY's stuffing of the unit, once STUFFED
+	// Rolls are the container's moves to another movement of its consolidation (since V2.105), latest first: who, when,
+	// why, from which movement to which. MovementID is the movement it is in now.
+	Rolls       []ContainerRoll
+	ExecutionID string // PHY's stuffing of the unit, once STUFFED
 	// DifferenceReason is why the container was taken as stuffed although PHY's seal or size-type differed.
 	DifferenceReason string
 	StuffedAt        time.Time

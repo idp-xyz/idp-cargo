@@ -175,16 +175,18 @@ type OceanMovement struct {
 	LocationEdition        string
 	BookingID              string
 	CapacityVersion        int
-	Legs                   []VoyageLeg // current first, then superseded
-	MasterBillNumber       string      // the current reference; empty before one is recorded
-	MasterBillKind         string
-	MasterBills            []MasterBill     // latest first
-	Containers             []ContainerVisit // the movement's live container visits, in the order they were assigned
-	Houses                 []House          // live
-	CarrierFacts           []OceanCarrierFact
-	Packs                  int64
-	GrossWeight            kernel.Quantity
-	Volume                 kernel.Quantity
+	// BookingLine is the capacity line of the booking the movement sails on (since V2.105; 1 for every earlier movement).
+	BookingLine      int
+	Legs             []VoyageLeg // current first, then superseded
+	MasterBillNumber string      // the current reference; empty before one is recorded
+	MasterBillKind   string
+	MasterBills      []MasterBill     // latest first
+	Containers       []ContainerVisit // the movement's live container visits, in the order they were assigned
+	Houses           []House          // live
+	CarrierFacts     []OceanCarrierFact
+	Packs            int64
+	GrossWeight      kernel.Quantity
+	Volume           kernel.Quantity
 }
 
 // OceanCarrierFact is one carrier report about the movement. It names a container or a bill, not both.

@@ -316,6 +316,9 @@ func (v VisitState) lastChange() time.Time {
 	for _, r := range v.Releases {
 		last = later(last, r.At)
 	}
+	for _, r := range v.Rolls {
+		last = later(last, r.At)
+	}
 	return last
 }
 

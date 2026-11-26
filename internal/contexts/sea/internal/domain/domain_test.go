@@ -105,7 +105,7 @@ func TestOpenTakesTheVoyageFromTheBooking(t *testing.T) {
 		"another consolidation":        func(b *Booking) { b.ConsumerID = "C-9" },
 		"a co-loader on a container":   func(b *Booking) { b.Carrier.Role = "CO_LOADER" },
 		"no carrier revision":          func(b *Booking) { b.Carrier.PartyRevision = 0 },
-		"two capacity lines":           func(b *Booking) { b.Lines = 2 },
+		"no capacity line":             func(b *Booking) { b.Lines = 0 }, // two lines are carried since V2.105, one movement each
 		"an airport code":              func(b *Booking) { b.Origin = kernel.LocationCode{Scheme: kernel.IATAAirport, Code: "PVG"} },
 		"no route":                     func(b *Booking) { b.Destination = b.Origin },
 		"no legs":                      func(b *Booking) { b.Legs = nil },

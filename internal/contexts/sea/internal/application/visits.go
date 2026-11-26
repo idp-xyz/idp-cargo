@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -440,3 +441,85 @@ func (d Deps) AcceptCarrierLoadingConflict(ctx context.Context, c Command, reaso
 // AcceptCarrierLoadingConflict under S1 SUPERVISOR_ONLY (api.ActionSuperviseCarrierConflicts, which a test of the
 // module holds equal to this). The subject is the visit.
 const ActionSuperviseCarrierConflicts Action = "SuperviseCarrierConflicts"
+
+// RollContainer moves a sealed container that is not loaded to another movement of its consolidation, with the houses
+// loaded in it (since V2.105), in one transaction: the visit, the movement it leaves and the movement it joins are each
+// locked at their stored revision (the visit at the command's expected one), the movements in the order of their ids.
+// A house loaded in this container and another is refused, naming it: it would sail in two movements.
+func (d Deps) RollContainer(ctx context.Context, c Command, to sea.MovementID, reason string) (Receipt, error) {
+	if d.Visits == nil || d.Movements == nil {
+		return Receipt{}, ErrMissingDependency
+	}
+	hash, entered, stored, replayed, err := d.begin(ctx, c)
+	if err != nil || replayed {
+		return stored, err
+	}
+	return d.write(ctx, c, hash, "ContainerVisit", func(txCtx context.Context) (Receipt, []aggregate, error) {
+		v, revision, err := d.Visits.Load(txCtx, c.Scope.TenantID, sea.VisitID(c.Subject))
+		if err != nil {
+			return Receipt{}, nil, err
+		}
+		if revision != c.ExpectedRevision {
+			return Receipt{}, nil, sea.ErrConflict
+		}
+		fromID := v.State().MovementID
+		if fromID == to {
+			return Receipt{}, nil, fmt.Errorf("%w: container %s is in movement %s already", sea.ErrInvalidChange, v.State().Number, to)
+		}
+		ids := []sea.MovementID{fromID, to}
+		slices.Sort(ids)
+		movements, revisions := map[sea.MovementID]*sea.Movement{}, map[sea.MovementID]int64{}
+		for _, id := range ids {
+			m, r, err := d.Movements.Load(txCtx, c.Scope.TenantID, id)
+			if err != nil {
+				return Receipt{}, nil, err
+			}
+			movements[id], revisions[id] = m, r
+		}
+		from, target := movements[fromID], movements[to]
+		if id, found, err := d.Visits.LiveByUnit(txCtx, c.Scope.TenantID, to, v.State().LoadUnitNo); err != nil {
+			return Receipt{}, nil, err
+		} else if found {
+			return Receipt{}, nil, fmt.Errorf("%w: unit %d on %s", ErrUnitHasContainer, v.State().LoadUnitNo, id)
+		}
+		houses, whole := from.HousesInStuffing(v.State().ExecutionID)
+		if !whole {
+			var split []string
+			for _, e := range houses {
+				if len(e.Facts.Stuffings) > 1 {
+					split = append(split, e.ShipmentID)
+				}
+			}
+			return Receipt{}, nil, fmt.Errorf("%w: %v are loaded in container %s and another, and cannot sail in two movements; unload them from one of the containers first (a rework), or roll the whole consolidation (LinkCarrierBooking)",
+				sea.ErrInvalidChange, split, v.State().Number)
+		}
+		live, err := d.liveNumbers(txCtx, c.Scope.TenantID, fromID)
+		if err != nil {
+			return Receipt{}, nil, err
+		}
+		if err := v.RollTo(from, target, len(live) == 1, reason, c.Scope.ActorID, c.OccurredAt); err != nil {
+			return Receipt{}, nil, err
+		}
+		for _, e := range houses {
+			if err := from.RollOut(e.ShipmentID, to, c.Scope.ActorID, c.OccurredAt); err != nil {
+				return Receipt{}, nil, err
+			}
+			if err := target.RollIn(from, e, c.Scope.ActorID, c.OccurredAt); err != nil {
+				return Receipt{}, nil, err
+			}
+		}
+		for _, a := range []interface{ Stamp(time.Time) }{v, from, target} {
+			a.Stamp(entered)
+		}
+		// the movement left first, so that a house's entry ends there before it starts in the other (one live entry per
+		// shipment), then the movement joined, then the visit with its roll
+		if _, err := d.Movements.Save(txCtx, from, revisions[fromID]); err != nil {
+			return Receipt{}, nil, err
+		}
+		if _, err := d.Movements.Save(txCtx, target, revisions[to]); err != nil {
+			return Receipt{}, nil, err
+		}
+		newRevision, err := d.Visits.Save(txCtx, v, revision)
+		return Receipt{SubjectID: c.Subject, NewRevision: newRevision}, []aggregate{v, from, target}, err
+	})
+}

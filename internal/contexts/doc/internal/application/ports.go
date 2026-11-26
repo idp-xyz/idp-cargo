@@ -111,6 +111,9 @@ type Facts interface {
 // Ocean reads SEA's latest OceanDocFacts v1 version of a movement, outside DOC's transactions.
 type Ocean interface {
 	Latest(ctx context.Context, tenant doc.TenantID, movement string) (doc.OceanFacts, error)
+	// Carrying names the movement SEA associates a house bill number with now, and its shipment (since V2.105: a house
+	// whose container was rolled to another movement of its consolidation); found is false when SEA does not say.
+	Carrying(ctx context.Context, tenant doc.TenantID, legalEntity, hbl string) (movement, shipment string, found bool, err error)
 }
 
 // Parties reads COM's OrderParties v1 of an order (COM -> DOC), outside DOC's transactions: without contacts for a

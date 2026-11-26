@@ -32,6 +32,11 @@ type OpenOceanMovement struct {
 	ConsolidationID string
 	BookingID       string
 	OccurredAt      time.Time
+	// BookingLine is the capacity line of the booking the movement sails on (since V2.105; 0 or 1 is the first). A
+	// consolidation has one movement in force per booking line: a container the carrier rolled to a later vessel
+	// sails in a movement of its own, on a new booking or on the line of the same booking that names that vessel
+	// (RollContainerToMovement moves it there). Left out of the request hash when 0.
+	BookingLine int `json:",omitempty"`
 }
 
 // LinkCarrierBooking takes a newer capacity version of the movement's booking (a schedule change, or a roll to

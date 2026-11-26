@@ -37,6 +37,19 @@ func (r ConflictRelease) releases(fact CarrierFact, p Stuffing) bool {
 	return r.FactNo == fact.No && sealKey(r.PHYSeal) == sealKey(p.Seal) && r.PHYSealedAt.Equal(p.SealedAt)
 }
 
+// CarrierLoadedFor is the carrier's earliest report of a loading that dates the container on board in the movement's
+// facts (DocFactsOf): one that names its number, or, with exactly one live container (only), one that names none.
+func (m *Movement) CarrierLoadedFor(number string, only bool) (CarrierFact, bool) {
+	var first CarrierFact
+	found := false
+	for _, c := range m.state.CarrierFacts {
+		if c.Kind == CarrierLoaded && (c.ContainerNumber == number || only && c.ContainerNumber == "") && (!found || c.OccurredAt.Before(first.OccurredAt)) {
+			first, found = c, true
+		}
+	}
+	return first, found
+}
+
 // carrierLoadingFacts are the carrier's loading reports dated before PHY sealed the container again that count for it:
 // those that name its number and, with exactly one live container (only), those that name no container, which can only
 // be about it.

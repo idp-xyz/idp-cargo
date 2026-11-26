@@ -91,7 +91,8 @@ func (d Deps) buildHouseBill(ctx context.Context, s Scope, id doc.DocumentID, sr
 		}
 	}
 	if len(orderIDs) == 0 {
-		return doc.Content{}, fmt.Errorf("%w: %s", doc.ErrMasterMismatch, src.ShipmentID)
+		return doc.Content{}, fmt.Errorf("%w: %s is not in SEA's latest facts of %s; refresh the draft (or open the amendment) with the movement that carries it",
+			doc.ErrMasterMismatch, src.ShipmentID, src.MovementID)
 	}
 	var orders []doc.OrderParties
 	for _, o := range orderIDs {
@@ -220,7 +221,20 @@ type Revise struct {
 func (d Deps) Revise(ctx context.Context, c Command, r Revise) (Receipt, error) {
 	var content doc.Content
 	return d.change(ctx, c, func(ctx context.Context, m *doc.Document) (err error) {
-		content, err = d.build(ctx, c.Scope, m.ID(), sourceOf(m, r.Payment, r.Handling, r.AgentPartyID, r.MovementID, r.Release, r.Originals), c.OccurredAt)
+		src := sourceOf(m, r.Payment, r.Handling, r.AgentPartyID, r.MovementID, r.Release, r.Originals)
+		content, err = d.build(ctx, c.Scope, m.ID(), src, c.OccurredAt)
+		if !errors.Is(err, doc.ErrMasterMismatch) || r.MovementID != "" || !src.Kind.SeaHouse() {
+			return err
+		}
+		moved, ok, ferr := d.rolledTo(ctx, c.Scope.TenantID, m.State())
+		if ferr != nil {
+			return ferr
+		}
+		if !ok {
+			return err
+		}
+		src.MovementID = moved
+		content, err = d.build(ctx, c.Scope, m.ID(), src, c.OccurredAt)
 		return err
 	}, func(_ context.Context, m *doc.Document) error {
 		if r.Amendment {
@@ -228,6 +242,26 @@ func (d Deps) Revise(ctx context.Context, c Command, r Revise) (Receipt, error) 
 		}
 		return m.Refresh(content, r.Reason, c.Scope.ActorID, c.OccurredAt)
 	})
+}
+
+// rolledTo is the movement a sea house bill follows when its container was rolled (V2.105; the owner's decision of
+// 2026-11-26: a bill not issued moves to the new voyage by itself): SEA associates the same number with the same
+// shipment in another movement of the same consolidation. A house transferred to another consolidation is not followed:
+// the command names the movement then.
+func (d Deps) rolledTo(ctx context.Context, tenant doc.TenantID, st doc.DocumentState) (string, bool, error) {
+	movement, shipment, found, err := d.Ocean.Carrying(ctx, tenant, st.LegalEntityID, st.Number)
+	if err != nil || !found || shipment != st.ShipmentID || movement == st.MovementID {
+		return "", false, err
+	}
+	facts, err := d.Ocean.Latest(ctx, tenant, movement)
+	if errors.Is(err, ErrUnknownSource) {
+		return "", false, fmt.Errorf("%w: house bill %s sails in %s now, its container rolled there from %s; refresh the draft once SEA finalizes %s's facts",
+			doc.ErrSourceNotFinal, st.Number, movement, st.MovementID, movement)
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return movement, facts.ConsolidationID == st.ConsolidationID, nil
 }
 
 // Approve approves the draft; an actor approving a draft they wrote must also be allowed ApproveOwnTransportDocument.

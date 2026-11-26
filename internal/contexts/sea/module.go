@@ -91,8 +91,14 @@ func (m *Module) command(id, tenant, actor, action, subject string, expected int
 }
 
 func (m *Module) OpenOceanMovement(ctx context.Context, cmd api.OpenOceanMovement) (api.Receipt, error) {
-	r, err := m.deps(cmd.TenantID, cmd.CommandID).Open(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, api.ActionOpenOceanMovement, cmd.MovementID,
-		0, cmd.OccurredAt, cmd), cmd.ConsolidationID, cmd.BookingID)
+	r, err := m.deps(cmd.TenantID, cmd.CommandID).OpenOnLine(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, api.ActionOpenOceanMovement, cmd.MovementID,
+		0, cmd.OccurredAt, cmd), cmd.ConsolidationID, cmd.BookingID, cmd.BookingLine)
+	return receipt(r, err)
+}
+
+func (m *Module) RollContainerToMovement(ctx context.Context, cmd api.RollContainerToMovement) (api.Receipt, error) {
+	r, err := m.deps(cmd.TenantID, cmd.CommandID).RollContainer(ctx, m.command(cmd.CommandID, cmd.TenantID, cmd.ActorID, api.ActionRollContainerToMovement,
+		cmd.VisitID, cmd.ExpectedRevision, cmd.OccurredAt, cmd), domain.MovementID(cmd.ToMovementID), cmd.Reason)
 	return receipt(r, err)
 }
 
@@ -520,7 +526,7 @@ func view(mv *domain.Movement, revision int64) api.OceanMovement {
 		DocFactsVersion: len(st.DocFacts),
 		Kind:            string(st.Kind), ConsolidationID: st.ConsolidationID, OperatingLegalEntityID: st.LegalEntityID, CarrierPartyID: st.Carrier.PartyID,
 		CarrierPartyRevision: st.Carrier.PartyRevision, CarrierRole: st.Carrier.Role, Origin: st.Origin, Destination: st.Destination,
-		LocationEdition: st.Edition, BookingID: current.BookingID, CapacityVersion: current.CapacityVersion}
+		LocationEdition: st.Edition, BookingID: current.BookingID, CapacityVersion: current.CapacityVersion, BookingLine: max(st.BookingLine, 1)}
 	for i := len(st.Links) - 1; i >= 0; i-- {
 		l := st.Links[i]
 		for n, g := range l.Legs {
@@ -621,6 +627,11 @@ func visitView(v *domain.Visit, revision int64) api.ContainerVisit {
 		r := st.Releases[i]
 		out.Releases = append(out.Releases, api.CarrierConflictRelease{ReleaseNo: r.No, FactNo: r.FactNo, PHYSeal: r.PHYSeal, PHYSealedAt: r.PHYSealedAt,
 			Reason: r.Reason, RecordedBy: r.By, RecordedAt: r.At, SettingsVersion: r.SettingsVersion, S1: r.S1})
+	}
+	for i := len(st.Rolls) - 1; i >= 0; i-- {
+		r := st.Rolls[i]
+		out.Rolls = append(out.Rolls, api.ContainerRoll{RollNo: r.No, FromMovementID: string(r.FromMovement), ToMovementID: string(r.ToMovement), Reason: r.Reason,
+			By: r.By, At: r.At})
 	}
 	for i := len(st.Events) - 1; i >= 0; i-- {
 		e := st.Events[i]
