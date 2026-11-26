@@ -24,14 +24,15 @@ import (
 var Roles = map[string][]string{
 	"ops": {"org:Read", "org:AddPartyAddress", "org:ChangePartyAddress", "org:DeactivatePartyAddress", "org:SetDefaultPartyAddress",
 		"org:AddPartyContact", "org:ChangePartyContact", "org:DeactivatePartyContact", "org:SetDefaultPartyContact", "org:ReadPartyContacts",
-		"rate:*", "sea:*"},
-	"warehouse":       {"org:Read", "sea:Read"},
-	"docs":            {"org:Read", "org:ReadPartyContacts", "org:ReserveContactTransfers", "org:ReleaseContactTransfers", "sea:Read"},
-	"finance":         {"org:Read", "rate:Read", "sea:Read", "fin:ReadProfit", "fin:RequestCostReview"},
-	"finance-manager": {"org:Read", "rate:Read", "sea:Read", "fin:ReadProfit", "fin:ResolveCostReview"},
+		"rate:*", "sea:*", "com:*", "com:ReadOrderContacts", "ful:*", "phy:*"},
+	"warehouse": {"org:Read", "sea:Read", "com:Read", "ful:Read", "phy:*"},
+	"docs": {"org:Read", "org:ReadPartyContacts", "org:ReserveContactTransfers", "org:ReleaseContactTransfers", "sea:Read",
+		"com:Read", "com:ReadOrderContacts", "com:LockOrderParties", "com:ReleaseOrderPartyLock", "ful:Read", "phy:Read"},
+	"finance":         {"org:Read", "rate:Read", "sea:Read", "com:Read", "ful:Read", "phy:Read", "fin:ReadProfit", "fin:RequestCostReview"},
+	"finance-manager": {"org:Read", "rate:Read", "sea:Read", "com:Read", "ful:Read", "phy:Read", "fin:ReadProfit", "fin:ResolveCostReview"},
 	"privacy": {"org:Read", "org:ReadContactAccessLog", "org:ErasePartyContact", "org:RecordContactConsent", "org:RecordTransferSafeguard",
-		"org:ReadPartyContacts"},
-	"admin":      {"org:*", "org:ConfirmOnboarding", "fin:ApproveSettings", "sea:ApproveSettings"},
+		"org:ReadPartyContacts", "com:Read", "com:ReadContactAccessLog", "com:EraseOrderContacts", "com:ReadRestrictedOrderContacts"},
+	"admin":      {"org:*", "org:ConfirmOnboarding", "fin:ApproveSettings", "sea:ApproveSettings", "com:Read", "com:SetOrderPolicy"},
 	"consultant": {"org:Read", "org:ReadOnboarding", "org:ProposeOnboarding", "fin:ConfigureSettings", "sea:ConfigureSettings"},
 }
 

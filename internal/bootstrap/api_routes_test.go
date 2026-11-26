@@ -4,11 +4,18 @@ import (
 	"bytes"
 	"os"
 	"reflect"
+	"slices"
 	"sort"
 	"testing"
 
+	"go.idp.xyz/idp-cargo/internal/contexts/com"
+	comapi "go.idp.xyz/idp-cargo/internal/contexts/com/api"
+	"go.idp.xyz/idp-cargo/internal/contexts/ful"
+	fulapi "go.idp.xyz/idp-cargo/internal/contexts/ful/api"
 	"go.idp.xyz/idp-cargo/internal/contexts/org"
 	orgapi "go.idp.xyz/idp-cargo/internal/contexts/org/api"
+	"go.idp.xyz/idp-cargo/internal/contexts/phy"
+	phyapi "go.idp.xyz/idp-cargo/internal/contexts/phy/api"
 	"go.idp.xyz/idp-cargo/internal/foundation/httpapi"
 )
 
@@ -49,6 +56,34 @@ var covered = []coverage{
 	}, internal: map[string]string{
 		"ResolvePartyRole":       "the other contexts' check of a party's role, with the particulars they freeze",
 		"RecordOnboardingModule": "the platform's own record of a module's progress, which no person holds",
+	}},
+	{context: "com", module: (*com.Module)(nil), interfaces: []reflect.Type{
+		reflect.TypeFor[comapi.Commands](), reflect.TypeFor[comapi.OrderQueries](), reflect.TypeFor[comapi.OrderPolicies](),
+		reflect.TypeFor[comapi.ObligationReservations](), reflect.TypeFor[comapi.OrderPartyCommands](), reflect.TypeFor[comapi.OrderPartyQueries](),
+		reflect.TypeFor[comapi.OrderContactRetention](), reflect.TypeFor[comapi.ContactAccessQueries](), reflect.TypeFor[comapi.Queries](),
+	}, internal: map[string]string{
+		"GetObligationSnapshot":   "FUL's read of an obligation version, v1",
+		"GetObligationSnapshotV2": "FUL's read, v2",
+		"GetObligationSnapshotV3": "FUL's read, v3; a person reads the order (GetCustomerOrder)",
+	}},
+	{context: "ful", module: (*ful.Module)(nil), interfaces: []reflect.Type{
+		reflect.TypeFor[fulapi.Commands](), reflect.TypeFor[fulapi.ConsolAttachmentCommands](), reflect.TypeFor[fulapi.LoadEvidenceCommands](),
+		reflect.TypeFor[fulapi.Queries](), reflect.TypeFor[fulapi.OceanOperationQueries](), reflect.TypeFor[fulapi.AirOperationPlanQueries](),
+		reflect.TypeFor[fulapi.LoadIntentQueries](), reflect.TypeFor[fulapi.CostDriverQueries](),
+	}, internal: map[string]string{
+		"GetShipmentPlanSnapshot":  "the first plan snapshot; a person reads v2",
+		"GetOceanOperationPlan":    "SEA's read of a house's plan and evidence",
+		"GetOceanEvidenceCurrency": "SEA's check that FUL has PHY's latest facts",
+		"GetAirOperationPlan":      "AIR's read of a house's plan",
+		"GetLoadIntent":            "PHY's read of what a shipment intends to load",
+		"GetShipmentCostDriver":    "FIN's read of a shipment's cost drivers",
+	}},
+	{context: "phy", module: (*phy.Module)(nil), interfaces: []reflect.Type{
+		reflect.TypeFor[phyapi.Commands](), reflect.TypeFor[phyapi.PhysicalCommands](), reflect.TypeFor[phyapi.Queries](),
+	}, internal: map[string]string{
+		"GetConsolMembership":     "FUL's read of a house's membership",
+		"GetPhysicalLoadEvidence": "FUL's read of the verified load evidence",
+		"GetPhysicalCostBasis":    "FIN's read of the actuals it apportions by",
 	}},
 }
 
@@ -110,7 +145,8 @@ func TestTheRolesAreWellFormed(t *testing.T) {
 		t.Fatal("an unknown role")
 	}
 	got, err := RolePermissions([]string{"docs", "privacy"}, []string{"org:Read"})
-	if err != nil || len(got) == 0 || got[0] != "org:ErasePartyContact" {
+	if err != nil || !slices.Contains(got, "org:ErasePartyContact") || !slices.Contains(got, "org:ReserveContactTransfers") || !slices.IsSorted(got) ||
+		len(slices.Compact(slices.Clone(got))) != len(got) {
 		t.Fatalf("docs and privacy: %v %v", got, err)
 	}
 }

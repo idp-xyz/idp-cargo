@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	fulhttp "go.idp.xyz/idp-cargo/internal/contexts/ful/internal/adapters/http"
+	"go.idp.xyz/idp-cargo/internal/foundation/httpapi"
 	"time"
 
 	bentopg "go.idp.xyz/idp-bento-go/postgres"
@@ -458,3 +460,6 @@ func classify(err error) error {
 	}
 	return fmt.Errorf("%w: %w", kind, err)
 }
+
+// RegisterHTTP registers FUL's inbound HTTP routes (since V2.107); the composition root calls it.
+func (m *Module) RegisterHTTP(r *httpapi.Routes) { fulhttp.Register(r, m) }
