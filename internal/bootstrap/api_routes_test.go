@@ -14,6 +14,8 @@ import (
 	fulapi "go.idp.xyz/idp-cargo/internal/contexts/ful/api"
 	"go.idp.xyz/idp-cargo/internal/contexts/org"
 	orgapi "go.idp.xyz/idp-cargo/internal/contexts/org/api"
+	"go.idp.xyz/idp-cargo/internal/contexts/phy"
+	phyapi "go.idp.xyz/idp-cargo/internal/contexts/phy/api"
 	"go.idp.xyz/idp-cargo/internal/foundation/httpapi"
 )
 
@@ -75,6 +77,13 @@ var covered = []coverage{
 		"GetAirOperationPlan":      "AIR's read of a house's plan",
 		"GetLoadIntent":            "PHY's read of what a shipment intends to load",
 		"GetShipmentCostDriver":    "FIN's read of a shipment's cost drivers",
+	}},
+	{context: "phy", module: (*phy.Module)(nil), interfaces: []reflect.Type{
+		reflect.TypeFor[phyapi.Commands](), reflect.TypeFor[phyapi.PhysicalCommands](), reflect.TypeFor[phyapi.Queries](),
+	}, internal: map[string]string{
+		"GetConsolMembership":     "FUL's read of a house's membership",
+		"GetPhysicalLoadEvidence": "FUL's read of the verified load evidence",
+		"GetPhysicalCostBasis":    "FIN's read of the actuals it apportions by",
 	}},
 }
 

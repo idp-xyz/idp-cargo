@@ -40,7 +40,8 @@ func (c APIConfig) verifier() identity.HS256Verifier {
 // SEA's ocean movements and container visits, with BOOK's bookings and FUL's plans, which SEA reads, and FIN's profit
 // and cost review (V2.99), with FUL's and PHY's facts, which FIN reads; ORG's parties, legal entities, address books,
 // contact transfer register and onboardings, with the platform's onboarding commands (V2.106); COM's orders and FUL's
-// shipments (V2.107). PHY, BOOK, AIR and DOC have no routes yet.
+// shipments (V2.107); PHY's consolidations, cargo lots and load executions (V2.108). BOOK, AIR and DOC have no routes
+// yet.
 func (p *Platform) API(cfg APIConfig) (http.Handler, error) {
 	switch {
 	case len(cfg.TokenKey) < 32 || cfg.TokenIssuer == "" || cfg.TokenAudience == "":
@@ -83,7 +84,7 @@ func (p *Platform) API(cfg APIConfig) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	return transport.NewHandler(transport.Config{Verifier: cfg.verifier(), Logger: cfg.Logger, Ready: p.pool.Ping}, apiRegistrars(rate, sea, fin, org, com, ful, onboarding)...)
+	return transport.NewHandler(transport.Config{Verifier: cfg.verifier(), Logger: cfg.Logger, Ready: p.pool.Ping}, apiRegistrars(rate, sea, fin, org, com, ful, phy, onboarding)...)
 }
 
 // APIServer is an http.Server for the API's handler with Cargo's timeouts; its requests run under base.

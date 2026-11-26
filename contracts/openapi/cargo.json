@@ -1844,6 +1844,1014 @@
           }
         },
         "type": "object"
+      },
+      "phy.CargoLot": {
+        "additionalProperties": false,
+        "properties": {
+          "closed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "completed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "discrepancies": {
+            "items": {
+              "$ref": "#/components/schemas/phy.Discrepancy"
+            },
+            "type": "array"
+          },
+          "expected_ful_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "expected_gross_weight": {
+            "$ref": "#/components/schemas/kernel.Quantity"
+          },
+          "expected_packs": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "expected_plan_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "expected_volume": {
+            "$ref": "#/components/schemas/kernel.Quantity"
+          },
+          "facility": {
+            "$ref": "#/components/schemas/phy.Facility"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/phy.ReceiptLine"
+            },
+            "type": "array"
+          },
+          "loaded_packs": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "lot_id": {
+            "type": "string"
+          },
+          "measurements": {
+            "items": {
+              "$ref": "#/components/schemas/phy.Measurement"
+            },
+            "type": "array"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "received_packs": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "reopens": {
+            "items": {
+              "$ref": "#/components/schemas/phy.LotReopen"
+            },
+            "type": "array"
+          },
+          "revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "screening": {
+            "type": "string"
+          },
+          "screenings": {
+            "items": {
+              "$ref": "#/components/schemas/phy.Screening"
+            },
+            "type": "array"
+          },
+          "shipment_id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "tenant_id": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "phy.CarrierEvidence": {
+        "additionalProperties": false,
+        "properties": {
+          "entered_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "evidence": {
+            "$ref": "#/components/schemas/phy.Evidence"
+          },
+          "evidence_no": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "fact": {
+            "type": "string"
+          },
+          "gross_weight": {
+            "$ref": "#/components/schemas/kernel.Quantity"
+          },
+          "pieces": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "recorded_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "shipment_id": {
+            "type": "string"
+          },
+          "transport": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "phy.Consolidation": {
+        "additionalProperties": false,
+        "properties": {
+          "consolidation_id": {
+            "type": "string"
+          },
+          "current": {
+            "$ref": "#/components/schemas/phy.ConsolidationVersion"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "load_units": {
+            "items": {
+              "$ref": "#/components/schemas/phy.PlannedLoadUnit"
+            },
+            "type": "array"
+          },
+          "members": {
+            "items": {
+              "$ref": "#/components/schemas/phy.Member"
+            },
+            "type": "array"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "operating_legal_entity_id": {
+            "type": "string"
+          },
+          "revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "state": {
+            "type": "string"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "versions": {
+            "items": {
+              "$ref": "#/components/schemas/phy.ConsolidationVersion"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "phy.ConsolidationSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "consolidation_id": {
+            "type": "string"
+          },
+          "destination": {
+            "$ref": "#/components/schemas/kernel.LocationCode"
+          },
+          "destination_iata": {
+            "type": "string"
+          },
+          "house_cut_off": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "live_houses": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "operating_legal_entity_id": {
+            "type": "string"
+          },
+          "origin": {
+            "$ref": "#/components/schemas/kernel.LocationCode"
+          },
+          "origin_iata": {
+            "type": "string"
+          },
+          "planned_departure": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "revision": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "phy.ConsolidationVersion": {
+        "additionalProperties": false,
+        "properties": {
+          "change": {
+            "type": "string"
+          },
+          "destination": {
+            "$ref": "#/components/schemas/kernel.LocationCode"
+          },
+          "destination_iata": {
+            "type": "string"
+          },
+          "entered_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "house_cut_off": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "location_edition": {
+            "type": "string"
+          },
+          "origin": {
+            "$ref": "#/components/schemas/kernel.LocationCode"
+          },
+          "origin_iata": {
+            "type": "string"
+          },
+          "planned_departure": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "written_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "phy.Discrepancy": {
+        "additionalProperties": false,
+        "properties": {
+          "discrepancy_no": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "expected": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "observed": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "raised_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "reference": {
+            "type": "string"
+          },
+          "resolution": {
+            "type": "string"
+          },
+          "resolved_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "unit": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "phy.Evidence": {
+        "additionalProperties": false,
+        "properties": {
+          "occurred_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "reference": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "phy.Facility": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "location": {
+            "$ref": "#/components/schemas/kernel.LocationCode"
+          }
+        },
+        "type": "object"
+      },
+      "phy.Hold": {
+        "additionalProperties": false,
+        "properties": {
+          "evidence": {
+            "$ref": "#/components/schemas/phy.Evidence"
+          },
+          "hold_no": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "lot_id": {
+            "type": "string"
+          },
+          "placed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "release_evidence": {
+            "$ref": "#/components/schemas/phy.Evidence"
+          },
+          "released": {
+            "type": "boolean"
+          },
+          "released_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "phy.LoadExecution": {
+        "additionalProperties": false,
+        "properties": {
+          "cancel_reason": {
+            "type": "string"
+          },
+          "cancelled_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "cancelled_by": {
+            "type": "string"
+          },
+          "carrier_evidence": {
+            "items": {
+              "$ref": "#/components/schemas/phy.CarrierEvidence"
+            },
+            "type": "array"
+          },
+          "close_evidence": {
+            "$ref": "#/components/schemas/phy.Evidence"
+          },
+          "closed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "consolidation_id": {
+            "type": "string"
+          },
+          "discrepancies": {
+            "items": {
+              "$ref": "#/components/schemas/phy.LoadingDiscrepancy"
+            },
+            "type": "array"
+          },
+          "execution_id": {
+            "type": "string"
+          },
+          "facility": {
+            "$ref": "#/components/schemas/phy.Facility"
+          },
+          "holds": {
+            "items": {
+              "$ref": "#/components/schemas/phy.Hold"
+            },
+            "type": "array"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/phy.LoadLine"
+            },
+            "type": "array"
+          },
+          "load_unit_no": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "opened_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "reversals": {
+            "items": {
+              "$ref": "#/components/schemas/phy.Reversal"
+            },
+            "type": "array"
+          },
+          "revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "reworks": {
+            "items": {
+              "$ref": "#/components/schemas/phy.Rework"
+            },
+            "type": "array"
+          },
+          "started_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "tendered_packs": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "phy.LoadLine": {
+        "additionalProperties": false,
+        "properties": {
+          "basis": {
+            "type": "string"
+          },
+          "entered_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "entry_no": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "evidence": {
+            "$ref": "#/components/schemas/phy.Evidence"
+          },
+          "gross_weight": {
+            "$ref": "#/components/schemas/kernel.Quantity"
+          },
+          "line_no": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "live_gross_weight": {
+            "$ref": "#/components/schemas/kernel.Quantity"
+          },
+          "live_packs": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "live_volume": {
+            "$ref": "#/components/schemas/kernel.Quantity"
+          },
+          "loaded_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "lot_id": {
+            "type": "string"
+          },
+          "measurement_no": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "packs": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "shipment_id": {
+            "type": "string"
+          },
+          "volume": {
+            "$ref": "#/components/schemas/kernel.Quantity"
+          }
+        },
+        "type": "object"
+      },
+      "phy.LoadingDiscrepancy": {
+        "additionalProperties": false,
+        "properties": {
+          "discrepancy_no": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "evidence_no": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "expected": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "observed": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "raised_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "reference": {
+            "type": "string"
+          },
+          "resolution": {
+            "type": "string"
+          },
+          "resolved_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "shipment_id": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "phy.LotReopen": {
+        "additionalProperties": false,
+        "properties": {
+          "closed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "closed_by": {
+            "type": "string"
+          },
+          "entered_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "execution_id": {
+            "type": "string"
+          },
+          "reopen_no": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "reopened_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "reopened_by": {
+            "type": "string"
+          },
+          "reversal_no": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "rework_no": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "phy.Measurement": {
+        "additionalProperties": false,
+        "properties": {
+          "entered_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "evidence": {
+            "$ref": "#/components/schemas/phy.Evidence"
+          },
+          "gross_weight": {
+            "$ref": "#/components/schemas/kernel.Quantity"
+          },
+          "measured_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "package_groups": {
+            "items": {
+              "$ref": "#/components/schemas/phy.PackageGroup"
+            },
+            "type": "array"
+          },
+          "version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "volume": {
+            "$ref": "#/components/schemas/kernel.Quantity"
+          }
+        },
+        "type": "object"
+      },
+      "phy.Member": {
+        "additionalProperties": false,
+        "properties": {
+          "attached_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "entry_no": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "ful_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "gross_weight": {
+            "$ref": "#/components/schemas/kernel.Quantity"
+          },
+          "membership_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "packs": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "plan_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "shipment_id": {
+            "type": "string"
+          },
+          "volume": {
+            "$ref": "#/components/schemas/kernel.Quantity"
+          }
+        },
+        "type": "object"
+      },
+      "phy.OpenDiscrepancy": {
+        "additionalProperties": false,
+        "properties": {
+          "consolidation_id": {
+            "type": "string"
+          },
+          "discrepancy_no": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "execution_id": {
+            "type": "string"
+          },
+          "expected": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "lot_id": {
+            "type": "string"
+          },
+          "observed": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "raised_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "shipment_id": {
+            "type": "string"
+          },
+          "unit": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "phy.PackageGroup": {
+        "additionalProperties": false,
+        "properties": {
+          "count": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "height_mm": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "length_mm": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "package_type": {
+            "type": "string"
+          },
+          "width_mm": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "phy.PlannedLoadUnit": {
+        "additionalProperties": false,
+        "properties": {
+          "capacity_cm3": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "equipment_edition": {
+            "type": "string"
+          },
+          "execution_id": {
+            "type": "string"
+          },
+          "execution_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "execution_state": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "max_gross_kg": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "planned_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "remove_reason": {
+            "type": "string"
+          },
+          "removed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "tare_kg": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "teu_tenths": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "type_code": {
+            "type": "string"
+          },
+          "unit_no": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "phy.Receipt": {
+        "additionalProperties": false,
+        "properties": {
+          "command_id": {
+            "type": "string"
+          },
+          "consolidation_id": {
+            "type": "string"
+          },
+          "entry_no": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "execution_id": {
+            "type": "string"
+          },
+          "item_no": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "lot_id": {
+            "type": "string"
+          },
+          "new_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "shipment_id": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "phy.ReceiptLine": {
+        "additionalProperties": false,
+        "properties": {
+          "condition": {
+            "type": "string"
+          },
+          "entered_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "evidence": {
+            "$ref": "#/components/schemas/phy.Evidence"
+          },
+          "line_no": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "package_type": {
+            "type": "string"
+          },
+          "packs": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "received_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "phy.Reversal": {
+        "additionalProperties": false,
+        "properties": {
+          "entered_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "evidence": {
+            "$ref": "#/components/schemas/phy.Evidence"
+          },
+          "gross_weight": {
+            "$ref": "#/components/schemas/kernel.Quantity"
+          },
+          "line_no": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "packs": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "reversal_no": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "reversed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "volume": {
+            "$ref": "#/components/schemas/kernel.Quantity"
+          }
+        },
+        "type": "object"
+      },
+      "phy.Rework": {
+        "additionalProperties": false,
+        "properties": {
+          "asked_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "asked_by": {
+            "type": "string"
+          },
+          "asked_entered_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "broken_seal": {
+            "$ref": "#/components/schemas/phy.Evidence"
+          },
+          "broken_sealed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "broken_sealed_by": {
+            "type": "string"
+          },
+          "end": {
+            "type": "string"
+          },
+          "ended_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "ended_by": {
+            "type": "string"
+          },
+          "new_seal_reference": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "rework_no": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "phy.Screening": {
+        "additionalProperties": false,
+        "properties": {
+          "entered_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "evidence": {
+            "$ref": "#/components/schemas/phy.Evidence"
+          },
+          "method": {
+            "type": "string"
+          },
+          "outcome": {
+            "type": "string"
+          },
+          "recorded_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "reference": {
+            "type": "string"
+          },
+          "result_no": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "screener": {
+            "type": "string"
+          }
+        },
+        "type": "object"
       }
     },
     "securitySchemes": {
@@ -1856,10 +2864,647 @@
   "info": {
     "description": "Cargo's HTTP API. Every /v1 call carries a bearer token; the tenant and the actor come only from it. A command carries Idempotency-Key (its command id) and, when it changes a resource at a revision, If-Match \"n\"; it states its business time in occurred_at. Errors are RFC 9457 problems with a business code.",
     "title": "IDP Cargo API",
-    "version": "2.107"
+    "version": "2.108"
   },
   "openapi": "3.1.0",
   "paths": {
+    "/v1/cargo-lots/{lot_id}": {
+      "get": {
+        "operationId": "phy.GetCargoLot",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "lot_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/phy.CargoLot"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "A cargo lot: received, measured, screened, discrepancies",
+        "tags": [
+          "phy"
+        ],
+        "x-calls": "GetCargoLot",
+        "x-permission": "phy:Read"
+      }
+    },
+    "/v1/cargo-lots/{lot_id}/close": {
+      "post": {
+        "operationId": "phy.CloseCargoLot",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "lot_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/phy.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Close the lot once all its packs are loaded",
+        "tags": [
+          "phy"
+        ],
+        "x-calls": "CloseCargoLot",
+        "x-permission": "phy:CloseCargoLot"
+      }
+    },
+    "/v1/cargo-lots/{lot_id}/complete": {
+      "post": {
+        "operationId": "phy.CompleteReceipt",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "lot_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/phy.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Complete the receipt",
+        "tags": [
+          "phy"
+        ],
+        "x-calls": "CompleteReceipt",
+        "x-permission": "phy:CompleteReceipt"
+      }
+    },
+    "/v1/cargo-lots/{lot_id}/discrepancies/{discrepancy_no}/resolve": {
+      "post": {
+        "operationId": "phy.ResolveCargoDiscrepancy",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "lot_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "discrepancy_no",
+            "required": true,
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  },
+                  "reference": {
+                    "type": "string"
+                  },
+                  "resolution": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/phy.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Resolve a receiving discrepancy",
+        "tags": [
+          "phy"
+        ],
+        "x-calls": "ResolveCargoDiscrepancy",
+        "x-permission": "phy:ResolveCargoDiscrepancy"
+      }
+    },
+    "/v1/cargo-lots/{lot_id}/measurements": {
+      "post": {
+        "operationId": "phy.RecordCargoMeasurement",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "lot_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "evidence": {
+                    "$ref": "#/components/schemas/phy.Evidence"
+                  },
+                  "gross_weight": {
+                    "$ref": "#/components/schemas/kernel.Quantity"
+                  },
+                  "method": {
+                    "type": "string"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "package_groups": {
+                    "items": {
+                      "$ref": "#/components/schemas/phy.PackageGroup"
+                    },
+                    "type": "array"
+                  },
+                  "volume": {
+                    "$ref": "#/components/schemas/kernel.Quantity"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/phy.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Record the measured weight and volume",
+        "tags": [
+          "phy"
+        ],
+        "x-calls": "RecordCargoMeasurement",
+        "x-permission": "phy:RecordCargoMeasurement"
+      }
+    },
+    "/v1/cargo-lots/{lot_id}/receipts": {
+      "post": {
+        "operationId": "phy.ReceiveCargo",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "lot_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "condition": {
+                    "type": "string"
+                  },
+                  "evidence": {
+                    "$ref": "#/components/schemas/phy.Evidence"
+                  },
+                  "facility": {
+                    "$ref": "#/components/schemas/phy.Facility"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "package_type": {
+                    "type": "string"
+                  },
+                  "packs": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "shipment_id": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/phy.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Receive cargo into a lot (If-Match \"0\" for a new lot)",
+        "tags": [
+          "phy"
+        ],
+        "x-calls": "ReceiveCargo",
+        "x-permission": "phy:ReceiveCargo"
+      }
+    },
+    "/v1/cargo-lots/{lot_id}/screenings": {
+      "post": {
+        "operationId": "phy.RecordScreeningResult",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "lot_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "evidence": {
+                    "$ref": "#/components/schemas/phy.Evidence"
+                  },
+                  "method": {
+                    "type": "string"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "outcome": {
+                    "type": "string"
+                  },
+                  "reference": {
+                    "type": "string"
+                  },
+                  "screener": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/phy.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Record a security screening result",
+        "tags": [
+          "phy"
+        ],
+        "x-calls": "RecordScreeningResult",
+        "x-permission": "phy:RecordScreeningResult"
+      }
+    },
     "/v1/charge-codes": {
       "get": {
         "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
@@ -1988,6 +3633,1349 @@
           "rate"
         ],
         "x-calls": ""
+      }
+    },
+    "/v1/consolidations": {
+      "get": {
+        "operationId": "phy.ListOpenConsolidations",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "mode",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "origin",
+            "schema": {
+              "description": "as text",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "destination",
+            "schema": {
+              "description": "as text",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "operating_legal_entity_id",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "departure_from",
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "departure_until",
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "items": {
+                      "items": {
+                        "$ref": "#/components/schemas/phy.ConsolidationSummary"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Open consolidations, for attaching houses (origin and destination as CNSHA or IATA:PVG)",
+        "tags": [
+          "phy"
+        ],
+        "x-calls": "ListOpenConsolidations",
+        "x-permission": "phy:Read"
+      },
+      "post": {
+        "operationId": "phy.CreateConsolidation",
+        "parameters": [
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "consolidation_id": {
+                    "type": "string"
+                  },
+                  "destination": {
+                    "$ref": "#/components/schemas/kernel.LocationCode"
+                  },
+                  "house_cut_off": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "kind": {
+                    "type": "string"
+                  },
+                  "mode": {
+                    "type": "string"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "operating_legal_entity_id": {
+                    "type": "string"
+                  },
+                  "origin": {
+                    "$ref": "#/components/schemas/kernel.LocationCode"
+                  },
+                  "planned_departure": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/phy.Receipt"
+                }
+              }
+            },
+            "description": "Created",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Create a consolidation",
+        "tags": [
+          "phy"
+        ],
+        "x-calls": "CreateConsolidation",
+        "x-permission": "phy:CreateConsolidation"
+      }
+    },
+    "/v1/consolidations/{consolidation_id}": {
+      "get": {
+        "operationId": "phy.GetConsolidation",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "consolidation_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/phy.Consolidation"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "A consolidation: its houses, load units and status",
+        "tags": [
+          "phy"
+        ],
+        "x-calls": "GetConsolidation",
+        "x-permission": "phy:Read"
+      }
+    },
+    "/v1/consolidations/{consolidation_id}/amend": {
+      "post": {
+        "operationId": "phy.AmendConsolidation",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "consolidation_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "destination": {
+                    "$ref": "#/components/schemas/kernel.LocationCode"
+                  },
+                  "house_cut_off": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "origin": {
+                    "$ref": "#/components/schemas/kernel.LocationCode"
+                  },
+                  "planned_departure": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/phy.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Amend the route, departure or cut-off",
+        "tags": [
+          "phy"
+        ],
+        "x-calls": "AmendConsolidation",
+        "x-permission": "phy:AmendConsolidation"
+      }
+    },
+    "/v1/consolidations/{consolidation_id}/cancel": {
+      "post": {
+        "operationId": "phy.CancelConsolidation",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "consolidation_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/phy.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Cancel it",
+        "tags": [
+          "phy"
+        ],
+        "x-calls": "CancelConsolidation",
+        "x-permission": "phy:CancelConsolidation"
+      }
+    },
+    "/v1/consolidations/{consolidation_id}/close": {
+      "post": {
+        "operationId": "phy.CloseConsolidation",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "consolidation_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "overrun_reason": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/phy.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Close it to new houses",
+        "tags": [
+          "phy"
+        ],
+        "x-calls": "CloseConsolidation",
+        "x-permission": "phy:CloseConsolidation"
+      }
+    },
+    "/v1/consolidations/{consolidation_id}/houses": {
+      "post": {
+        "operationId": "phy.AttachHouse",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "consolidation_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "expected_membership_revision": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "shipment_id": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/phy.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Attach a house (then record it in FUL)",
+        "tags": [
+          "phy"
+        ],
+        "x-calls": "AttachHouse",
+        "x-permission": "phy:AttachHouse"
+      }
+    },
+    "/v1/consolidations/{consolidation_id}/houses/{shipment_id}/detach": {
+      "post": {
+        "operationId": "phy.DetachHouse",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "consolidation_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "shipment_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "expected_membership_revision": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  },
+                  "reason_text": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/phy.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Detach a house (then record it in FUL)",
+        "tags": [
+          "phy"
+        ],
+        "x-calls": "DetachHouse",
+        "x-permission": "phy:DetachHouse"
+      }
+    },
+    "/v1/consolidations/{consolidation_id}/houses/{shipment_id}/end-cancelled": {
+      "post": {
+        "operationId": "phy.EndMembershipForCancelledShipment",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "consolidation_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "shipment_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "expected_membership_revision": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/phy.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "End the membership of a shipment FUL cancelled",
+        "tags": [
+          "phy"
+        ],
+        "x-calls": "EndMembershipForCancelledShipment",
+        "x-permission": "phy:EndMembershipForCancelledShipment"
+      }
+    },
+    "/v1/consolidations/{consolidation_id}/houses/{shipment_id}/refresh": {
+      "post": {
+        "operationId": "phy.RefreshHouseIntent",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "consolidation_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "shipment_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "expected_membership_revision": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/phy.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Refresh a house's intent from FUL's latest plan",
+        "tags": [
+          "phy"
+        ],
+        "x-calls": "RefreshHouseIntent",
+        "x-permission": "phy:RefreshHouseIntent"
+      }
+    },
+    "/v1/consolidations/{consolidation_id}/houses/{shipment_id}/transfer": {
+      "post": {
+        "operationId": "phy.TransferHouse",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "consolidation_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "shipment_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "expected_membership_revision": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  },
+                  "reason_text": {
+                    "type": "string"
+                  },
+                  "to_consolidation_id": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/phy.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Transfer a house to another consolidation (then record it in FUL)",
+        "tags": [
+          "phy"
+        ],
+        "x-calls": "TransferHouse",
+        "x-permission": "phy:TransferHouse"
+      }
+    },
+    "/v1/consolidations/{consolidation_id}/load-units": {
+      "post": {
+        "operationId": "phy.PlanLoadUnit",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "consolidation_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "type": "string"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "type_code": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/phy.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Plan a load unit (a container, a ULD)",
+        "tags": [
+          "phy"
+        ],
+        "x-calls": "PlanLoadUnit",
+        "x-permission": "phy:PlanLoadUnit"
+      }
+    },
+    "/v1/consolidations/{consolidation_id}/load-units/{unit_no}/remove": {
+      "post": {
+        "operationId": "phy.RemovePlannedLoadUnit",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "consolidation_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "unit_no",
+            "required": true,
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/phy.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Remove a planned load unit",
+        "tags": [
+          "phy"
+        ],
+        "x-calls": "RemovePlannedLoadUnit",
+        "x-permission": "phy:RemovePlannedLoadUnit"
+      }
+    },
+    "/v1/consolidations/{consolidation_id}/reconcile": {
+      "post": {
+        "operationId": "phy.ReconcileConsolidation",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "consolidation_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/phy.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Reconcile it once its executions are closed",
+        "tags": [
+          "phy"
+        ],
+        "x-calls": "ReconcileConsolidation",
+        "x-permission": "phy:ReconcileConsolidation"
+      }
+    },
+    "/v1/consolidations/{consolidation_id}/reopen": {
+      "post": {
+        "operationId": "phy.ReopenConsolidation",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "consolidation_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/phy.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Reopen it",
+        "tags": [
+          "phy"
+        ],
+        "x-calls": "ReopenConsolidation",
+        "x-permission": "phy:ReopenConsolidation"
       }
     },
     "/v1/contact-transfers/releases": {
@@ -2521,6 +5509,72 @@
         "x-calls": ""
       }
     },
+    "/v1/discrepancies": {
+      "get": {
+        "operationId": "phy.ListOpenDiscrepancies",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "consolidation_id",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "shipment_id",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "items": {
+                      "items": {
+                        "$ref": "#/components/schemas/phy.OpenDiscrepancy"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Open discrepancies of a consolidation or a shipment",
+        "tags": [
+          "phy"
+        ],
+        "x-calls": "ListOpenDiscrepancies",
+        "x-permission": "phy:Read"
+      }
+    },
     "/v1/fin/cost-review-requests": {
       "post": {
         "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
@@ -2975,6 +6029,1191 @@
         ],
         "x-calls": "VerifyLegalEntity",
         "x-permission": "org:VerifyLegalEntity"
+      }
+    },
+    "/v1/load-executions": {
+      "post": {
+        "operationId": "phy.OpenLoadExecution",
+        "parameters": [
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "consolidation_id": {
+                    "type": "string"
+                  },
+                  "execution_id": {
+                    "type": "string"
+                  },
+                  "facility": {
+                    "$ref": "#/components/schemas/phy.Facility"
+                  },
+                  "kind": {
+                    "type": "string"
+                  },
+                  "load_unit_no": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/phy.Receipt"
+                }
+              }
+            },
+            "description": "Created",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Open a stuffing or build-up of a load unit",
+        "tags": [
+          "phy"
+        ],
+        "x-calls": "OpenLoadExecution",
+        "x-permission": "phy:OpenLoadExecution"
+      }
+    },
+    "/v1/load-executions/{execution_id}": {
+      "get": {
+        "operationId": "phy.GetLoadExecution",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "execution_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/phy.LoadExecution"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "A load execution: its lines, holds, seal and evidence",
+        "tags": [
+          "phy"
+        ],
+        "x-calls": "GetLoadExecution",
+        "x-permission": "phy:Read"
+      }
+    },
+    "/v1/load-executions/{execution_id}/cancel": {
+      "post": {
+        "operationId": "phy.CancelLoadExecution",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "execution_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/phy.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Cancel it",
+        "tags": [
+          "phy"
+        ],
+        "x-calls": "CancelLoadExecution",
+        "x-permission": "phy:CancelLoadExecution"
+      }
+    },
+    "/v1/load-executions/{execution_id}/carrier-evidence": {
+      "post": {
+        "operationId": "phy.RecordCarrierLoadEvidence",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "execution_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "evidence": {
+                    "$ref": "#/components/schemas/phy.Evidence"
+                  },
+                  "fact": {
+                    "type": "string"
+                  },
+                  "gross_weight": {
+                    "$ref": "#/components/schemas/kernel.Quantity"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "pieces": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "shipment_id": {
+                    "type": "string"
+                  },
+                  "transport": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/phy.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Record the carrier's evidence of the load",
+        "tags": [
+          "phy"
+        ],
+        "x-calls": "RecordCarrierLoadEvidence",
+        "x-permission": "phy:RecordCarrierLoadEvidence"
+      }
+    },
+    "/v1/load-executions/{execution_id}/close": {
+      "post": {
+        "operationId": "phy.CloseLoadExecution",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "execution_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "evidence": {
+                    "$ref": "#/components/schemas/phy.Evidence"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/phy.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Close it: the container sealed, the ULD built (then FUL takes the evidence)",
+        "tags": [
+          "phy"
+        ],
+        "x-calls": "CloseLoadExecution",
+        "x-permission": "phy:CloseLoadExecution"
+      }
+    },
+    "/v1/load-executions/{execution_id}/discrepancies/{discrepancy_no}/resolve": {
+      "post": {
+        "operationId": "phy.ResolveLoadingDiscrepancy",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "execution_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "discrepancy_no",
+            "required": true,
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  },
+                  "reference": {
+                    "type": "string"
+                  },
+                  "resolution": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/phy.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Resolve a loading discrepancy",
+        "tags": [
+          "phy"
+        ],
+        "x-calls": "ResolveLoadingDiscrepancy",
+        "x-permission": "phy:ResolveLoadingDiscrepancy"
+      }
+    },
+    "/v1/load-executions/{execution_id}/holds": {
+      "post": {
+        "operationId": "phy.PlaceLoadExecutionOnHold",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "execution_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "evidence": {
+                    "$ref": "#/components/schemas/phy.Evidence"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  },
+                  "text": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/phy.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Place it on hold",
+        "tags": [
+          "phy"
+        ],
+        "x-calls": "PlaceLoadExecutionOnHold",
+        "x-permission": "phy:PlaceLoadExecutionOnHold"
+      }
+    },
+    "/v1/load-executions/{execution_id}/holds/{hold_no}/release": {
+      "post": {
+        "operationId": "phy.ReleaseLoadExecutionHold",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "execution_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "hold_no",
+            "required": true,
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "evidence": {
+                    "$ref": "#/components/schemas/phy.Evidence"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/phy.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Release a hold",
+        "tags": [
+          "phy"
+        ],
+        "x-calls": "ReleaseLoadExecutionHold",
+        "x-permission": "phy:ReleaseLoadExecutionHold"
+      }
+    },
+    "/v1/load-executions/{execution_id}/loaded": {
+      "post": {
+        "operationId": "phy.RecordCargoLoaded",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "execution_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "evidence": {
+                    "$ref": "#/components/schemas/phy.Evidence"
+                  },
+                  "gross_weight": {
+                    "$ref": "#/components/schemas/kernel.Quantity"
+                  },
+                  "lot_id": {
+                    "type": "string"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "packs": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "volume": {
+                    "$ref": "#/components/schemas/kernel.Quantity"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/phy.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Record packs of a lot loaded",
+        "tags": [
+          "phy"
+        ],
+        "x-calls": "RecordCargoLoaded",
+        "x-permission": "phy:RecordCargoLoaded"
+      }
+    },
+    "/v1/load-executions/{execution_id}/rework": {
+      "post": {
+        "operationId": "phy.OpenStuffingForRework",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "execution_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/phy.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Open a sealed container for rework, with a reason",
+        "tags": [
+          "phy"
+        ],
+        "x-calls": "OpenStuffingForRework",
+        "x-permission": "phy:OpenStuffingForRework"
+      }
+    },
+    "/v1/load-executions/{execution_id}/rework/unload": {
+      "post": {
+        "operationId": "phy.UnloadHouseForRework",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "execution_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "evidence": {
+                    "$ref": "#/components/schemas/phy.Evidence"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "shipment_id": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/phy.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Unload a whole house in a rework",
+        "tags": [
+          "phy"
+        ],
+        "x-calls": "UnloadHouseForRework",
+        "x-permission": "phy:UnloadHouseForRework"
+      }
+    },
+    "/v1/load-executions/{execution_id}/start": {
+      "post": {
+        "operationId": "phy.StartLoading",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "execution_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/phy.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Start loading",
+        "tags": [
+          "phy"
+        ],
+        "x-calls": "StartLoading",
+        "x-permission": "phy:StartLoading"
+      }
+    },
+    "/v1/load-executions/{execution_id}/unloaded": {
+      "post": {
+        "operationId": "phy.RecordCargoUnloaded",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "execution_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "evidence": {
+                    "$ref": "#/components/schemas/phy.Evidence"
+                  },
+                  "line_no": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "packs": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/phy.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Record packs of a line unloaded",
+        "tags": [
+          "phy"
+        ],
+        "x-calls": "RecordCargoUnloaded",
+        "x-permission": "phy:RecordCargoUnloaded"
       }
     },
     "/v1/obligations/{obligation_id}/reservations": {

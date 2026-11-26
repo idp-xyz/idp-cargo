@@ -98,7 +98,7 @@ func (g *generator) operation(op Op, id string) map[string]any {
 			if s.server[f.key] {
 				continue
 			}
-			params = append(params, map[string]any{"name": f.key, "in": "query", "schema": g.schema(op.input.FieldByIndex(f.index).Type)})
+			params = append(params, map[string]any{"name": f.key, "in": "query", "schema": g.param(op.input.FieldByIndex(f.index).Type)})
 		}
 	}
 	if len(params) > 0 {
@@ -120,6 +120,14 @@ func (g *generator) operation(op Op, id string) map[string]any {
 	}
 	o["responses"] = map[string]any{fmt.Sprint(op.Status): ok, "default": problem()}
 	return o
+}
+
+// param is the schema of a query parameter: a type read from text (a location, "CNSHA" or "IATA:PVG") is a string.
+func (g *generator) param(t reflect.Type) map[string]any {
+	if t != timeType && reflect.PointerTo(t).Implements(textUnmarshalerType) {
+		return map[string]any{"type": "string", "description": "as text"}
+	}
+	return g.schema(t)
 }
 
 func problem() map[string]any {

@@ -11,6 +11,7 @@ import (
 	"go.idp.xyz/idp-cargo/internal/contexts/ful"
 	"go.idp.xyz/idp-cargo/internal/contexts/org"
 	orgapi "go.idp.xyz/idp-cargo/internal/contexts/org/api"
+	"go.idp.xyz/idp-cargo/internal/contexts/phy"
 	"go.idp.xyz/idp-cargo/internal/contexts/rate"
 	"go.idp.xyz/idp-cargo/internal/contexts/sea"
 	"go.idp.xyz/idp-cargo/internal/foundation/httpapi"
@@ -21,13 +22,14 @@ import (
 // database, for the OpenAPI document (cmd/cargo-openapi, contracts/openapi/cargo.json) and its test.
 
 // apiRegistrars are the registrars the API serves, in the order they register.
-func apiRegistrars(r *rate.Module, s *sea.Module, f *fin.Module, o *org.Module, c *com.Module, u *ful.Module, onboarding *Onboarding) []transport.Registrar {
-	return []transport.Registrar{r, s, f, o, c, u, platformRoutes{onboarding}}
+func apiRegistrars(r *rate.Module, s *sea.Module, f *fin.Module, o *org.Module, c *com.Module, u *ful.Module, y *phy.Module,
+	onboarding *Onboarding) []transport.Registrar {
+	return []transport.Registrar{r, s, f, o, c, u, y, platformRoutes{onboarding}}
 }
 
 // APIRoutes answers the API's route table.
 func APIRoutes() []httpapi.Op {
-	return transport.Table(apiRegistrars(nil, nil, nil, nil, nil, nil, nil)...)
+	return transport.Table(apiRegistrars(nil, nil, nil, nil, nil, nil, nil, nil)...)
 }
 
 // platformRoutes are the routes of what only the platform composes: a customer's onboarding, which ORG records and FIN
@@ -82,7 +84,7 @@ var orgKinds = httpapi.Errors{Unauthenticated: orgapi.ErrUnauthenticated, Unauth
 	Conflict: orgapi.ErrConflict, IdempotencyConflict: orgapi.ErrIdempotencyConflict, Rejected: orgapi.ErrRejected}
 
 // APIVersion is the version the OpenAPI document states: the archive version that last changed the routes.
-const APIVersion = "2.107"
+const APIVersion = "2.108"
 
 // OpenAPIDocument answers the API's OpenAPI document.
 func OpenAPIDocument() ([]byte, error) {
