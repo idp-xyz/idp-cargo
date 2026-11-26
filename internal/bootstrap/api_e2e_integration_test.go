@@ -484,3 +484,146 @@ func TestH03LeavesBoxAAndBoxBIsRolledThroughTheAPIAlone(t *testing.T) {
 		t.Fatalf("revenue %d, cost %d, profit %d", revenue, cost, revenue-cost)
 	}
 }
+
+func iataAt(code string) M { return M{"scheme": "IATA", "code": code} }
+
+// An air line through the API alone, to its billing (stage 3, acceptance 4): the parties and the airline's codes, a
+// quote of AIR_FREIGHT 1,000.00 USD sold and 500.00 bought, an order and a shipment PVG to JFK; the air consolidation,
+// the airline's booking with its MAWB, the air movement and the house's HAWB drawn from the series; the cargo
+// received, weighed, screened, tendered to the terminal and weighed there; FUL's evidence, AIR's facts finalized; the
+// HAWB drafted, approved by a colleague, the parties locked and issued over the missing credit account by a person who
+// may; FIN's job priced from the quote (revenue 7,123.40, cost 3,561.70 by the estimate rate), its document fee, and a
+// debit note on the HAWB.
+func TestAnAirLineRunsToItsDebitNoteThroughTheAPIAlone(t *testing.T) {
+	f := newFlow(t, "cargo-e2e-air-")
+	admin, ops, wh, dora, dan := f.as("ada", "admin"), f.as("otto", "ops"), f.as("walt", "warehouse"), f.as("dora", "docs"), f.as("dan", "docs")
+	lead, fin := f.as("lee", "docs", "finance-manager"), f.as("finn", "finance")
+	departs := f.at.Add(72 * time.Hour)
+	ts := func(t time.Time) string { return t.Format(time.RFC3339) }
+
+	// ORG
+	f.post(admin, "/v1/legal-entities", "", M{"legal_entity_id": "LE", "registered_name": "上海货代有限公司", "jurisdiction": "CN", "evidence_ref": "licence", "occurred_at": f.hours(0)})
+	f.post(admin, "/v1/legal-entities/LE/verify", `"1"`, M{"occurred_at": f.hours(0)})
+	for _, p := range []struct{ id, name, country, role string }{{"party-a", "Customer A Inc", "US", "CUSTOMER"}, {"shipper-co", "Shanghai Shipper Co", "CN", "SHIPPER"},
+		{"consignee-us", "New York Consignee Inc", "US", "CONSIGNEE"}, {"airline-mu", "China Eastern Airlines", "CN", "CARRIER"}} {
+		f.post(admin, "/v1/parties", "", M{"party_id": p.id, "legal_name": p.name, "country_code": p.country, "occurred_at": f.hours(0)})
+		f.post(admin, "/v1/parties/"+p.id+"/activate", `"1"`, M{"evidence_ref": "registry extract", "occurred_at": f.hours(0)})
+		revision := `"2"`
+		if p.id == "airline-mu" {
+			f.post(admin, "/v1/parties/airline-mu/identifiers", `"2"`, M{"type": "IATA_AIRLINE", "country": "ZZ", "value": "MU", "evidence_ref": "IATA directory"})
+			f.post(admin, "/v1/parties/airline-mu/identifiers", `"3"`, M{"type": "IATA_AWB_PREFIX", "country": "ZZ", "value": "781", "evidence_ref": "IATA directory"})
+			revision = `"4"`
+		}
+		f.post(admin, "/v1/parties/"+p.id+"/roles", revision, M{"legal_entity_id": "LE", "role_code": p.role, "valid_from": ts(f.at.Add(-time.Hour)), "evidence_ref": "contract",
+			"occurred_at": f.hours(0)})
+		if p.role == "SHIPPER" || p.role == "CONSIGNEE" {
+			f.post(ops, "/v1/parties/"+p.id+"/addresses", `"0"`, M{"address_id": "HQ", "address": M{"short_code": "HQ", "purposes": []string{"OFFICE"}, "name": p.name,
+				"lines": []string{"1 Harbour Road"}, "city": map[string]string{"CN": "Shanghai", "US": "New York"}[p.country], "country_code": p.country}, "default_for": []string{"OFFICE"}})
+			// a Chinese shipper's customs code and a US consignee's EIN, which an air waybill prints
+			id := map[string]M{"CN": {"type": "CN_CUSTOMS", "country": "CN", "value": "3105960ABC"}, "US": {"type": "US_EIN", "country": "US", "value": "123456789"}}[p.country]
+			id["evidence_ref"] = "registration certificate"
+			f.post(admin, "/v1/parties/"+p.id+"/identifiers", `"3"`, id)
+		}
+	}
+
+	// RATE, COM, FUL: the quote, the order and its parties, the shipment
+	f.post(ops, "/v1/quotes", "", M{"quote_id": "Q-A", "legal_entity_id": "LE", "customer_party_id": "party-a", "currency": "USD",
+		"lines":      []M{{"charge_code": "AIR_FREIGHT", "sell": M{"currency": "USD", "minor": 100_000}, "cost": M{"currency": "USD", "minor": 50_000}}},
+		"valid_from": f.hours(0), "valid_until": ts(f.at.Add(14 * 24 * time.Hour)), "occurred_at": f.hours(0)})
+	f.post(ops, "/v1/quotes/Q-A/accept", `"1"`, M{"evidence_kind": "EMAIL", "evidence_ref": "mail", "occurred_at": f.hours(1)})
+	f.post(ops, "/v1/orders", "", M{"order_id": "O-A", "quote_id": "Q-A", "customer_party_id": "party-a", "transport": M{"mode": "AIR"},
+		"lines": []M{{"description": "Cartons of electronics", "packs": 6, "package_type": "CT", "gross_weight": kgm(300)}}, "occurred_at": f.hours(2)})
+	f.post(ops, "/v1/orders/O-A/obligations", `"1"`, M{"line_no": 1, "obligation_id": "OB-A", "packs": 6, "gross_weight": kgm(300), "occurred_at": f.hours(3)})
+	for role, id := range map[string]string{"SHIPPER": "shipper-co", "CONSIGNEE": "consignee-us"} {
+		f.post(ops, "/v1/orders/O-A/parties", "GET /v1/orders/O-A", M{"party": M{"role": role, "party_id": id}, "occurred_at": f.hours(3)})
+	}
+	f.post(ops, "/v1/obligations/OB-A/reservations", "", M{"obligation_version": 1, "shipment_id": "SH-A", "occurred_at": f.hours(4)})
+	f.post(ops, "/v1/shipments", "", M{"shipment_id": "SH-A", "obligation_id": "OB-A", "obligation_version": 1, "occurred_at": f.hours(5)})
+	f.post(ops, "/v1/shipments/SH-A/plan", `"1"`, M{"transport_mode": "AIR", "origin": iataAt("PVG"), "destination": iataAt("JFK"),
+		"departure_window": M{"from": ts(departs), "until": ts(departs.Add(48 * time.Hour))}, "reason": "flight booked", "occurred_at": f.hours(6)})
+	f.post(ops, "/v1/shipments/SH-A/confirm", `"2"`, M{"occurred_at": f.hours(7)})
+
+	// PHY, BOOK, AIR: the consolidation and the house, the airline's booking and MAWB, the movement and the HAWB
+	f.post(ops, "/v1/consolidations", "", M{"consolidation_id": "C-1", "mode": "AIR", "kind": "AIR_CONSOL", "operating_legal_entity_id": "LE", "origin": iataAt("PVG"),
+		"destination": iataAt("JFK"), "planned_departure": ts(departs.Add(6 * time.Hour)), "house_cut_off": ts(departs.Add(-6 * time.Hour)), "occurred_at": f.hours(8)})
+	f.post(ops, "/v1/consolidations/C-1/houses", "", M{"shipment_id": "SH-A", "expected_membership_revision": 0, "occurred_at": f.hours(9)})
+	f.post(ops, "/v1/shipments/SH-A/consol-attachments", "GET /v1/shipments/SH-A", M{"consolidation_id": "C-1", "occurred_at": f.hours(9)})
+	etd := departs.Add(6 * time.Hour)
+	evidence := M{"sha256": strings.Repeat("6b", 32), "storage_id": "mail/airline.eml", "media_type": "message/rfc822", "captured_at": f.hours(10)}
+	f.post(ops, "/v1/bookings", "", M{"booking_id": "BK-1", "kind": "AIR_CONSOL", "legal_entity_id": "LE", "carrier_party_id": "airline-mu", "consolidation_id": "C-1",
+		"request": M{"legs": []M{{"loading": iataAt("PVG"), "discharge": iataAt("JFK"), "flight": "MU587", "departure_date": etd.Format(time.DateOnly)}},
+			"capacity": M{"pieces": 20, "gross_weight": kgm(1000)}}, "occurred_at": f.hours(10)})
+	f.post(ops, "/v1/bookings/BK-1/sent", `"1"`, M{"channel": "CARRIER_PORTAL", "evidence": evidence, "occurred_at": f.hours(10)})
+	f.post(ops, "/v1/bookings/BK-1/confirmation", `"2"`, M{"answer": M{"channel": "EMAIL", "evidence": evidence, "references": []M{{"type": "MAWB_NUMBER", "value": "781-12345675"}}},
+		"lines": []M{{"capacity": M{"pieces": 20, "gross_weight": kgm(1000)}, "legs": []M{{"loading": iataAt("PVG"), "discharge": iataAt("JFK"), "flight": "MU587",
+			"etd": ts(etd), "eta": ts(etd.Add(14 * time.Hour))}}}}, "occurred_at": f.hours(11)})
+	f.post(ops, "/v1/air-movements", "", M{"movement_id": "AM-1", "consolidation_id": "C-1", "booking_id": "BK-1", "occurred_at": f.hours(12)})
+	f.post(ops, "/v1/hawb-series/LE", "", M{"template": "SHA{seq:7}", "first_number": 1, "occurred_at": f.hours(12)})
+	f.post(ops, "/v1/air-movements/AM-1/house-waybills", "GET /v1/air-movements/AM-1", M{"shipment_id": "SH-A", "occurred_at": f.hours(12)})
+
+	// the warehouse and the terminal: received, weighed, screened, tendered, weighed again; FUL and AIR take it. A
+	// facility is at the consolidation's origin as PHY froze it.
+	origin := dig(f.get(ops, "/v1/consolidations/C-1"), "current", "origin")
+	f.post(wh, "/v1/cargo-lots/L-A/receipts", `"0"`, M{"shipment_id": "SH-A", "facility": M{"location": origin, "code": "SHA-WH1"}, "packs": 6, "package_type": "CT",
+		"condition": "GOOD", "evidence": evidenceAt("WMS", "GRN-1", f.hours(13)), "occurred_at": f.hours(13)})
+	f.post(wh, "/v1/cargo-lots/L-A/measurements", `"1"`, M{"gross_weight": kgm(303), "volume": M{"unit": "MTQ", "amount": 2}, "method": "SCALE",
+		"evidence": evidenceAt("SCALE-3", "W-1", f.hours(13)), "occurred_at": f.hours(13)})
+	f.post(wh, "/v1/cargo-lots/L-A/screenings", `"2"`, M{"outcome": "PASSED", "screener": "PVG cargo security station", "method": "XRAY", "reference": "AQ-1",
+		"evidence": evidenceAt("PVG-SECURITY", "AQ-1", f.hours(13)), "occurred_at": f.hours(13)})
+	f.post(wh, "/v1/cargo-lots/L-A/complete", `"3"`, M{"occurred_at": f.hours(14)})
+	f.post(ops, "/v1/consolidations/C-1/close", "GET /v1/consolidations/C-1", M{"occurred_at": f.hours(15)})
+	f.post(ops, "/v1/load-executions", "", M{"execution_id": "X-1", "consolidation_id": "C-1", "kind": "TENDER", "facility": M{"location": origin, "code": "PVG-EASTERN"},
+		"occurred_at": f.hours(16)})
+	f.post(ops, "/v1/load-executions/X-1/start", `"1"`, M{"occurred_at": f.hours(16)})
+	f.post(ops, "/v1/load-executions/X-1/loaded", `"2"`, M{"lot_id": "L-A", "packs": 6, "evidence": evidenceAt("TRUCK-APP", "DLV-1", f.hours(16)), "occurred_at": f.hours(16)})
+	f.post(ops, "/v1/load-executions/X-1/close", `"3"`, M{"evidence": evidenceAt("PVG-EASTERN", "JJD-1", f.hours(16)), "occurred_at": f.hours(16)})
+	f.post(ops, "/v1/cargo-lots/L-A/measurements", "GET /v1/cargo-lots/L-A", M{"gross_weight": kgm(318), "volume": M{"unit": "MTQ", "amount": 1}, "method": "TERMINAL_WEIGHT",
+		"evidence": evidenceAt("PVG-EASTERN", "WGT-1", f.hours(17)), "occurred_at": f.hours(17)})
+	f.post(ops, "/v1/shipments/SH-A/load-evidence", "GET /v1/shipments/SH-A", M{"occurred_at": f.hours(17)})
+	f.post(ops, "/v1/air-movements/AM-1/house-waybills/SH-A/refresh", "GET /v1/air-movements/AM-1", M{"occurred_at": f.hours(17)})
+	f.post(ops, "/v1/air-movements/AM-1/finalize-doc-facts", "GET /v1/air-movements/AM-1", M{"occurred_at": f.hours(18)})
+
+	// DOC: the authorities, the HAWB drafted, approved by a colleague, the parties locked, issued over the credit check
+	for id, a := range map[string]struct{ kind, airline string }{"AUTH-H": {"HAWB", ""}, "AUTH-M": {"MAWB", "airline-mu"}} {
+		f.post(dora, "/v1/issuance-authorities", "", M{"authority_id": id, "legal_entity_id": "LE", "kind": a.kind, "issue_place": "CNPVG", "airline_party_id": a.airline,
+			"qualification": a.kind + " authority", "validity": M{"from": f.hours(0), "until": nil}, "evidence_ref": "contracts/" + id, "occurred_at": f.hours(18)})
+	}
+	f.post(dora, "/v1/documents", "", M{"document_id": "DOC-HAWB-A", "kind": "HAWB", "movement_id": "AM-1", "shipment_id": "SH-A", "payment_indicator": "PREPAID",
+		"handling_information": "keep dry", "occurred_at": f.hours(19)})
+	f.post(dan, "/v1/documents/DOC-HAWB-A/approve", `"1"`, M{"occurred_at": f.hours(19)})
+	f.post(dora, "/v1/orders/O-A/party-locks", "GET /v1/orders/O-A", M{"holder_id": "DOC-HAWB-A", "occurred_at": f.hours(19)})
+	f.post(lead, "/v1/documents/DOC-HAWB-A/issue", `"2"`, M{"credit_override_reason": "the controller approved the credit", "occurred_at": f.hours(20)})
+
+	// FIN: the job priced from the quote, the document fee, the debit note on the HAWB
+	f.post(fin, "/v1/fin/legal-entities/LE/policy", "", M{"functional_currency": "CNY", "book_code": "MAIN", "occurred_at": f.hours(19)})
+	for _, r := range []struct {
+		kind, source string
+		rate         int64
+	}{{"ESTIMATE", "CFETS central parity", 71_234}, {"INVOICE", "bank selling rate", 72_000}} {
+		f.post(fin, "/v1/fin/legal-entities/LE/exchange-rates", "GET /v1/fin/legal-entities/LE/policy", M{"rate_type": r.kind, "from": "USD", "rate": r.rate, "scale": 4,
+			"from_digits": 2, "to_digits": 2, "valid_from": f.hours(0), "valid_until": ts(f.at.AddDate(0, 1, 0)), "source": r.source, "occurred_at": f.hours(19)})
+	}
+	for code, treatment := range map[string]M{"AIR_FREIGHT": {"treatment": "EXEMPT_INTL_FREIGHT_FORWARDING", "rate_bp": 0}, "DOC_FEE": {"treatment": "TAXABLE", "rate_bp": 600}} {
+		treatment["charge_code"], treatment["effective_from"], treatment["occurred_at"] = code, f.at.AddDate(0, 0, -1).Format(time.DateOnly), f.hours(19)
+		f.post(fin, "/v1/fin/legal-entities/LE/tax-treatments", "GET /v1/fin/legal-entities/LE/policy", treatment)
+	}
+	for kind, template := range map[string]string{"DEBIT_NOTE": "SHADN{seq:6}", "CREDIT_NOTE": "SHACN{seq:6}"} {
+		f.post(fin, "/v1/fin/legal-entities/LE/invoice-series", "GET /v1/fin/legal-entities/LE/policy", M{"kind": kind, "template": template, "first_number": 1, "occurred_at": f.hours(19)})
+	}
+	f.post(fin, "/v1/fin/legal-entities/LE/debtors/party-a/credit-terms", `"0"`, M{"limit": jcny(10_000_000), "payment_days": 30, "payment_basis": "END_OF_MONTH", "occurred_at": f.hours(19)})
+	f.post(fin, "/v1/fin/billing-profiles/party-a", "", M{"buyer_kind": "FOREIGN", "evidence_ref": "account opening form", "occurred_at": f.hours(19)})
+	f.post(fin, "/v1/fin/jobs", "", M{"job_id": "JOB-A", "shipment_id": "SH-A", "occurred_at": f.hours(19)})
+	f.post(fin, "/v1/fin/jobs/JOB-A/pricing-basis", `"1"`, M{"quote_id": "Q-A", "order_id": "O-A", "occurred_at": f.hours(19)})
+	profit := f.get(fin, "/v1/fin/jobs/JOB-A/profit")
+	if dig(profit, "revenue", "minor") != 712_340.0 || dig(profit, "cost", "minor") != 356_170.0 {
+		t.Fatalf("the job's profit: %v", profit)
+	}
+	f.post(fin, "/v1/fin/jobs/JOB-A/charge-lines", "GET /v1/fin/jobs/JOB-A", M{"charge_code": "DOC_FEE", "sell": M{"party_id": "party-a", "amount": jcny(30_000)},
+		"reason": "HAWB fee", "occurred_at": f.hours(20)})
+	f.post(fin, "/v1/fin/jobs/JOB-A/debit-notes", "GET /v1/fin/jobs/JOB-A", M{"invoice_id": "DN-A", "debtor_party_id": "party-a", "line_nos": []int{1, 2}, "currency": "CNY",
+		"invoice_date": f.at.Add(20 * time.Hour).Format(time.DateOnly), "occurred_at": f.hours(20)})
+	note := f.get(fin, "/v1/fin/debtor-invoices/DN-A")
+	if dig(note, "document", "master_number") != "781-12345675" || !strings.HasPrefix(fmt.Sprint(dig(note, "document", "number")), "SHA") {
+		t.Fatalf("the debit note: %v", note)
+	}
+}

@@ -188,13 +188,9 @@ func decodeBody(raw []byte, v reflect.Value, skip map[string]bool) error {
 // assign sets v from a decoded JSON value x.
 func assign(x any, v reflect.Value, path string) error {
 	t := v.Type()
-	if x == nil {
-		switch t.Kind() {
-		case reflect.Pointer, reflect.Slice, reflect.Map:
-			v.SetZero()
-			return nil
-		}
-		return wrong(path)
+	if x == nil { // null is the zero value, as encoding/json reads it: an open-ended time, no list, no number
+		v.SetZero()
+		return nil
 	}
 	if reflect.PointerTo(t).Implements(unmarshalerType) && t.Kind() != reflect.Pointer {
 		raw, err := json.Marshal(x)
