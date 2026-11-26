@@ -45,7 +45,7 @@ func (l LocationCode) IsZero() bool { return l == LocationCode{} }
 
 func upper(b byte) bool { return b >= 'A' && b <= 'Z' }
 
-// UnmarshalText reads a location as a query parameter gives it (since V2.108): a UN/LOCODE alone ("CNSHA"), or the
+// UnmarshalText reads a location as a query parameter gives it (since V2.107): a UN/LOCODE alone ("CNSHA"), or the
 // scheme and the code ("IATA:PVG", "UNLOCODE:CNSHA"). Only the form is read; Valid checks it. A JSON body gives the
 // object {"scheme", "code"}, which this does not change; there is no MarshalText, so a location's JSON, and a
 // command's request hash, are what they were.

@@ -1,4 +1,4 @@
-// Package http is PHY's inbound HTTP adapter (since V2.108): each route binds the body or the query string to PHY's own
+// Package http is PHY's inbound HTTP adapter (since V2.107): each route binds the body or the query string to PHY's own
 // api command or query, with the tenant and actor of the verified principal, and holds no business rules. PHY
 // authorizes its commands itself, before it replays one; the reads are "phy:Read". A consolidation's, a cargo lot's
 // and a load execution's ETag is its revision; a house's membership revision is in the body

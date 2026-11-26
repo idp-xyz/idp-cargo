@@ -15,7 +15,7 @@ import (
 	fulapi "go.idp.xyz/idp-cargo/internal/contexts/ful/api"
 )
 
-// PHY through HTTP (stage 3, V2.108), on PostgreSQL, with the job roles' tokens: a sea consolidation created by the
+// PHY through HTTP (stage 3, V2.107), on PostgreSQL, with the job roles' tokens: a sea consolidation created by the
 // operator and read by the finance staff, listed by its origin given as text, a container planned, a planned house
 // attached; the house's cargo received into a lot at the CFS by the warehouse, measured and its receipt completed;
 // the refusals of a role without the permission and of another tenant. The house is planned in process.

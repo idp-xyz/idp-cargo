@@ -401,5 +401,5 @@ func classify(err error) error {
 	return fmt.Errorf("%w: %w", kind, err)
 }
 
-// RegisterHTTP registers PHY's inbound HTTP routes (since V2.108); the composition root calls it.
+// RegisterHTTP registers PHY's inbound HTTP routes (since V2.107); the composition root calls it.
 func (m *Module) RegisterHTTP(r *httpapi.Routes) { phyhttp.Register(r, m) }
