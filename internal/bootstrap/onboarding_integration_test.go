@@ -43,6 +43,15 @@ type settingsDay struct {
 
 func newSettingsDay(t *testing.T, prefix string) *settingsDay {
 	t.Helper()
+	d := settingsDayOn(t, uniqueTenant(prefix))
+	seedORG(t, d.platform, d.tenant)
+	return d
+}
+
+// settingsDayOn is the day's real ORG, FIN and SEA over one database for a tenant that exists already (another day's
+// fixture seeded its ORG), so that the onboarding and the settings commands act on the tenant of that day.
+func settingsDayOn(t *testing.T, tenant string) *settingsDay {
+	t.Helper()
 	platform := openPlatform(t)
 	orgModule, err := platform.ORG(permissions{})
 	if err != nil {
@@ -72,14 +81,13 @@ func newSettingsDay(t *testing.T, prefix string) *settingsDay {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d := &settingsDay{t: t, platform: platform, org: orgModule, fin: finModule, sea: seaModule, tenant: uniqueTenant(prefix)}
+	d := &settingsDay{t: t, platform: platform, org: orgModule, fin: finModule, sea: seaModule, tenant: tenant}
 	if d.onboarding, err = NewOnboarding(orgModule, finModule, seaModule); err != nil {
 		t.Fatal(err)
 	}
 	if d.tools, err = NewSettingsTools(finModule, seaModule); err != nil {
 		t.Fatal(err)
 	}
-	seedORG(t, platform, d.tenant)
 	return d
 }
 
