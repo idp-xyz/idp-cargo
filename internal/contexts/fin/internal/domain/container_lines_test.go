@@ -243,3 +243,111 @@ func TestFinanceMayAttributeTheShareOfAHouseThatChangedContainer(t *testing.T) {
 		t.Fatalf("back: %+v %+v", la.Attributions, sharesOf(t, p, 1))
 	}
 }
+
+// A line moved to another container, or to or from the whole consolidation, starts again with every house of where it
+// belongs now: houses outside the old container, or left out of it by finance, are not carried as left out (the review
+// of V2.104, finding 1).
+func TestALineMovedTakesEveryHouseOfWhereItBelongsNow(t *testing.T) {
+	revise := func(p *ConsolCostPool, version, unitNo int) {
+		t.Helper()
+		if err := p.ReviseCostInUnit(1, version, unitNo, SideInput{PartyID: "CARRIER-1", PartyRevision: 3, Amount: usd(13_000)}, "moved", policy(t), "ops-1",
+			hour(5)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	b := containerBasis()
+	// container 1 to the whole consolidation: HS2, never in container 1, takes part
+	p := pool(t, b)
+	recordUnitCost(t, p, 1, usd(13_000), MethodPieces)
+	if err := apportion(p, ApportionInput{Jobs: threeJobs()}, b, "ops-1", hour(4)); err != nil {
+		t.Fatal(err)
+	}
+	revise(p, 1, 0)
+	if err := apportion(p, ApportionInput{Jobs: threeJobs()}, b, "ops-1", hour(6)); err != nil {
+		t.Fatal(err)
+	}
+	for ship, s := range sharesOf(t, p, 1) {
+		if !s.Used || s.InUnit != nil || s.Amount == 0 {
+			t.Errorf("to the whole consolidation, %s: %+v", ship, s)
+		}
+	}
+	// container 1, with HS3 left out by finance, to container 2: HS3 takes part there
+	p = pool(t, b)
+	recordUnitCost(t, p, 1, usd(13_000), MethodPieces)
+	if err := apportion(p, ApportionInput{NotUsed: []string{"HS3"}, Jobs: threeJobs()}, b, "ops-1", hour(4)); err != nil {
+		t.Fatal(err)
+	}
+	revise(p, 1, 2)
+	if err := apportion(p, ApportionInput{Jobs: threeJobs()}, b, "ops-1", hour(6)); err != nil {
+		t.Fatal(err)
+	}
+	if s := sharesOf(t, p, 1); s["HS2"].Amount != 6_500 || s["HS3"].Amount != 6_500 || s["HS1"].Used {
+		t.Fatalf("to container 2: %+v", s)
+	}
+	// the whole consolidation, with HS1 left out, to container 1: HS1 takes part there
+	p = pool(t, b)
+	recordCost(t, p, "SEAFREIGHT", usd(13_000), MethodPieces)
+	if err := apportion(p, ApportionInput{NotUsed: []string{"HS1"}, Jobs: threeJobs()}, b, "ops-1", hour(4)); err != nil {
+		t.Fatal(err)
+	}
+	revise(p, 1, 1)
+	if err := apportion(p, ApportionInput{Jobs: threeJobs()}, b, "ops-1", hour(6)); err != nil {
+		t.Fatal(err)
+	}
+	if s := sharesOf(t, p, 1); s["HS1"].Amount != 10_000 || s["HS3"].Amount != 3_000 {
+		t.Fatalf("to container 1: %+v", s)
+	}
+	// and a line that stays where it is keeps finance's list, as before (TestFinanceLeavesOutOnlyHousesOfTheContainer)
+}
+
+// The record of a house that changed container (the review of V2.104, finding 2): its share on the old container's
+// line names the containers it is in now, empty when it is in none; no other share has one.
+func TestAHouseThatChangedContainerIsRecordedWithWhereItIsNow(t *testing.T) {
+	b := containerBasis()
+	p := pool(t, b)
+	recordUnitCost(t, p, 1, usd(13_000), MethodPieces)
+	recordUnitCost(t, p, 2, usd(13_000), MethodPieces)
+	if err := apportion(p, ApportionInput{Jobs: threeJobs()}, b, "ops-1", hour(4)); err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range []int{1, 2} {
+		for ship, s := range sharesOf(t, p, line) {
+			if s.LeftTo != nil {
+				t.Errorf("line %d, %s: a record of a move before any: %+v", line, ship, s.LeftTo)
+			}
+		}
+	}
+	if err := apportion(p, ApportionInput{Jobs: threeJobs()}, movedBasis(), "ops-1", hour(5)); err != nil {
+		t.Fatal(err)
+	}
+	one, two := sharesOf(t, p, 1), sharesOf(t, p, 2)
+	if m := one["HS3"].LeftTo; m == nil || len(m.To) != 1 || m.To[0] != 2 {
+		t.Fatalf("HS3 on container 1's line: %+v", one["HS3"])
+	}
+	if one["HS1"].LeftTo != nil || one["HS2"].LeftTo != nil || two["HS3"].LeftTo != nil {
+		t.Fatalf("other shares: %+v %+v", one, two)
+	}
+	// apportioned again with HS3 still out, nothing moved since: the record is not repeated
+	if err := apportion(p, ApportionInput{Jobs: threeJobs()}, movedBasis(), "ops-1", hour(6)); err != nil {
+		t.Fatal(err)
+	}
+	if sharesOf(t, p, 1)["HS3"].LeftTo != nil {
+		t.Fatalf("repeated: %+v", sharesOf(t, p, 1)["HS3"])
+	}
+	// a house unloaded and in no container: the record is empty, not nil
+	q := pool(t, b)
+	recordUnitCost(t, q, 1, usd(13_000), MethodPieces)
+	if err := apportion(q, ApportionInput{Jobs: threeJobs()}, b, "ops-1", hour(4)); err != nil {
+		t.Fatal(err)
+	}
+	none := copyOf(b)
+	none.Revision++
+	none.Houses[2].Units = nil
+	none.Houses[2].LoadedPacks = 0
+	if err := apportion(q, ApportionInput{Jobs: threeJobs()}, none, "ops-1", hour(5)); err != nil {
+		t.Fatal(err)
+	}
+	if m := sharesOf(t, q, 1)["HS3"].LeftTo; m == nil || len(m.To) != 0 {
+		t.Fatalf("in no container: %+v", m)
+	}
+}

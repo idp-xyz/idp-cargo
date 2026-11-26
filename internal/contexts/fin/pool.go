@@ -123,7 +123,7 @@ func poolView(p *domain.ConsolCostPool, revision int64) api.ConsolCostPool {
 			}
 			for _, s := range la.Shares {
 				lv.Shares = append(lv.Shares, api.PoolShare{ShareNo: s.No, ShipmentID: s.ShipmentID, JobID: s.JobID, NotUsed: !s.Used, Quantity: s.Quantity, Unit: s.Unit,
-					Amount: kernel.Money{Currency: currency, Minor: s.Amount}, Local: local(s.Local), InUnit: s.InUnit})
+					Amount: kernel.Money{Currency: currency, Minor: s.Amount}, Local: local(s.Local), InUnit: s.InUnit, LeftTo: unitMoveView(s.LeftTo)})
 			}
 			out = append(out, lv)
 		}
@@ -376,4 +376,12 @@ func poolShareViews(shares []application.PoolShare, currency kernel.CurrencyCode
 		return a.LineNo - b.LineNo
 	})
 	return out, total
+}
+
+// unitMoveView is the record of a house that changed container, as FIN answers it.
+func unitMoveView(m *domain.UnitMove) *api.PoolUnitMove {
+	if m == nil {
+		return nil
+	}
+	return &api.PoolUnitMove{ToUnits: append([]int{}, m.To...)}
 }

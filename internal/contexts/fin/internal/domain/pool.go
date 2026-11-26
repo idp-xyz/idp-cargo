@@ -299,6 +299,25 @@ type Share struct {
 	// part. So a house that changed container shows on the line's shares: in the container at one apportionment, not at
 	// the next.
 	InUnit *bool
+	// LeftTo records a house that changed container (since V2.104): on a line of one container, a house that was in the
+	// container under the line's apportionment in force (whether it took part or finance left it out) and is not in it
+	// now has the containers it is loaded in now. Nil for every other share. (A pointer keeps a Share comparable.)
+	LeftTo *UnitMove
+}
+
+// UnitMove is where a house that left a line's container is loaded now: its containers, in unit order, empty when none.
+type UnitMove struct{ To []int }
+
+// unitsOf is the containers a house has packs loaded in, in unit order (empty, not nil, when none).
+func unitsOf(h HouseFacts) []int {
+	out := []int{}
+	for _, u := range h.Units {
+		if u.LoadedPacks > 0 {
+			out = append(out, u.UnitNo)
+		}
+	}
+	slices.Sort(out)
+	return out
 }
 
 // LineApportionment is one line's shares under an apportionment, at the line version it divided: the line's cost then
@@ -828,8 +847,16 @@ func (p *ConsolCostPool) apportionment(in ApportionInput, basis CostBasis, by st
 				}
 			}
 		}
+		wasIn := map[string]bool{} // on a line of one container, the houses in it under the apportionment in force (left out or not)
 		if unitLine {
 			lineStage = BasisActual // the container is sealed and every house in it is loaded
+			if _, held, ok := p.SharesOfLine(no); ok && p.inForceForItsUnit(no) {
+				for _, s := range held.Shares {
+					if s.InUnit != nil && *s.InUnit {
+						wasIn[s.ShipmentID] = true
+					}
+				}
+			}
 		}
 		if len(taking) == 0 {
 			// no house is live: the remainder is to be allocated on the line, with no share
@@ -884,6 +911,9 @@ func (p *ConsolCostPool) apportionment(in ApportionInput, basis CostBasis, by st
 				_, in := inUnit[no][h.ShipmentID]
 				share.InUnit = &in
 				takes = takes && in
+				if !in && wasIn[h.ShipmentID] {
+					share.LeftTo = &UnitMove{To: unitsOf(h)}
+				}
 			}
 			if takes {
 				share.Used, share.Quantity, share.Unit, share.Amount, share.Local = true, quantities[k], unit, amounts[k], locals[k]
@@ -902,7 +932,7 @@ func (p *ConsolCostPool) apportionment(in ApportionInput, basis CostBasis, by st
 func (p *ConsolCostPool) carriedLeftOut(lineNo int, houses []HouseFacts) (map[string]bool, error) {
 	out := map[string]bool{}
 	_, la, ok := p.SharesOfLine(lineNo)
-	if !ok {
+	if !ok || !p.inForceForItsUnit(lineNo) {
 		return out, nil
 	}
 	for _, s := range la.Shares {
@@ -921,7 +951,7 @@ func (p *ConsolCostPool) carriedLeftOut(lineNo int, houses []HouseFacts) (map[st
 func (p *ConsolCostPool) carriedLeftOutOfUnit(lineNo int, inUnit map[string]HouseFacts) (map[string]bool, error) {
 	out := map[string]bool{}
 	_, la, ok := p.SharesOfLine(lineNo)
-	if !ok {
+	if !ok || !p.inForceForItsUnit(lineNo) {
 		return out, nil
 	}
 	for _, s := range la.Shares {
@@ -930,6 +960,19 @@ func (p *ConsolCostPool) carriedLeftOutOfUnit(lineNo int, inUnit map[string]Hous
 		}
 	}
 	return out, nil
+}
+
+// inForceForItsUnit says whether the line's apportionment in force divided it for the container it belongs to now (the
+// whole consolidation alike): only then are the houses that apportionment left out carried to the next. A line moved to
+// another container, or to or from the whole consolidation, starts again with every house of where it belongs now:
+// houses not in the old container were not left out by finance (since V2.104).
+func (p *ConsolCostPool) inForceForItsUnit(lineNo int) bool {
+	line := p.state.Lines[lineNo-1]
+	_, la, ok := p.SharesOfLine(lineNo)
+	if !ok {
+		return true
+	}
+	return la.LineVersion >= 1 && la.LineVersion <= len(line.Versions) && line.Versions[la.LineVersion-1].LoadUnitNo == line.LoadUnitNo()
 }
 
 // unitText names where a line belongs: the whole consolidation, or one of its containers.
@@ -1451,6 +1494,10 @@ func (p *ConsolCostPool) lineRefusal(l PoolCostLine, basis CostBasis, houses []H
 	case la.Amount != cost || la.Local != local:
 		return pendingLineNotApportioned, fmt.Errorf("%w: cost line %d was apportioned at %d (%d local); its final cost is %d (%d local)", ErrPoolNotClosable, l.No, la.Amount,
 			la.Local, cost, local)
+	case (la.ToAllocate != 0 || la.ToAllocateLocal != 0) && l.LoadUnitNo() > 0:
+		return pendingToBeAllocated, fmt.Errorf("%w: cost line %d has %d to be allocated, as no house is loaded in container %d; attribute it as a loss or an exception cost "+
+			"of a house that left the container, or move the line to another container or to the whole consolidation (a revision), and apportion it again",
+			ErrPoolNotClosable, l.No, la.ToAllocate, l.LoadUnitNo())
 	case la.ToAllocate != 0 || la.ToAllocateLocal != 0:
 		return pendingToBeAllocated, fmt.Errorf("%w: cost line %d has %d to be allocated, as no house of the consolidation is live; add cargo and apportion the line again, or "+
 			"attribute it as a loss or an exception cost of a house that left, or cancel the consolidation and retain it", ErrPoolNotClosable, l.No, la.ToAllocate)

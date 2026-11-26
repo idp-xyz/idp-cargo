@@ -629,7 +629,15 @@ type PoolShare struct {
 	// that changed container shows as in it under one apportionment and out of it under the next. Quantity is what the
 	// house had in that container.
 	InUnit *bool
+	// LeftTo records a house that changed container: on a line of one container, a house that was in the container under
+	// the line's previous apportionment (whether it took part or was left out) and is not in it now has the containers it
+	// is loaded in now (empty when none). The apportionment's By and At say who divided the line and when. Nil for every other share.
+	LeftTo *PoolUnitMove
 }
+
+// PoolUnitMove is where a house that left a line's container is loaded now (since V2.104): its containers, in unit
+// order, empty when none.
+type PoolUnitMove struct{ ToUnits []int }
 
 // PoolAttribution is who bears one house's former share of one cost line under an apportionment (FIN V2.93): the loss
 // the house's own job bears and the consolidation's exception cost with the party responsible for it (empty when it is

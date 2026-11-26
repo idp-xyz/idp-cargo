@@ -132,6 +132,7 @@ type (
 		Amount     int64  `json:"amount_minor"`
 		Local      int64  `json:"local_minor"`
 		InUnit     *bool  `json:"in_unit,omitempty"` // since V2.104, on a line of one container
+		LeftTo     []int  `json:"left_to_units"`     // since V2.104: a house that changed container (null for every other share)
 	}
 	closureRow struct {
 		No              int        `json:"closure_no"`
@@ -156,6 +157,7 @@ type (
 		Amount          int64  `json:"amount_minor"`
 		Local           int64  `json:"local_minor"`
 		InUnit          *bool  `json:"in_unit"` // since V2.104, on a line of one container
+		LeftTo          []int  `json:"left_to_units"`
 	}
 )
 
@@ -235,7 +237,7 @@ func scanPool(row pgx.Row, tenant fin.TenantID) (*fin.ConsolCostPool, int64, err
 			}
 			for _, sh := range f.Shares {
 				la.Shares = append(la.Shares, fin.Share{No: sh.No, ShipmentID: sh.ShipmentID, JobID: sh.JobID, Used: sh.Used, Quantity: sh.Quantity, Unit: sh.Unit,
-					Amount: sh.Amount, Local: sh.Local, InUnit: sh.InUnit})
+					Amount: sh.Amount, Local: sh.Local, InUnit: sh.InUnit, LeftTo: moveOf(sh.LeftTo)})
 			}
 			preview.Lines = append(preview.Lines, la)
 		}
@@ -266,7 +268,7 @@ func scanPool(row pgx.Row, tenant fin.TenantID) (*fin.ConsolCostPool, int64, err
 		for i := range a.Lines {
 			if a.Lines[i].LineNo == s.LineNo {
 				a.Lines[i].Shares = append(a.Lines[i].Shares, fin.Share{No: s.No, ShipmentID: s.ShipmentID, JobID: s.JobID, Used: s.Used, Quantity: s.Quantity,
-					Unit: s.Unit, Amount: s.Amount, Local: s.Local, InUnit: s.InUnit})
+					Unit: s.Unit, Amount: s.Amount, Local: s.Local, InUnit: s.InUnit, LeftTo: moveOf(s.LeftTo)})
 				placed = true
 			}
 		}
@@ -492,7 +494,7 @@ func writePool(ctx context.Context, q bentopg.Executor, p *fin.ConsolCostPool) e
 			}
 			for _, sh := range la.Shares {
 				f.Shares = append(f.Shares, figureShare{No: sh.No, ShipmentID: sh.ShipmentID, JobID: sh.JobID, Used: sh.Used, Quantity: sh.Quantity, Unit: sh.Unit,
-					Amount: sh.Amount, Local: sh.Local, InUnit: sh.InUnit})
+					Amount: sh.Amount, Local: sh.Local, InUnit: sh.InUnit, LeftTo: unitsOfMove(sh.LeftTo)})
 			}
 			figures = append(figures, f)
 		}
@@ -536,8 +538,8 @@ func writePool(ctx context.Context, q bentopg.Executor, p *fin.ConsolCostPool) e
 			}
 			for _, sh := range la.Shares {
 				if err := exec(`INSERT INTO cargo_fin.pool_apportionment_share (tenant_id,pool_id,apportionment_no,line_no,share_no,shipment_id,job_id,
-                    used,quantity,unit,amount_minor,local_minor,in_unit) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`, a.No, la.LineNo, sh.No, sh.ShipmentID,
-					sh.JobID, sh.Used, sh.Quantity, orNull(sh.Unit), sh.Amount, sh.Local, sh.InUnit); err != nil {
+                    used,quantity,unit,amount_minor,local_minor,in_unit,left_to_units) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`, a.No, la.LineNo, sh.No,
+					sh.ShipmentID, sh.JobID, sh.Used, sh.Quantity, orNull(sh.Unit), sh.Amount, sh.Local, sh.InUnit, unitsArg(sh.LeftTo)); err != nil {
 					return err
 				}
 			}
@@ -682,4 +684,32 @@ func (s PoolStore) RevisionsOf(ctx context.Context, tenant fin.TenantID, pools [
 		out[id] = revision
 	}
 	return out, rows.Err()
+}
+
+// moveOf is a stored list of containers as the record of a house that changed container: nil for NULL.
+func moveOf(units []int) *fin.UnitMove {
+	if units == nil {
+		return nil
+	}
+	return &fin.UnitMove{To: append([]int{}, units...)}
+}
+
+// unitsOfMove is the record's containers as stored: nil (NULL) without a record, empty when the house is in none.
+func unitsOfMove(m *fin.UnitMove) []int {
+	if m == nil {
+		return nil
+	}
+	return append([]int{}, m.To...)
+}
+
+// unitsArg is the record's containers as the database's integer[]: NULL without a record, '{}' when the house is in none.
+func unitsArg(m *fin.UnitMove) any {
+	if m == nil {
+		return nil
+	}
+	out := make([]int32, len(m.To))
+	for i, u := range m.To {
+		out[i] = int32(u)
+	}
+	return out
 }

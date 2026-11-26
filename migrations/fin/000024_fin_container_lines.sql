@@ -6,14 +6,19 @@
 --     the whole consolidation, as every earlier row reads. Moving a line to another container is a revision.
 --   pool_apportionment_share.in_unit: on a line of one container, whether the house had packs loaded in that container at
 --     the basis the apportionment read; NULL on a line of the whole consolidation. A share used is in the container.
--- Two nullable columns without a default (no table is rewritten, no row changes) and their rules. Only the domain keeps
+--   pool_apportionment_share.left_to_units: the record of a house that changed container. On a line of one container, a
+--     house that was in the container under the line's apportionment in force and is not in it now has the containers it
+--     is loaded in now (empty when none); NULL on every other share.
+-- Three nullable columns without a default (no table is rewritten, no row changes) and their rules. Only the domain keeps
 -- that the container exists and is sealed (PHY's basis), and that in_unit and the quantities are what PHY answered.
 
 ALTER TABLE cargo_fin.pool_cost_version ADD COLUMN load_unit_no integer,
   ADD CONSTRAINT pool_cost_version_load_unit CHECK (load_unit_no IS NULL OR load_unit_no BETWEEN 1 AND 999);
 
-ALTER TABLE cargo_fin.pool_apportionment_share ADD COLUMN in_unit boolean,
-  ADD CONSTRAINT pool_apportionment_share_in_unit CHECK (in_unit IS NOT FALSE OR NOT used);
+ALTER TABLE cargo_fin.pool_apportionment_share ADD COLUMN in_unit boolean, ADD COLUMN left_to_units integer[],
+  ADD CONSTRAINT pool_apportionment_share_in_unit CHECK (in_unit IS NOT FALSE OR NOT used),
+  ADD CONSTRAINT pool_apportionment_share_left_to CHECK (left_to_units IS NULL OR (in_unit IS FALSE AND NOT used AND array_ndims(left_to_units) IS NOT DISTINCT FROM
+    (CASE WHEN cardinality(left_to_units) = 0 THEN NULL ELSE 1 END) AND 1 <= ALL (left_to_units) AND 999 >= ALL (left_to_units)));
 
 -- A version names a container only in a sea LCL pool (the forwarder's own containers; co-loads have none, which the
 -- domain refuses at the apportionment), and not on a line whose default method is CONTAINER_COUNT or TEU.

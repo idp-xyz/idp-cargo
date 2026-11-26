@@ -108,6 +108,10 @@ func TestLinesOfOneContainerOnPostgres(t *testing.T) {
 	a = u.apportionAll("apportion-4", 8, []int{1, 2})
 	u.checkUnitLine("unit 1 after the move", a, 1, unitShare{"A", 4, 5_000, true, true}, unitShare{"B", 0, 0, false, false}, unitShare{"C", 0, 0, false, false})
 	u.checkUnitLine("unit 2 after the move", a, 2, unitShare{"A", 0, 0, false, false}, unitShare{"B", 2, 1_600, true, true}, unitShare{"C", 3, 2_400, true, true})
+	// the record of the move is on SH-C's share of unit 1's line: it was there, it is in unit 2 now; FIN reads it back
+	if m := a.Lines[0].Shares[2].LeftTo; m == nil || len(m.ToUnits) != 1 || m.ToUnits[0] != 2 || a.Lines[0].Shares[0].LeftTo != nil || a.Lines[1].Shares[2].LeftTo != nil {
+		t.Fatalf("the record of SH-C's move: %+v / %+v", a.Lines[0].Shares, a.Lines[1].Shares)
+	}
 
 	// finance may instead attribute SH-C's former share of unit 1's line (the 1,000 it bore there) as its own loss
 	f.w.costBases["CONSOL-K"] = containerBasis(f, true)
@@ -197,12 +201,28 @@ INSERT INTO cargo_fin.pool_apportionment_share ` + columns + ` VALUES ($1,'P-K',
 	if state, constraint := sqlState(u.rawRun(whole)); state != "23514" || constraint != "pool_share_in_unit_of_line" {
 		t.Errorf("a share of a whole line that says: state %s constraint %s", state, constraint)
 	}
+	// the record of a move (left_to_units): only on a share not used and out of the container, with containers 1 to 999
+	withMove := func(aIn, bIn, bMove string) string {
+		sql := apportionment("PIECES", aIn, bIn, false)
+		sql = strings.ReplaceAll(sql, "amount_minor,local_minor,in_unit)", "amount_minor,local_minor,in_unit,left_to_units)")
+		sql = strings.Replace(sql, ",5000,5000,"+aIn+");", ",5000,5000,"+aIn+",NULL);", 1)
+		return strings.TrimSuffix(sql, ")") + "," + bMove + ")"
+	}
+	for name, tc := range map[string]struct{ sql, check string }{
+		"a record on a house in the container": {withMove("true", "true", "'{2}'"), "pool_apportionment_share_left_to"},
+		"a record naming container 1000":       {withMove("true", "false", "'{1000}'"), "pool_apportionment_share_left_to"},
+		"a record of two dimensions":           {withMove("true", "false", "'{{2}}'"), "pool_apportionment_share_left_to"},
+	} {
+		if state, constraint := sqlState(u.rawRun(tc.sql)); state != "23514" || constraint != tc.check {
+			t.Errorf("%s: state %s constraint %s, want 23514 %s", name, state, constraint, tc.check)
+		}
+	}
 	// the same apportionment written right is accepted and reads back
-	if err := u.rawRun(apportionment("PIECES", "true", "false", false)); err != nil {
+	if err := u.rawRun(withMove("true", "false", "'{}'")); err != nil {
 		t.Fatalf("written right: %v", err)
 	}
 	if a := u.ap.pool(u.pool).Apportionments[1]; a.Lines[0].Shares[0].InUnit == nil || !*a.Lines[0].Shares[0].InUnit || a.Lines[0].Shares[1].InUnit == nil ||
-		*a.Lines[0].Shares[1].InUnit {
+		*a.Lines[0].Shares[1].InUnit || a.Lines[0].Shares[0].LeftTo != nil || a.Lines[0].Shares[1].LeftTo == nil || len(a.Lines[0].Shares[1].LeftTo.ToUnits) != 0 {
 		t.Fatalf("reads back as %+v", a.Lines[0].Shares)
 	}
 }
