@@ -1189,6 +1189,11 @@ const (
 // GetCostReviewRequest reads a request by its id; the actor needs ReadProfit.
 type GetCostReviewRequest struct{ TenantID, ActorID, RequestID string }
 
+// GetJobLegalEntity answers the legal entity a job of the tenant was opened under (FIN V2.101), which the job keeps for
+// good, so that a caller whose view is limited to some legal entities can be told apart before anything about the job
+// is read. The actor needs ReadProfit; an unknown job yields ErrNotFound.
+type GetJobLegalEntity struct{ TenantID, ActorID, JobID string }
+
 // ListCostReviewRequests lists the tenant's requests in the order made, of one job when JobID is given, and of one
 // State (OPEN or RESOLVED) when given; Limit is 1 to 500 and After the id of the request the page follows.
 type ListCostReviewRequests struct {
@@ -1361,6 +1366,7 @@ type Queries interface {
 	GetFinSettingsChangeImpact(ctx context.Context, q GetFinSettingsChangeImpact) (FinSettingsChangeImpact, error)
 	ListJobProfits(ctx context.Context, q ListJobProfits) (JobProfitPage, error)
 	GetCostReviewRequest(ctx context.Context, q GetCostReviewRequest) (CostReviewRequest, error)
+	GetJobLegalEntity(ctx context.Context, q GetJobLegalEntity) (string, error)
 	ListCostReviewRequests(ctx context.Context, q ListCostReviewRequests) (CostReviewPage, error)
 	GetAfterTheFactReview(ctx context.Context, q GetAfterTheFactReview) (AfterTheFactPage, error)
 }
