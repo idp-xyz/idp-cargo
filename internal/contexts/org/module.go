@@ -172,7 +172,8 @@ func classify(err error) error {
 		errors.Is(err, domain.ErrInvalidChange), errors.Is(err, domain.ErrShortCodeInUse), errors.Is(err, domain.ErrEntryNotActive),
 		errors.Is(err, domain.ErrNothingChanged), errors.Is(err, domain.ErrPartyArchived),
 		errors.Is(err, domain.ErrInvalidIdentifier), errors.Is(err, domain.ErrIdentifierExists), errors.Is(err, domain.ErrInvalidConsent),
-		errors.Is(err, domain.ErrInvalidTransfer), errors.Is(err, domain.ErrTransferThreshold), errors.Is(err, domain.ErrTransferAssessment):
+		errors.Is(err, domain.ErrInvalidTransfer), errors.Is(err, domain.ErrTransferThreshold), errors.Is(err, domain.ErrTransferAssessment),
+		errors.Is(err, domain.ErrInvalidOnboarding):
 		kind = api.ErrRejected
 	default:
 		return err

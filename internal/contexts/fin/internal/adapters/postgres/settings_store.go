@@ -50,8 +50,10 @@ func (s SettingsStore) LockShared(ctx context.Context, tenant fin.TenantID) erro
 
 func readSettings(ctx context.Context, q bentopg.Querier, tenant fin.TenantID) (*settings.Ledger, error) {
 	rows, err := q.Query(ctx, `SELECT c.change_id,c.reason,c.proposed_by,c.proposed_at,c.effective_at,c.loosening,
-        a.approved_by,a.approved_at,a.version_no,a.in_force_at,a.auto, x.cancelled_by,x.cancelled_at,x.reason,x.kind,x.cancelled_role
+        a.approved_by,a.approved_at,a.version_no,a.in_force_at,a.auto,a.risk_acknowledgement,a.basis_onboarding_id, x.cancelled_by,x.cancelled_at,x.reason,x.kind,x.cancelled_role,
+        h.onboarding_id
       FROM cargo_fin.settings_change c
+      LEFT JOIN cargo_fin.settings_hold h ON h.tenant_id=c.tenant_id AND h.change_id=c.change_id
       LEFT JOIN cargo_fin.settings_approval a ON a.tenant_id=c.tenant_id AND a.change_id=c.change_id
       LEFT JOIN cargo_fin.settings_cancellation x ON x.tenant_id=c.tenant_id AND x.change_id=c.change_id
       WHERE c.tenant_id=$1 ORDER BY c.proposed_at, c.change_id`, string(tenant))
@@ -62,17 +64,26 @@ func readSettings(ctx context.Context, q bentopg.Querier, tenant fin.TenantID) (
 	var sets []settings.ChangeSet
 	for rows.Next() {
 		var c settings.ChangeSet
-		var approvedBy, cancelledBy, cancelReason, cancelKind, cancelRole *string
+		var approvedBy, acknowledgement, basis, cancelledBy, cancelReason, cancelKind, cancelRole, hold *string
 		var approvedAt, inForce, cancelledAt *time.Time
 		var version *int
 		var auto *bool
-		if err = rows.Scan(&c.ID, &c.Reason, &c.By, &c.At, &c.Effective, &c.Loosening, &approvedBy, &approvedAt, &version, &inForce, &auto,
-			&cancelledBy, &cancelledAt, &cancelReason, &cancelKind, &cancelRole); err != nil {
+		if err = rows.Scan(&c.ID, &c.Reason, &c.By, &c.At, &c.Effective, &c.Loosening, &approvedBy, &approvedAt, &version, &inForce, &auto, &acknowledgement, &basis,
+			&cancelledBy, &cancelledAt, &cancelReason, &cancelKind, &cancelRole, &hold); err != nil {
 			return nil, err
+		}
+		if hold != nil {
+			c.Hold = *hold
 		}
 		c.At, c.Effective = utc(c.At), utc(c.Effective)
 		if approvedBy != nil {
 			c.Approval = &settings.Approval{By: *approvedBy, At: utc(*approvedAt), Version: *version, InForce: utc(*inForce), Auto: *auto}
+			if acknowledgement != nil {
+				c.Approval.Acknowledgement = *acknowledgement
+			}
+			if basis != nil {
+				c.Approval.Basis = *basis
+			}
 		}
 		if cancelledBy != nil {
 			c.Cancellation = &settings.Cancellation{By: *cancelledBy, At: utc(*cancelledAt), Reason: *cancelReason, Refused: *cancelKind == "REFUSED", Role: *cancelRole}
@@ -151,6 +162,11 @@ func (s SettingsStore) InsertChange(ctx context.Context, tenant fin.TenantID, c 
 			return err
 		}
 	}
+	if c.Hold != "" {
+		if _, err = q.Exec(ctx, `INSERT INTO cargo_fin.settings_hold (tenant_id,change_id,onboarding_id) VALUES ($1,$2,$3)`, string(tenant), c.ID, c.Hold); err != nil {
+			return err
+		}
+	}
 	if c.Approval != nil {
 		return s.InsertApproval(ctx, tenant, c.ID, *c.Approval)
 	}
@@ -162,10 +178,14 @@ func (s SettingsStore) InsertApproval(ctx context.Context, tenant fin.TenantID, 
 	if err != nil {
 		return err
 	}
+	var acknowledgement, basis *string
+	if a.Acknowledgement != "" {
+		acknowledgement, basis = &a.Acknowledgement, &a.Basis
+	}
 	tag, err := q.Exec(ctx, `INSERT INTO cargo_fin.settings_approval (tenant_id,change_id,proposed_by,proposed_at,effective_at,loosening,approved_by,
-        approved_at,version_no,in_force_at,auto)
-      SELECT tenant_id,change_id,proposed_by,proposed_at,effective_at,loosening,$3,$4,$5,$6,$7 FROM cargo_fin.settings_change
-      WHERE tenant_id=$1 AND change_id=$2`, string(tenant), id, a.By, a.At, a.Version, a.InForce, a.Auto)
+        approved_at,version_no,in_force_at,auto,risk_acknowledgement,basis_onboarding_id)
+      SELECT tenant_id,change_id,proposed_by,proposed_at,effective_at,loosening,$3,$4,$5,$6,$7,$8,$9 FROM cargo_fin.settings_change
+      WHERE tenant_id=$1 AND change_id=$2`, string(tenant), id, a.By, a.At, a.Version, a.InForce, a.Auto, acknowledgement, basis)
 	if err == nil && tag.RowsAffected() != 1 {
 		return fmt.Errorf("%w: settings change set %s", bentorepo.ErrNotFound, id)
 	}
@@ -195,4 +215,143 @@ func (s SettingsStore) InsertCancellation(ctx context.Context, tenant fin.Tenant
 	_, err = q.Exec(ctx, `INSERT INTO cargo_fin.settings_cancellation (tenant_id,change_id,cancelled_by,cancelled_at,reason,kind,cancelled_role) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
 		string(tenant), id, c.By, c.At, c.Reason, kind, c.Role)
 	return clockSkew(err)
+}
+
+// Declarations lists the tenant's declarations of a single administrator, in the order recorded, in a query's snapshot.
+func (s SettingsStore) Declarations(ctx context.Context, tenant fin.TenantID) ([]settings.Declaration, error) {
+	q, err := s.DB.ReadExecutor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return readDeclarations(ctx, q, tenant)
+}
+
+// DeclarationsForWrite lists them in a write transaction, under the settings lock the command holds.
+func (s SettingsStore) DeclarationsForWrite(ctx context.Context, tenant fin.TenantID) ([]settings.Declaration, error) {
+	q, err := s.DB.RequireExecutor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return readDeclarations(ctx, q, tenant)
+}
+
+func readDeclarations(ctx context.Context, q bentopg.Querier, tenant fin.TenantID) ([]settings.Declaration, error) {
+	rows, err := q.Query(ctx, `SELECT onboarding_id,proposed_by,confirmed_by,administrator,declared_at FROM cargo_fin.single_administrator WHERE tenant_id=$1
+      ORDER BY declared_at, onboarding_id`, string(tenant))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []settings.Declaration
+	for rows.Next() {
+		var d settings.Declaration
+		if err = rows.Scan(&d.OnboardingID, &d.ProposedBy, &d.ConfirmedBy, &d.Administrator, &d.At); err != nil {
+			return nil, err
+		}
+		d.At = utc(d.At)
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+// InsertDeclaration records a declaration of a single administrator.
+func (s SettingsStore) InsertDeclaration(ctx context.Context, tenant fin.TenantID, d settings.Declaration) error {
+	q, err := s.DB.RequireExecutor(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = q.Exec(ctx, `INSERT INTO cargo_fin.single_administrator (tenant_id,onboarding_id,proposed_by,confirmed_by,administrator,declared_at) VALUES ($1,$2,$3,$4,$5,$6)`,
+		string(tenant), d.OnboardingID, d.ProposedBy, d.ConfirmedBy, d.Administrator, d.At)
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		if pgErr.ConstraintName == "single_administrator_time_once" { // two declarations of a tenant at one instant: the later retries
+			return fmt.Errorf("%w: a declaration of the tenant is at the same instant as this one's; the declarations of a tenant are in order of time, so send the same command again", bentorepo.ErrConflict)
+		}
+		return fmt.Errorf("%w: the declaration of onboarding %s", bentorepo.ErrAlreadyExists, d.OnboardingID)
+	}
+	return err
+}
+
+// WorkActors lists, for the entry times from (included) to to (excluded), each actor who submitted an apportionment of a
+// consolidation cost pool and how many, and how many of those state an attribution of their own (not one only carried
+// forward from an earlier apportionment): the person who confirmed it.
+func (s SettingsStore) WorkActors(ctx context.Context, tenant fin.TenantID, from, to time.Time) ([]app.ActorWork, error) {
+	q, err := s.DB.ReadExecutor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := q.Query(ctx, `SELECT a.made_by, count(*),
+        count(*) FILTER (WHERE EXISTS (SELECT 1 FROM cargo_fin.pool_apportionment_attribution t WHERE t.tenant_id=a.tenant_id AND t.pool_id=a.pool_id
+          AND t.apportionment_no=a.apportionment_no AND NOT t.carried))
+      FROM cargo_fin.pool_apportionment a WHERE a.tenant_id=$1 AND a.entered_at >= $2 AND a.entered_at < $3 GROUP BY a.made_by ORDER BY a.made_by`,
+		string(tenant), from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []app.ActorWork
+	for rows.Next() {
+		var w app.ActorWork
+		if err = rows.Scan(&w.Actor, &w.Submitted, &w.Confirmed); err != nil {
+			return nil, err
+		}
+		out = append(out, w)
+	}
+	return out, rows.Err()
+}
+
+// Reviews lists the reviews of self-approved change sets, in the order of their times, in a query's snapshot.
+func (s SettingsStore) Reviews(ctx context.Context, tenant fin.TenantID) ([]settings.SelfReview, error) {
+	q, err := s.DB.ReadExecutor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return readReviews(ctx, q, tenant)
+}
+
+// ReviewsForWrite lists them in a write transaction, under the settings lock the command holds.
+func (s SettingsStore) ReviewsForWrite(ctx context.Context, tenant fin.TenantID) ([]settings.SelfReview, error) {
+	q, err := s.DB.RequireExecutor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return readReviews(ctx, q, tenant)
+}
+
+func readReviews(ctx context.Context, q bentopg.Querier, tenant fin.TenantID) ([]settings.SelfReview, error) {
+	rows, err := q.Query(ctx, `SELECT change_id,reviewed_by,reviewed_at,conclusion,coalesce(note,'') FROM cargo_fin.settings_self_approval_review WHERE tenant_id=$1
+      ORDER BY reviewed_at, change_id`, string(tenant))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []settings.SelfReview
+	for rows.Next() {
+		var r settings.SelfReview
+		if err = rows.Scan(&r.ChangeID, &r.By, &r.At, &r.Conclusion, &r.Note); err != nil {
+			return nil, err
+		}
+		r.At = utc(r.At)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// InsertReview records the review of a self-approved change set.
+func (s SettingsStore) InsertReview(ctx context.Context, tenant fin.TenantID, r settings.SelfReview, approvedBy string) error {
+	q, err := s.DB.RequireExecutor(ctx)
+	if err != nil {
+		return err
+	}
+	var note *string
+	if r.Note != "" {
+		note = &r.Note
+	}
+	_, err = q.Exec(ctx, `INSERT INTO cargo_fin.settings_self_approval_review (tenant_id,change_id,approved_by,reviewed_by,reviewed_at,conclusion,note) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+		string(tenant), r.ChangeID, approvedBy, r.By, r.At, r.Conclusion, note)
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		return fmt.Errorf("%w: the review of change set %s", bentorepo.ErrAlreadyExists, r.ChangeID)
+	}
+	return err
 }

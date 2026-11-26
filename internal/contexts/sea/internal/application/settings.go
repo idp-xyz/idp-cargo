@@ -33,6 +33,16 @@ type SettingsStore interface {
 	InsertChange(ctx context.Context, tenant sea.TenantID, c settings.ChangeSet) error
 	InsertApproval(ctx context.Context, tenant sea.TenantID, id string, a settings.Approval) error
 	InsertCancellation(ctx context.Context, tenant sea.TenantID, id string, c settings.Cancellation) error
+	// Declarations lists the declarations of a single administrator in a query's snapshot, DeclarationsForWrite in a write
+	// transaction (under the settings lock); InsertDeclaration records one.
+	Declarations(ctx context.Context, tenant sea.TenantID) ([]settings.Declaration, error)
+	DeclarationsForWrite(ctx context.Context, tenant sea.TenantID) ([]settings.Declaration, error)
+	InsertDeclaration(ctx context.Context, tenant sea.TenantID, d settings.Declaration) error
+	// Reviews lists the reviews of self-approved change sets in a query's snapshot, ReviewsForWrite in a write transaction (under the
+	// settings lock); InsertReview records one, with the approver it repeats.
+	Reviews(ctx context.Context, tenant sea.TenantID) ([]settings.SelfReview, error)
+	ReviewsForWrite(ctx context.Context, tenant sea.TenantID) ([]settings.SelfReview, error)
+	InsertReview(ctx context.Context, tenant sea.TenantID, r settings.SelfReview, approvedBy string) error
 	// KnowsLegalEntity says whether SEA knows the legal entity: it has an HBL series or a movement.
 	KnowsLegalEntity(ctx context.Context, tenant sea.TenantID, legalEntity string) (bool, error)
 	// LegalEntities lists the legal entities SEA knows, in the order of their IDs.
@@ -74,7 +84,11 @@ func (d Deps) writeSettings(ctx context.Context, c Command, hash string, mutate 
 // legal entity an entry names must be one SEA knows. The receipt's revision is the records the change set has: its
 // proposal, and its approval when it only tightens (an approval and a cancellation come later). The notice names the
 // legal entities whose own values stay looser than what the company's entries of the change set now say.
-func (d Deps) ProposeSettings(ctx context.Context, c Command, entries []settings.Entry, reason string, effective time.Time) (Receipt, error) {
+//
+// A change set proposed with hold, the onboarding it is held for (V2.102, batch F), is not approved when it is proposed, not even
+// when it only tightens: the owner who confirms the onboarding approves it, and while it waits no other change set is proposed
+// or approved (the ledger refuses it, and so does the database).
+func (d Deps) ProposeSettings(ctx context.Context, c Command, entries []settings.Entry, reason string, effective time.Time, hold string) (Receipt, error) {
 	if d.Settings == nil {
 		return Receipt{}, ErrMissingDependency
 	}
@@ -100,7 +114,7 @@ func (d Deps) ProposeSettings(ctx context.Context, c Command, entries []settings
 			}
 		}
 		cat := SeaSettingsCatalogue()
-		cs, err := ledger.Propose(cat, settings.Proposal{ID: c.Subject, Entries: entries, Reason: reason, By: c.Scope.ActorID, At: now, Effective: effective})
+		cs, err := ledger.Propose(cat, settings.Proposal{ID: c.Subject, Entries: entries, Reason: reason, By: c.Scope.ActorID, At: now, Effective: effective, Hold: hold})
 		if err != nil {
 			return Receipt{}, nil, err
 		}
@@ -193,6 +207,13 @@ func (d Deps) settingsChange(ctx context.Context, c Command) (*settings.Ledger, 
 
 // ApproveSettings approves a change set that waits for a second person: the approver is not its proposer.
 func (d Deps) ApproveSettings(ctx context.Context, c Command) (Receipt, error) {
+	return d.ApproveSettingsAs(ctx, c, "")
+}
+
+// ApproveSettingsAs is ApproveSettings with the single administrator's way (V2.102): the proposer of a loosening
+// approves it themselves, when the tenant declared a single administrator (read here, under the settings lock, from
+// SEA's own records) and the approval carries a risk acknowledgement.
+func (d Deps) ApproveSettingsAs(ctx context.Context, c Command, acknowledgement string) (Receipt, error) {
 	if d.Settings == nil {
 		return Receipt{}, ErrMissingDependency
 	}
@@ -201,11 +222,26 @@ func (d Deps) ApproveSettings(ctx context.Context, c Command) (Receipt, error) {
 		return stored, err
 	}
 	return d.writeSettings(ctx, c, hash, func(txCtx context.Context, now time.Time) (Receipt, aggregate, error) {
-		ledger, _, err := d.settingsChange(txCtx, c)
+		ledger, cs, err := d.settingsChange(txCtx, c)
 		if err != nil {
 			return Receipt{}, nil, err
 		}
-		a, err := ledger.Approve(SeaSettingsCatalogue(), c.Subject, c.Scope.ActorID, now)
+		// a change set held for an onboarding is approved only by the platform's onboarding, in the owner's own name
+		if cs.Hold != "" {
+			if err = d.Auth.RequireSeaAction(txCtx, c.Scope, ActionApproveHeld, c.Subject); err != nil {
+				return Receipt{}, nil, fmt.Errorf("%w: %v; change set %s is held for onboarding %s, which the customer's owner confirms (ConfirmOnboarding): confirm it, or withdraw it (WithdrawOnboarding)",
+					ErrUnauthorized, err, c.Subject, cs.Hold)
+			}
+		}
+		declared, err := d.Settings.DeclarationsForWrite(txCtx, c.Scope.TenantID)
+		if err != nil {
+			return Receipt{}, nil, err
+		}
+		own := settings.Own{Administrators: administratorsOf(declared, now), Acknowledgement: acknowledgement}
+		if in, ok := settings.DeclarationInForce(declared, now); ok {
+			own.Basis = in.OnboardingID
+		}
+		a, err := ledger.ApproveAs(SeaSettingsCatalogue(), c.Subject, c.Scope.ActorID, now, own)
 		if err != nil {
 			return Receipt{}, nil, err
 		}
@@ -214,6 +250,19 @@ func (d Deps) ApproveSettings(ctx context.Context, c Command) (Receipt, error) {
 		}
 		return Receipt{SubjectID: c.Subject, NewRevision: 2, SettingsVersion: a.Version}, SettingsApproved(c.Scope.TenantID, c.Subject, a), nil
 	})
+}
+
+// ActionApproveHeld is the action of approving a change set held for an onboarding, which only the platform's onboarding takes, in
+// the owner's own name (api.ActionApproveHeldSettings).
+const ActionApproveHeld Action = "ApproveHeldSettings"
+
+// administratorsOf is the tenant's single administrator in force at the time of the approval, one name or none: the one
+// the latest declaration at or before the time names.
+func administratorsOf(declared []settings.Declaration, at time.Time) []string {
+	if administrator, ok := settings.AdministratorInForce(declared, at); ok {
+		return []string{administrator}
+	}
+	return nil
 }
 
 // CancelSettings cancels a change set that is not in force yet, with a reason.
@@ -491,4 +540,148 @@ func (r Reads) openConflicts(txCtx context.Context, tenant sea.TenantID, legalEn
 		}
 	}
 	return out, nil
+}
+
+// DeclareSingleAdministrator records that the tenant declared a single administrator in an onboarding, proposed by one
+// person and confirmed by another (the command's actor, the customer's owner), who named the administrator (not the
+// consultant who proposed it), at SEA's clock under the settings lock.
+func (d Deps) DeclareSingleAdministrator(ctx context.Context, c Command, proposedBy, administrator string) (Receipt, error) {
+	if d.Settings == nil {
+		return Receipt{}, ErrMissingDependency
+	}
+	hash, _, stored, replayed, err := d.begin(ctx, c)
+	if err != nil || replayed {
+		return stored, err
+	}
+	return d.writeSettings(ctx, c, hash, func(txCtx context.Context, now time.Time) (Receipt, aggregate, error) {
+		if strings.TrimSpace(c.Subject) == "" || strings.TrimSpace(proposedBy) == "" || proposedBy == c.Scope.ActorID ||
+			strings.TrimSpace(administrator) == "" || administrator == proposedBy {
+			return Receipt{}, nil, fmt.Errorf("%w: a declaration names its onboarding, two different people, the consultant who proposed it and the owner who "+
+				"confirmed it, and the administrator, who is not the consultant; the platform's onboarding makes it, so ask its owners if you see this", sea.ErrInvalidChange)
+		}
+		// a tenant has one single administrator in force, the one its latest declaration names, so its declarations are in a total
+		// order: each has its own time, later than every earlier one (the schema's unique key on the tenant and the time)
+		now = now.Truncate(time.Microsecond)
+		earlier, err := d.Settings.DeclarationsForWrite(txCtx, c.Scope.TenantID)
+		if err != nil {
+			return Receipt{}, nil, err
+		}
+		for _, e := range earlier {
+			if !now.After(e.At) {
+				return Receipt{}, nil, fmt.Errorf("%w: the tenant's declaration of onboarding %s is at %s, not before this one's time %s, and the declarations of a tenant are in order of time "+
+					"(the latest names the single administrator); send the same command again", sea.ErrInvalidChange, e.OnboardingID, e.At.UTC().Format(time.RFC3339Nano), now.UTC().Format(time.RFC3339Nano))
+			}
+		}
+		d1 := settings.Declaration{OnboardingID: c.Subject, ProposedBy: proposedBy, ConfirmedBy: c.Scope.ActorID, Administrator: administrator, At: now}
+		if err := d.Settings.InsertDeclaration(txCtx, c.Scope.TenantID, d1); err != nil {
+			return Receipt{}, nil, err
+		}
+		return Receipt{SubjectID: c.Subject, NewRevision: 1}, SingleAdministratorDeclared(c.Scope.TenantID, c.Subject, now), nil
+	})
+}
+
+// ExceptionReportRead is SEA's part of the exception report, read in one snapshot.
+type ExceptionReportRead struct {
+	At           time.Time
+	Report       settings.Report
+	Declarations []settings.Declaration
+}
+
+// ExceptionReport reads the tenant's ledger and declarations in one snapshot and answers the report for the period
+// from (included) to to (excluded), the exceptions and the items looser than the standard profile as of now.
+func (r Reads) ExceptionReport(ctx context.Context, tenant sea.TenantID, from, to time.Time) (ExceptionReportRead, error) {
+	if r.Settings == nil || r.Clock == nil {
+		return ExceptionReportRead{}, ErrMissingDependency
+	}
+	if tenant == "" || from.IsZero() || to.IsZero() || !to.After(from) {
+		return ExceptionReportRead{}, fmt.Errorf("%w: the report asks for a tenant and a period, from before to", ErrInvalidQuery)
+	}
+	out := ExceptionReportRead{At: r.Clock.Now().UTC().Truncate(time.Microsecond)}
+	err := r.Tx.WithinTransaction(ctx, func(txCtx context.Context) error {
+		ledger, err := r.Settings.Read(txCtx, tenant)
+		if err != nil {
+			return err
+		}
+		out.Report = ledger.ExceptionReport(SeaSettingsCatalogue(), out.At, from.UTC(), to.UTC())
+		out.Declarations, err = r.Settings.Declarations(txCtx, tenant)
+		return err
+	})
+	return out, err
+}
+
+// ReviewSelfApproval records the review of a change set that its own proposer approved as the single administrator: by someone other
+// than the approver, once, with a conclusion and a note, at SEA's clock under the settings lock. Subject is the change set.
+func (d Deps) ReviewSelfApproval(ctx context.Context, c Command, conclusion, note string) (Receipt, error) {
+	if d.Settings == nil {
+		return Receipt{}, ErrMissingDependency
+	}
+	hash, _, stored, replayed, err := d.begin(ctx, c)
+	if err != nil || replayed {
+		return stored, err
+	}
+	return d.writeSettings(ctx, c, hash, func(txCtx context.Context, now time.Time) (Receipt, aggregate, error) {
+		_, cs, err := d.settingsChange(txCtx, c)
+		if err != nil {
+			return Receipt{}, nil, err
+		}
+		reviews, err := d.Settings.ReviewsForWrite(txCtx, c.Scope.TenantID)
+		if err != nil {
+			return Receipt{}, nil, err
+		}
+		var existing *settings.SelfReview
+		for i := range reviews {
+			if reviews[i].ChangeID == c.Subject {
+				existing = &reviews[i]
+			}
+		}
+		now = now.Truncate(time.Microsecond)
+		if cs.Approval != nil && now.Before(cs.Approval.At) { // SEA's clock is behind the approval it reviews
+			now = cs.Approval.At
+		}
+		r, err := settings.ReviewSelfApproval(cs, existing, c.Scope.ActorID, conclusion, note, now)
+		if err != nil {
+			return Receipt{}, nil, err
+		}
+		if err = d.Settings.InsertReview(txCtx, c.Scope.TenantID, r, cs.Approval.By); err != nil {
+			return Receipt{}, nil, err
+		}
+		return Receipt{SubjectID: c.Subject, NewRevision: 1}, SelfApprovalReviewed(c.Scope.TenantID, c.Subject, r.At), nil
+	})
+}
+
+// SelfApprovalReviews is the self-approved change sets approved in a period with no review, and those with their review, as of one snapshot.
+type SelfApprovalReviews struct {
+	At           time.Time
+	Pending      []settings.SelfApprovedLine
+	Reviewed     []settings.ReviewedLine
+	Declarations []settings.Declaration
+}
+
+// SelfApprovalReviews reads, in one snapshot, the self-approved change sets approved from from (included) to to (excluded), divided into
+// those with no review and those reviewed, with their reviewers and conclusions.
+func (r Reads) SelfApprovalReviews(ctx context.Context, tenant sea.TenantID, from, to time.Time) (SelfApprovalReviews, error) {
+	if r.Settings == nil || r.Clock == nil {
+		return SelfApprovalReviews{}, ErrMissingDependency
+	}
+	if tenant == "" || from.IsZero() || to.IsZero() || !to.After(from) {
+		return SelfApprovalReviews{}, fmt.Errorf("%w: the query asks for a tenant and a period, from before to", ErrInvalidQuery)
+	}
+	out := SelfApprovalReviews{At: r.Clock.Now().UTC().Truncate(time.Microsecond)}
+	err := r.Tx.WithinTransaction(ctx, func(txCtx context.Context) error {
+		ledger, err := r.Settings.Read(txCtx, tenant)
+		if err != nil {
+			return err
+		}
+		reviews, err := r.Settings.Reviews(txCtx, tenant)
+		if err != nil {
+			return err
+		}
+		if out.Declarations, err = r.Settings.Declarations(txCtx, tenant); err != nil {
+			return err
+		}
+		report := ledger.ExceptionReport(SeaSettingsCatalogue(), out.At, from.UTC(), to.UTC())
+		out.Pending, out.Reviewed = settings.SplitReviews(report.SelfApproved, reviews)
+		return nil
+	})
+	return out, err
 }

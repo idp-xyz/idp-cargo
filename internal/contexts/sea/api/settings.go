@@ -27,25 +27,53 @@ type SeaSettingEntry struct {
 // and the actor needs the permission ConfigureSettings, granted by name only. Receipt.NewRevision is the records of the
 // change set: 1, or 2 when it was approved on the spot. Receipt.Notice names the legal entities that stay looser than
 // the company's new value.
+//
+// OnboardingID (V2.102, batch F) holds the change set for that onboarding: it is not approved when it is proposed, not even when it
+// only tightens, its approver is never its proposer, and until it is approved or cancelled no other change set of the tenant is
+// proposed or approved (SETTINGS_ONBOARDING_WAITING: confirm the onboarding, or withdraw it). It is the platform's onboarding that
+// holds one, in the consultant's own name: the action is ActionProposeHeldSettings, granted only with the platform's mark besides
+// ConfigureSettings by name, so that no one else can freeze a tenant's settings with a made-up onboarding.
 type ProposeSeaSettingsChange struct {
-	CommandID   string
-	TenantID    string
-	ActorID     string
-	ChangeID    string
-	Entries     []SeaSettingEntry
-	Reason      string
-	EffectiveAt time.Time
+	CommandID    string
+	TenantID     string
+	ActorID      string
+	ChangeID     string
+	Entries      []SeaSettingEntry
+	Reason       string
+	EffectiveAt  time.Time
+	OnboardingID string `json:",omitempty"`
 }
 
 // ApproveSeaSettingsChange approves a change set that waits for a second person. The approver is not the proposer
 // (SETTINGS_SAME_ACTOR: have another approver approve it) and needs the permission ApproveSettings, granted by name
 // only. The change set takes effect at its effective time, or at the approval when that is later.
 // Receipt.SettingsVersion is the version it made.
+//
+// A tenant whose onboarding declared a single administrator (DeclareSeaSingleAdministrator) may have a loosening
+// approved by its own proposer, but only with a written risk acknowledgement of 1 to 2000 characters in
+// RiskAcknowledgement (SETTINGS_ACKNOWLEDGEMENT: give it); the acknowledgement is stored with the approval and listed in
+// the exception report. Another approver gives none, and without the declaration the proposer is refused as before.
 type ApproveSeaSettingsChange struct {
-	CommandID string
-	TenantID  string
-	ActorID   string
-	ChangeID  string
+	CommandID           string
+	TenantID            string
+	ActorID             string
+	ChangeID            string
+	RiskAcknowledgement string `json:",omitempty"`
+}
+
+// DeclareSeaSingleAdministrator records that the tenant declared a single administrator in the onboarding OnboardingID,
+// proposed by ProposedBy and confirmed by ActorID, the customer's owner (two different people), who named AdministratorID
+// as the one administrator (not the consultant ProposedBy). Only that administrator may approve their own loosening. It is the platform's
+// onboarding that calls it, once the owner has confirmed; it needs the permission DeclareSingleAdministrator, granted by
+// name only and not by ConfigureSettings, so that a configurer alone cannot make it. It is recorded once for each
+// onboarding, never withdrawn, and idempotent by command id. Receipt.ChangeID is the onboarding.
+type DeclareSeaSingleAdministrator struct {
+	CommandID       string
+	TenantID        string
+	ActorID         string
+	OnboardingID    string
+	ProposedBy      string
+	AdministratorID string
 }
 
 // RefuseSeaSettingsChange is an approver's refusal of a change set that waits for approval, with a reason: it is
@@ -72,12 +100,29 @@ type CancelSeaSettingsChange struct {
 	Reason    string
 }
 
+// ReviewSeaSelfApprovedSettingsChange records the review of a change set that its own proposer approved as the tenant's single
+// administrator (V2.102, batch F), one by one: Conclusion is ACCEPTED or NOT_ACCEPTED, and a NOT_ACCEPTED has a Note (1 to 2000
+// characters; given for ACCEPTED too, it has the same length). The reviewer is never the person who approved it, needs the
+// permission ReviewSettingsExceptions, granted by name only, and reviews a change set once: a review is immutable and replayed by its
+// command id. A NOT_ACCEPTED changes no setting: undoing the change is a normal change set (ProposeSeaSettingsChange). Receipt.SubjectID
+// is the change set.
+type ReviewSeaSelfApprovedSettingsChange struct {
+	CommandID  string
+	TenantID   string
+	ActorID    string
+	ChangeID   string
+	Conclusion string
+	Note       string `json:",omitempty"`
+}
+
 // SettingsCommands is SEA's command entry point for the settings.
 type SettingsCommands interface {
 	ProposeSeaSettingsChange(ctx context.Context, cmd ProposeSeaSettingsChange) (Receipt, error)
 	ApproveSeaSettingsChange(ctx context.Context, cmd ApproveSeaSettingsChange) (Receipt, error)
 	CancelSeaSettingsChange(ctx context.Context, cmd CancelSeaSettingsChange) (Receipt, error)
 	RefuseSeaSettingsChange(ctx context.Context, cmd RefuseSeaSettingsChange) (Receipt, error)
+	DeclareSeaSingleAdministrator(ctx context.Context, cmd DeclareSeaSingleAdministrator) (Receipt, error)
+	ReviewSeaSelfApprovedSettingsChange(ctx context.Context, cmd ReviewSeaSelfApprovedSettingsChange) (Receipt, error)
 }
 
 // Actions of the settings, and the permission the release of a carrier conflict needs under S1 SUPERVISOR_ONLY. The
@@ -89,6 +134,16 @@ const (
 	ActionConfigureSettings         = "ConfigureSettings"
 	ActionApproveSettings           = "ApproveSettings"
 	ActionSuperviseCarrierConflicts = "SuperviseCarrierConflicts"
+	// ActionDeclareSingleAdministrator (V2.102) is granted by name only too; the platform's onboarding holds it.
+	ActionDeclareSingleAdministrator = "DeclareSingleAdministrator"
+	// ActionProposeHeldSettings and ActionApproveHeldSettings (V2.102, batch F) are the platform's onboarding's too: it proposes a change set held
+	// for an onboarding in the consultant's own name, and approves it in the owner's own name. Each needs the platform's mark, besides
+	// ConfigureSettings (proposing) or ApproveSettings (approving) by name, which no token carries.
+	ActionProposeHeldSettings = "ProposeHeldSettings"
+	ActionApproveHeldSettings = "ApproveHeldSettings"
+	// ActionReviewSettingsExceptions (V2.102, batch F) reviews a single administrator's self-approval, and reads the reviews and what still
+	// waits for one. It is granted by name only: "sea:*" and "*" do not include it.
+	ActionReviewSettingsExceptions = "ReviewSettingsExceptions"
 )
 
 // Settings events have the change set as subject; an approval carries the settings version it made as SettingsVersion.
@@ -97,6 +152,10 @@ const (
 	SeaSettingsChangeApproved  = "SeaSettingsChangeApproved.v1"
 	SeaSettingsChangeCancelled = "SeaSettingsChangeCancelled.v1"
 	SeaSettingsChangeRefused   = "SeaSettingsChangeRefused.v1"
+	// SeaSingleAdministratorDeclared has the onboarding as subject.
+	SeaSingleAdministratorDeclared = "SeaSingleAdministratorDeclared.v1"
+	// SeaSelfApprovalReviewed has the change set whose self-approval was reviewed as subject.
+	SeaSelfApprovalReviewed = "SeaSelfApprovalReviewed.v1"
 )
 
 // The item of SEA's catalogue and its values, from strict to loose. S1 is set at the company and at a legal entity (the
@@ -167,23 +226,29 @@ const (
 // approved it, the version it made, when it is or was in force, and who cancelled it, why and in which role
 // (CONFIGURER or APPROVER).
 type SeaSettingsChange struct {
-	ChangeID      string
-	Status        string
-	Reason        string
-	Loosening     bool
-	ProposedBy    string
-	ProposedAt    time.Time
-	EffectiveAt   time.Time
-	Entries       []SeaSettingEntryView
-	ApprovedBy    string
-	ApprovedAt    time.Time
-	Version       int
-	InForceAt     time.Time
-	AutoApproved  bool
-	CancelledBy   string
-	CancelledAt   time.Time
-	CancelReason  string
-	CancelledRole string
+	ChangeID     string
+	Status       string
+	Reason       string
+	Loosening    bool
+	ProposedBy   string
+	ProposedAt   time.Time
+	EffectiveAt  time.Time
+	Entries      []SeaSettingEntryView
+	ApprovedBy   string
+	ApprovedAt   time.Time
+	Version      int
+	InForceAt    time.Time
+	AutoApproved bool
+	// RiskAcknowledgement is the written acknowledgement of a single administrator who approved their own loosening, and
+	// BasisOnboardingID the onboarding of the declaration of the single administrator that approval relies on (V2.102, batch F).
+	RiskAcknowledgement string
+	BasisOnboardingID   string
+	// HeldForOnboarding is the onboarding the change set is held for, empty for an ordinary change set (V2.102, batch F).
+	HeldForOnboarding string
+	CancelledBy       string
+	CancelledAt       time.Time
+	CancelReason      string
+	CancelledRole     string
 }
 
 // GetSeaSettingsCatalogue answers the catalogue of SEA's settings.
@@ -210,8 +275,10 @@ type SeaSettingItem struct {
 
 // SeaSettingsCatalogue is the catalogue, and the same as a Markdown table (for the manual).
 type SeaSettingsCatalogue struct {
-	Items []SeaSettingItem
-	Table string
+	// Version names the catalogue's content (its items, their values in order and defaults, scopes and controls).
+	Version string
+	Items   []SeaSettingItem
+	Table   string
 }
 
 // GetSeaSettingsChangeImpact answers what a change of SEA's settings would change before it takes effect, and changes
@@ -259,10 +326,107 @@ type SeaSettingsChangeImpact struct {
 	Entities    []SeaImpactEntity
 }
 
+// GetSeaExceptionReport is SEA's part of the exception report of a tenant for the period From (included) to To
+// (excluded): the approved legal-entity exceptions looser than the company and the items in force now looser than the
+// standard profile, with who proposed and who approved each, the loosenings that a single administrator approved
+// themselves with their acknowledgements and the declarations, and the actors who proposed or approved a change set in
+// the period. Read-only; the actor needs the permission ApproveSettings, granted by name only.
+type GetSeaExceptionReport struct {
+	TenantID string
+	ActorID  string
+	From     time.Time
+	To       time.Time
+}
+
+// SeaExceptionLine is an entry of a scope looser than the company's value (Exception) or than the standard profile's.
+type SeaExceptionLine struct {
+	ScopeKind  string
+	ScopeID    string
+	Key        string
+	Value      string
+	ThanValue  string // the company's value for an exception, the standard profile's for a looser item
+	ChangeID   string
+	ProposedBy string
+	ApprovedBy string
+}
+
+// SeaSelfApproval is a loosening that its own proposer approved as the single administrator, with the declaration it relies on (its
+// onboarding, the administrator it names and when it was declared: V2.102, batch F).
+type SeaSelfApproval struct {
+	ChangeID           string
+	ApprovedBy         string
+	ApprovedAt         time.Time
+	Acknowledgement    string
+	BasisOnboardingID  string
+	BasisAdministrator string
+	BasisDeclaredAt    time.Time
+	Entries            []SeaSettingEntryView
+}
+
+// SeaSettingsChanger is an actor who proposed or approved change sets in the period.
+type SeaSettingsChanger struct {
+	ActorID  string
+	Proposed int
+	Approved int
+}
+
+// SeaSingleAdministratorDeclaration is a declaration of a single administrator.
+type SeaSingleAdministratorDeclaration struct {
+	OnboardingID    string
+	ProposedBy      string
+	ConfirmedBy     string
+	AdministratorID string
+	DeclaredAt      time.Time
+}
+
+// SeaExceptionReport is SEA's part of the exception report.
+type SeaExceptionReport struct {
+	TenantID           string
+	From               time.Time
+	To                 time.Time
+	AsOf               time.Time
+	Exceptions         []SeaExceptionLine
+	LooserThanStandard []SeaExceptionLine
+	SelfApproved       []SeaSelfApproval
+	Declarations       []SeaSingleAdministratorDeclaration
+	Changers           []SeaSettingsChanger
+}
+
 // SettingsQueries is SEA's read side for the settings.
 type SettingsQueries interface {
+	GetSeaExceptionReport(ctx context.Context, q GetSeaExceptionReport) (SeaExceptionReport, error)
 	GetSeaSettings(ctx context.Context, q GetSeaSettings) (SeaSettings, error)
 	ListSeaSettingsChanges(ctx context.Context, q ListSeaSettingsChanges) ([]SeaSettingsChange, error)
 	GetSeaSettingsCatalogue(ctx context.Context, q GetSeaSettingsCatalogue) (SeaSettingsCatalogue, error)
 	GetSeaSettingsChangeImpact(ctx context.Context, q GetSeaSettingsChangeImpact) (SeaSettingsChangeImpact, error)
+	ListSeaSelfApprovalReviews(ctx context.Context, q ListSeaSelfApprovalReviews) (SeaSelfApprovalReviews, error)
+}
+
+// ListSeaSelfApprovalReviews answers, for a period of approvals (From included, To excluded), the self-approved change sets that no
+// one has reviewed and the reviewed ones with their reviewer, conclusion and note (SEA V2.102, batch F). It is read-only. The actor
+// needs ReviewSettingsExceptions, granted by name only.
+type ListSeaSelfApprovalReviews struct {
+	TenantID string
+	ActorID  string
+	From     time.Time
+	To       time.Time
+}
+
+// SeaSelfApprovalReview is a self-approved change set with its review.
+type SeaSelfApprovalReview struct {
+	SeaSelfApproval
+	ReviewedBy string
+	ReviewedAt time.Time
+	Conclusion string
+	Note       string
+}
+
+// SeaSelfApprovalReviews is the self-approved change sets of a period: Pending have no review.
+type SeaSelfApprovalReviews struct {
+	TenantID string
+	From     time.Time
+	To       time.Time
+	AsOf     time.Time
+	Pending  []SeaSelfApproval
+	Reviewed []SeaSelfApprovalReview
 }

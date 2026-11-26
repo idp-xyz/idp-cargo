@@ -397,6 +397,26 @@ type SettingsStore interface {
 	InsertChange(ctx context.Context, tenant fin.TenantID, c settings.ChangeSet) error
 	InsertApproval(ctx context.Context, tenant fin.TenantID, id string, a settings.Approval) error
 	InsertCancellation(ctx context.Context, tenant fin.TenantID, id string, c settings.Cancellation) error
+	// Declarations lists the declarations of a single administrator in a query's snapshot, DeclarationsForWrite in a write
+	// transaction (under the settings lock); InsertDeclaration records one.
+	Declarations(ctx context.Context, tenant fin.TenantID) ([]settings.Declaration, error)
+	DeclarationsForWrite(ctx context.Context, tenant fin.TenantID) ([]settings.Declaration, error)
+	InsertDeclaration(ctx context.Context, tenant fin.TenantID, d settings.Declaration) error
+	// Reviews lists the reviews of self-approved change sets in a query's snapshot, ReviewsForWrite in a write transaction (under
+	// the settings lock); InsertReview records one, with the approver it repeats.
+	Reviews(ctx context.Context, tenant fin.TenantID) ([]settings.SelfReview, error)
+	ReviewsForWrite(ctx context.Context, tenant fin.TenantID) ([]settings.SelfReview, error)
+	InsertReview(ctx context.Context, tenant fin.TenantID, r settings.SelfReview, approvedBy string) error
+	// WorkActors lists who submitted apportionments and stated attributions in a period (the exception report).
+	WorkActors(ctx context.Context, tenant fin.TenantID, from, to time.Time) ([]ActorWork, error)
+}
+
+// ActorWork is what an actor did in FIN in a period: the apportionments they submitted, and of those the ones that state
+// an attribution of their own, which is to confirm it.
+type ActorWork struct {
+	Actor     string
+	Submitted int
+	Confirmed int
 }
 
 // Deps are the ports every FIN command uses.
@@ -436,6 +456,8 @@ type Deps struct {
 	Settings SettingsStore
 	// CostReviews holds the cost review requests and their resolutions (FIN V2.99).
 	CostReviews CostReviewStore
+	// AfterTheFact holds the marks of the weeks reviewed and reads the weekly list (FIN V2.102, batch B).
+	AfterTheFact AfterTheFactStore
 }
 
 // Command is what every FIN command carries: Subject is the legal entity, the job, <legal entity>/<debtor> or the

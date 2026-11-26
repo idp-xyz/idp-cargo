@@ -757,25 +757,68 @@ type FinSettingEntry struct {
 // checked as a whole, each legal entity named must have a finance policy, and the actor needs the permission
 // ConfigureSettings, granted by name only. Receipt.NewRevision is the records of the change set: 1, or 2 when it was
 // approved on the spot.
+//
+// OnboardingID (V2.102, batch F) holds the change set for that onboarding: it is not approved when it is proposed, not even when it
+// only tightens, its approver is never its proposer, and until it is approved or cancelled no other change set of the tenant is
+// proposed or approved (SETTINGS_ONBOARDING_WAITING: confirm the onboarding, or withdraw it). It is the platform's onboarding that
+// holds one, in the consultant's own name: the action is ActionProposeHeldSettings, granted only with the platform's mark besides
+// ConfigureSettings by name, so that no one else can freeze a tenant's settings with a made-up onboarding.
 type ProposeFinSettingsChange struct {
-	CommandID   string
-	TenantID    string
-	ActorID     string
-	ChangeID    string
-	Entries     []FinSettingEntry
-	Reason      string
-	EffectiveAt time.Time
+	CommandID    string
+	TenantID     string
+	ActorID      string
+	ChangeID     string
+	Entries      []FinSettingEntry
+	Reason       string
+	EffectiveAt  time.Time
+	OnboardingID string `json:",omitempty"`
 }
 
 // ApproveFinSettingsChange approves a change set that waits for a second person. The approver is not the proposer
 // (SETTINGS_SAME_ACTOR: have another approver approve it) and needs the permission ApproveSettings, granted by name
 // only. The change set takes effect at its effective time, or at the approval when that is later. Receipt.Version is
 // the settings version it made.
+//
+// A tenant whose onboarding declared a single administrator (DeclareFinSingleAdministrator) may have a loosening
+// approved by its own proposer, but only with a written risk acknowledgement of 1 to 2000 characters in
+// RiskAcknowledgement (SETTINGS_ACKNOWLEDGEMENT: give it); the acknowledgement is stored with the approval and listed in
+// the exception report. Another approver gives none, and without the declaration the proposer is refused as before.
 type ApproveFinSettingsChange struct {
-	CommandID string
-	TenantID  string
-	ActorID   string
-	ChangeID  string
+	CommandID           string
+	TenantID            string
+	ActorID             string
+	ChangeID            string
+	RiskAcknowledgement string `json:",omitempty"`
+}
+
+// DeclareFinSingleAdministrator records that the tenant declared a single administrator in the onboarding OnboardingID,
+// proposed by ProposedBy and confirmed by ActorID, the customer's owner (two different people), who named AdministratorID
+// as the one administrator (not the consultant ProposedBy). Only that administrator may approve their own loosening. It is the platform's
+// onboarding that calls it, once the owner has confirmed; it needs the permission DeclareSingleAdministrator, granted by
+// name only and not by ConfigureSettings, so that a configurer alone cannot make it. It is recorded once for each
+// onboarding, never withdrawn, and idempotent by command id. Receipt.SubjectID is the onboarding.
+type DeclareFinSingleAdministrator struct {
+	CommandID       string
+	TenantID        string
+	ActorID         string
+	OnboardingID    string
+	ProposedBy      string
+	AdministratorID string
+}
+
+// ReviewFinSelfApprovedSettingsChange records the review of a change set that its own proposer approved as the tenant's single
+// administrator (V2.102, batch F), one by one: Conclusion is ACCEPTED or NOT_ACCEPTED, and a NOT_ACCEPTED has a Note (1 to 2000
+// characters; given for ACCEPTED too, it has the same length). The reviewer is never the person who approved it, needs the
+// permission ReviewSettingsExceptions, granted by name only, and reviews a change set once: a review is immutable and replayed by its
+// command id. A NOT_ACCEPTED changes no setting: undoing the change is a normal change set (ProposeFinSettingsChange). Receipt.SubjectID
+// is the change set.
+type ReviewFinSelfApprovedSettingsChange struct {
+	CommandID  string
+	TenantID   string
+	ActorID    string
+	ChangeID   string
+	Conclusion string
+	Note       string `json:",omitempty"`
 }
 
 // RefuseFinSettingsChange is an approver's refusal of a change set that waits for approval, with a reason: it is
@@ -839,6 +882,30 @@ type ResolveCostReview struct {
 	Note      string
 }
 
+// MarkAfterTheFactReviewed marks a legal entity's ISO week (YYYY-Www, Monday 00:00 to Monday 00:00 UTC by the
+// apportionments' system time) reviewed, with a note of 1 to 2000 characters (FIN V2.102, batch B). It records the size
+// and the digest of the week's list as it is then, so that a list that changes later is visible in
+// GetAfterTheFactReview. The reviewer is neither the submitter nor the previewer of any line of that list
+// (FIN_AFTER_THE_FACT_REVIEWER: another person reviews), a week is reviewed again when its list differs from the latest
+// review's, in size or digest, and is refused only when it is the list already reviewed (FIN_AFTER_THE_FACT_REVIEWED: there is
+// nothing new to review), each review keeping its own number, from 1 without a gap, its size and its digest, and only once it has ended, from the next Monday at 00:00 UTC by FIN's clock (FIN_AFTER_THE_FACT_WEEK_NOT_ENDED: review it
+// from that Monday; a week that has not begun is FIN_AFTER_THE_FACT_WEEK_NOT_BEGUN). The receipt's SubjectID is "<legal entity>/<week>", its
+// NewRevision the review's number (1 for the first) and its Version the list's size. It needs the permission ReviewAfterTheFact, granted by name only, and
+// ReadProfit as well, so that the reviewer can read the list they sign.
+//
+// Conclusion (batch F) is ACCEPTED or NOT_ACCEPTED, and a NOT_ACCEPTED has a note: the note is 1 to 2000 characters when given. The review
+// records the lines it covers, that is the list at that time; GetAfterTheFactReview says, for each line, the review that covers it. A
+// NOT_ACCEPTED changes nothing else: what it found is put right by the ordinary commands.
+type MarkAfterTheFactReviewed struct {
+	CommandID     string
+	TenantID      string
+	ActorID       string
+	LegalEntityID string
+	Week          string
+	Conclusion    string
+	Note          string `json:",omitempty"`
+}
+
 // Commands is FIN's command entry point.
 type Commands interface {
 	OpenFinancePolicy(ctx context.Context, cmd OpenFinancePolicy) (Receipt, error)
@@ -894,8 +961,11 @@ type Commands interface {
 	ApproveFinSettingsChange(ctx context.Context, cmd ApproveFinSettingsChange) (Receipt, error)
 	CancelFinSettingsChange(ctx context.Context, cmd CancelFinSettingsChange) (Receipt, error)
 	RefuseFinSettingsChange(ctx context.Context, cmd RefuseFinSettingsChange) (Receipt, error)
+	DeclareFinSingleAdministrator(ctx context.Context, cmd DeclareFinSingleAdministrator) (Receipt, error)
+	ReviewFinSelfApprovedSettingsChange(ctx context.Context, cmd ReviewFinSelfApprovedSettingsChange) (Receipt, error)
 	RequestCostReview(ctx context.Context, cmd RequestCostReview) (Receipt, error)
 	ResolveCostReview(ctx context.Context, cmd ResolveCostReview) (Receipt, error)
+	MarkAfterTheFactReviewed(ctx context.Context, cmd MarkAfterTheFactReviewed) (Receipt, error)
 }
 
 // Actions an Authorizer decides on: the command names.
@@ -960,6 +1030,16 @@ const (
 	// controls work, or approve it.
 	ActionConfigureSettings = "ConfigureSettings"
 	ActionApproveSettings   = "ApproveSettings"
+	// ActionDeclareSingleAdministrator (V2.102) is granted by name only too; the platform's onboarding holds it.
+	ActionDeclareSingleAdministrator = "DeclareSingleAdministrator"
+	// ActionProposeHeldSettings and ActionApproveHeldSettings (V2.102, batch F) are the platform's onboarding's too: it proposes a change set held
+	// for an onboarding in the consultant's own name, and approves it in the owner's own name. Each needs the platform's mark, besides
+	// ConfigureSettings (proposing) or ApproveSettings (approving) by name, which no token carries.
+	ActionProposeHeldSettings = "ProposeHeldSettings"
+	ActionApproveHeldSettings = "ApproveHeldSettings"
+	// ActionReviewSettingsExceptions (V2.102, batch F) reviews a single administrator's self-approval, and reads the reviews and what still
+	// waits for one. It is granted by name only: "fin:*" and "*" do not include it.
+	ActionReviewSettingsExceptions = "ReviewSettingsExceptions"
 
 	// ReadProfit reads the profit queries and the cost review requests; RequestCostReview and ResolveCostReview are the
 	// two commands of the cost review. "fin:*" grants all three: none changes an amount or how a control works, and the
@@ -967,6 +1047,12 @@ const (
 	ActionReadProfit        = "ReadProfit"
 	ActionRequestCostReview = "RequestCostReview"
 	ActionResolveCostReview = "ResolveCostReview"
+
+	// ReviewAfterTheFact marks a week of the after-the-fact review list reviewed (FIN V2.102, batch B). It is granted by
+	// name only: "fin:*" and "*" do not include it, so that a general grant never lets a person sign off the weekly
+	// compensation of the LEAN profile. That the reviewer is neither the submitter nor the previewer of a line of the
+	// week is the domain's rule, not a permission. The list itself is read with ReadProfit.
+	ActionReviewAfterTheFact = "ReviewAfterTheFact"
 )
 
 // Authorizer decides whether a verified actor may perform an action on a subject.

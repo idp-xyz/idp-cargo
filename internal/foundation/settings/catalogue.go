@@ -10,6 +10,8 @@
 package settings
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"regexp"
@@ -202,4 +204,25 @@ func (c *Catalogue) Table() string {
 		}
 	}
 	return b.String()
+}
+
+// Version names the catalogue's content that a configuration depends on: the context, and each item's key, default,
+// scopes, internal control and values in order with their parameters. It is the first 16 hex digits of the SHA-256 of
+// that text, so a change to an item, a value, a default or the order of values is a new version and a change of a
+// title or an explanation is not. An exported configuration carries it, so that an import can say the two environments
+// differ.
+func (c *Catalogue) Version() string {
+	var b strings.Builder
+	b.WriteString(c.Context)
+	for _, it := range c.Items {
+		fmt.Fprintf(&b, "\nitem %s default=%s kinds=%s control=%t", it.Key, it.Default, strings.Join(it.Kinds, ","), it.Control)
+		for _, v := range it.Values {
+			fmt.Fprintf(&b, "\n value %s", v.ID)
+			if v.Param != nil {
+				fmt.Fprintf(&b, " param=%s kinds=%s looser_when_higher=%t", v.Param.Name, strings.Join(v.Param.Kinds, ","), v.Param.LooserWhenHigher)
+			}
+		}
+	}
+	sum := sha256.Sum256([]byte(b.String()))
+	return hex.EncodeToString(sum[:8])
 }

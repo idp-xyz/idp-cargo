@@ -1060,9 +1060,15 @@ type FinSettingsChange struct {
 	Version      int
 	InForceAt    time.Time
 	AutoApproved bool
-	CancelledBy  string
-	CancelledAt  time.Time
-	CancelReason string
+	// RiskAcknowledgement is the written acknowledgement of a single administrator who approved their own loosening, and
+	// BasisOnboardingID the onboarding of the declaration of the single administrator that approval relies on (V2.102, batch F).
+	RiskAcknowledgement string
+	BasisOnboardingID   string
+	// HeldForOnboarding is the onboarding the change set is held for, empty for an ordinary change set (V2.102, batch F).
+	HeldForOnboarding string
+	CancelledBy       string
+	CancelledAt       time.Time
+	CancelReason      string
 	// CancelledRole is the permission the canceller acted under: CONFIGURER (ConfigureSettings) or APPROVER (ApproveSettings).
 	CancelledRole string
 }
@@ -1105,6 +1111,8 @@ type FinReferenceItem struct {
 
 // FinSettingsCatalogue is the catalogue, and the same as a Markdown table (for the manual). Reference lists E1 to E4.
 type FinSettingsCatalogue struct {
+	// Version names the catalogue's content (its items, their values in order and defaults, scopes and controls).
+	Version   string
 	Items     []FinSettingItem
 	Reference []FinReferenceItem
 	Table     string
@@ -1358,9 +1366,248 @@ type Queries interface {
 	GetFinSettings(ctx context.Context, q GetFinSettings) (FinSettings, error)
 	ListFinSettingsChanges(ctx context.Context, q ListFinSettingsChanges) ([]FinSettingsChange, error)
 	GetFinSettingsCatalogue(ctx context.Context, q GetFinSettingsCatalogue) (FinSettingsCatalogue, error)
+	GetFinExceptionReport(ctx context.Context, q GetFinExceptionReport) (FinExceptionReport, error)
 	GetFinSettingsChangeImpact(ctx context.Context, q GetFinSettingsChangeImpact) (FinSettingsChangeImpact, error)
 	ListJobProfits(ctx context.Context, q ListJobProfits) (JobProfitPage, error)
 	GetCostReviewRequest(ctx context.Context, q GetCostReviewRequest) (CostReviewRequest, error)
 	GetJobLegalEntity(ctx context.Context, q GetJobLegalEntity) (string, error)
 	ListCostReviewRequests(ctx context.Context, q ListCostReviewRequests) (CostReviewPage, error)
+	GetAfterTheFactReview(ctx context.Context, q GetAfterTheFactReview) (AfterTheFactPage, error)
+	ListAfterTheFactPending(ctx context.Context, q ListAfterTheFactPending) (AfterTheFactPending, error)
+	ListFinSelfApprovalReviews(ctx context.Context, q ListFinSelfApprovalReviews) (FinSelfApprovalReviews, error)
+}
+
+// Reasons an attribution is on the after-the-fact review list (FIN V2.102, batch B). NO_SECOND_PERSON: the person who
+// submitted the apportionment is the person who previewed it. NO_VOUCHER: the attribution has no voucher (F3
+// ONLY_WHEN_AMOUNT_MOVES allows it when no amount moves, and F8 makes one by default). MADE_BY_DEFAULT: nobody stated
+// it; F8 DEFAULT_TO_REMAINING gave the whole former share to the cargo that remains.
+const (
+	ReviewReasonNoSecondPerson = "NO_SECOND_PERSON"
+	ReviewReasonNoVoucher      = "NO_VOUCHER"
+	ReviewReasonMadeByDefault  = "MADE_BY_DEFAULT"
+)
+
+// GetAfterTheFactReview lists, in pages, every attribution of a legal entity confirmed in an ISO week (YYYY-Www, from
+// Monday 00:00 UTC to the next Monday 00:00 UTC, by the apportionments' system time) that has no second person, no
+// voucher or was made by default, and answers whether the week is reviewed (FIN V2.102, batch B). It is read-only.
+// Limit is 1 to 500 and After the NextAfter of the page before. An attribution an apportionment only carries forward
+// is not listed again: it was listed in the week that stated it. The actor needs ReadProfit.
+//
+// What the records tell: "no second person" is that the submitter of the apportionment and its previewer are one
+// person. FIN does not record who asked for the rework that unloaded a house or who ended its place, so a submitter who
+// is that person is not told as such: the line names the submitter and the previewer, and the reader compares them with
+// PHY's record.
+type GetAfterTheFactReview struct {
+	TenantID      string
+	ActorID       string
+	LegalEntityID string
+	Week          string
+	Limit         int
+	After         string
+}
+
+// AfterTheFactLine is one attribution of the list: the pool and its consolidation, the line, the house and its job, the
+// apportionment that confirmed it and when (the system time that puts it in the week), the amounts it put on the house's
+// job (the loss) and on the consolidation (the exception cost, with who is responsible), each in the line's currency and
+// in the functional currency, who submitted the apportionment and who previewed it, and why it is listed (Reasons, in
+// the order NO_SECOND_PERSON, NO_VOUCHER, MADE_BY_DEFAULT). Voucher is empty when there is none.
+type AfterTheFactLine struct {
+	PoolID          string
+	ConsolidationID string
+	LineNo          int
+	ShipmentID      string
+	JobID           string
+	ApportionmentNo int
+	PreviewNo       int
+	EnteredAt       time.Time
+	Loss            kernel.Money
+	LossLocal       kernel.Money
+	Exception       kernel.Money
+	ExceptionLocal  kernel.Money
+	Party           string
+	Voucher         string
+	SubmittedBy     string
+	PreviewedBy     string
+	Reasons         []string
+	// Covered says that a review covers the line, and then CoveredByReview is the number of the latest review that does, with its
+	// reviewer, conclusion and time (V2.102, batch F). A line no review covers is one listed after the review of its week.
+	Covered           bool
+	CoveredByReview   int
+	CoveredBy         string
+	CoveredConclusion string
+	CoveredAt         time.Time
+}
+
+// AfterTheFactReviewMark says whether the week is reviewed and, if it is, the latest review: its number, by whom and when,
+// the note and the size and digest of the list at that time, with the size and digest of the whole list now and whether they
+// match: a list that changed after its review (an attribution recorded later in the same week) does not, and the week may be
+// reviewed again (MarkAfterTheFactReviewed), which makes the next review.
+type AfterTheFactReviewMark struct {
+	Reviewed      bool
+	ReviewNo      int
+	ReviewedBy    string
+	ReviewedAt    time.Time
+	Conclusion    string
+	Note          string
+	ListSize      int
+	ListDigest    string
+	CurrentSize   int
+	CurrentDigest string
+	Matches       bool
+}
+
+// AfterTheFactPage is a page of the list, read in one snapshot, with the week's review. NextAfter is the After of the
+// next page, empty after the last.
+type AfterTheFactPage struct {
+	LegalEntityID string
+	Week          string
+	WeekStart     time.Time
+	WeekEnd       time.Time
+	Lines         []AfterTheFactLine
+	NextAfter     string
+	Review        AfterTheFactReviewMark
+}
+
+// GetFinExceptionReport is FIN's part of the exception report of a tenant for the period From (included) to To
+// (excluded): the approved legal-entity exceptions looser than the company and the items in force now looser than the
+// standard profile, with who proposed and who approved each, the loosenings that a single administrator approved
+// themselves with their acknowledgements and the declarations, the actors who proposed or approved a change set in the
+// period, and what each actor submitted or confirmed in FIN in it. Read-only; the actor needs the permission
+// ApproveSettings, granted by name only.
+type GetFinExceptionReport struct {
+	TenantID string
+	ActorID  string
+	From     time.Time
+	To       time.Time
+}
+
+// FinExceptionLine is an entry of a scope looser than the company's value (an exception) or than the standard profile's.
+type FinExceptionLine struct {
+	ScopeKind string
+	ScopeID   string
+	Key       string
+	Value     string
+	// ThresholdMinor is the parameter of the value, in the legal entity's functional currency.
+	ThresholdMinor *int64
+	// ThanValue is the company's value for an exception, the standard profile's for a looser item.
+	ThanValue  string
+	ChangeID   string
+	ProposedBy string
+	ApprovedBy string
+}
+
+// FinSelfApproval is a loosening that its own proposer approved as the single administrator, with the declaration it relies on (its
+// onboarding, the administrator it names and when it was declared: V2.102, batch F).
+type FinSelfApproval struct {
+	ChangeID           string
+	ApprovedBy         string
+	ApprovedAt         time.Time
+	Acknowledgement    string
+	BasisOnboardingID  string
+	BasisAdministrator string
+	BasisDeclaredAt    time.Time
+	Entries            []FinSettingEntryView
+}
+
+// FinSettingsChanger is an actor who proposed or approved change sets in the period.
+type FinSettingsChanger struct {
+	ActorID  string
+	Proposed int
+	Approved int
+}
+
+// FinActorWork is what an actor did in FIN in the period: the apportionments of consolidation cost pools they
+// submitted, and of those the ones that state an attribution of their own, which is to confirm it.
+type FinActorWork struct {
+	ActorID   string
+	Submitted int
+	Confirmed int
+}
+
+// FinSingleAdministratorDeclaration is a declaration of a single administrator.
+type FinSingleAdministratorDeclaration struct {
+	OnboardingID    string
+	ProposedBy      string
+	ConfirmedBy     string
+	AdministratorID string
+	DeclaredAt      time.Time
+}
+
+// FinExceptionReport is FIN's part of the exception report.
+type FinExceptionReport struct {
+	TenantID           string
+	From               time.Time
+	To                 time.Time
+	AsOf               time.Time
+	Exceptions         []FinExceptionLine
+	LooserThanStandard []FinExceptionLine
+	SelfApproved       []FinSelfApproval
+	Declarations       []FinSingleAdministratorDeclaration
+	Changers           []FinSettingsChanger
+	Work               []FinActorWork
+}
+
+// ListAfterTheFactPending answers, for a legal entity and the ISO weeks from FromWeek to ToWeek (YYYY-Www, both included, at most 53
+// weeks), what still waits for review (FIN V2.102, batch F): every listed line of an ended week that no review covers, and the ended
+// weeks with no review. A week that has not ended is left out. It is read-only, in one snapshot. The actor needs ReviewAfterTheFact,
+// granted by name only, and ReadProfit, as the list shows what a loss cost.
+type ListAfterTheFactPending struct {
+	TenantID      string
+	ActorID       string
+	LegalEntityID string
+	FromWeek      string
+	ToWeek        string
+}
+
+// AfterTheFactWeek is an ended week with no review: its list has ListedLines lines now (0 when nothing is listed).
+type AfterTheFactWeek struct {
+	Week        string
+	WeekStart   time.Time
+	WeekEnd     time.Time
+	ListedLines int
+}
+
+// AfterTheFactPendingLine is a listed line no review covers, in its week.
+type AfterTheFactPendingLine struct {
+	Week string
+	AfterTheFactLine
+}
+
+// AfterTheFactPending is what still waits for review.
+type AfterTheFactPending struct {
+	LegalEntityID      string
+	FromWeek           string
+	ToWeek             string
+	AsOf               time.Time
+	WeeksWithoutReview []AfterTheFactWeek
+	Lines              []AfterTheFactPendingLine
+}
+
+// ListFinSelfApprovalReviews answers, for a period of approvals (From included, To excluded), the self-approved change sets that no
+// one has reviewed and the reviewed ones with their reviewer, conclusion and note (FIN V2.102, batch F). It is read-only. The actor
+// needs ReviewSettingsExceptions, granted by name only.
+type ListFinSelfApprovalReviews struct {
+	TenantID string
+	ActorID  string
+	From     time.Time
+	To       time.Time
+}
+
+// FinSelfApprovalReview is a self-approved change set with its review.
+type FinSelfApprovalReview struct {
+	FinSelfApproval
+	ReviewedBy string
+	ReviewedAt time.Time
+	Conclusion string
+	Note       string
+}
+
+// FinSelfApprovalReviews is the self-approved change sets of a period: Pending have no review.
+type FinSelfApprovalReviews struct {
+	TenantID string
+	From     time.Time
+	To       time.Time
+	AsOf     time.Time
+	Pending  []FinSelfApproval
+	Reviewed []FinSelfApprovalReview
 }
