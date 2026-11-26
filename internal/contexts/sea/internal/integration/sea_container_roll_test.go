@@ -247,3 +247,27 @@ func TestTheDatabaseKeepsTheRulesOfARollOnPostgres(t *testing.T) {
 	}
 	_ = time.Second
 }
+
+// A container the carrier reported loaded is not rolled (the review of V2.105, M1): the movement's facts date it on
+// board from that report, so DOC may have issued its houses' bills. The other container, which the report does not
+// name, still rolls.
+func TestAContainerTheCarrierReportedLoadedDoesNotRollOnPostgres(t *testing.T) {
+	f := newRollFixture(t)
+	f.w.booking("BK-2", "C-1", "EVER GLORY", "", "0130W", 1, f.hours(240))
+	if _, err := f.open("OM-2", "C-1", "BK-2"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.carrierFact("load-cv2", "OM-1", f.get(t, "OM-1").Revision, api.CarrierLoaded, "TEMU1234565", "", "LOAD-CV2", 5, 5); err != nil {
+		t.Fatalf("the carrier reports box B loaded: %v", err)
+	}
+	if v := f.visit(t, "CV-2"); v.Status != api.VisitVGM {
+		t.Fatalf("CV-2's own status: %s", v.Status)
+	}
+	_, err := f.roll(t, "roll-cv2", "CV-2", "OM-2", "rolled", 6)
+	if !errors.Is(err, api.ErrRejected) || !strings.Contains(err.Error(), "the carrier reported container TEMU1234565 loaded on board") || !strings.Contains(err.Error(), "discharged first") {
+		t.Fatalf("a container the carrier reported loaded: %v", err)
+	}
+	if _, err = f.roll(t, "roll-cv1", "CV-1", "OM-2", "rolled", 6); err != nil {
+		t.Fatalf("the container the report does not name: %v", err)
+	}
+}

@@ -500,6 +500,25 @@ func (d Deps) ChangeHouse(ctx context.Context, c Command, read func(context.Cont
 // RecordCarrierFact records a carrier report on a movement that is OPEN or FINAL. The movement's revision does not
 // move, so a FINAL movement stays at the revision its document facts were published; only a loading that returns a
 // FINAL movement to OPEN is a step of its revision.
+// liveNumbers are the container numbers of a movement's visits that are not released.
+func (d Deps) liveNumbers(ctx context.Context, tenant sea.TenantID, movement sea.MovementID) ([]string, error) {
+	ids, err := d.Visits.OfMovement(ctx, tenant, movement)
+	if err != nil {
+		return nil, err
+	}
+	var live []string
+	for _, id := range ids {
+		v, _, err := d.Visits.Read(ctx, tenant, id)
+		if err != nil {
+			return nil, err
+		}
+		if v.State().Status != sea.VisitReleased {
+			live = append(live, v.State().Number)
+		}
+	}
+	return live, nil
+}
+
 func (d Deps) RecordCarrierFact(ctx context.Context, c Command, fact sea.CarrierFact) (Receipt, error) {
 	if d.Movements == nil || d.Visits == nil {
 		return Receipt{}, ErrMissingDependency
@@ -516,19 +535,9 @@ func (d Deps) RecordCarrierFact(ctx context.Context, c Command, fact sea.Carrier
 		if revision != c.ExpectedRevision {
 			return Receipt{}, nil, sea.ErrConflict
 		}
-		ids, err := d.Visits.OfMovement(txCtx, m.State().TenantID, m.ID())
+		live, err := d.liveNumbers(txCtx, m.State().TenantID, m.ID())
 		if err != nil {
 			return Receipt{}, nil, err
-		}
-		var live []string
-		for _, id := range ids {
-			v, _, err := d.Visits.Read(txCtx, m.State().TenantID, id)
-			if err != nil {
-				return Receipt{}, nil, err
-			}
-			if v.State().Status != sea.VisitReleased {
-				live = append(live, v.State().Number)
-			}
 		}
 		final := m.State().State == sea.StateFinal
 		no, added, err := m.RecordCarrierFact(fact, live, c.Scope.ActorID, c.OccurredAt)

@@ -493,7 +493,11 @@ func (d Deps) RollContainer(ctx context.Context, c Command, to sea.MovementID, r
 			return Receipt{}, nil, fmt.Errorf("%w: %v are loaded in container %s and another, and cannot sail in two movements; unload them from one of the containers first (a rework), or roll the whole consolidation (LinkCarrierBooking)",
 				sea.ErrInvalidChange, split, v.State().Number)
 		}
-		if err := v.RollTo(from, target, reason, c.Scope.ActorID, c.OccurredAt); err != nil {
+		live, err := d.liveNumbers(txCtx, c.Scope.TenantID, fromID)
+		if err != nil {
+			return Receipt{}, nil, err
+		}
+		if err := v.RollTo(from, target, len(live) == 1, reason, c.Scope.ActorID, c.OccurredAt); err != nil {
 			return Receipt{}, nil, err
 		}
 		for _, e := range houses {

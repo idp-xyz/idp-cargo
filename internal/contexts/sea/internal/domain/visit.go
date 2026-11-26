@@ -494,7 +494,13 @@ func sealKey(s string) string {
 // same consolidation, of a container booking and the same legal entity, OPEN or FINAL (since V2.105): the carrier rolled
 // it to a later vessel. Its seals, its VGM, its stuffing and its events stay; the houses in it move with it (the caller
 // rolls their entries out of the one movement and into the other in the same transaction).
-func (v *Visit) RollTo(from, to *Movement, reason, by string, at time.Time) error {
+func (v *Visit) RollTo(from, to *Movement, onlyLive bool, reason, by string, at time.Time) error {
+	if from != nil {
+		if fact, loaded := from.CarrierLoadedFor(v.state.Number, onlyLive); loaded {
+			return fmt.Errorf("%w: the carrier reported container %s loaded on board at %s (carrier fact %d of %s), so the movement's facts date it on board and its house bills may be issued; a container the carrier rolled after loading is discharged first",
+				ErrInvalidTransition, v.state.Number, fact.OccurredAt.UTC().Format(time.RFC3339), fact.No, from.ID())
+		}
+	}
 	switch {
 	case v.state.Status != VisitStuffed && v.state.Status != VisitVGM && v.state.Status != VisitGatedIn:
 		return fmt.Errorf("%w: container %s is %s: a container rolls to another movement once stuffed and sealed, and before it is loaded; a loaded container is discharged by the carrier first",

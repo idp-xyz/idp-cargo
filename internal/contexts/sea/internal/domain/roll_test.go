@@ -2,6 +2,7 @@ package domain
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,7 +17,7 @@ func TestASealedContainerRollsToAnotherMovementWithItsHouses(t *testing.T) {
 	// assigned, not stuffed: refused
 	later := open(t, booking(1))
 	later.state.MovementID = "OM-2"
-	if err := v.RollTo(m, later, "rolled", "ops", at.Add(2*time.Hour)); !errors.Is(err, ErrInvalidTransition) {
+	if err := v.RollTo(m, later, true, "rolled", "ops", at.Add(2*time.Hour)); !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("an empty container: %v", err)
 	}
 	sealed(t, v, "CN-SEAL-1", 3)
@@ -48,15 +49,31 @@ func TestASealedContainerRollsToAnotherMovementWithItsHouses(t *testing.T) {
 			return o
 		}(), "rolled", ErrInvalidTransition},
 	} {
-		if err := v.RollTo(m, tc.to, tc.reason, "ops", when); !errors.Is(err, tc.want) {
+		if err := v.RollTo(m, tc.to, true, tc.reason, "ops", when); !errors.Is(err, tc.want) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
+	// the carrier reported it loaded: the facts date it on board, so its house bills may be issued; refused. A report
+	// that names no container counts only while it is the movement's one live container.
+	for name, tc := range map[string]struct {
+		number string
+		only   bool
+		want   bool
+	}{"names it": {"CSQU3054383", false, true}, "names none, one live": {"", true, true}, "names none, two live": {"", false, false},
+		"names another": {"TEMU1234565", true, false}} {
+		m.state.CarrierFacts = []CarrierFact{{No: 1, Kind: CarrierLoaded, ContainerNumber: tc.number, OccurredAt: when}}
+		probe, _ := RestoreVisit(v.State())
+		err := probe.RollTo(m, later, tc.only, "rolled", "ops", when)
+		if refused := errors.Is(err, ErrInvalidTransition) && strings.Contains(err.Error(), "the carrier reported container CSQU3054383 loaded"); refused != tc.want {
+			t.Errorf("a carrier loading that %s: %v", name, err)
+		}
+	}
+	m.state.CarrierFacts = nil
 	houses, whole := m.HousesInStuffing(v.State().ExecutionID)
 	if len(houses) != 1 || !whole || houses[0].ShipmentID != "SH-1" {
 		t.Fatalf("houses in the container: %+v %v", houses, whole)
 	}
-	if err := v.RollTo(m, later, "shut out, rolled to the next vessel", "ops", when); err != nil {
+	if err := v.RollTo(m, later, true, "shut out, rolled to the next vessel", "ops", when); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.RollOut("SH-1", later.ID(), "ops", when); err != nil {
@@ -96,7 +113,7 @@ func TestASealedContainerRollsToAnotherMovementWithItsHouses(t *testing.T) {
 	if _, _, err := v.RecordContainerEvent(EventLoaded, loc("CNSHG"), gated, "vessel", "LOA-1", "ops", gated); err != nil {
 		t.Fatal(err)
 	}
-	if err := v.RollTo(later, m, "rolled back", "ops", gated); !errors.Is(err, ErrInvalidTransition) {
+	if err := v.RollTo(later, m, true, "rolled back", "ops", gated); !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("a loaded container: %v", err)
 	}
 }
