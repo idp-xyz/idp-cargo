@@ -32,9 +32,9 @@ import (
 // both lines of C-2's pool P-2 apportioned to H03 alone. Box B's storage fee of 300.00 arrives later, a line of P-1 by
 // CHARGEABLE with box A's houses named out: 200.00 and 100.00 by 20:10.
 //
-// NOT IN THIS STEP: the owner's scheme rolls box B, as a whole container, to a later voyage. Moving one container to
-// another voyage is not built (PLAN, stage 2, it needs a design of its own). Here box B sails on the same voyage as box
-// A, in the same movement, and its storage fee is a cost line of P-1 on box B's houses.
+// NOT IN THIS STEP: the owner's scheme rolls box B, as a whole container, to a later voyage; that is V2.105's
+// container_roll_integration_test.go. Here box B sails on the same voyage as box A, in the same movement, and its
+// storage fee is a cost line of P-1 on box B's houses.
 //
 // The revenue (chosen here, 9,200.00 in all, and the same before and after H03 leaves): each house's OCEAN_FREIGHT sell
 // and DOC_FEE sell of 100.00:
