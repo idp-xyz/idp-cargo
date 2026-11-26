@@ -10,7 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	nethttp "net/http"
+	"go.idp.xyz/idp-cargo/internal/foundation/httpapi"
 	"slices"
 	"strings"
 	"time"
@@ -58,7 +58,7 @@ type Module struct {
 }
 
 // RegisterHTTP registers FIN's inbound HTTP routes (V2.99); the composition root calls it.
-func (m *Module) RegisterHTTP(mux *nethttp.ServeMux) { finhttp.Register(mux, m) }
+func (m *Module) RegisterHTTP(r *httpapi.Routes) { finhttp.Register(r.LegacyMux("fin"), m) }
 
 // Option configures a Module.
 type Option func(*Module)

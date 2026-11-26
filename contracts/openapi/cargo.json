@@ -1,0 +1,5156 @@
+{
+  "components": {
+    "schemas": {
+      "Problem": {
+        "description": "RFC 9457 problem details with the IDP business code",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "correlation_id": {
+            "type": "string"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          },
+          "title": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "bootstrap.ModuleFailure": {
+        "additionalProperties": false,
+        "properties": {
+          "err": {},
+          "module": {
+            "type": "string"
+          },
+          "permanent": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "bootstrap.OnboardingConfirmation": {
+        "additionalProperties": false,
+        "properties": {
+          "failures": {
+            "items": {
+              "$ref": "#/components/schemas/bootstrap.ModuleFailure"
+            },
+            "type": "array"
+          },
+          "onboarding": {
+            "$ref": "#/components/schemas/org.Onboarding"
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/org.OnboardingReceipt"
+          }
+        },
+        "type": "object"
+      },
+      "kernel.ValidityInterval": {
+        "additionalProperties": false,
+        "properties": {
+          "from": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "until": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "org.Address": {
+        "additionalProperties": false,
+        "properties": {
+          "city": {
+            "type": "string"
+          },
+          "country_code": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "lines": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "local": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/org.LocalAddress"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "phone": {
+            "type": "string"
+          },
+          "postcode": {
+            "type": "string"
+          },
+          "purposes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "region": {
+            "type": "string"
+          },
+          "residential": {
+            "type": "boolean"
+          },
+          "short_code": {
+            "type": "string"
+          },
+          "un_locode": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "org.AddressBookReceipt": {
+        "additionalProperties": false,
+        "properties": {
+          "command_id": {
+            "type": "string"
+          },
+          "entry_id": {
+            "type": "string"
+          },
+          "entry_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "new_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "party_id": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "org.ApprovedRole": {
+        "additionalProperties": false,
+        "properties": {
+          "approved_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "approved_by": {
+            "type": "string"
+          },
+          "evidence_ref": {
+            "type": "string"
+          },
+          "legal_entity_id": {
+            "type": "string"
+          },
+          "role_code": {
+            "type": "string"
+          },
+          "valid_from": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "valid_until": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "org.Contact": {
+        "additionalProperties": false,
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "mobile": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "phone": {
+            "type": "string"
+          },
+          "purposes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "org.ContactAccess": {
+        "additionalProperties": false,
+        "properties": {
+          "access_id": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string"
+          },
+          "actor_id": {
+            "type": "string"
+          },
+          "contact_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "party_id": {
+            "type": "string"
+          },
+          "purpose": {
+            "type": "string"
+          },
+          "recorded_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "org.ContactConsent": {
+        "additionalProperties": false,
+        "properties": {
+          "basis": {
+            "type": "string"
+          },
+          "cross_border": {
+            "type": "boolean"
+          },
+          "evidence_ref": {
+            "type": "string"
+          },
+          "notice_version": {
+            "type": "string"
+          },
+          "provide_to_others": {
+            "type": "boolean"
+          },
+          "revision": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "org.ContactTransferRegister": {
+        "additionalProperties": false,
+        "properties": {
+          "dispatch_keys": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "persons": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "safeguard": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/org.TransferSafeguard"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "state": {
+            "type": "string"
+          },
+          "year": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "org.LegalEntityReceipt": {
+        "additionalProperties": false,
+        "properties": {
+          "command_id": {
+            "type": "string"
+          },
+          "legal_entity_id": {
+            "type": "string"
+          },
+          "new_revision": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "org.LegalEntityRef": {
+        "additionalProperties": false,
+        "properties": {
+          "jurisdiction": {
+            "type": "string"
+          },
+          "legal_entity_id": {
+            "type": "string"
+          },
+          "registered_name": {
+            "type": "string"
+          },
+          "revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "status": {
+            "type": "string"
+          },
+          "tenant_id": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "org.LocalAddress": {
+        "additionalProperties": false,
+        "properties": {
+          "city": {
+            "type": "string"
+          },
+          "language": {
+            "type": "string"
+          },
+          "lines": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "name": {
+            "type": "string"
+          },
+          "region": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "org.ModulePlan": {
+        "additionalProperties": false,
+        "properties": {
+          "catalogue_version": {
+            "type": "string"
+          },
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/org.OnboardingEntry"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "org.Onboarding": {
+        "additionalProperties": false,
+        "properties": {
+          "acknowledged_text": {
+            "type": "string"
+          },
+          "administrator_id": {
+            "type": "string"
+          },
+          "confirmed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "confirmed_by": {
+            "type": "string"
+          },
+          "finance_staff": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "modules": {
+            "items": {
+              "$ref": "#/components/schemas/org.OnboardingModule"
+            },
+            "type": "array"
+          },
+          "notice": {
+            "type": "string"
+          },
+          "onboarding_id": {
+            "type": "string"
+          },
+          "overrides": {
+            "additionalProperties": {
+              "items": {
+                "$ref": "#/components/schemas/org.OnboardingEntry"
+              },
+              "type": "array"
+            },
+            "type": "object"
+          },
+          "plan": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/org.ModulePlan"
+            },
+            "type": "object"
+          },
+          "plan_sha256": {
+            "type": "string"
+          },
+          "profile": {
+            "type": "string"
+          },
+          "proposed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "proposed_by": {
+            "type": "string"
+          },
+          "risk_statement": {
+            "type": "string"
+          },
+          "single_administrator": {
+            "type": "boolean"
+          },
+          "state": {
+            "type": "string"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "withdraw_reason": {
+            "type": "string"
+          },
+          "withdrawn_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "withdrawn_by": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "org.OnboardingEntry": {
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "scope_id": {
+            "type": "string"
+          },
+          "scope_kind": {
+            "type": "string"
+          },
+          "threshold_currency": {
+            "type": "string"
+          },
+          "threshold_minor": {
+            "anyOf": [
+              {
+                "format": "int64",
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "org.OnboardingModule": {
+        "additionalProperties": false,
+        "properties": {
+          "change_id": {
+            "type": "string"
+          },
+          "module": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "version": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "org.OnboardingReceipt": {
+        "additionalProperties": false,
+        "properties": {
+          "command_id": {
+            "type": "string"
+          },
+          "new_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "notice": {
+            "type": "string"
+          },
+          "onboarding_id": {
+            "type": "string"
+          },
+          "plan": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/org.ModulePlan"
+            },
+            "type": "object"
+          },
+          "plan_sha256": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "org.PartyAddress": {
+        "additionalProperties": false,
+        "properties": {
+          "address_id": {
+            "type": "string"
+          },
+          "book_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "city": {
+            "type": "string"
+          },
+          "country_code": {
+            "type": "string"
+          },
+          "default_for": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "email": {
+            "type": "string"
+          },
+          "lines": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "local": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/org.LocalAddress"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "party_id": {
+            "type": "string"
+          },
+          "phone": {
+            "type": "string"
+          },
+          "postcode": {
+            "type": "string"
+          },
+          "purposes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "region": {
+            "type": "string"
+          },
+          "residential": {
+            "type": "boolean"
+          },
+          "short_code": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "un_locode": {
+            "type": "string"
+          },
+          "version": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "org.PartyAddresses": {
+        "additionalProperties": false,
+        "properties": {
+          "addresses": {
+            "items": {
+              "$ref": "#/components/schemas/org.PartyAddress"
+            },
+            "type": "array"
+          },
+          "party_id": {
+            "type": "string"
+          },
+          "revision": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "org.PartyContact": {
+        "additionalProperties": false,
+        "properties": {
+          "consent": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/org.ContactConsent"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "contact_id": {
+            "type": "string"
+          },
+          "default_for": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "email": {
+            "type": "string"
+          },
+          "mobile": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "phone": {
+            "type": "string"
+          },
+          "purposes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "status": {
+            "type": "string"
+          },
+          "version": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "org.PartyContacts": {
+        "additionalProperties": false,
+        "properties": {
+          "contacts": {
+            "items": {
+              "$ref": "#/components/schemas/org.PartyContact"
+            },
+            "type": "array"
+          },
+          "party_id": {
+            "type": "string"
+          },
+          "revision": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "org.PartyIdentifier": {
+        "additionalProperties": false,
+        "properties": {
+          "country": {
+            "type": "string"
+          },
+          "none": {
+            "type": "boolean"
+          },
+          "type": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "org.PartyIdentity": {
+        "additionalProperties": false,
+        "properties": {
+          "country_code": {
+            "type": "string"
+          },
+          "english_name": {
+            "type": "string"
+          },
+          "identifiers": {
+            "items": {
+              "$ref": "#/components/schemas/org.PartyIdentifier"
+            },
+            "type": "array"
+          },
+          "legal_name": {
+            "type": "string"
+          },
+          "party_id": {
+            "type": "string"
+          },
+          "revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "org.PartyList": {
+        "additionalProperties": false,
+        "properties": {
+          "next": {
+            "type": "string"
+          },
+          "parties": {
+            "items": {
+              "$ref": "#/components/schemas/org.PartySummary"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "org.PartySummary": {
+        "additionalProperties": false,
+        "properties": {
+          "country_code": {
+            "type": "string"
+          },
+          "english_name": {
+            "type": "string"
+          },
+          "legal_name": {
+            "type": "string"
+          },
+          "party_id": {
+            "type": "string"
+          },
+          "revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "roles": {
+            "items": {
+              "$ref": "#/components/schemas/org.ApprovedRole"
+            },
+            "type": "array"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "org.Receipt": {
+        "additionalProperties": false,
+        "properties": {
+          "command_id": {
+            "type": "string"
+          },
+          "new_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "party_id": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "org.TransferReceipt": {
+        "additionalProperties": false,
+        "properties": {
+          "command_id": {
+            "type": "string"
+          },
+          "new_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "persons": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "state": {
+            "type": "string"
+          },
+          "year": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "org.TransferSafeguard": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "reference": {
+            "type": "string"
+          },
+          "safeguard_id": {
+            "type": "string"
+          },
+          "validity": {
+            "$ref": "#/components/schemas/kernel.ValidityInterval"
+          }
+        },
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "bearer": {
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "description": "Cargo's HTTP API. Every /v1 call carries a bearer token; the tenant and the actor come only from it. A command carries Idempotency-Key (its command id) and, when it changes a resource at a revision, If-Match \"n\"; it states its business time in occurred_at. Errors are RFC 9457 problems with a business code.",
+    "title": "IDP Cargo API",
+    "version": "2.106"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/v1/charge-codes": {
+      "get": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "rate.get_v1_charge-codes",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "rate"
+        ],
+        "x-calls": ""
+      },
+      "post": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "rate.post_v1_charge-codes",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "rate"
+        ],
+        "x-calls": ""
+      }
+    },
+    "/v1/charge-codes/{code}": {
+      "get": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "rate.get_v1_charge-codes_{code}",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "rate"
+        ],
+        "x-calls": ""
+      }
+    },
+    "/v1/charge-codes/{code}/deactivate": {
+      "post": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "rate.post_v1_charge-codes_{code}_deactivate",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "rate"
+        ],
+        "x-calls": ""
+      }
+    },
+    "/v1/charge-codes/{code}/reactivate": {
+      "post": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "rate.post_v1_charge-codes_{code}_reactivate",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "rate"
+        ],
+        "x-calls": ""
+      }
+    },
+    "/v1/charge-codes/{code}/revise": {
+      "post": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "rate.post_v1_charge-codes_{code}_revise",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "rate"
+        ],
+        "x-calls": ""
+      }
+    },
+    "/v1/contact-transfers/releases": {
+      "post": {
+        "operationId": "org.ReleaseContactTransfers",
+        "parameters": [
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "dispatch_id": {
+                    "type": "string"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/org.TransferReceipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Release a dispatch's reservation",
+        "tags": [
+          "org"
+        ],
+        "x-calls": "ReleaseContactTransfers",
+        "x-permission": "org:ReleaseContactTransfers"
+      }
+    },
+    "/v1/contact-transfers/reservations": {
+      "post": {
+        "operationId": "org.ReserveContactTransfers",
+        "parameters": [
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "contact_keys": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "dispatch_id": {
+                    "type": "string"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/org.TransferReceipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Reserve the contacts a dispatch transfers abroad",
+        "tags": [
+          "org"
+        ],
+        "x-calls": "ReserveContactTransfers",
+        "x-permission": "org:ReserveContactTransfers"
+      }
+    },
+    "/v1/contact-transfers/safeguards": {
+      "post": {
+        "operationId": "org.RecordTransferSafeguard",
+        "parameters": [
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "evidence_ref": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "type": "string"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "reference": {
+                    "type": "string"
+                  },
+                  "safeguard_id": {
+                    "type": "string"
+                  },
+                  "validity": {
+                    "$ref": "#/components/schemas/kernel.ValidityInterval"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/org.TransferReceipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Record a transfer safeguard",
+        "tags": [
+          "org"
+        ],
+        "x-calls": "RecordTransferSafeguard",
+        "x-permission": "org:RecordTransferSafeguard"
+      }
+    },
+    "/v1/contact-transfers/{year}": {
+      "get": {
+        "operationId": "org.GetContactTransferRegister",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "year",
+            "required": true,
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "dispatch_id",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/org.ContactTransferRegister"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "The register of a year: persons transferred and the safeguard in force",
+        "tags": [
+          "org"
+        ],
+        "x-calls": "GetContactTransferRegister",
+        "x-permission": "org:Read"
+      }
+    },
+    "/v1/container-visits": {
+      "get": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "sea.get_v1_container-visits",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "sea"
+        ],
+        "x-calls": ""
+      },
+      "post": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "sea.post_v1_container-visits",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "sea"
+        ],
+        "x-calls": ""
+      }
+    },
+    "/v1/container-visits/{visit}": {
+      "get": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "sea.get_v1_container-visits_{visit}",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "sea"
+        ],
+        "x-calls": ""
+      }
+    },
+    "/v1/container-visits/{visit}/events": {
+      "post": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "sea.post_v1_container-visits_{visit}_events",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "sea"
+        ],
+        "x-calls": ""
+      }
+    },
+    "/v1/container-visits/{visit}/release": {
+      "post": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "sea.post_v1_container-visits_{visit}_release",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "sea"
+        ],
+        "x-calls": ""
+      }
+    },
+    "/v1/container-visits/{visit}/seals": {
+      "post": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "sea.post_v1_container-visits_{visit}_seals",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "sea"
+        ],
+        "x-calls": ""
+      }
+    },
+    "/v1/container-visits/{visit}/stuffing-done": {
+      "post": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "sea.post_v1_container-visits_{visit}_stuffing-done",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "sea"
+        ],
+        "x-calls": ""
+      }
+    },
+    "/v1/container-visits/{visit}/vgm-assertions": {
+      "post": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "sea.post_v1_container-visits_{visit}_vgm-assertions",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "sea"
+        ],
+        "x-calls": ""
+      }
+    },
+    "/v1/container-visits/{visit}/vgm-assertions/{version}/signatory-reads": {
+      "get": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "sea.get_v1_container-visits_{visit}_vgm-assertions_{version}_signatory-reads",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "sea"
+        ],
+        "x-calls": ""
+      },
+      "post": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "sea.post_v1_container-visits_{visit}_vgm-assertions_{version}_signatory-reads",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "sea"
+        ],
+        "x-calls": ""
+      }
+    },
+    "/v1/container-visits/{visit}/vgm-response": {
+      "post": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "sea.post_v1_container-visits_{visit}_vgm-response",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "sea"
+        ],
+        "x-calls": ""
+      }
+    },
+    "/v1/fin/cost-review-requests": {
+      "post": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "fin.post_v1_fin_cost-review-requests",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "fin"
+        ],
+        "x-calls": ""
+      }
+    },
+    "/v1/fin/cost-review-requests/{requestId}": {
+      "get": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "fin.get_v1_fin_cost-review-requests_{requestId}",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "fin"
+        ],
+        "x-calls": ""
+      }
+    },
+    "/v1/fin/cost-review-requests/{requestId}/resolution": {
+      "post": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "fin.post_v1_fin_cost-review-requests_{requestId}_resolution",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "fin"
+        ],
+        "x-calls": ""
+      }
+    },
+    "/v1/fin/jobs/{jobId}/cost-review-requests": {
+      "get": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "fin.get_v1_fin_jobs_{jobId}_cost-review-requests",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "fin"
+        ],
+        "x-calls": ""
+      }
+    },
+    "/v1/fin/jobs/{jobId}/profit": {
+      "get": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "fin.get_v1_fin_jobs_{jobId}_profit",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "fin"
+        ],
+        "x-calls": ""
+      }
+    },
+    "/v1/fin/legal-entities/{legalEntityId}/job-profits": {
+      "get": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "fin.get_v1_fin_legal-entities_{legalEntityId}_job-profits",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "fin"
+        ],
+        "x-calls": ""
+      }
+    },
+    "/v1/hbl-series": {
+      "post": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "sea.post_v1_hbl-series",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "sea"
+        ],
+        "x-calls": ""
+      }
+    },
+    "/v1/hbl-series/{legal_entity}": {
+      "get": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "sea.get_v1_hbl-series_{legal_entity}",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "sea"
+        ],
+        "x-calls": ""
+      }
+    },
+    "/v1/house-bills/{legal_entity}/{hbl}": {
+      "get": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "sea.get_v1_house-bills_{legal_entity}_{hbl}",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "sea"
+        ],
+        "x-calls": ""
+      }
+    },
+    "/v1/legal-entities": {
+      "get": {
+        "operationId": "org.ListLegalEntities",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "items": {
+                      "items": {
+                        "$ref": "#/components/schemas/org.LegalEntityRef"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "The tenant's legal entities",
+        "tags": [
+          "org"
+        ],
+        "x-calls": "ListLegalEntities",
+        "x-permission": "org:Read"
+      },
+      "post": {
+        "operationId": "org.RegisterLegalEntity",
+        "parameters": [
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "evidence_ref": {
+                    "type": "string"
+                  },
+                  "jurisdiction": {
+                    "type": "string"
+                  },
+                  "legal_entity_id": {
+                    "type": "string"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "registered_name": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/org.LegalEntityReceipt"
+                }
+              }
+            },
+            "description": "Created",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Register one of the tenant's companies (DRAFT)",
+        "tags": [
+          "org"
+        ],
+        "x-calls": "RegisterLegalEntity",
+        "x-permission": "org:RegisterLegalEntity"
+      }
+    },
+    "/v1/legal-entities/{legal_entity_id}": {
+      "get": {
+        "operationId": "org.GetLegalEntity",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "legal_entity_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/org.LegalEntityRef"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "A legal entity",
+        "tags": [
+          "org"
+        ],
+        "x-calls": "GetLegalEntity",
+        "x-permission": "org:Read"
+      }
+    },
+    "/v1/legal-entities/{legal_entity_id}/verify": {
+      "post": {
+        "operationId": "org.VerifyLegalEntity",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "legal_entity_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/org.LegalEntityReceipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Verify a DRAFT legal entity",
+        "tags": [
+          "org"
+        ],
+        "x-calls": "VerifyLegalEntity",
+        "x-permission": "org:VerifyLegalEntity"
+      }
+    },
+    "/v1/ocean-movements": {
+      "get": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "sea.get_v1_ocean-movements",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "sea"
+        ],
+        "x-calls": ""
+      },
+      "post": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "sea.post_v1_ocean-movements",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "sea"
+        ],
+        "x-calls": ""
+      }
+    },
+    "/v1/ocean-movements/{movement}": {
+      "get": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "sea.get_v1_ocean-movements_{movement}",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "sea"
+        ],
+        "x-calls": ""
+      }
+    },
+    "/v1/ocean-movements/{movement}/cancel": {
+      "post": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "sea.post_v1_ocean-movements_{movement}_cancel",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "sea"
+        ],
+        "x-calls": ""
+      }
+    },
+    "/v1/ocean-movements/{movement}/carrier-facts": {
+      "get": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "sea.get_v1_ocean-movements_{movement}_carrier-facts",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "sea"
+        ],
+        "x-calls": ""
+      },
+      "post": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "sea.post_v1_ocean-movements_{movement}_carrier-facts",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "sea"
+        ],
+        "x-calls": ""
+      }
+    },
+    "/v1/ocean-movements/{movement}/container-visits": {
+      "get": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "sea.get_v1_ocean-movements_{movement}_container-visits",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "sea"
+        ],
+        "x-calls": ""
+      }
+    },
+    "/v1/ocean-movements/{movement}/doc-facts": {
+      "get": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "sea.get_v1_ocean-movements_{movement}_doc-facts",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "sea"
+        ],
+        "x-calls": ""
+      }
+    },
+    "/v1/ocean-movements/{movement}/doc-facts/{version}": {
+      "get": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "sea.get_v1_ocean-movements_{movement}_doc-facts_{version}",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "sea"
+        ],
+        "x-calls": ""
+      }
+    },
+    "/v1/ocean-movements/{movement}/finalize-doc-facts": {
+      "post": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "sea.post_v1_ocean-movements_{movement}_finalize-doc-facts",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "sea"
+        ],
+        "x-calls": ""
+      }
+    },
+    "/v1/ocean-movements/{movement}/house-bills": {
+      "post": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "sea.post_v1_ocean-movements_{movement}_house-bills",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "sea"
+        ],
+        "x-calls": ""
+      }
+    },
+    "/v1/ocean-movements/{movement}/house-bills/{shipment}/end": {
+      "post": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "sea.post_v1_ocean-movements_{movement}_house-bills_{shipment}_end",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "sea"
+        ],
+        "x-calls": ""
+      }
+    },
+    "/v1/ocean-movements/{movement}/house-bills/{shipment}/refresh": {
+      "post": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "sea.post_v1_ocean-movements_{movement}_house-bills_{shipment}_refresh",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "sea"
+        ],
+        "x-calls": ""
+      }
+    },
+    "/v1/ocean-movements/{movement}/link-carrier-booking": {
+      "post": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "sea.post_v1_ocean-movements_{movement}_link-carrier-booking",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "sea"
+        ],
+        "x-calls": ""
+      }
+    },
+    "/v1/ocean-movements/{movement}/master-bills": {
+      "post": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "sea.post_v1_ocean-movements_{movement}_master-bills",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "sea"
+        ],
+        "x-calls": ""
+      }
+    },
+    "/v1/onboardings": {
+      "get": {
+        "operationId": "org.ListOnboardings",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "items": {
+                      "items": {
+                        "$ref": "#/components/schemas/org.Onboarding"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "The tenant's onboardings: org:ReadOnboarding",
+        "tags": [
+          "org"
+        ],
+        "x-calls": "ListOnboardings",
+        "x-permission": "checked by the context"
+      },
+      "post": {
+        "operationId": "org.ProposeOnboarding",
+        "parameters": [
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "finance_staff": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "onboarding_id": {
+                    "type": "string"
+                  },
+                  "overrides": {
+                    "additionalProperties": {
+                      "items": {
+                        "$ref": "#/components/schemas/org.OnboardingEntry"
+                      },
+                      "type": "array"
+                    },
+                    "type": "object"
+                  },
+                  "plan": {
+                    "additionalProperties": {
+                      "$ref": "#/components/schemas/org.ModulePlan"
+                    },
+                    "type": "object"
+                  },
+                  "profile": {
+                    "type": "string"
+                  },
+                  "risk_statement": {
+                    "type": "string"
+                  },
+                  "single_administrator": {
+                    "type": "boolean"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/org.OnboardingReceipt"
+                }
+              }
+            },
+            "description": "Created",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "The implementation consultant proposes a customer's onboarding: org:ProposeOnboarding, fin:ConfigureSettings and sea:ConfigureSettings by name",
+        "tags": [
+          "org"
+        ],
+        "x-calls": "ProposeOnboarding",
+        "x-permission": "org:ProposeOnboarding (granted by name only)"
+      }
+    },
+    "/v1/onboardings/{onboarding_id}": {
+      "get": {
+        "operationId": "org.GetOnboarding",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "onboarding_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/org.Onboarding"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "An onboarding: org:ReadOnboarding",
+        "tags": [
+          "org"
+        ],
+        "x-calls": "GetOnboarding",
+        "x-permission": "checked by the context"
+      }
+    },
+    "/v1/onboardings/{onboarding_id}/confirm": {
+      "post": {
+        "operationId": "org.ConfirmOnboarding",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "onboarding_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "acknowledged_text": {
+                    "type": "string"
+                  },
+                  "administrator_id": {
+                    "type": "string"
+                  },
+                  "plan_sha256": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/bootstrap.OnboardingConfirmation"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "The customer's owner confirms the plan by its SHA-256: org:ConfirmOnboarding, fin:ApproveSettings and sea:ApproveSettings by name",
+        "tags": [
+          "org"
+        ],
+        "x-calls": "ConfirmOnboarding",
+        "x-permission": "org:ConfirmOnboarding (granted by name only)"
+      }
+    },
+    "/v1/onboardings/{onboarding_id}/withdraw": {
+      "post": {
+        "operationId": "org.WithdrawOnboarding",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "onboarding_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/org.OnboardingReceipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "The consultant who proposed it, or the owner, withdraws an onboarding that waits",
+        "tags": [
+          "org"
+        ],
+        "x-calls": "WithdrawOnboarding",
+        "x-permission": "org:ProposeOnboarding (granted by name only)"
+      }
+    },
+    "/v1/parties": {
+      "get": {
+        "operationId": "org.ListParties",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "role_code",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "name_contains",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/org.PartyList"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "List parties, a page at a time",
+        "tags": [
+          "org"
+        ],
+        "x-calls": "ListParties",
+        "x-permission": "org:Read"
+      },
+      "post": {
+        "operationId": "org.RegisterParty",
+        "parameters": [
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "country_code": {
+                    "type": "string"
+                  },
+                  "legal_name": {
+                    "type": "string"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "party_id": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/org.Receipt"
+                }
+              }
+            },
+            "description": "Created",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Register a business party (DRAFT)",
+        "tags": [
+          "org"
+        ],
+        "x-calls": "RegisterParty",
+        "x-permission": "org:RegisterParty"
+      }
+    },
+    "/v1/parties/{party_id}": {
+      "get": {
+        "operationId": "org.GetPartyIdentity",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "party_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/org.PartyIdentity"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "A party: names, status, identifiers",
+        "tags": [
+          "org"
+        ],
+        "x-calls": "GetPartyIdentity",
+        "x-permission": "org:Read"
+      }
+    },
+    "/v1/parties/{party_id}/activate": {
+      "post": {
+        "operationId": "org.ActivateParty",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "party_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "evidence_ref": {
+                    "type": "string"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/org.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Activate a DRAFT party with the evidence of who it is",
+        "tags": [
+          "org"
+        ],
+        "x-calls": "ActivateParty",
+        "x-permission": "org:ActivateParty"
+      }
+    },
+    "/v1/parties/{party_id}/addresses": {
+      "get": {
+        "operationId": "org.GetPartyAddresses",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "party_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/org.PartyAddresses"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "A party's addresses",
+        "tags": [
+          "org"
+        ],
+        "x-calls": "GetPartyAddresses",
+        "x-permission": "org:Read"
+      },
+      "post": {
+        "operationId": "org.AddPartyAddress",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "party_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "address": {
+                    "$ref": "#/components/schemas/org.Address"
+                  },
+                  "address_id": {
+                    "type": "string"
+                  },
+                  "default_for": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/org.AddressBookReceipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Add an address",
+        "tags": [
+          "org"
+        ],
+        "x-calls": "AddPartyAddress",
+        "x-permission": "org:AddPartyAddress"
+      }
+    },
+    "/v1/parties/{party_id}/addresses/{address_id}": {
+      "get": {
+        "operationId": "org.GetPartyAddress",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "party_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "address_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "version",
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/org.PartyAddress"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "One address, at a version (0: the latest)",
+        "tags": [
+          "org"
+        ],
+        "x-calls": "GetPartyAddress",
+        "x-permission": "org:Read"
+      }
+    },
+    "/v1/parties/{party_id}/addresses/{address_id}/change": {
+      "post": {
+        "operationId": "org.ChangePartyAddress",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "party_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "address_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "address": {
+                    "$ref": "#/components/schemas/org.Address"
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/org.AddressBookReceipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Record the next version of an address",
+        "tags": [
+          "org"
+        ],
+        "x-calls": "ChangePartyAddress",
+        "x-permission": "org:ChangePartyAddress"
+      }
+    },
+    "/v1/parties/{party_id}/addresses/{address_id}/deactivate": {
+      "post": {
+        "operationId": "org.DeactivatePartyAddress",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "party_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "address_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/org.AddressBookReceipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Deactivate an address",
+        "tags": [
+          "org"
+        ],
+        "x-calls": "DeactivatePartyAddress",
+        "x-permission": "org:DeactivatePartyAddress"
+      }
+    },
+    "/v1/parties/{party_id}/addresses/{address_id}/default": {
+      "post": {
+        "operationId": "org.SetDefaultPartyAddress",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "party_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "address_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "purpose": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/org.AddressBookReceipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Make an address the default for a purpose",
+        "tags": [
+          "org"
+        ],
+        "x-calls": "SetDefaultPartyAddress",
+        "x-permission": "org:SetDefaultPartyAddress"
+      }
+    },
+    "/v1/parties/{party_id}/archive": {
+      "post": {
+        "operationId": "org.ArchiveParty",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "party_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/org.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Archive a suspended party whose roles ended",
+        "tags": [
+          "org"
+        ],
+        "x-calls": "ArchiveParty",
+        "x-permission": "org:ArchiveParty"
+      }
+    },
+    "/v1/parties/{party_id}/contact-access": {
+      "get": {
+        "operationId": "org.ListContactAccess",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "party_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "read_by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "since",
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "until",
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "items": {
+                      "items": {
+                        "$ref": "#/components/schemas/org.ContactAccess"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Who read the party's contacts: org:ReadContactAccessLog by name",
+        "tags": [
+          "org"
+        ],
+        "x-calls": "ListContactAccess",
+        "x-permission": "checked by the context"
+      }
+    },
+    "/v1/parties/{party_id}/contacts": {
+      "get": {
+        "operationId": "org.GetPartyContacts",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "party_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "purpose",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/org.PartyContacts"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "A party's contacts: org:ReadPartyContacts by name, each read logged with its purpose",
+        "tags": [
+          "org"
+        ],
+        "x-calls": "GetPartyContacts",
+        "x-permission": "checked by the context"
+      },
+      "post": {
+        "operationId": "org.AddPartyContact",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "party_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "contact": {
+                    "$ref": "#/components/schemas/org.Contact"
+                  },
+                  "contact_id": {
+                    "type": "string"
+                  },
+                  "default_for": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/org.AddressBookReceipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Add a contact",
+        "tags": [
+          "org"
+        ],
+        "x-calls": "AddPartyContact",
+        "x-permission": "org:AddPartyContact"
+      }
+    },
+    "/v1/parties/{party_id}/contacts/{contact_id}/change": {
+      "post": {
+        "operationId": "org.ChangePartyContact",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "party_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "contact_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "contact": {
+                    "$ref": "#/components/schemas/org.Contact"
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/org.AddressBookReceipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Record the next version of a contact",
+        "tags": [
+          "org"
+        ],
+        "x-calls": "ChangePartyContact",
+        "x-permission": "org:ChangePartyContact"
+      }
+    },
+    "/v1/parties/{party_id}/contacts/{contact_id}/consents": {
+      "post": {
+        "operationId": "org.RecordContactConsent",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "party_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "contact_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "consent": {
+                    "$ref": "#/components/schemas/org.ContactConsent"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/org.AddressBookReceipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Record a contact's consent",
+        "tags": [
+          "org"
+        ],
+        "x-calls": "RecordContactConsent",
+        "x-permission": "org:RecordContactConsent"
+      }
+    },
+    "/v1/parties/{party_id}/contacts/{contact_id}/deactivate": {
+      "post": {
+        "operationId": "org.DeactivatePartyContact",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "party_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "contact_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/org.AddressBookReceipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Deactivate a contact",
+        "tags": [
+          "org"
+        ],
+        "x-calls": "DeactivatePartyContact",
+        "x-permission": "org:DeactivatePartyContact"
+      }
+    },
+    "/v1/parties/{party_id}/contacts/{contact_id}/default": {
+      "post": {
+        "operationId": "org.SetDefaultPartyContact",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "party_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "contact_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "purpose": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/org.AddressBookReceipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Make a contact the default for a purpose",
+        "tags": [
+          "org"
+        ],
+        "x-calls": "SetDefaultPartyContact",
+        "x-permission": "org:SetDefaultPartyContact"
+      }
+    },
+    "/v1/parties/{party_id}/contacts/{contact_id}/erase": {
+      "post": {
+        "operationId": "org.ErasePartyContact",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "party_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "contact_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/org.AddressBookReceipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Erase a contact's personal data (by name only)",
+        "tags": [
+          "org"
+        ],
+        "x-calls": "ErasePartyContact",
+        "x-permission": "org:ErasePartyContact"
+      }
+    },
+    "/v1/parties/{party_id}/english-name": {
+      "post": {
+        "operationId": "org.SetPartyEnglishName",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "party_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "english_name": {
+                    "type": "string"
+                  },
+                  "evidence_ref": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/org.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Set the English name",
+        "tags": [
+          "org"
+        ],
+        "x-calls": "SetPartyEnglishName",
+        "x-permission": "org:SetPartyEnglishName"
+      }
+    },
+    "/v1/parties/{party_id}/identifiers": {
+      "post": {
+        "operationId": "org.RecordPartyIdentifier",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "party_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "country": {
+                    "type": "string"
+                  },
+                  "evidence_ref": {
+                    "type": "string"
+                  },
+                  "none": {
+                    "type": "boolean"
+                  },
+                  "type": {
+                    "type": "string"
+                  },
+                  "value": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/org.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Record an identifier (or that it has none)",
+        "tags": [
+          "org"
+        ],
+        "x-calls": "RecordPartyIdentifier",
+        "x-permission": "org:RecordPartyIdentifier"
+      }
+    },
+    "/v1/parties/{party_id}/identifiers/retire": {
+      "post": {
+        "operationId": "org.RetirePartyIdentifier",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "party_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "country": {
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/org.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Retire an identifier",
+        "tags": [
+          "org"
+        ],
+        "x-calls": "RetirePartyIdentifier",
+        "x-permission": "org:RetirePartyIdentifier"
+      }
+    },
+    "/v1/parties/{party_id}/legal-name": {
+      "post": {
+        "operationId": "org.CorrectPartyLegalName",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "party_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "evidence_ref": {
+                    "type": "string"
+                  },
+                  "legal_name": {
+                    "type": "string"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/org.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Correct the legal name",
+        "tags": [
+          "org"
+        ],
+        "x-calls": "CorrectPartyLegalName",
+        "x-permission": "org:CorrectPartyLegalName"
+      }
+    },
+    "/v1/parties/{party_id}/roles": {
+      "post": {
+        "operationId": "org.ApproveRole",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "party_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "evidence_ref": {
+                    "type": "string"
+                  },
+                  "legal_entity_id": {
+                    "type": "string"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "role_code": {
+                    "type": "string"
+                  },
+                  "valid_from": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "valid_until": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/org.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Approve a partner role for a legal entity",
+        "tags": [
+          "org"
+        ],
+        "x-calls": "ApproveRole",
+        "x-permission": "org:ApproveRole"
+      }
+    },
+    "/v1/parties/{party_id}/suspend": {
+      "post": {
+        "operationId": "org.SuspendParty",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "party_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/org.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Suspend an active party",
+        "tags": [
+          "org"
+        ],
+        "x-calls": "SuspendParty",
+        "x-permission": "org:SuspendParty"
+      }
+    },
+    "/v1/quotes": {
+      "post": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "rate.post_v1_quotes",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "rate"
+        ],
+        "x-calls": ""
+      }
+    },
+    "/v1/quotes/{quote}": {
+      "get": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "rate.get_v1_quotes_{quote}",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "rate"
+        ],
+        "x-calls": ""
+      }
+    },
+    "/v1/quotes/{quote}/accept": {
+      "post": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "rate.post_v1_quotes_{quote}_accept",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "rate"
+        ],
+        "x-calls": ""
+      }
+    },
+    "/v1/quotes/{quote}/approve-price": {
+      "post": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "rate.post_v1_quotes_{quote}_approve-price",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "rate"
+        ],
+        "x-calls": ""
+      }
+    },
+    "/v1/quotes/{quote}/expire": {
+      "post": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "rate.post_v1_quotes_{quote}_expire",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "rate"
+        ],
+        "x-calls": ""
+      }
+    },
+    "/v1/quotes/{quote}/snapshot": {
+      "get": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "rate.get_v1_quotes_{quote}_snapshot",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "rate"
+        ],
+        "x-calls": ""
+      }
+    },
+    "/v1/rate-cards": {
+      "get": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "rate.get_v1_rate-cards",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "rate"
+        ],
+        "x-calls": ""
+      },
+      "post": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "rate.post_v1_rate-cards",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "rate"
+        ],
+        "x-calls": ""
+      }
+    },
+    "/v1/rate-cards/{card}": {
+      "get": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "rate.get_v1_rate-cards_{card}",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "rate"
+        ],
+        "x-calls": ""
+      }
+    },
+    "/v1/rate-cards/{card}/versions": {
+      "post": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "rate.post_v1_rate-cards_{card}_versions",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "rate"
+        ],
+        "x-calls": ""
+      }
+    },
+    "/v1/rate-cards/{card}/versions/{version}": {
+      "get": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "rate.get_v1_rate-cards_{card}_versions_{version}",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "rate"
+        ],
+        "x-calls": ""
+      }
+    },
+    "/v1/rate-cards/{card}/versions/{version}/entries": {
+      "put": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "rate.put_v1_rate-cards_{card}_versions_{version}_entries",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "rate"
+        ],
+        "x-calls": ""
+      }
+    },
+    "/v1/rate-cards/{card}/versions/{version}/publish": {
+      "post": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "rate.post_v1_rate-cards_{card}_versions_{version}_publish",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "rate"
+        ],
+        "x-calls": ""
+      }
+    },
+    "/v1/rate-cards/{card}/versions/{version}/withdraw": {
+      "post": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "rate.post_v1_rate-cards_{card}_versions_{version}_withdraw",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "rate"
+        ],
+        "x-calls": ""
+      }
+    },
+    "/v1/rate-evaluations": {
+      "post": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "rate.post_v1_rate-evaluations",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "rate"
+        ],
+        "x-calls": ""
+      }
+    },
+    "/v1/rate-snapshots/{snapshot}": {
+      "get": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "rate.get_v1_rate-snapshots_{snapshot}",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "rate"
+        ],
+        "x-calls": ""
+      }
+    },
+    "/v1/service-levels": {
+      "get": {
+        "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
+        "operationId": "rate.get_v1_service-levels",
+        "responses": {
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "tags": [
+          "rate"
+        ],
+        "x-calls": ""
+      }
+    }
+  },
+  "security": [
+    {
+      "bearer": []
+    }
+  ]
+}

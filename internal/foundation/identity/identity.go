@@ -225,6 +225,12 @@ func Allowed(p Principal, bc, action string) bool {
 		slices.Contains(p.Permissions, bc+":"+action)
 }
 
+// AllowedNamed reports whether p holds the permission for action in bc by name: "<context>:<Action>" itself, which
+// the wildcards do not grant.
+func AllowedNamed(p Principal, bc, action string) bool {
+	return slices.Contains(p.Permissions, bc+":"+action)
+}
+
 // Authorize lets the principal on ctx perform action in the bounded context bc as tenant and actor: the principal
 // must be that tenant and actor and hold the permission.
 func Authorize(ctx context.Context, bc, tenantID, actorID, action string) error {

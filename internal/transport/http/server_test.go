@@ -45,7 +45,8 @@ var (
 // demo is a context with routes that exercise the helpers.
 type demo struct{}
 
-func (demo) RegisterHTTP(mux *nethttp.ServeMux) {
+func (demo) RegisterHTTP(r *httpapi.Routes) {
+	mux := r.LegacyMux("demo")
 	mux.HandleFunc("GET /v1/whoami", func(w nethttp.ResponseWriter, r *nethttp.Request) {
 		p, _ := identity.PrincipalFrom(r.Context())
 		httpapi.WriteJSON(w, nethttp.StatusOK, map[string]string{"tenant": p.TenantID, "actor": p.ActorID, "correlation": httpapi.CorrelationID(r.Context())})

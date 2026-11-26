@@ -67,3 +67,18 @@ func (e *LegalEntity) ID() LegalEntityID          { return e.id }
 func (e *LegalEntity) Tenant() TenantID           { return e.tenantID }
 func (e *LegalEntity) Status() LegalEntityStatus  { return e.status }
 func (e *LegalEntity) ApprovedBranches() []Branch { return append([]Branch(nil), e.branches...) }
+
+func (e *LegalEntity) RegisteredName() string       { return e.registeredName }
+func (e *LegalEntity) Jurisdiction() string         { return e.jurisdiction }
+func (e *LegalEntity) RegistrationEvidence() string { return e.registrationEvidenceRef }
+
+// RestoreLegalEntity reconstructs a stored legal entity without emitting events.
+func RestoreLegalEntity(t TenantID, id LegalEntityID, name, jurisdiction, evidence string, status LegalEntityStatus) (*LegalEntity, error) {
+	switch {
+	case t == "" || id == "" || strings.TrimSpace(name) == "" || len(jurisdiction) != 2 || strings.TrimSpace(evidence) == "":
+		return nil, ErrInvalidIdentity
+	case status != EntityDraft && status != EntityVerified && status != EntitySuspended:
+		return nil, ErrInvalidIdentity
+	}
+	return &LegalEntity{tenantID: t, id: id, registeredName: name, jurisdiction: jurisdiction, registrationEvidenceRef: evidence, status: status}, nil
+}

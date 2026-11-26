@@ -21,9 +21,20 @@ import (
 	"go.idp.xyz/idp-cargo/internal/foundation/identity"
 )
 
-// Registrar is a context that registers its routes.
+// Registrar is a context that registers its routes in the route table (httpapi.Routes), of which the OpenAPI document
+// is made.
 type Registrar interface {
-	RegisterHTTP(mux *nethttp.ServeMux)
+	RegisterHTTP(r *httpapi.Routes)
+}
+
+// Table answers the route table of the registrars without serving it: for the OpenAPI document and its test. The
+// registrars may be modules that were not opened (a typed nil): registering calls none of their methods.
+func Table(registrars ...Registrar) []httpapi.Op {
+	r := httpapi.NewRoutes(nil, nil)
+	for _, reg := range registrars {
+		reg.RegisterHTTP(r)
+	}
+	return r.Ops()
 }
 
 // Config is what the handler needs: the token verifier, a logger, and Ready for /readyz (the database answering).
@@ -39,8 +50,9 @@ func NewHandler(cfg Config, registrars ...Registrar) (nethttp.Handler, error) {
 		return nil, errors.New("http: the handler needs a verifier, a logger and a readiness check")
 	}
 	api := nethttp.NewServeMux()
+	routes := httpapi.NewRoutes(api, principals{})
 	for _, r := range registrars {
-		r.RegisterHTTP(api)
+		r.RegisterHTTP(routes)
 	}
 	open := nethttp.NewServeMux()
 	open.HandleFunc("GET /healthz", func(w nethttp.ResponseWriter, _ *nethttp.Request) {
@@ -59,6 +71,25 @@ func NewHandler(cfg Config, registrars ...Registrar) (nethttp.Handler, error) {
 	open.Handle("/v1/", authenticate(cfg.Verifier, routed(api)))
 	open.Handle("/", routed(nethttp.NewServeMux()))
 	return correlate(logRequests(cfg.Logger, recoverPanic(cfg.Logger, open))), nil
+}
+
+// principals is the routes' Caller: the verified principal authenticate put on the context.
+type principals struct{}
+
+func (principals) Who(ctx context.Context) (string, string, bool) {
+	p, ok := identity.PrincipalFrom(ctx)
+	return p.TenantID, p.ActorID, ok
+}
+
+func (principals) Allowed(ctx context.Context, bc, action string, named bool) bool {
+	p, ok := identity.PrincipalFrom(ctx)
+	if !ok {
+		return false
+	}
+	if named {
+		return identity.AllowedNamed(p, bc, action)
+	}
+	return identity.Allowed(p, bc, action)
 }
 
 var correlationPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{8,64}$`)

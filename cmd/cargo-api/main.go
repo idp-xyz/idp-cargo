@@ -37,7 +37,7 @@ type options struct {
 	shutdown                       time.Duration
 	mint, devTokens                bool
 	mintTenant, mintActor          string
-	mintPermissions                string
+	mintPermissions, mintRoles     string
 	mintTTL                        time.Duration
 }
 
@@ -57,6 +57,7 @@ func parse(args []string) (options, error) {
 	fs.StringVar(&o.mintTenant, "tenant", "", "-mint-token: the tenant")
 	fs.StringVar(&o.mintActor, "actor", "", "-mint-token: the actor (subject)")
 	fs.StringVar(&o.mintPermissions, "permissions", "", "-mint-token: comma-separated permissions, such as rate:Read,rate:MaintainChargeCodes")
+	fs.StringVar(&o.mintRoles, "role", "", "-mint-token: comma-separated job roles whose default permissions the token carries (ops, warehouse, docs, finance, finance-manager, privacy, admin, consultant)")
 	fs.DurationVar(&o.mintTTL, "ttl", time.Hour, "-mint-token: lifetime")
 	if err := fs.Parse(args); err != nil {
 		return options{}, err
@@ -87,9 +88,15 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout 
 	cfg := bootstrap.APIConfig{TokenKey: key, TokenIssuer: o.issuer, TokenAudience: o.audience, MarginFloorBP: o.marginFloorBP,
 		RateCardDiscountBP: o.discountBP}
 	if o.mint {
-		var perms []string
+		var perms, roles []string
 		if o.mintPermissions != "" {
 			perms = strings.Split(o.mintPermissions, ",")
+		}
+		if o.mintRoles != "" {
+			roles = strings.Split(o.mintRoles, ",")
+		}
+		if perms, err = bootstrap.RolePermissions(roles, perms); err != nil {
+			return err
 		}
 		token, err := bootstrap.MintDevToken(cfg, o.mintTenant, o.mintActor, perms, o.mintTTL)
 		if err != nil {

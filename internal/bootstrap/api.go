@@ -37,7 +37,9 @@ func (c APIConfig) verifier() identity.HS256Verifier {
 // API assembles the contexts the HTTP API serves, each authorized by the permissions of the request's verified
 // principal (identity.Authorize), and answers the handler: RATE's catalogue, with ORG for RATE's party checks,
 // SEA's ocean movements and container visits, with BOOK's bookings and FUL's plans, which SEA reads, and FIN's profit
-// and cost review (V2.99), with FUL's and PHY's facts, which FIN reads. COM, FUL, PHY and BOOK have no routes yet.
+// and cost review (V2.99), with FUL's and PHY's facts, which FIN reads; ORG's parties, legal entities, address books,
+// contact transfer register and onboardings, with the platform's onboarding commands (V2.106). COM, FUL, PHY, BOOK,
+// AIR and DOC have no routes yet.
 func (p *Platform) API(cfg APIConfig) (http.Handler, error) {
 	switch {
 	case len(cfg.TokenKey) < 32 || cfg.TokenIssuer == "" || cfg.TokenAudience == "":
@@ -76,7 +78,11 @@ func (p *Platform) API(cfg APIConfig) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	return transport.NewHandler(transport.Config{Verifier: cfg.verifier(), Logger: cfg.Logger, Ready: p.pool.Ping}, rate, sea, fin)
+	onboarding, err := NewOnboarding(org, fin, sea)
+	if err != nil {
+		return nil, err
+	}
+	return transport.NewHandler(transport.Config{Verifier: cfg.verifier(), Logger: cfg.Logger, Ready: p.pool.Ping}, apiRegistrars(rate, sea, fin, org, onboarding)...)
 }
 
 // APIServer is an http.Server for the API's handler with Cargo's timeouts; its requests run under base.
@@ -140,6 +146,10 @@ func authorizeHeld(ctx context.Context, bc, tenant, actor, action, proposeAction
 // carries a mark no token can carry, so no person's role holds it.
 func (permissions) AuthorizePartyAction(ctx context.Context, tenant, actor, action, _ string) error {
 	switch action {
+	case orgapi.ActionReadPartyContacts, orgapi.ActionErasePartyContact, orgapi.ActionReadContactAccessLog:
+		// a person's contact details, their erasure and the log of who read them (since V2.106): by name only, as a VGM
+		// signatory's name, so that "org:*" and "*" include no one's personal data
+		return identity.AuthorizeNamed(ctx, "org", tenant, actor, action)
 	case orgapi.ActionRecordOnboardingModule, orgapi.ActionProposeOnboarding, orgapi.ActionConfirmOnboarding:
 		if err := onlyThePlatform(ctx, "org", action); err != nil { // the principal the onboarding builds, not a person's token that carries the permission
 			return err

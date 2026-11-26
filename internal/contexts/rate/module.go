@@ -8,7 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"net/http"
+	"go.idp.xyz/idp-cargo/internal/foundation/httpapi"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -55,7 +55,7 @@ var (
 )
 
 // RegisterHTTP registers RATE's inbound HTTP routes; the composition root calls it.
-func (m *Module) RegisterHTTP(mux *http.ServeMux) { ratehttp.Register(mux, m) }
+func (m *Module) RegisterHTTP(r *httpapi.Routes) { ratehttp.Register(r.LegacyMux("rate"), m) }
 
 // New assembles RATE. org answers recipient checks; the composition root passes ORG's module.
 func New(db *bentopg.DB, org orgapi.Queries, auth api.Authorizer, margins api.MarginPolicy, opts ...Option) (*Module, error) {

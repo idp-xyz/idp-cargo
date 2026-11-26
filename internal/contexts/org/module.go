@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	orghttp "go.idp.xyz/idp-cargo/internal/contexts/org/internal/adapters/http"
+	"go.idp.xyz/idp-cargo/internal/foundation/httpapi"
 
 	bentopg "go.idp.xyz/idp-bento-go/postgres"
 	bentooutbox "go.idp.xyz/idp-bento-go/postgres/outbox"
@@ -158,7 +160,7 @@ func classify(err error) error {
 		kind = api.ErrUnauthorized
 	case errors.Is(err, application.ErrIdempotencyConflict):
 		kind = api.ErrIdempotencyConflict
-	case errors.Is(err, domain.ErrConflict), errors.Is(err, bentorepo.ErrConflict), errors.Is(err, domain.ErrEntryExists),
+	case errors.Is(err, domain.ErrConflict), errors.Is(err, bentorepo.ErrConflict), errors.Is(err, bentorepo.ErrAlreadyExists), errors.Is(err, domain.ErrEntryExists),
 		errors.Is(err, domain.ErrIdentifierInUse):
 		kind = api.ErrConflict
 	case errors.Is(err, bentorepo.ErrNotFound), errors.Is(err, domain.ErrUnknownAddress), errors.Is(err, domain.ErrUnknownContact),
@@ -180,3 +182,6 @@ func classify(err error) error {
 	}
 	return fmt.Errorf("%w: %w", kind, err)
 }
+
+// RegisterHTTP registers ORG's inbound HTTP routes (since V2.106); the composition root calls it.
+func (m *Module) RegisterHTTP(r *httpapi.Routes) { orghttp.Register(r, m) }

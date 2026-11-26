@@ -23,7 +23,7 @@ type QuoteService interface {
 	GetRateSnapshot(ctx context.Context, q api.GetRateSnapshot) (api.RateSnapshot, error)
 }
 
-func registerQuotes(mux *nethttp.ServeMux, s QuoteService) {
+func registerQuotes(mux httpapi.Mux, s QuoteService) {
 	h := quoteHandlers{s}
 	mux.HandleFunc("GET /v1/service-levels", h.listServiceLevels)
 	mux.HandleFunc("POST /v1/quotes", h.createQuote)
