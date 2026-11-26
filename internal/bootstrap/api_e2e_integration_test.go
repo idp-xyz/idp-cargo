@@ -133,15 +133,13 @@ func evidenceAt(source, ref, at string) M {
 	return M{"source": source, "reference": ref, "occurred_at": at}
 }
 
-// The owner's scheme of 2026-11-18 through the API alone (stage 3, acceptance 4): C-1 of two 22G1 boxes, box A with
-// H01, H02 and H03 (10, 15 and 5 W/M), box B with H04 and H05 (20 and 10 W/M); the parties, quotes, orders, shipments,
-// the consolidation, the warehouse's receipts, the stuffing and the seals, the booking and the ocean movement, the
-// freight of each box and the document fee apportioned. Then the carrier rolls box B to EVER GLORY a week later: a new
-// booking, a movement of its own, the master bills and finalizations; box B's storage fee of 300.00 falls on H04 and
-// H05 by 20:10. Each house's revenue, cost and profit are FIN's answer at the end.
-func TestTheOwnersTwoBoxesRunThroughTheAPIAlone(t *testing.T) {
-	f := newFlow(t, "cargo-e2e-sea-")
-	admin, ops, wh, docs := f.as("ada", "admin"), f.as("otto", "ops"), f.as("walt", "warehouse"), f.as("dora", "docs")
+// twoBoxes runs steps 1 to 6 of the owner's scheme through the API: master data, quotes, orders, shipments, C-1 with
+// its two boxes stuffed and sealed, the booking and OM-1 with its houses, containers, seals, VGMs and master bill, and
+// FIN's pool apportioned (box A's freight on container 1, box B's on container 2, the document fee by shipment).
+func (f *flow) twoBoxes() {
+	t := f.t
+	t.Helper()
+	admin, ops, wh := f.as("ada", "admin"), f.as("otto", "ops"), f.as("walt", "warehouse")
 	fin, manager := f.as("finn", "finance"), f.as("mia", "finance-manager")
 	houses := []string{"H01", "H02", "H03", "H04", "H05"}
 	weights := map[string]int64{"H01": 312, "H02": 300, "H03": 288, "H04": 400, "H05": 350}
@@ -231,21 +229,7 @@ func TestTheOwnersTwoBoxesRunThroughTheAPIAlone(t *testing.T) {
 
 	// 5. BOOK and SEA: the booking of two boxes on EVER GIVEN, OM-1 with its houses and containers, sealed, stuffed, the
 	// VGMs, the master bill
-	booking := func(id string, vessel, voyage string, etd time.Time, hour int) {
-		evidence := M{"sha256": strings.Repeat("6b", 32), "storage_id": "mail/line.eml", "media_type": "message/rfc822", "captured_at": f.hours(hour)}
-		f.post(ops, "/v1/bookings", "", M{"booking_id": id, "kind": "SEA_LCL_CONSOL_EQUIPMENT", "legal_entity_id": "LE", "carrier_party_id": "line-1", "consolidation_id": "C-1",
-			"request": M{"legs": []M{{"loading": loc("CNSHA"), "discharge": loc("DEHAM"), "departure_date": etd.Format(time.DateOnly)}},
-				"capacity": M{"equipment": []M{{"size_type": "22G1", "count": 2}}}}, "occurred_at": f.hours(hour)})
-		f.post(ops, "/v1/bookings/"+id+"/sent", `"1"`, M{"channel": "CARRIER_PORTAL", "evidence": evidence, "occurred_at": f.hours(hour)})
-		f.post(ops, "/v1/bookings/"+id+"/confirmation", `"2"`, M{"answer": M{"channel": "EMAIL", "evidence": evidence,
-			"references": []M{{"type": "BOOKING_NUMBER", "value": "LINE-" + id}}},
-			"lines": []M{{"capacity": M{"equipment": []M{{"size_type": "22G1", "count": 2}}}, "legs": []M{{"loading": loc("CNSHA"), "discharge": loc("DEHAM"),
-				"vessel": vessel, "voyage": voyage, "etd": etd.Format(time.RFC3339), "eta": etd.Add(30 * 24 * time.Hour).Format(time.RFC3339),
-				"cut_offs": []M{{"kind": "VGM", "at": etd.Add(-36 * time.Hour).Format(time.RFC3339), "time_zone": "Asia/Shanghai"},
-					{"kind": "SHIPPING_INSTRUCTIONS_DOCUMENTS", "at": etd.Add(-48 * time.Hour).Format(time.RFC3339), "time_zone": "Asia/Shanghai"}}}}}},
-			"occurred_at": f.hours(hour)})
-	}
-	booking("BK-1", "EVER GIVEN", "0123W", f.at.Add(78*time.Hour), 10)
+	f.booking("BK-1", "C-1", "EVER GIVEN", "0123W", f.at.Add(78*time.Hour), 10)
 	f.post(ops, "/v1/ocean-movements", "", M{"movement_id": "OM-1", "consolidation_id": "C-1", "booking_id": "BK-1", "occurred_at": f.hours(11)})
 	f.post(ops, "/v1/hbl-series", "", M{"legal_entity_id": "LE", "template": "SHAL{seq:7}", "first_number": 1, "occurred_at": f.hours(11)})
 	om := func(id string) string { return "GET /v1/ocean-movements/" + id }
@@ -264,11 +248,7 @@ func TestTheOwnersTwoBoxesRunThroughTheAPIAlone(t *testing.T) {
 		f.post(ops, "/v1/container-visits/"+v+"/vgm-assertions", cv(v), M{"mass": kgm([]int64{2900, 3000}[i]), "method": "METHOD_2", "responsible_party_id": "LE",
 			"responsible_party_revision": 1, "determined_at": f.hours(19), "signatory": "Ada", "occurred_at": f.hours(19)})
 	}
-	bill := func(movement, number string, hour int) {
-		f.post(ops, "/v1/ocean-movements/"+movement+"/master-bills", om(movement), M{"number": number, "kind": "CARRIER_MBL", "evidence": M{"sha256": strings.Repeat("9c", 32),
-			"storage_id": "mail/mbl.pdf", "media_type": "application/pdf", "captured_at": f.hours(hour)}, "occurred_at": f.hours(hour)})
-	}
-	bill("OM-1", "linu2611000457", 18)
+	f.bill("OM-1", "linu2611000457", 18)
 
 	// 6. FIN: the jobs and their revenue, the pool of C-1: each box's freight a line of its container, the document fee
 	// by shipment, apportioned by one person and submitted by another
@@ -299,21 +279,26 @@ func TestTheOwnersTwoBoxesRunThroughTheAPIAlone(t *testing.T) {
 	}
 	preview := f.post(fin, "/v1/fin/pools/P-1/previews", "GET /v1/fin/pools/P-1", M{"line_nos": []int{1, 2, 3}, "occurred_at": f.hours(20)})
 	f.post(manager, fmt.Sprintf("/v1/fin/pools/P-1/previews/%v/submit", preview["version"]), "GET /v1/fin/pools/P-1", M{"occurred_at": f.hours(20)})
-	bears := func(stage string, want map[string]int64) {
-		t.Helper()
-		for _, h := range houses {
-			p := f.get(fin, "/v1/fin/jobs/JOB-"+h+"/profit")
-			cost := int64(dig(p, "pool_cost", "minor").(float64))
-			if cost != want[h] {
-				t.Fatalf("%s, %s bears %d, want %d: %v", stage, h, cost, want[h], p)
-			}
-		}
-	}
-	bears("before the roll", map[string]int64{"H01": 106_000, "H02": 156_000, "H03": 56_000, "H04": 166_000, "H05": 86_000})
+	f.bears("before the roll", map[string]int64{"H01": 106_000, "H02": 156_000, "H03": 56_000, "H04": 166_000, "H05": 86_000})
 
+}
+
+// The owner's scheme of 2026-11-18 through the API alone (stage 3, acceptance 4): C-1 of two 22G1 boxes, box A with
+// H01, H02 and H03 (10, 15 and 5 W/M), box B with H04 and H05 (20 and 10 W/M); the parties, quotes, orders, shipments,
+// the consolidation, the warehouse's receipts, the stuffing and the seals, the booking and the ocean movement, the
+// freight of each box and the document fee apportioned. Then the carrier rolls box B to EVER GLORY a week later: a new
+// booking, a movement of its own, the master bills and finalizations; box B's storage fee of 300.00 falls on H04 and
+// H05 by 20:10. Each house's revenue, cost and profit are FIN's answer at the end.
+func TestTheOwnersTwoBoxesRunThroughTheAPIAlone(t *testing.T) {
+	f := newFlow(t, "cargo-e2e-sea-")
+	f.twoBoxes()
+	ops, docs, fin, manager := f.as("otto", "ops"), f.as("dora", "docs"), f.as("finn", "finance"), f.as("mia", "finance-manager")
+	houses := []string{"H01", "H02", "H03", "H04", "H05"}
+	om := func(id string) string { return "GET /v1/ocean-movements/" + id }
+	cv := func(id string) string { return "GET /v1/container-visits/" + id }
 	// 7. The carrier rolls box B: BK-2 on EVER GLORY a week later; OM-2 is opened and box B rolled there; box A sails in
 	// OM-1, box B in OM-2, each finalized with its own master bill
-	booking("BK-2", "EVER GLORY", "0130W", f.at.Add(240*time.Hour), 23)
+	f.booking("BK-2", "C-1", "EVER GLORY", "0130W", f.at.Add(240*time.Hour), 23)
 	f.post(ops, "/v1/ocean-movements", "", M{"movement_id": "OM-2", "consolidation_id": "C-1", "booking_id": "BK-2", "occurred_at": f.hours(23)})
 	f.refused("the documentation staff rolls a container", docs, "/v1/container-visits/CV-2/roll", cv("CV-2"), M{"to_movement_id": "OM-2", "reason": "rolled", "occurred_at": f.hours(24)}, 403)
 	f.post(ops, "/v1/container-visits/CV-2/roll", cv("CV-2"), M{"to_movement_id": "OM-2", "reason": "shut out at the terminal; rolled to EVER GLORY 0130W", "occurred_at": f.hours(24)})
@@ -321,16 +306,10 @@ func TestTheOwnersTwoBoxesRunThroughTheAPIAlone(t *testing.T) {
 	if hs, _ := om2["houses"].([]any); len(hs) != 2 {
 		t.Fatalf("OM-2's houses: %v", om2["houses"])
 	}
-	load := func(visit string, hour int) {
-		for i, kind := range []string{"GATE_IN_TERMINAL", "LOADED_ON_BOARD"} {
-			f.post(ops, "/v1/container-visits/"+visit+"/events", cv(visit), M{"kind": kind, "location": "CNSHG", "happened_at": f.hours(hour - 1 + i), "source": "terminal",
-				"reference": kind + "-" + visit, "occurred_at": f.hours(hour - 1 + i)})
-		}
-	}
-	load("CV-1", 26)
+	f.load("CV-1", 26)
 	f.post(ops, "/v1/ocean-movements/OM-1/finalize-doc-facts", om("OM-1"), M{"occurred_at": f.hours(26)})
-	bill("OM-2", "linu2612000777", 30)
-	load("CV-2", 40)
+	f.bill("OM-2", "linu2612000777", 30)
+	f.load("CV-2", 40)
 	f.post(ops, "/v1/ocean-movements/OM-2/finalize-doc-facts", om("OM-2"), M{"occurred_at": f.hours(40)})
 	if facts := f.get(docs, "/v1/ocean-movements/OM-2/doc-facts"); dig(facts, "facts", "vessel") != "EVER GLORY" {
 		t.Fatalf("OM-2's facts: %v", facts)
@@ -339,9 +318,9 @@ func TestTheOwnersTwoBoxesRunThroughTheAPIAlone(t *testing.T) {
 	// 8. Box B's storage fee of 300.00, a line of container 2: H04 200.00, H05 100.00; each house's profit
 	f.post(fin, "/v1/fin/pools/P-1/costs", "GET /v1/fin/pools/P-1", M{"charge_code": "STORAGE", "description": "storage of box B", "method": "CHARGEABLE", "load_unit_no": 2,
 		"cost": M{"party_id": "line-1", "amount": jcny(30_000)}, "reason": "storage of box B until EVER GLORY", "occurred_at": time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)})
-	preview = f.post(fin, "/v1/fin/pools/P-1/previews", "GET /v1/fin/pools/P-1", M{"line_nos": []int{4}, "occurred_at": time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)})
+	preview := f.post(fin, "/v1/fin/pools/P-1/previews", "GET /v1/fin/pools/P-1", M{"line_nos": []int{4}, "occurred_at": time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)})
 	f.post(manager, fmt.Sprintf("/v1/fin/pools/P-1/previews/%v/submit", preview["version"]), "GET /v1/fin/pools/P-1", M{"occurred_at": time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)})
-	bears("after the roll", map[string]int64{"H01": 106_000, "H02": 156_000, "H03": 56_000, "H04": 186_000, "H05": 96_000})
+	f.bears("after the roll", map[string]int64{"H01": 106_000, "H02": 156_000, "H03": 56_000, "H04": 186_000, "H05": 96_000})
 	var revenue, cost int64
 	for _, h := range houses {
 		p := f.get(fin, "/v1/fin/jobs/JOB-"+h+"/profit")
@@ -349,6 +328,159 @@ func TestTheOwnersTwoBoxesRunThroughTheAPIAlone(t *testing.T) {
 		cost += int64(dig(p, "pool_cost", "minor").(float64))
 	}
 	if revenue != 920_000 || cost != 600_000 || revenue-cost != 320_000 {
+		t.Fatalf("revenue %d, cost %d, profit %d", revenue, cost, revenue-cost)
+	}
+}
+
+// booking books two boxes of a consolidation with the line, from its draft to the carrier's confirmation.
+func (f *flow) booking(id, consolidation, vessel, voyage string, etd time.Time, hour int) {
+	ops := f.as("otto", "ops")
+	evidence := M{"sha256": strings.Repeat("6b", 32), "storage_id": "mail/line.eml", "media_type": "message/rfc822", "captured_at": f.hours(hour)}
+	f.post(ops, "/v1/bookings", "", M{"booking_id": id, "kind": "SEA_LCL_CONSOL_EQUIPMENT", "legal_entity_id": "LE", "carrier_party_id": "line-1", "consolidation_id": consolidation,
+		"request": M{"legs": []M{{"loading": loc("CNSHA"), "discharge": loc("DEHAM"), "departure_date": etd.Format(time.DateOnly)}},
+			"capacity": M{"equipment": []M{{"size_type": "22G1", "count": 2}}}}, "occurred_at": f.hours(hour)})
+	f.post(ops, "/v1/bookings/"+id+"/sent", `"1"`, M{"channel": "CARRIER_PORTAL", "evidence": evidence, "occurred_at": f.hours(hour)})
+	f.post(ops, "/v1/bookings/"+id+"/confirmation", `"2"`, M{"answer": M{"channel": "EMAIL", "evidence": evidence,
+		"references": []M{{"type": "BOOKING_NUMBER", "value": "LINE-" + id}}},
+		"lines": []M{{"capacity": M{"equipment": []M{{"size_type": "22G1", "count": 2}}}, "legs": []M{{"loading": loc("CNSHA"), "discharge": loc("DEHAM"),
+			"vessel": vessel, "voyage": voyage, "etd": etd.Format(time.RFC3339), "eta": etd.Add(30 * 24 * time.Hour).Format(time.RFC3339),
+			"cut_offs": []M{{"kind": "VGM", "at": etd.Add(-36 * time.Hour).Format(time.RFC3339), "time_zone": "Asia/Shanghai"},
+				{"kind": "SHIPPING_INSTRUCTIONS_DOCUMENTS", "at": etd.Add(-48 * time.Hour).Format(time.RFC3339), "time_zone": "Asia/Shanghai"}}}}}},
+		"occurred_at": f.hours(hour)})
+}
+
+// bill records a movement's master bill.
+func (f *flow) bill(movement, number string, hour int) {
+	ops := f.as("otto", "ops")
+	f.post(ops, "/v1/ocean-movements/"+movement+"/master-bills", "GET /v1/ocean-movements/"+movement, M{"number": number, "kind": "CARRIER_MBL", "evidence": M{"sha256": strings.Repeat("9c", 32),
+		"storage_id": "mail/mbl.pdf", "media_type": "application/pdf", "captured_at": f.hours(hour)}, "occurred_at": f.hours(hour)})
+}
+
+// bears checks what each house bears of the pools, as FIN's job profit tells it.
+func (f *flow) bears(stage string, want map[string]int64) {
+	t, fin := f.t, f.as("finn", "finance")
+	t.Helper()
+	for h := range want {
+		p := f.get(fin, "/v1/fin/jobs/JOB-"+h+"/profit")
+		cost := int64(dig(p, "pool_cost", "minor").(float64))
+		if cost != want[h] {
+			t.Fatalf("%s, %s bears %d, want %d: %v", stage, h, cost, want[h], p)
+		}
+	}
+}
+
+// load records a container gated in an hour before it is loaded on board, at the hour.
+func (f *flow) load(visit string, hour int) {
+	ops := f.as("otto", "ops")
+	for i, kind := range []string{"GATE_IN_TERMINAL", "LOADED_ON_BOARD"} {
+		f.post(ops, "/v1/container-visits/"+visit+"/events", "GET /v1/container-visits/"+visit, M{"kind": kind, "location": "CNSHG", "happened_at": f.hours(hour - 1 + i), "source": "terminal",
+			"reference": kind + "-" + visit, "occurred_at": f.hours(hour - 1 + i)})
+	}
+}
+
+// H03 leaves box A through the API alone (the owner's scheme of 2026-11-18, stage 3, acceptance 4): after step 6, the
+// operator asks a rework of box A, the warehouse unloads H03 whole and seals the box again, its VGM is asserted again;
+// H03 is transferred to C-2 (a box of its own, its own booking and movement, its own pool of 850.00 freight and 180.00
+// rework handling); SEA ends H03 in OM-1 and refreshes H01 and H02 from FUL's new evidence. The carrier rolls box B to
+// EVER GLORY. Box B's storage fee falls on H04 and H05 by 20:10; finance attributes H03's former shares of P-1 (box A's
+// freight all to the cargo that remains, the document fee's 60.00 as H03's own loss), submitted by another person.
+// Each house bears what stage 2c's in-process test asserts: H01 1,260.00, H02 1,860.00, H03 1,090.00, H04 1,860.00,
+// H05 960.00; cost 7,030.00 and profit 2,170.00.
+func TestH03LeavesBoxAAndBoxBIsRolledThroughTheAPIAlone(t *testing.T) {
+	f := newFlow(t, "cargo-e2e-h03-")
+	f.twoBoxes()
+	ops, wh, fin, manager := f.as("otto", "ops"), f.as("walt", "warehouse"), f.as("finn", "finance"), f.as("mia", "finance-manager")
+	rita := f.as("rita", "ops", "finance-manager") // asks the rework, and holds what a submitter holds
+	om := func(id string) string { return "GET /v1/ocean-movements/" + id }
+	cv := func(id string) string { return "GET /v1/container-visits/" + id }
+	x := func(id string) string { return "GET /v1/load-executions/" + id }
+	departs := f.at.Add(72 * time.Hour)
+	cfs := M{"location": loc("CNSHG"), "code": "SHA-CFS1"}
+
+	// a rework of box A: H03 unloaded whole, the box sealed again, its VGM again; FIN's pool is in work meanwhile
+	f.post(rita, "/v1/load-executions/X-1/rework", x("X-1"), M{"reason": "H03 is booked on another consolidation", "occurred_at": f.hours(17)})
+	f.refused("a preview while box A is reworked", fin, "/v1/fin/pools/P-1/previews", "GET /v1/fin/pools/P-1", M{"line_nos": []int{3}, "occurred_at": f.hours(17)}, 422)
+	f.post(wh, "/v1/cargo-lots/L-H03/close", "GET /v1/cargo-lots/L-H03", M{"occurred_at": f.hours(16)})
+	f.post(wh, "/v1/load-executions/X-1/rework/unload", x("X-1"), M{"shipment_id": "SH-H03", "evidence": evidenceAt("CFS-WMS", "UNSTUFF-H03", f.hours(18)), "occurred_at": f.hours(18)})
+	f.post(wh, "/v1/load-executions/X-1/close", x("X-1"), M{"evidence": evidenceAt("SEAL", "SEAL-RESEAL-1", f.hours(19)), "occurred_at": f.hours(19)})
+	f.post(ops, "/v1/container-visits/CV-1/vgm-assertions", cv("CV-1"), M{"mass": kgm(2800), "method": "METHOD_2", "responsible_party_id": "LE",
+		"responsible_party_revision": 1, "determined_at": f.hours(20), "signatory": "Ada", "occurred_at": f.hours(20)})
+
+	// H03 to C-2, recorded in FUL; C-2's pool
+	f.post(ops, "/v1/consolidations", "", M{"consolidation_id": "C-2", "mode": "SEA", "kind": "SEA_LCL_OWN", "operating_legal_entity_id": "LE", "origin": loc("CNSHA"),
+		"destination": loc("DEHAM"), "planned_departure": departs.Add(6 * time.Hour).Format(time.RFC3339), "house_cut_off": departs.Add(-6 * time.Hour).Format(time.RFC3339),
+		"occurred_at": f.hours(8)})
+	f.post(ops, "/v1/consolidations/C-2/load-units", `"1"`, M{"kind": "CONTAINER", "type_code": "22G1", "occurred_at": f.hours(8)})
+	f.post(f.as("olga", "ops"), "/v1/consolidations/C-1/houses/SH-H03/transfer", "", M{"to_consolidation_id": "C-2", "expected_membership_revision": 1, "reason": "WRONG_CONSOL",
+		"occurred_at": f.hours(21)})
+	f.post(ops, "/v1/shipments/SH-H03/consol-attachments", "GET /v1/shipments/SH-H03", M{"consolidation_id": "C-2", "occurred_at": f.hours(22)})
+	f.post(fin, "/v1/fin/pools", "", M{"pool_id": "P-2", "consolidation_id": "C-2", "occurred_at": f.hours(33)})
+	for _, line := range []struct {
+		code  string
+		minor int64
+	}{{"OCEAN_FREIGHT", 85_000}, {"REWORK_HANDLING", 18_000}} {
+		f.post(fin, "/v1/fin/pools/P-2/costs", "GET /v1/fin/pools/P-2", M{"charge_code": line.code, "description": "H03's own", "method": "CHARGEABLE",
+			"cost": M{"party_id": "line-1", "amount": jcny(line.minor)}, "reason": "H03's own", "occurred_at": f.hours(33)})
+	}
+	preview := f.post(fin, "/v1/fin/pools/P-2/previews", "GET /v1/fin/pools/P-2", M{"line_nos": []int{1, 2}, "occurred_at": f.hours(34)})
+	f.post(manager, fmt.Sprintf("/v1/fin/pools/P-2/previews/%v/submit", preview["version"]), "GET /v1/fin/pools/P-2", M{"occurred_at": f.hours(34)})
+
+	// SEA: H03 ended in OM-1, H01 and H02 refreshed from FUL's evidence of the resealed box; the carrier rolls box B
+	f.post(ops, "/v1/ocean-movements/OM-1/house-bills/SH-H03/end", om("OM-1"), M{"occurred_at": f.hours(20)})
+	for _, h := range []string{"H01", "H02"} {
+		f.post(ops, "/v1/shipments/SH-"+h+"/load-evidence", "GET /v1/shipments/SH-"+h, M{"occurred_at": f.hours(20)})
+		f.post(ops, "/v1/ocean-movements/OM-1/house-bills/SH-"+h+"/refresh", om("OM-1"), M{"occurred_at": f.hours(21)})
+	}
+	f.booking("BK-2", "C-1", "EVER GLORY", "0130W", f.at.Add(240*time.Hour), 23)
+	f.post(ops, "/v1/ocean-movements", "", M{"movement_id": "OM-2", "consolidation_id": "C-1", "booking_id": "BK-2", "occurred_at": f.hours(23)})
+	f.post(ops, "/v1/container-visits/CV-2/roll", cv("CV-2"), M{"to_movement_id": "OM-2", "reason": "shut out at the terminal; rolled to EVER GLORY 0130W", "occurred_at": f.hours(24)})
+	f.load("CV-1", 26)
+	f.post(ops, "/v1/ocean-movements/OM-1/finalize-doc-facts", om("OM-1"), M{"occurred_at": f.hours(26)})
+	f.bill("OM-2", "linu2612000777", 30)
+	f.load("CV-2", 40)
+	f.post(ops, "/v1/ocean-movements/OM-2/finalize-doc-facts", om("OM-2"), M{"occurred_at": f.hours(40)})
+
+	// C-2: H03's box stuffed and sealed, its booking and movement OM-3
+	f.post(ops, "/v1/consolidations/C-2/close", "GET /v1/consolidations/C-2", M{"occurred_at": f.hours(30)})
+	f.post(wh, "/v1/load-executions", "", M{"execution_id": "X-3", "consolidation_id": "C-2", "kind": "STUFFING", "facility": cfs, "load_unit_no": 1, "occurred_at": f.hours(31)})
+	f.post(wh, "/v1/load-executions/X-3/start", `"1"`, M{"occurred_at": f.hours(31)})
+	f.post(wh, "/v1/load-executions/X-3/loaded", x("X-3"), M{"lot_id": "L-H03", "packs": 6, "evidence": evidenceAt("CFS-TALLY", "T-X-3H03", f.hours(32)), "occurred_at": f.hours(32)})
+	f.post(wh, "/v1/load-executions/X-3/close", x("X-3"), M{"evidence": evidenceAt("SEAL", "SEAL-X-3", f.hours(33)), "occurred_at": f.hours(33)})
+	f.post(ops, "/v1/shipments/SH-H03/load-evidence", "GET /v1/shipments/SH-H03", M{"occurred_at": f.hours(34)})
+	f.booking("BK-3", "C-2", "EVER GIVEN", "0124E", f.at.Add(96*time.Hour), 30)
+	f.post(ops, "/v1/ocean-movements", "", M{"movement_id": "OM-3", "consolidation_id": "C-2", "booking_id": "BK-3", "occurred_at": f.hours(30)})
+	f.post(ops, "/v1/ocean-movements/OM-3/house-bills", om("OM-3"), M{"shipment_id": "SH-H03", "occurred_at": f.hours(34)})
+	f.post(ops, "/v1/container-visits", "", M{"visit_id": "CV-3", "movement_id": "OM-3", "load_unit_no": 1, "container_number": "msku1234565", "size_type": "22G1",
+		"tare_kg": 2180, "max_gross_kg": 30480, "plate_source": "CSC_PLATE", "occurred_at": f.hours(35)})
+	f.post(ops, "/v1/container-visits/CV-3/seals", cv("CV-3"), M{"number": "seal-x-3", "party": "SHIPPER", "applied_at": f.hours(33), "source": "tally sheet", "occurred_at": f.hours(35)})
+	f.post(wh, "/v1/container-visits/CV-3/stuffing-done", cv("CV-3"), M{"occurred_at": f.hours(36)})
+	f.post(ops, "/v1/container-visits/CV-3/vgm-assertions", cv("CV-3"), M{"mass": kgm(2900), "method": "METHOD_2", "responsible_party_id": "LE",
+		"responsible_party_revision": 1, "determined_at": f.hours(36), "signatory": "Ada", "occurred_at": f.hours(36)})
+	f.bill("OM-3", "linu2611000999", 36)
+	f.load("CV-3", 44)
+	f.post(ops, "/v1/ocean-movements/OM-3/finalize-doc-facts", om("OM-3"), M{"occurred_at": f.hours(44)})
+
+	// FIN: box B's storage fee; H03's former shares attributed in one preview, submitted by another person
+	now := func() string { return time.Now().UTC().Add(-time.Minute).Format(time.RFC3339) }
+	f.post(fin, "/v1/fin/pools/P-1/costs", "GET /v1/fin/pools/P-1", M{"charge_code": "STORAGE", "description": "storage of box B", "method": "CHARGEABLE", "load_unit_no": 2,
+		"cost": M{"party_id": "line-1", "amount": jcny(30_000)}, "reason": "storage of box B until EVER GLORY", "occurred_at": now()})
+	preview = f.post(fin, "/v1/fin/pools/P-1/previews", "GET /v1/fin/pools/P-1", M{"line_nos": []int{4}, "occurred_at": now()})
+	f.post(manager, fmt.Sprintf("/v1/fin/pools/P-1/previews/%v/submit", preview["version"]), "GET /v1/fin/pools/P-1", M{"occurred_at": now()})
+	preview = f.post(fin, "/v1/fin/pools/P-1/previews", "GET /v1/fin/pools/P-1", M{"line_nos": []int{1, 2, 3}, "occurred_at": now(), "attributions": []M{
+		{"line_no": 1, "shipment_id": "SH-H03", "loss": 0, "exception": 0, "voucher": "CLAIM-1"},
+		{"line_no": 3, "shipment_id": "SH-H03", "loss": 6_000, "exception": 0, "voucher": "REWORK-1"}}})
+	f.refused("the asker of the rework submits", rita, fmt.Sprintf("/v1/fin/pools/P-1/previews/%v/submit", preview["version"]), f.etag(fin, "/v1/fin/pools/P-1"),
+		M{"occurred_at": now()}, 422) // FIN_CONFIRMER_ASKED_REWORK
+	f.post(manager, fmt.Sprintf("/v1/fin/pools/P-1/previews/%v/submit", preview["version"]), "GET /v1/fin/pools/P-1", M{"occurred_at": now()})
+	after := map[string]int64{"H01": 126_000, "H02": 186_000, "H03": 109_000, "H04": 186_000, "H05": 96_000}
+	f.bears("after H03 left and box B rolled", after)
+	var revenue, cost int64
+	for h := range after {
+		p := f.get(fin, "/v1/fin/jobs/JOB-"+h+"/profit")
+		revenue += int64(dig(p, "revenue", "minor").(float64))
+		cost += int64(dig(p, "pool_cost", "minor").(float64))
+	}
+	if revenue != 920_000 || cost != 703_000 || revenue-cost != 217_000 {
 		t.Fatalf("revenue %d, cost %d, profit %d", revenue, cost, revenue-cost)
 	}
 }
