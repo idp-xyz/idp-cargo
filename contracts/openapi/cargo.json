@@ -25,6 +25,1107 @@
         },
         "type": "object"
       },
+      "air.AirDocFacts": {
+        "additionalProperties": false,
+        "properties": {
+          "airline_designator": {
+            "type": "string"
+          },
+          "airline_party_id": {
+            "type": "string"
+          },
+          "airline_party_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "awb_prefix": {
+            "type": "string"
+          },
+          "booking_id": {
+            "type": "string"
+          },
+          "capacity_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "chargeable_rule": {
+            "type": "string"
+          },
+          "chargeable_weight": {
+            "$ref": "#/components/schemas/kernel.Quantity"
+          },
+          "consolidation_id": {
+            "type": "string"
+          },
+          "content": {
+            "contentEncoding": "base64",
+            "type": "string"
+          },
+          "destination": {
+            "$ref": "#/components/schemas/air.Airport"
+          },
+          "finalized_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "finalized_by": {
+            "type": "string"
+          },
+          "flights": {
+            "items": {
+              "$ref": "#/components/schemas/air.DocFlight"
+            },
+            "type": "array"
+          },
+          "gross_weight": {
+            "$ref": "#/components/schemas/kernel.Quantity"
+          },
+          "houses": {
+            "items": {
+              "$ref": "#/components/schemas/air.DocHouse"
+            },
+            "type": "array"
+          },
+          "location_edition": {
+            "type": "string"
+          },
+          "mawb": {
+            "type": "string"
+          },
+          "mawb_source": {
+            "type": "string"
+          },
+          "movement_id": {
+            "type": "string"
+          },
+          "operating_legal_entity_id": {
+            "type": "string"
+          },
+          "origin": {
+            "$ref": "#/components/schemas/air.Airport"
+          },
+          "pieces": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "security_status": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "volume": {
+            "$ref": "#/components/schemas/kernel.Quantity"
+          }
+        },
+        "type": "object"
+      },
+      "air.AirMovement": {
+        "additionalProperties": false,
+        "properties": {
+          "airline_designator": {
+            "type": "string"
+          },
+          "airline_party_id": {
+            "type": "string"
+          },
+          "airline_party_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "awb_prefix": {
+            "type": "string"
+          },
+          "booking_id": {
+            "type": "string"
+          },
+          "capacity_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "chargeable_weight": {
+            "$ref": "#/components/schemas/kernel.Quantity"
+          },
+          "consolidation_id": {
+            "type": "string"
+          },
+          "destination": {
+            "$ref": "#/components/schemas/air.Airport"
+          },
+          "doc_facts_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "flights": {
+            "items": {
+              "$ref": "#/components/schemas/air.FlightSegment"
+            },
+            "type": "array"
+          },
+          "gross_weight": {
+            "$ref": "#/components/schemas/kernel.Quantity"
+          },
+          "houses": {
+            "items": {
+              "$ref": "#/components/schemas/air.House"
+            },
+            "type": "array"
+          },
+          "location_edition": {
+            "type": "string"
+          },
+          "mawb": {
+            "type": "string"
+          },
+          "mawb_status": {
+            "type": "string"
+          },
+          "movement_id": {
+            "type": "string"
+          },
+          "operating_legal_entity_id": {
+            "type": "string"
+          },
+          "origin": {
+            "$ref": "#/components/schemas/air.Airport"
+          },
+          "pieces": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "state": {
+            "type": "string"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "volume": {
+            "$ref": "#/components/schemas/kernel.Quantity"
+          }
+        },
+        "type": "object"
+      },
+      "air.Airport": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/kernel.LocationCode"
+          },
+          "iata": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "air.DocFlight": {
+        "additionalProperties": false,
+        "properties": {
+          "eta": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "etd": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "flight": {
+            "type": "string"
+          },
+          "from": {
+            "$ref": "#/components/schemas/air.Airport"
+          },
+          "to": {
+            "$ref": "#/components/schemas/air.Airport"
+          }
+        },
+        "type": "object"
+      },
+      "air.DocHouse": {
+        "additionalProperties": false,
+        "properties": {
+          "basis": {
+            "type": "string"
+          },
+          "chargeable_weight": {
+            "$ref": "#/components/schemas/kernel.Quantity"
+          },
+          "evidence_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "gross_weight": {
+            "$ref": "#/components/schemas/kernel.Quantity"
+          },
+          "hawb": {
+            "type": "string"
+          },
+          "parts": {
+            "items": {
+              "$ref": "#/components/schemas/air.DocPart"
+            },
+            "type": "array"
+          },
+          "pieces": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "plan_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "screenings": {
+            "items": {
+              "$ref": "#/components/schemas/air.Screening"
+            },
+            "type": "array"
+          },
+          "security_status": {
+            "type": "string"
+          },
+          "shipment_id": {
+            "type": "string"
+          },
+          "volume": {
+            "$ref": "#/components/schemas/kernel.Quantity"
+          }
+        },
+        "type": "object"
+      },
+      "air.DocPart": {
+        "additionalProperties": false,
+        "properties": {
+          "goods_description": {
+            "type": "string"
+          },
+          "obligation_id": {
+            "type": "string"
+          },
+          "obligation_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "order_id": {
+            "type": "string"
+          },
+          "package_type": {
+            "type": "string"
+          },
+          "packs": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "air.FlightSegment": {
+        "additionalProperties": false,
+        "properties": {
+          "booking_id": {
+            "type": "string"
+          },
+          "capacity_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "current": {
+            "type": "boolean"
+          },
+          "eta": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "etd": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "flight": {
+            "type": "string"
+          },
+          "from": {
+            "$ref": "#/components/schemas/air.Airport"
+          },
+          "segment": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "to": {
+            "$ref": "#/components/schemas/air.Airport"
+          }
+        },
+        "type": "object"
+      },
+      "air.HawbSeries": {
+        "additionalProperties": false,
+        "properties": {
+          "first_number": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "last": {
+            "items": {
+              "$ref": "#/components/schemas/air.NumberPeriod"
+            },
+            "type": "array"
+          },
+          "legal_entity_id": {
+            "type": "string"
+          },
+          "revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "template": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "air.House": {
+        "additionalProperties": false,
+        "properties": {
+          "associated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "basis": {
+            "type": "string"
+          },
+          "chargeable_rule": {
+            "type": "string"
+          },
+          "chargeable_weight": {
+            "$ref": "#/components/schemas/kernel.Quantity"
+          },
+          "end": {
+            "type": "string"
+          },
+          "ended_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "entry_no": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "evidence_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "ful_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "gross_weight": {
+            "$ref": "#/components/schemas/kernel.Quantity"
+          },
+          "hawb": {
+            "type": "string"
+          },
+          "parts": {
+            "items": {
+              "$ref": "#/components/schemas/air.HousePart"
+            },
+            "type": "array"
+          },
+          "pieces": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "plan_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "screenings": {
+            "items": {
+              "$ref": "#/components/schemas/air.Screening"
+            },
+            "type": "array"
+          },
+          "security_status": {
+            "type": "string"
+          },
+          "shipment_id": {
+            "type": "string"
+          },
+          "start": {
+            "type": "string"
+          },
+          "volume": {
+            "$ref": "#/components/schemas/kernel.Quantity"
+          },
+          "window_drift": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "air.HousePart": {
+        "additionalProperties": false,
+        "properties": {
+          "goods_description": {
+            "type": "string"
+          },
+          "gross_weight": {
+            "$ref": "#/components/schemas/kernel.Quantity"
+          },
+          "obligation_id": {
+            "type": "string"
+          },
+          "obligation_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "order_id": {
+            "type": "string"
+          },
+          "package_type": {
+            "type": "string"
+          },
+          "packs": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "volume": {
+            "$ref": "#/components/schemas/kernel.Quantity"
+          }
+        },
+        "type": "object"
+      },
+      "air.HouseWaybillRef": {
+        "additionalProperties": false,
+        "properties": {
+          "entry_no": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "hawb": {
+            "type": "string"
+          },
+          "legal_entity_id": {
+            "type": "string"
+          },
+          "movement_id": {
+            "type": "string"
+          },
+          "shipment_id": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "air.NumberPeriod": {
+        "additionalProperties": false,
+        "properties": {
+          "last": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "period": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "air.Receipt": {
+        "additionalProperties": false,
+        "properties": {
+          "command_id": {
+            "type": "string"
+          },
+          "entry_no": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "facts_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "hawb": {
+            "type": "string"
+          },
+          "movement_id": {
+            "type": "string"
+          },
+          "new_revision": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "air.Screening": {
+        "additionalProperties": false,
+        "properties": {
+          "lot_id": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "outcome": {
+            "type": "string"
+          },
+          "reference": {
+            "type": "string"
+          },
+          "screened_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "screener": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "book.Answer": {
+        "additionalProperties": false,
+        "properties": {
+          "carrier_time": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "channel": {
+            "type": "string"
+          },
+          "evidence": {
+            "$ref": "#/components/schemas/book.Evidence"
+          },
+          "reason_code": {
+            "type": "string"
+          },
+          "reason_text": {
+            "type": "string"
+          },
+          "references": {
+            "items": {
+              "$ref": "#/components/schemas/book.CarrierReference"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "book.BookingSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "booking_id": {
+            "type": "string"
+          },
+          "carrier_party_id": {
+            "type": "string"
+          },
+          "consumer_id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "pending_since": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "book.Capacity": {
+        "additionalProperties": false,
+        "properties": {
+          "equipment": {
+            "items": {
+              "$ref": "#/components/schemas/book.Equipment"
+            },
+            "type": "array"
+          },
+          "gross_weight": {
+            "$ref": "#/components/schemas/kernel.Quantity"
+          },
+          "pieces": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "volume": {
+            "$ref": "#/components/schemas/kernel.Quantity"
+          }
+        },
+        "type": "object"
+      },
+      "book.CapacityLeg": {
+        "additionalProperties": false,
+        "properties": {
+          "cut_offs": {
+            "items": {
+              "$ref": "#/components/schemas/book.CutOff"
+            },
+            "type": "array"
+          },
+          "discharge": {
+            "$ref": "#/components/schemas/book.ResolvedLocation"
+          },
+          "eta": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "etd": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "flight": {
+            "type": "string"
+          },
+          "loading": {
+            "$ref": "#/components/schemas/book.ResolvedLocation"
+          },
+          "vessel": {
+            "type": "string"
+          },
+          "vessel_imo": {
+            "type": "string"
+          },
+          "voyage": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "book.CapacityLine": {
+        "additionalProperties": false,
+        "properties": {
+          "capacity": {
+            "$ref": "#/components/schemas/book.Capacity"
+          },
+          "carrier_reference": {
+            "type": "string"
+          },
+          "legs": {
+            "items": {
+              "$ref": "#/components/schemas/book.ConfirmedLeg"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "book.CapacityLineView": {
+        "additionalProperties": false,
+        "properties": {
+          "capacity": {
+            "$ref": "#/components/schemas/book.Capacity"
+          },
+          "carrier_reference": {
+            "type": "string"
+          },
+          "legs": {
+            "items": {
+              "$ref": "#/components/schemas/book.CapacityLeg"
+            },
+            "type": "array"
+          },
+          "line": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "book.CapacityVersion": {
+        "additionalProperties": false,
+        "properties": {
+          "confirmed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/book.CapacityLineView"
+            },
+            "type": "array"
+          },
+          "location_edition": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "recorded_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "version": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "book.CarrierBooking": {
+        "additionalProperties": false,
+        "properties": {
+          "awaiting_carrier_since": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "booking_id": {
+            "type": "string"
+          },
+          "capacity": {
+            "$ref": "#/components/schemas/book.CapacityVersion"
+          },
+          "carrier_awb_prefix": {
+            "type": "string"
+          },
+          "carrier_iata_designator": {
+            "type": "string"
+          },
+          "carrier_party_id": {
+            "type": "string"
+          },
+          "carrier_party_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "carrier_role": {
+            "type": "string"
+          },
+          "confirmation_level": {
+            "type": "string"
+          },
+          "consumer_id": {
+            "type": "string"
+          },
+          "consumer_kind": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "legal_entity_id": {
+            "type": "string"
+          },
+          "mawb_number": {
+            "type": "string"
+          },
+          "rebooks": {
+            "type": "string"
+          },
+          "references": {
+            "items": {
+              "$ref": "#/components/schemas/book.CarrierReference"
+            },
+            "type": "array"
+          },
+          "request": {
+            "$ref": "#/components/schemas/book.RequestVersion"
+          },
+          "revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "status": {
+            "type": "string"
+          },
+          "superseded_capacity": {
+            "items": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "tenant_id": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "book.CarrierReference": {
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "book.ConfirmedLeg": {
+        "additionalProperties": false,
+        "properties": {
+          "cut_offs": {
+            "items": {
+              "$ref": "#/components/schemas/book.CutOff"
+            },
+            "type": "array"
+          },
+          "discharge": {
+            "$ref": "#/components/schemas/kernel.LocationCode"
+          },
+          "eta": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "etd": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "flight": {
+            "type": "string"
+          },
+          "loading": {
+            "$ref": "#/components/schemas/kernel.LocationCode"
+          },
+          "vessel": {
+            "type": "string"
+          },
+          "vessel_imo": {
+            "type": "string"
+          },
+          "voyage": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "book.CutOff": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "location": {
+            "$ref": "#/components/schemas/kernel.LocationCode"
+          },
+          "time_zone": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "book.CutOffDue": {
+        "additionalProperties": false,
+        "properties": {
+          "booking_id": {
+            "type": "string"
+          },
+          "capacity_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "consumer_id": {
+            "type": "string"
+          },
+          "cut_off": {
+            "$ref": "#/components/schemas/book.CutOff"
+          },
+          "flight": {
+            "type": "string"
+          },
+          "leg": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "line": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "voyage": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "book.Equipment": {
+        "additionalProperties": false,
+        "properties": {
+          "count": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "size_type": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "book.Evidence": {
+        "additionalProperties": false,
+        "properties": {
+          "captured_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "media_type": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "storage_id": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "book.Receipt": {
+        "additionalProperties": false,
+        "properties": {
+          "booking_id": {
+            "type": "string"
+          },
+          "command_id": {
+            "type": "string"
+          },
+          "new_revision": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "book.Request": {
+        "additionalProperties": false,
+        "properties": {
+          "capacity": {
+            "$ref": "#/components/schemas/book.Capacity"
+          },
+          "forwarder_reference": {
+            "type": "string"
+          },
+          "handling_codes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "legs": {
+            "items": {
+              "$ref": "#/components/schemas/book.RequestedLeg"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "book.RequestVersion": {
+        "additionalProperties": false,
+        "properties": {
+          "capacity": {
+            "$ref": "#/components/schemas/book.Capacity"
+          },
+          "forwarder_reference": {
+            "type": "string"
+          },
+          "handling_codes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "legs": {
+            "items": {
+              "$ref": "#/components/schemas/book.ResolvedLeg"
+            },
+            "type": "array"
+          },
+          "location_edition": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "written_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "book.RequestedLeg": {
+        "additionalProperties": false,
+        "properties": {
+          "departure_date": {
+            "type": "string"
+          },
+          "discharge": {
+            "$ref": "#/components/schemas/kernel.LocationCode"
+          },
+          "flight": {
+            "type": "string"
+          },
+          "loading": {
+            "$ref": "#/components/schemas/kernel.LocationCode"
+          },
+          "vessel": {
+            "type": "string"
+          },
+          "voyage": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "book.ResolvedLeg": {
+        "additionalProperties": false,
+        "properties": {
+          "departure_date": {
+            "type": "string"
+          },
+          "discharge": {
+            "$ref": "#/components/schemas/book.ResolvedLocation"
+          },
+          "flight": {
+            "type": "string"
+          },
+          "loading": {
+            "$ref": "#/components/schemas/book.ResolvedLocation"
+          },
+          "vessel": {
+            "type": "string"
+          },
+          "voyage": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "book.ResolvedLocation": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/kernel.LocationCode"
+          },
+          "iata": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "bootstrap.ModuleFailure": {
         "additionalProperties": false,
         "properties": {
@@ -2864,10 +3965,2385 @@
   "info": {
     "description": "Cargo's HTTP API. Every /v1 call carries a bearer token; the tenant and the actor come only from it. A command carries Idempotency-Key (its command id) and, when it changes a resource at a revision, If-Match \"n\"; it states its business time in occurred_at. Errors are RFC 9457 problems with a business code.",
     "title": "IDP Cargo API",
-    "version": "2.107"
+    "version": "2.108"
   },
   "openapi": "3.1.0",
   "paths": {
+    "/v1/air-movements": {
+      "get": {
+        "operationId": "air.FindAirMovementByMAWB",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "mawb",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/air.AirMovement"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "A movement by its MAWB number (?mawb=)",
+        "tags": [
+          "air"
+        ],
+        "x-calls": "FindAirMovementByMAWB",
+        "x-permission": "air:Read"
+      },
+      "post": {
+        "operationId": "air.OpenAirMovement",
+        "parameters": [
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "booking_id": {
+                    "type": "string"
+                  },
+                  "consolidation_id": {
+                    "type": "string"
+                  },
+                  "movement_id": {
+                    "type": "string"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/air.Receipt"
+                }
+              }
+            },
+            "description": "Created",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Open an air movement from a confirmed booking",
+        "tags": [
+          "air"
+        ],
+        "x-calls": "OpenAirMovement",
+        "x-permission": "air:OpenAirMovement"
+      }
+    },
+    "/v1/air-movements/{movement_id}": {
+      "get": {
+        "operationId": "air.GetAirMovement",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "movement_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/air.AirMovement"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "An air movement: its flights, houses and MAWB",
+        "tags": [
+          "air"
+        ],
+        "x-calls": "GetAirMovement",
+        "x-permission": "air:Read"
+      }
+    },
+    "/v1/air-movements/{movement_id}/cancel": {
+      "post": {
+        "operationId": "air.CancelAirMovement",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "movement_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/air.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Cancel the movement",
+        "tags": [
+          "air"
+        ],
+        "x-calls": "CancelAirMovement",
+        "x-permission": "air:CancelAirMovement"
+      }
+    },
+    "/v1/air-movements/{movement_id}/doc-facts/{version}": {
+      "get": {
+        "operationId": "air.GetAirDocFacts",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "movement_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/air.AirDocFacts"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "A version of the facts (0: the latest)",
+        "tags": [
+          "air"
+        ],
+        "x-calls": "GetAirDocFacts",
+        "x-permission": "air:Read"
+      }
+    },
+    "/v1/air-movements/{movement_id}/finalize-doc-facts": {
+      "post": {
+        "operationId": "air.FinalizeAirDocFacts",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "movement_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/air.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Finalize the facts DOC issues from",
+        "tags": [
+          "air"
+        ],
+        "x-calls": "FinalizeAirDocFacts",
+        "x-permission": "air:FinalizeAirDocFacts"
+      }
+    },
+    "/v1/air-movements/{movement_id}/house-waybills": {
+      "post": {
+        "operationId": "air.AssociateHouseWaybill",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "movement_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "hawb": {
+                    "type": "string"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "shipment_id": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/air.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Associate a house and draw its HAWB",
+        "tags": [
+          "air"
+        ],
+        "x-calls": "AssociateHouseWaybill",
+        "x-permission": "air:AssociateHouseWaybill"
+      }
+    },
+    "/v1/air-movements/{movement_id}/house-waybills/{shipment_id}/end": {
+      "post": {
+        "operationId": "air.EndHouseWaybillAssociation",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "movement_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "shipment_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/air.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "End a house FUL reports detached",
+        "tags": [
+          "air"
+        ],
+        "x-calls": "EndHouseWaybillAssociation",
+        "x-permission": "air:EndHouseWaybillAssociation"
+      }
+    },
+    "/v1/air-movements/{movement_id}/house-waybills/{shipment_id}/refresh": {
+      "post": {
+        "operationId": "air.RefreshHouseWaybillFacts",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "movement_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "shipment_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/air.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Refresh a house from FUL's latest plan",
+        "tags": [
+          "air"
+        ],
+        "x-calls": "RefreshHouseWaybillFacts",
+        "x-permission": "air:RefreshHouseWaybillFacts"
+      }
+    },
+    "/v1/air-movements/{movement_id}/link-carrier-booking": {
+      "post": {
+        "operationId": "air.LinkCarrierBooking",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "movement_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/air.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Take the booking's newer capacity",
+        "tags": [
+          "air"
+        ],
+        "x-calls": "LinkCarrierBooking",
+        "x-permission": "air:LinkCarrierBooking"
+      }
+    },
+    "/v1/booking-references": {
+      "get": {
+        "operationId": "book.FindBookingByCarrierReference",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "carrier_party_id",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "type",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "value",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/book.CarrierBooking"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "A booking by the carrier's reference",
+        "tags": [
+          "book"
+        ],
+        "x-calls": "FindBookingByCarrierReference",
+        "x-permission": "book:Read"
+      }
+    },
+    "/v1/bookings": {
+      "get": {
+        "operationId": "book.ListCapacityForConsumer",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "consolidation_id",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "items": {
+                      "items": {
+                        "$ref": "#/components/schemas/book.CarrierBooking"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "The confirmed bookings whose capacity is allocated to a consolidation",
+        "tags": [
+          "book"
+        ],
+        "x-calls": "ListCapacityForConsumer",
+        "x-permission": "book:Read"
+      },
+      "post": {
+        "operationId": "book.DraftCarrierBooking",
+        "parameters": [
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "booking_id": {
+                    "type": "string"
+                  },
+                  "carrier_party_id": {
+                    "type": "string"
+                  },
+                  "consolidation_id": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "type": "string"
+                  },
+                  "legal_entity_id": {
+                    "type": "string"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "rebooks": {
+                    "type": "string"
+                  },
+                  "request": {
+                    "$ref": "#/components/schemas/book.Request"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/book.Receipt"
+                }
+              }
+            },
+            "description": "Created",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Draft a booking with a carrier",
+        "tags": [
+          "book"
+        ],
+        "x-calls": "DraftCarrierBooking",
+        "x-permission": "book:DraftCarrierBooking"
+      }
+    },
+    "/v1/bookings-awaiting-carrier": {
+      "get": {
+        "operationId": "book.ListBookingsAwaitingCarrier",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "sent_before",
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "items": {
+                      "items": {
+                        "$ref": "#/components/schemas/book.BookingSummary"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Requests sent and not answered",
+        "tags": [
+          "book"
+        ],
+        "x-calls": "ListBookingsAwaitingCarrier",
+        "x-permission": "book:Read"
+      }
+    },
+    "/v1/bookings/{booking_id}": {
+      "get": {
+        "operationId": "book.GetCarrierBooking",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "booking_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/book.CarrierBooking"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "A booking: its request, the carrier's answers and the capacity in force",
+        "tags": [
+          "book"
+        ],
+        "x-calls": "GetCarrierBooking",
+        "x-permission": "book:Read"
+      }
+    },
+    "/v1/bookings/{booking_id}/acknowledgement": {
+      "post": {
+        "operationId": "book.RecordCarrierAcknowledgement",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "booking_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "answer": {
+                    "$ref": "#/components/schemas/book.Answer"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/book.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Record the carrier's acknowledgement",
+        "tags": [
+          "book"
+        ],
+        "x-calls": "RecordCarrierAcknowledgement",
+        "x-permission": "book:RecordCarrierAcknowledgement"
+      }
+    },
+    "/v1/bookings/{booking_id}/cancellation-confirmed": {
+      "post": {
+        "operationId": "book.RecordCancellationConfirmed",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "booking_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "answer": {
+                    "$ref": "#/components/schemas/book.Answer"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/book.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Record the carrier's confirmation of the cancellation",
+        "tags": [
+          "book"
+        ],
+        "x-calls": "RecordCancellationConfirmed",
+        "x-permission": "book:RecordCancellationConfirmed"
+      }
+    },
+    "/v1/bookings/{booking_id}/cancellation-request": {
+      "post": {
+        "operationId": "book.RequestBookingCancellation",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "booking_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "channel": {
+                    "type": "string"
+                  },
+                  "evidence": {
+                    "$ref": "#/components/schemas/book.Evidence"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/book.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Request the cancellation",
+        "tags": [
+          "book"
+        ],
+        "x-calls": "RequestBookingCancellation",
+        "x-permission": "book:RequestBookingCancellation"
+      }
+    },
+    "/v1/bookings/{booking_id}/carrier-change": {
+      "post": {
+        "operationId": "book.RecordCarrierChange",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "booking_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "answer": {
+                    "$ref": "#/components/schemas/book.Answer"
+                  },
+                  "lines": {
+                    "items": {
+                      "$ref": "#/components/schemas/book.CapacityLine"
+                    },
+                    "type": "array"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/book.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Record a change the carrier made: schedule, rollover, reduction, split",
+        "tags": [
+          "book"
+        ],
+        "x-calls": "RecordCarrierChange",
+        "x-permission": "book:RecordCarrierChange"
+      }
+    },
+    "/v1/bookings/{booking_id}/change-confirmed": {
+      "post": {
+        "operationId": "book.RecordChangeConfirmed",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "booking_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "answer": {
+                    "$ref": "#/components/schemas/book.Answer"
+                  },
+                  "lines": {
+                    "items": {
+                      "$ref": "#/components/schemas/book.CapacityLine"
+                    },
+                    "type": "array"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/book.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Record the carrier's confirmation of a requested change",
+        "tags": [
+          "book"
+        ],
+        "x-calls": "RecordChangeConfirmed",
+        "x-permission": "book:RecordChangeConfirmed"
+      }
+    },
+    "/v1/bookings/{booking_id}/change-refused": {
+      "post": {
+        "operationId": "book.RecordChangeRefused",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "booking_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "answer": {
+                    "$ref": "#/components/schemas/book.Answer"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/book.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Record the carrier's refusal of a requested change",
+        "tags": [
+          "book"
+        ],
+        "x-calls": "RecordChangeRefused",
+        "x-permission": "book:RecordChangeRefused"
+      }
+    },
+    "/v1/bookings/{booking_id}/change-request": {
+      "post": {
+        "operationId": "book.RequestBookingChange",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "booking_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "channel": {
+                    "type": "string"
+                  },
+                  "evidence": {
+                    "$ref": "#/components/schemas/book.Evidence"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  },
+                  "request": {
+                    "$ref": "#/components/schemas/book.Request"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/book.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Request a change of the booking",
+        "tags": [
+          "book"
+        ],
+        "x-calls": "RequestBookingChange",
+        "x-permission": "book:RequestBookingChange"
+      }
+    },
+    "/v1/bookings/{booking_id}/confirmation": {
+      "post": {
+        "operationId": "book.RecordCarrierConfirmation",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "booking_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "answer": {
+                    "$ref": "#/components/schemas/book.Answer"
+                  },
+                  "lines": {
+                    "items": {
+                      "$ref": "#/components/schemas/book.CapacityLine"
+                    },
+                    "type": "array"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/book.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Record the carrier's confirmation: the capacity lines",
+        "tags": [
+          "book"
+        ],
+        "x-calls": "RecordCarrierConfirmation",
+        "x-permission": "book:RecordCarrierConfirmation"
+      }
+    },
+    "/v1/bookings/{booking_id}/decline": {
+      "post": {
+        "operationId": "book.RecordCarrierDecline",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "booking_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "answer": {
+                    "$ref": "#/components/schemas/book.Answer"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/book.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Record that the carrier declined the booking",
+        "tags": [
+          "book"
+        ],
+        "x-calls": "RecordCarrierDecline",
+        "x-permission": "book:RecordCarrierDecline"
+      }
+    },
+    "/v1/bookings/{booking_id}/reassign": {
+      "post": {
+        "operationId": "book.ReassignBookingCapacity",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "booking_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "consolidation_id": {
+                    "type": "string"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/book.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Reassign the capacity to another consolidation",
+        "tags": [
+          "book"
+        ],
+        "x-calls": "ReassignBookingCapacity",
+        "x-permission": "book:ReassignBookingCapacity"
+      }
+    },
+    "/v1/bookings/{booking_id}/rejection": {
+      "post": {
+        "operationId": "book.RecordCarrierRejection",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "booking_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "answer": {
+                    "$ref": "#/components/schemas/book.Answer"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/book.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Record the carrier's rejection",
+        "tags": [
+          "book"
+        ],
+        "x-calls": "RecordCarrierRejection",
+        "x-permission": "book:RecordCarrierRejection"
+      }
+    },
+    "/v1/bookings/{booking_id}/request": {
+      "post": {
+        "operationId": "book.AmendBookingRequest",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "booking_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  },
+                  "request": {
+                    "$ref": "#/components/schemas/book.Request"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/book.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Amend the request before it is sent",
+        "tags": [
+          "book"
+        ],
+        "x-calls": "AmendBookingRequest",
+        "x-permission": "book:AmendBookingRequest"
+      }
+    },
+    "/v1/bookings/{booking_id}/sent": {
+      "post": {
+        "operationId": "book.RecordBookingRequestSent",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "booking_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "channel": {
+                    "type": "string"
+                  },
+                  "evidence": {
+                    "$ref": "#/components/schemas/book.Evidence"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/book.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Record the request sent, with its evidence",
+        "tags": [
+          "book"
+        ],
+        "x-calls": "RecordBookingRequestSent",
+        "x-permission": "book:RecordBookingRequestSent"
+      }
+    },
+    "/v1/bookings/{booking_id}/withdraw": {
+      "post": {
+        "operationId": "book.WithdrawDraftBooking",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "booking_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/book.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Withdraw a draft",
+        "tags": [
+          "book"
+        ],
+        "x-calls": "WithdrawDraftBooking",
+        "x-permission": "book:WithdrawDraftBooking"
+      }
+    },
     "/v1/cargo-lots/{lot_id}": {
       "get": {
         "operationId": "phy.GetCargoLot",
@@ -5509,6 +8985,74 @@
         "x-calls": ""
       }
     },
+    "/v1/cut-offs": {
+      "get": {
+        "operationId": "book.ListCutOffsDue",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "from",
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "until",
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "items": {
+                      "items": {
+                        "$ref": "#/components/schemas/book.CutOffDue"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Cut-offs due in a window",
+        "tags": [
+          "book"
+        ],
+        "x-calls": "ListCutOffsDue",
+        "x-permission": "book:Read"
+      }
+    },
     "/v1/discrepancies": {
       "get": {
         "operationId": "phy.ListOpenDiscrepancies",
@@ -5707,6 +9251,139 @@
         "x-calls": ""
       }
     },
+    "/v1/hawb-series/{legal_entity_id}": {
+      "get": {
+        "operationId": "air.GetHawbSeries",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "legal_entity_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/air.HawbSeries"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "A legal entity's HAWB series",
+        "tags": [
+          "air"
+        ],
+        "x-calls": "GetHawbSeries",
+        "x-permission": "air:Read"
+      },
+      "post": {
+        "operationId": "air.RegisterHawbSeries",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "legal_entity_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "first_number": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "template": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/air.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Register a legal entity's HAWB series",
+        "tags": [
+          "air"
+        ],
+        "x-calls": "RegisterHawbSeries",
+        "x-permission": "air:RegisterHawbSeries"
+      }
+    },
     "/v1/hbl-series": {
       "post": {
         "description": "A route written before V2.106: its body and response are described in the context's adapter and in docs/api.",
@@ -5771,6 +9448,57 @@
           "sea"
         ],
         "x-calls": ""
+      }
+    },
+    "/v1/house-waybills/{legal_entity_id}/{hawb}": {
+      "get": {
+        "operationId": "air.FindHouseWaybill",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "legal_entity_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "hawb",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/air.HouseWaybillRef"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Where a HAWB number lives",
+        "tags": [
+          "air"
+        ],
+        "x-calls": "FindHouseWaybill",
+        "x-permission": "air:Read"
       }
     },
     "/v1/legal-entities": {

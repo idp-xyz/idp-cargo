@@ -8,6 +8,10 @@ import (
 	"sort"
 	"testing"
 
+	"go.idp.xyz/idp-cargo/internal/contexts/air"
+	airapi "go.idp.xyz/idp-cargo/internal/contexts/air/api"
+	"go.idp.xyz/idp-cargo/internal/contexts/book"
+	bookapi "go.idp.xyz/idp-cargo/internal/contexts/book/api"
 	"go.idp.xyz/idp-cargo/internal/contexts/com"
 	comapi "go.idp.xyz/idp-cargo/internal/contexts/com/api"
 	"go.idp.xyz/idp-cargo/internal/contexts/ful"
@@ -85,6 +89,9 @@ var covered = []coverage{
 		"GetPhysicalLoadEvidence": "FUL's read of the verified load evidence",
 		"GetPhysicalCostBasis":    "FIN's read of the actuals it apportions by",
 	}},
+	{context: "book", module: (*book.Module)(nil), interfaces: []reflect.Type{reflect.TypeFor[bookapi.Commands](), reflect.TypeFor[bookapi.Queries]()}},
+	{context: "air", module: (*air.Module)(nil), interfaces: []reflect.Type{reflect.TypeFor[airapi.Commands](), reflect.TypeFor[airapi.Queries](),
+		reflect.TypeFor[airapi.AirDocFactsQueries]()}},
 }
 
 func TestEveryPublicMethodOfARoutedContextHasOneRoute(t *testing.T) {

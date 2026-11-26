@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	bookhttp "go.idp.xyz/idp-cargo/internal/contexts/book/internal/adapters/http"
+	"go.idp.xyz/idp-cargo/internal/foundation/httpapi"
 	"slices"
 	"time"
 
@@ -452,3 +454,6 @@ func classify(err error) error {
 	}
 	return fmt.Errorf("%w: %w", kind, err)
 }
+
+// RegisterHTTP registers BOOK's inbound HTTP routes (since V2.108); the composition root calls it.
+func (m *Module) RegisterHTTP(r *httpapi.Routes) { bookhttp.Register(r, m) }

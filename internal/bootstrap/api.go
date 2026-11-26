@@ -40,8 +40,8 @@ func (c APIConfig) verifier() identity.HS256Verifier {
 // SEA's ocean movements and container visits, with BOOK's bookings and FUL's plans, which SEA reads, and FIN's profit
 // and cost review (V2.99), with FUL's and PHY's facts, which FIN reads; ORG's parties, legal entities, address books,
 // contact transfer register and onboardings, with the platform's onboarding commands (V2.106); COM's orders and FUL's
-// shipments (V2.107); PHY's consolidations, cargo lots and load executions (V2.107). BOOK, AIR and DOC have no routes
-// yet.
+// shipments (V2.107); PHY's consolidations, cargo lots and load executions (V2.107); BOOK's bookings and AIR's movements
+// (V2.108). DOC has no routes yet.
 func (p *Platform) API(cfg APIConfig) (http.Handler, error) {
 	switch {
 	case len(cfg.TokenKey) < 32 || cfg.TokenIssuer == "" || cfg.TokenAudience == "":
@@ -73,6 +73,10 @@ func (p *Platform) API(cfg APIConfig) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
+	air, err := p.AIR(book, ful, permissions{})
+	if err != nil {
+		return nil, err
+	}
 	// FIN's routes read the profit and run the cost review; no route issues a debit note, which is the only use FIN has
 	// for DOC's snapshots, so they stay unbound (a debit note asked for in process would be refused
 	// ErrDocumentsUnbound).
@@ -84,7 +88,7 @@ func (p *Platform) API(cfg APIConfig) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	return transport.NewHandler(transport.Config{Verifier: cfg.verifier(), Logger: cfg.Logger, Ready: p.pool.Ping}, apiRegistrars(rate, sea, fin, org, com, ful, phy, onboarding)...)
+	return transport.NewHandler(transport.Config{Verifier: cfg.verifier(), Logger: cfg.Logger, Ready: p.pool.Ping}, apiRegistrars(rate, sea, fin, org, com, ful, phy, book, air, onboarding)...)
 }
 
 // APIServer is an http.Server for the API's handler with Cargo's timeouts; its requests run under base.
@@ -180,6 +184,11 @@ func (permissions) AuthorizeShipmentAction(ctx context.Context, tenant, actor, a
 
 func (permissions) AuthorizeConsolidationAction(ctx context.Context, tenant, actor, action, _ string) error {
 	return identity.Authorize(ctx, "phy", tenant, actor, action)
+}
+
+// AuthorizeAirAction covers AIR's commands (since V2.108, when AIR is first served).
+func (permissions) AuthorizeAirAction(ctx context.Context, tenant, actor, action, _ string) error {
+	return identity.Authorize(ctx, "air", tenant, actor, action)
 }
 
 func (permissions) AuthorizeBookingAction(ctx context.Context, tenant, actor, action, _ string) error {

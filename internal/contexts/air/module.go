@@ -7,6 +7,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	airhttp "go.idp.xyz/idp-cargo/internal/contexts/air/internal/adapters/http"
+	"go.idp.xyz/idp-cargo/internal/foundation/httpapi"
 	"slices"
 	"strings"
 	"time"
@@ -428,3 +430,6 @@ func classify(err error) error {
 	}
 	return fmt.Errorf("%w: %w", kind, err)
 }
+
+// RegisterHTTP registers AIR's inbound HTTP routes (since V2.108); the composition root calls it.
+func (m *Module) RegisterHTTP(r *httpapi.Routes) { airhttp.Register(r, m) }
