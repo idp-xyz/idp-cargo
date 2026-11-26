@@ -13,7 +13,7 @@ import (
 // they can be changed. A permission granted by name only is listed by name: the wildcards never include it.
 //
 //   - ops: the operator: parties' address books and contacts, quotes, ocean movements and containers.
-//   - warehouse: the warehouse (CFS) staff.
+//   - warehouse: the warehouse (CFS) staff: receiving, stuffing and sealing in PHY, and the stuffing and seal in SEA.
 //   - docs: the documentation staff: contacts for a dispatch, the contact transfer register's reservations.
 //   - finance: the finance staff: jobs, receivables, payables, credit, fapiao, the profit and cost reviews.
 //   - finance-manager: the finance manager: as the staff, and by name the approval of one's own variance, the
@@ -26,7 +26,7 @@ var Roles = map[string][]string{
 	"ops": {"org:Read", "org:AddPartyAddress", "org:ChangePartyAddress", "org:DeactivatePartyAddress", "org:SetDefaultPartyAddress",
 		"org:AddPartyContact", "org:ChangePartyContact", "org:DeactivatePartyContact", "org:SetDefaultPartyContact", "org:ReadPartyContacts",
 		"rate:*", "sea:*", "com:*", "com:ReadOrderContacts", "ful:*", "phy:*", "book:*", "air:*", "doc:Read", "fin:Read"},
-	"warehouse": {"org:Read", "sea:Read", "com:Read", "ful:Read", "phy:*", "book:Read", "air:Read", "doc:Read"},
+	"warehouse": {"org:Read", "sea:Read", "sea:RecordStuffingDone", "sea:RecordContainerSeal", "com:Read", "ful:Read", "phy:*", "book:Read", "air:Read", "doc:Read"},
 	"docs": {"org:Read", "org:ReadPartyContacts", "org:ReserveContactTransfers", "org:ReleaseContactTransfers", "sea:Read",
 		"com:Read", "com:ReadOrderContacts", "com:LockOrderParties", "com:ReleaseOrderPartyLock", "ful:Read", "phy:Read", "book:Read", "air:Read", "doc:*"},
 	"finance": {"org:Read", "rate:Read", "sea:Read", "com:Read", "ful:Read", "phy:Read", "book:Read", "air:Read", "doc:Read", "fin:*"},
