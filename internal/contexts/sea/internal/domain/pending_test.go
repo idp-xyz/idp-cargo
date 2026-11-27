@@ -4,6 +4,9 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
+
+	"go.idp.xyz/idp-cargo/internal/kernel"
 )
 
 // The pending items of a movement (V2.88): each kind, blocking or warning, what Finalize does with them.
@@ -57,6 +60,9 @@ func TestEveryBlockingPendingItemIsListedAndRefusesFinalize(t *testing.T) {
 		{"house no longer reported", PendHouseNotReported, ScopeHouse, "SH-2", []string{"STALE_HOUSE: FUL no longer reports", "refresh the house, or end its association"}, func(d *reDay) { d.p2.ConsolidationID = "" }},
 		{"FUL behind PHY", PendFULBehind, ScopeHouse, "SH-1", []string{"FUL has not recorded PHY's latest facts", "refresh the house if SEA then reports it STALE_HOUSE"}, func(d *reDay) { d.p1.EvidenceBehind = true }},
 		{"house stale", PendHouseStale, ScopeHouse, "SH-1", []string{"STALE_HOUSE: FUL reports newer facts", "refresh it first"}, func(d *reDay) { d.p1.PlanVersion = 2 }},
+		{"house window changed", PendHouseWindow, ScopeHouse, "SH-1", []string{"another window the customer agreed to", "before the movement is finalized"}, func(d *reDay) {
+			d.p1.Window.Until = d.p1.Window.Until.Add(48 * time.Hour)
+		}},
 		{"no seal", PendContainerNoSeal, ScopeContainer, "CSQU3054383", []string{"has no seal", "RecordContainerSeal"}, func(d *reDay) { d.v.state.Seals = nil }},
 		{"houses disagree", PendHousesDisagree, ScopeContainer, "CSQU3054383", []string{"carry different seals", "refresh the houses"}, func(d *reDay) {
 			d.p1.Stuffings = []Stuffing{d.p1.Stuffings[0]}
@@ -128,6 +134,44 @@ func TestEveryBlockingPendingItemIsListedAndRefusesFinalize(t *testing.T) {
 		if !strings.Contains(err.Error(), first.Message) || (blocking > 1) != strings.Contains(err.Error(), "more pending items") {
 			t.Fatalf("%s: finalize %q does not name its first item %q (%d blocking)", c.name, err, first.Message, blocking)
 		}
+	}
+}
+
+// V2.110: a house whose agreed window alone changed in FUL blocks the finalization, not the stuffing (packing carries
+// on); a house departing outside its agreed window is a warning, and the published facts say it drifts.
+func TestAnAgreedWindowBlocksTheFinalizationNotTheStuffing(t *testing.T) {
+	d := newReDay(t)
+	d.p1.Window.Until = d.p1.Window.Until.Add(48 * time.Hour)
+	if err := d.m.CheckHouses([]Plan{d.p1, d.p2}, ErrNotStuffed); err != nil {
+		t.Fatalf("the stuffing with a new agreed window: %v", err)
+	}
+	if err := d.m.CheckHouses([]Plan{d.p1, d.p2}, ErrNotFinalizable); !errors.Is(err, ErrNotFinalizable) {
+		t.Fatalf("the finalization's check with a new agreed window: %v", err)
+	}
+	stale := newReDay(t)
+	stale.p1.PlanVersion = 2
+	if err := stale.m.CheckHouses([]Plan{stale.p1, stale.p2}, ErrNotStuffed); !errors.Is(err, ErrNotStuffed) {
+		t.Fatalf("the stuffing with a stale house: %v", err)
+	}
+
+	// the agreed window narrowed so that it ends before the first leg's ETD: SH-1 drifts, a warning, and is published so
+	e := newReDay(t)
+	etd := e.m.Current().Legs[0].ETD
+	e.p1.Window = kernel.ValidityInterval{From: etd.Add(-96 * time.Hour), Until: etd.Add(-time.Hour)}
+	e.p1.Revision++
+	if err := e.m.Refresh(e.p1, "ops", hr(26)); err != nil {
+		t.Fatal(err)
+	}
+	it := wantItem(t, "a drifting house", e.items(), WarnDateChangeUnanswered, false, "departs outside the window the customer agreed to", "DOC issues no bill")
+	if it.SubjectID != "SH-1" {
+		t.Fatalf("%+v", it)
+	}
+	if err := e.finalize(40); err != nil {
+		t.Fatalf("a drifting house blocked the finalization: %v", err)
+	}
+	v, _, _ := e.m.DocFactsVersion(0)
+	if !strings.Contains(string(v.Content), `"window_drift":true`) || strings.Count(string(v.Content), "window_drift") != 1 {
+		t.Fatalf("the published drift: %s", v.Content)
 	}
 }
 

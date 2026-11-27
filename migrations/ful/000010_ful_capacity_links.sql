@@ -73,8 +73,8 @@ CREATE TRIGGER shipment_capacity_link_leg_immutable BEFORE UPDATE OR DELETE ON c
 CREATE TRIGGER shipment_date_answer_immutable BEFORE UPDATE OR DELETE ON cargo_ful.shipment_date_answer
   FOR EACH ROW EXECUTE FUNCTION cargo_ful.reject_row_change();
 
--- A link joins a shipment that is not cancelled, whose row is locked first; it follows the previous link, and the
--- shipment is attached on the main carriage to the link's consolidation now.
+-- A link joins a shipment that is not cancelled, whose row is locked first; it follows the previous link, is not dated
+-- before it or before an answer, and the shipment is attached on the main carriage to the link's consolidation now.
 CREATE FUNCTION cargo_ful.check_capacity_link() RETURNS trigger LANGUAGE plpgsql AS $fn$
 DECLARE
   s cargo_ful.shipment;
@@ -86,6 +86,11 @@ BEGIN
   IF s.shipment_id IS NULL OR s.status = 'CANCELLED' OR NEW.link_no <> last + 1 THEN
     RAISE EXCEPTION 'cargo_ful: shipment %/% takes no capacity link %', NEW.tenant_id, NEW.shipment_id, NEW.link_no
       USING ERRCODE = 'check_violation', CONSTRAINT = 'shipment_capacity_link_follows';
+  END IF;
+  IF NEW.linked_at < (SELECT max(l.linked_at) FROM cargo_ful.shipment_capacity_link l WHERE l.tenant_id = NEW.tenant_id AND l.shipment_id = NEW.shipment_id)
+     OR NEW.linked_at < (SELECT max(d.answered_at) FROM cargo_ful.shipment_date_answer d WHERE d.tenant_id = NEW.tenant_id AND d.shipment_id = NEW.shipment_id) THEN
+    RAISE EXCEPTION 'cargo_ful: capacity link %/%/% is dated before what the shipment recorded', NEW.tenant_id, NEW.shipment_id, NEW.link_no
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'shipment_capacity_link_in_order';
   END IF;
   IF NOT EXISTS (SELECT 1 FROM cargo_ful.shipment_consol_attachment a WHERE a.tenant_id = NEW.tenant_id AND a.shipment_id = NEW.shipment_id
        AND a.stage = NEW.stage AND a.ended_at IS NULL AND a.consolidation_id = NEW.consolidation_id) THEN
@@ -118,13 +123,15 @@ CREATE CONSTRAINT TRIGGER shipment_capacity_link_has_legs AFTER INSERT ON cargo_
 CREATE CONSTRAINT TRIGGER shipment_capacity_link_legs_with_link AFTER INSERT ON cargo_ful.shipment_capacity_link_leg
   DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION cargo_ful.check_capacity_link_legs_at_commit();
 
--- An answer joins a shipment that is not cancelled, whose row is locked first; it follows the previous answer, answers
--- the shipment's latest link, and is not dated before it.
+-- An answer joins a shipment that is not cancelled, whose row is locked first; it follows the previous answer and is
+-- not dated before it, answers the shipment's latest link and is not dated before it either, and names the departure
+-- window of the shipment's latest plan version, which it answered.
 CREATE FUNCTION cargo_ful.check_date_answer() RETURNS trigger LANGUAGE plpgsql AS $fn$
 DECLARE
   s cargo_ful.shipment;
   last integer;
   latest cargo_ful.shipment_capacity_link;
+  plan cargo_ful.shipment_plan_version;
 BEGIN
   SELECT * INTO s FROM cargo_ful.shipment WHERE tenant_id = NEW.tenant_id AND shipment_id = NEW.shipment_id FOR NO KEY UPDATE;
   SELECT coalesce(max(answer_no), 0) INTO last FROM cargo_ful.shipment_date_answer
@@ -138,6 +145,16 @@ BEGIN
   IF latest.link_no IS DISTINCT FROM NEW.link_no OR NEW.answered_at < latest.linked_at THEN
     RAISE EXCEPTION 'cargo_ful: date answer %/%/% answers link %, not the latest', NEW.tenant_id, NEW.shipment_id, NEW.answer_no, NEW.link_no
       USING ERRCODE = 'check_violation', CONSTRAINT = 'shipment_date_answer_latest_link';
+  END IF;
+  IF NEW.answered_at < (SELECT max(d.answered_at) FROM cargo_ful.shipment_date_answer d WHERE d.tenant_id = NEW.tenant_id AND d.shipment_id = NEW.shipment_id) THEN
+    RAISE EXCEPTION 'cargo_ful: date answer %/%/% is dated before the previous one', NEW.tenant_id, NEW.shipment_id, NEW.answer_no
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'shipment_date_answer_in_order';
+  END IF;
+  SELECT * INTO plan FROM cargo_ful.shipment_plan_version
+    WHERE tenant_id = NEW.tenant_id AND shipment_id = NEW.shipment_id ORDER BY plan_no DESC LIMIT 1;
+  IF NEW.window_from IS DISTINCT FROM plan.departure_from OR NEW.window_until IS DISTINCT FROM plan.departure_until THEN
+    RAISE EXCEPTION 'cargo_ful: date answer %/%/% names another window than the plan''s', NEW.tenant_id, NEW.shipment_id, NEW.answer_no
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'shipment_date_answer_window';
   END IF;
   RETURN NEW;
 END $fn$;

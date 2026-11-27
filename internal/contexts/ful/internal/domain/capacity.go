@@ -15,10 +15,15 @@ import (
 // another booking (a schedule change, a rollover, a reduction, a container rolled to another movement): each link is
 // kept, so the original stays visible. A link never changes the plan or the execution status.
 //
-// When the first departure of a link lies outside the plan's departure window, the customer is asked (the owner's
-// decision of 2026-11-26): the answer is recorded against the link, with its evidence. An accepted departure widens the
-// window the customer agreed to, which AIR and SEA hold the house to and DOC issues by; a refusal keeps it as it was.
-// An answer counts while the plan's departure window is the one it answered: amending the window asks again.
+// When the first departure of the current carriage (the latest link, of the consolidation the shipment is attached to
+// now) lies outside the plan's departure window, the customer is asked (the owner's decision of 2026-11-26: "accept the
+// new date, or change the window"): the answer is recorded against the link, with its evidence. An acceptance is of that
+// date: it widens the window the customer agreed to, which AIR and SEA hold the house to and DOC issues by, to that
+// departure, and a later link departing at another date asks again. The link's own latest answer decides; a link to
+// the same departure as an earlier accepted one carries that acceptance. An answer counts while the plan's departure
+// window is the one it answered: amending the window asks again, and amending it back does not revive an answer given
+// since. A link is a record and changes neither the plan nor the execution status, so a shipment whose packs departed
+// is linked and answered too: its bill may be issued after the departure.
 
 var (
 	ErrCapacityMismatch = errors.New("ful: the booking's capacity does not fit the shipment")
@@ -114,8 +119,8 @@ type DateAnswer struct {
 }
 
 // LinkCapacity links the main carriage to BOOK's capacity: allocated to the consolidation FUL records the shipment
-// attached to, of the plan's mode. The same carriage as the current link changes nothing and reports false. A shipment
-// cancelled, or whose planned packs have all departed, links none.
+// attached to, of the plan's mode. The same carriage as the current link changes nothing and reports false. A cancelled
+// shipment links none.
 func (s *Shipment) LinkCapacity(c Capacity, by string, at time.Time) (bool, error) {
 	if s.state.Status == ShipmentCancelled {
 		return false, ErrShipmentCancelled
@@ -129,9 +134,6 @@ func (s *Shipment) LinkCapacity(c Capacity, by string, at time.Time) (bool, erro
 	}
 	if mode := s.Latest().Route.Mode; c.Mode != mode {
 		return false, fmt.Errorf("%w: booking %s is %s, the plan %s", ErrCapacityMismatch, c.BookingID, c.Mode, mode)
-	}
-	if planned := s.Latest().Scope.Packs; planned > 0 && s.Departed() >= planned {
-		return false, fmt.Errorf("%w: all %d packs departed", ErrDeparted, planned)
 	}
 	if current, ok := s.CurrentLink(); ok && current.Capacity.same(c) {
 		return false, nil
@@ -156,7 +158,7 @@ func (s *Shipment) AnswerDateChange(linkNo int, answer, evidence, by string, at 
 	if (answer != AnswerAccepted && answer != AnswerRefused) || !text(evidence) {
 		return fmt.Errorf("%w: answer %q with its evidence", ErrInvalidChange, answer)
 	}
-	current, ok := s.CurrentLink()
+	current, ok := s.carriage()
 	window := s.Latest().Route.Departure
 	if !ok || current.No != linkNo || window.Contains(current.Departure()) {
 		return fmt.Errorf("%w: link %d", ErrNothingToAnswer, linkNo)
@@ -179,50 +181,72 @@ func (s *Shipment) CurrentLink() (CapacityLink, bool) {
 	return CapacityLink{}, false
 }
 
+// carriage returns the latest link when it is of the consolidation the shipment is attached to now on the main
+// carriage: once the shipment moved to another consolidation, the carriage of the old one is not its carriage, until it
+// is linked to the new one's capacity.
+func (s *Shipment) carriage() (CapacityLink, bool) {
+	l, ok := s.CurrentLink()
+	if a, attached := s.Attachment(StageMain); !ok || !attached || a.ConsolidationID != l.ConsolidationID {
+		return CapacityLink{}, false
+	}
+	return l, true
+}
+
 // Links returns the capacity links in the order made; Answers the customer's answers.
 func (s *Shipment) Links() []CapacityLink { return slices.Clone(s.state.Links) }
 func (s *Shipment) Answers() []DateAnswer { return slices.Clone(s.state.Answers) }
 
-// Answer returns the latest answer to a link that counts: given while the plan's departure window was the current one.
+// Answer returns the answer to a link that counts: the link's latest, when it was given while the plan's departure
+// window was the current one.
 func (s *Shipment) Answer(linkNo int) (DateAnswer, bool) {
-	window := s.Latest().Route.Departure
 	for i := len(s.state.Answers) - 1; i >= 0; i-- {
-		if a := s.state.Answers[i]; a.LinkNo == linkNo && sameInterval(a.Window, window) {
-			return a, true
+		if a := s.state.Answers[i]; a.LinkNo == linkNo {
+			return a, sameInterval(a.Window, s.Latest().Route.Departure)
 		}
 	}
 	return DateAnswer{}, false
 }
 
-// AgreedWindow is the window the customer agreed to: the smallest one that holds the plan's departure window and the
-// departure of every link whose answer that counts is ACCEPTED. It is the plan's window when there is none.
+// accepted reports whether the customer accepted the current carriage's departure: its own latest answer is ACCEPTED
+// and counts, or it was never answered and an earlier link departing at the same instant was accepted. An answer given
+// under another window asks again.
+func (s *Shipment) accepted(c CapacityLink) bool {
+	if a, counts := s.Answer(c.No); a.No != 0 {
+		return counts && a.Answer == AnswerAccepted
+	}
+	for _, l := range s.state.Links[:c.No-1] {
+		if a, ok := s.Answer(l.No); ok && a.Answer == AnswerAccepted && l.Departure().Equal(c.Departure()) {
+			return true
+		}
+	}
+	return false
+}
+
+// AgreedWindow is the window the customer agreed to: the plan's departure window, widened to the current carriage's
+// departure when the customer accepted it.
 func (s *Shipment) AgreedWindow() kernel.ValidityInterval {
 	w := s.Latest().Route.Departure
-	for _, l := range s.state.Links {
-		a, ok := s.Answer(l.No)
-		if !ok || a.Answer != AnswerAccepted {
-			continue
-		}
-		if d := l.Departure(); !w.Contains(d) {
-			if d.Before(w.From) {
-				w.From = d
-			} else {
-				w.Until = d.Add(time.Microsecond)
-			}
-		}
+	c, ok := s.carriage()
+	if !ok || w.Contains(c.Departure()) || !s.accepted(c) {
+		return w
+	}
+	if d := c.Departure(); d.Before(w.From) {
+		w.From = d
+	} else {
+		w.Until = d.Add(time.Microsecond)
 	}
 	return w
 }
 
-// AwaitingAnswer reports the current link when its departure lies outside the window the customer agreed to: the
-// customer's answer is awaited, or was a refusal (refused true).
+// AwaitingAnswer reports the current carriage when its departure lies outside the window the customer agreed to: the
+// customer's answer is awaited, or the answer that counts was a refusal (refused true).
 func (s *Shipment) AwaitingAnswer() (link CapacityLink, refused bool, awaiting bool) {
-	current, ok := s.CurrentLink()
-	if !ok || s.state.Status == ShipmentCancelled || s.AgreedWindow().Contains(current.Departure()) {
+	c, ok := s.carriage()
+	if !ok || s.state.Status == ShipmentCancelled || s.AgreedWindow().Contains(c.Departure()) {
 		return CapacityLink{}, false, false
 	}
-	a, answered := s.Answer(current.No)
-	return current, answered && a.Answer == AnswerRefused, true
+	a, counts := s.Answer(c.No)
+	return c, counts && a.Answer == AnswerRefused, true
 }
 
 func (s *Shipment) validateLinks() error {

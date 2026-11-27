@@ -531,13 +531,13 @@ func facts(p Plan) (Facts, error) {
 	return f, nil
 }
 
-// sameMeasures reports whether two facts document the same quantities and the same sealed containers.
 // sameWindow reports whether FUL's window is the one the entry froze: the window the customer agreed to changes when
 // the customer accepts a departure outside it (FUL V2.110), and a refresh takes it.
 func sameWindow(a, b kernel.ValidityInterval) bool {
 	return a.From.Equal(b.From) && a.Until.Equal(b.Until)
 }
 
+// sameMeasures reports whether two facts document the same quantities and the same sealed containers.
 func sameMeasures(a, b Facts) bool {
 	return a.Packs == b.Packs && a.GrossWeight == b.GrossWeight && a.Volume == b.Volume && a.Basis == b.Basis &&
 		slices.EqualFunc(a.Stuffings, b.Stuffings, Stuffing.same)

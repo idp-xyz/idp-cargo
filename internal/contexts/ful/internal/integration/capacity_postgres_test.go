@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	bentopg "go.idp.xyz/idp-bento-go/postgres"
 	bookapi "go.idp.xyz/idp-cargo/internal/contexts/book/api"
 	fulmodule "go.idp.xyz/idp-cargo/internal/contexts/ful"
@@ -203,47 +204,68 @@ func TestCapacityLinksAndTheCustomersAnswerOnPostgres(t *testing.T) {
 		t.Fatalf("events: %v", types)
 	}
 
-	// the database keeps the rows as written
-	for _, tc := range []struct{ sql, state, why string }{
-		{`UPDATE cargo_ful.shipment_capacity_link SET capacity_version=9 WHERE tenant_id=$1`, "42501", "a link is immutable"},
-		{`DELETE FROM cargo_ful.shipment_capacity_link_leg WHERE tenant_id=$1`, "42501", "a link's legs are kept"},
-		{`UPDATE cargo_ful.shipment_date_answer SET answer='REFUSED' WHERE tenant_id=$1`, "42501", "an answer is immutable"},
+	// the database keeps the rows as written; where a rule names its constraint, the refusal is that rule's
+	for _, tc := range []struct{ sql, state, why, constraint string }{
+		{`UPDATE cargo_ful.shipment_capacity_link SET capacity_version=9 WHERE tenant_id=$1`, "42501", "a link is immutable", ""},
+		{`DELETE FROM cargo_ful.shipment_capacity_link_leg WHERE tenant_id=$1`, "42501", "a link's legs are kept", ""},
+		{`UPDATE cargo_ful.shipment_date_answer SET answer='REFUSED' WHERE tenant_id=$1`, "42501", "an answer is immutable", ""},
 		{`INSERT INTO cargo_ful.shipment_capacity_link (tenant_id,shipment_id,link_no,stage,plan_no,booking_id,booking_revision,transport_mode,
           consolidation_id,capacity_version,line_no,linked_by,linked_at,entered_at) VALUES ($1,'SH-1',4,'MAIN',2,'BK-1',9,'SEA','C-1',3,1,'rogue',now(),now())`,
-			"23514", "links are numbered one after another"},
+			"23514", "links are numbered one after another", "shipment_capacity_link_follows"},
 		{`INSERT INTO cargo_ful.shipment_capacity_link (tenant_id,shipment_id,link_no,stage,plan_no,booking_id,booking_revision,transport_mode,
           consolidation_id,capacity_version,line_no,linked_by,linked_at,entered_at) VALUES ($1,'SH-1',3,'MAIN',2,'BK-9',9,'SEA','C-9',3,1,'rogue',now(),now())`,
-			"23514", "a link is to the consolidation the shipment is attached to"},
+			"23514", "a link is to the consolidation the shipment is attached to", "shipment_capacity_link_attached"},
 		{`INSERT INTO cargo_ful.shipment_capacity_link (tenant_id,shipment_id,link_no,stage,plan_no,booking_id,booking_revision,transport_mode,
           consolidation_id,capacity_version,line_no,linked_by,linked_at,entered_at) VALUES ($1,'SH-1',3,'MAIN',2,'BK-1',9,'SEA','C-1',3,1,'rogue',now(),now())`,
-			"23514", "a link has legs, written with it"},
+			"23514", "a link has legs, written with it", "shipment_capacity_link_legs_with_link"},
 		{`INSERT INTO cargo_ful.shipment_capacity_link_leg (tenant_id,shipment_id,link_no,leg_no,etd) VALUES ($1,'SH-1',1,2,now())`,
-			"23514", "a link's legs are written with it"},
+			"23514", "a link's legs are written with it", "shipment_capacity_link_legs_with_link"},
 		{`INSERT INTO cargo_ful.shipment_capacity_link_leg (tenant_id,shipment_id,link_no,leg_no,etd,eta) VALUES ($1,'SH-1',1,2,now(),now() - interval '1 day')`,
-			"23514", "a leg arrives after it departs"},
+			"23514", "a leg arrives after it departs", "shipment_capacity_link_leg_times"},
 		{`INSERT INTO cargo_ful.shipment_date_answer (tenant_id,shipment_id,answer_no,link_no,answer,evidence_ref,answered_by,answered_at,entered_at)
-          VALUES ($1,'SH-1',3,1,'ACCEPTED','mail','rogue',now(),now())`, "23514", "an answer is to the latest link"},
+          VALUES ($1,'SH-1',3,1,'ACCEPTED','mail','rogue',now(),now())`, "23514", "an answer is to the latest link", ""},
 		{`INSERT INTO cargo_ful.shipment_date_answer (tenant_id,shipment_id,answer_no,link_no,answer,evidence_ref,answered_by,answered_at,entered_at)
-          VALUES ($1,'SH-1',3,2,'ACCEPTED','mail','rogue',now() - interval '30 days',now())`, "23514", "an answer is not dated before its link"},
+          VALUES ($1,'SH-1',3,2,'ACCEPTED','mail','rogue',now() - interval '30 days',now())`, "23514", "an answer is not dated before its link", ""},
 		{`INSERT INTO cargo_ful.shipment_date_answer (tenant_id,shipment_id,answer_no,link_no,answer,evidence_ref,answered_by,answered_at,entered_at)
-          VALUES ($1,'SH-1',5,2,'ACCEPTED','mail','rogue',now(),now())`, "23514", "answers are numbered one after another"},
+          VALUES ($1,'SH-1',5,2,'ACCEPTED','mail','rogue',now(),now())`, "23514", "answers are numbered one after another", ""},
 		{`INSERT INTO cargo_ful.shipment_date_answer (tenant_id,shipment_id,answer_no,link_no,answer,evidence_ref,answered_by,answered_at,entered_at)
-          VALUES ($1,'SH-1',3,2,'MAYBE','mail','rogue',now(),now())`, "23514", "an answer is ACCEPTED or REFUSED"},
+          VALUES ($1,'SH-1',3,2,'MAYBE','mail','rogue',now(),now())`, "23514", "an answer is ACCEPTED or REFUSED", ""},
 		{`INSERT INTO cargo_ful.shipment_date_answer (tenant_id,shipment_id,answer_no,link_no,answer,evidence_ref,answered_by,answered_at,entered_at)
-          VALUES ($1,'SH-1',3,2,'ACCEPTED',' ','rogue',now(),now())`, "23514", "an answer names its evidence"},
+          VALUES ($1,'SH-1',3,2,'ACCEPTED',' ','rogue',now(),now())`, "23514", "an answer names its evidence", ""},
+		{`INSERT INTO cargo_ful.shipment_capacity_link (tenant_id,shipment_id,link_no,stage,plan_no,booking_id,booking_revision,transport_mode,
+          consolidation_id,capacity_version,line_no,linked_by,linked_at,entered_at) VALUES ($1,'SH-1',3,'MAIN',2,'BK-1',9,'SEA','C-1',3,1,'rogue',now() - interval '60 days',now())`,
+			"23514", "a link is not dated before the shipment's latest link or answer", "shipment_capacity_link_in_order"},
+		{`INSERT INTO cargo_ful.shipment_date_answer (tenant_id,shipment_id,answer_no,link_no,answer,evidence_ref,window_from,window_until,answered_by,answered_at,entered_at)
+          SELECT $1,'SH-1',3,2,'ACCEPTED','mail',departure_from,departure_until,'rogue',
+            (SELECT linked_at FROM cargo_ful.shipment_capacity_link WHERE tenant_id=$1 AND shipment_id='SH-1' AND link_no=2) + interval '1 second',now()
+          FROM cargo_ful.shipment_plan_version WHERE tenant_id=$1 AND shipment_id='SH-1' AND plan_no=2`,
+			"23514", "an answer is not dated before the previous answer", "shipment_date_answer_in_order"},
+		{`INSERT INTO cargo_ful.shipment_date_answer (tenant_id,shipment_id,answer_no,link_no,answer,evidence_ref,window_from,window_until,answered_by,answered_at,entered_at)
+          VALUES ($1,'SH-1',3,2,'ACCEPTED','mail',now(),now() + interval '1 day','rogue',now(),now())`,
+			"23514", "an answer names the plan's window, which it answered", "shipment_date_answer_window"},
 	} {
 		err := f.within(t, func(ctx context.Context, e bentopg.Executor) error {
 			_, err := e.Exec(ctx, tc.sql, f.tenant)
 			return err
 		})
-		if sqlState(err) != tc.state {
-			t.Errorf("%s: err = %v, want SQLSTATE %s (%s)", tc.sql, err, tc.state, tc.why)
+		var pgErr *pgconn.PgError
+		if sqlState(err) != tc.state || (tc.constraint != "" && (!errors.As(err, &pgErr) || pgErr.ConstraintName != tc.constraint)) {
+			t.Errorf("%s: err = %v, want SQLSTATE %s %s (%s)", tc.sql, err, tc.state, tc.constraint, tc.why)
 		}
+	}
+	// the same answer with the plan's window and in order is taken: the refusals above are the rules'
+	if err := f.within(t, func(ctx context.Context, e bentopg.Executor) error {
+		_, err := e.Exec(ctx, `INSERT INTO cargo_ful.shipment_date_answer (tenant_id,shipment_id,answer_no,link_no,answer,evidence_ref,window_from,window_until,
+            answered_by,answered_at,entered_at) SELECT $1,'SH-1',3,2,'REFUSED','mail',departure_from,departure_until,'rogue',now(),now()
+          FROM cargo_ful.shipment_plan_version WHERE tenant_id=$1 AND shipment_id='SH-1' AND plan_no=2`, f.tenant)
+		return err
+	}); err != nil {
+		t.Fatalf("an answer in order, with the plan's window: %v", err)
 	}
 
 	// a cancelled shipment takes no link and no answer
 	if _, err = f.module.CancelShipment(ctx, api.CancelShipment{CommandID: "cancel", TenantID: f.tenant, ActorID: "planner-1", ShipmentID: "SH-1",
-		ExpectedRevision: 8, Reason: "withdrawn", OccurredAt: f.at.Add(6 * time.Hour)}); err != nil {
+		ExpectedRevision: 8, Reason: "withdrawn", OccurredAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
 	for _, sql := range []string{

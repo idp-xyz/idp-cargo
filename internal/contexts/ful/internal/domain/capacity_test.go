@@ -142,8 +142,9 @@ func TestADepartureOutsideTheWindowAwaitsTheCustomersAnswer(t *testing.T) {
 	if err := s.AnswerDateChange(3, AnswerAccepted, "mail-4", "ops-1", at.Add(6*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	if w := s.AgreedWindow(); !w.From.Equal(early) || !w.Until.Equal(outside.Add(time.Microsecond)) {
-		t.Fatalf("widened at both ends: %+v", w)
+	// an acceptance is of its date: the agreed window is the plan's widened to this carriage's departure alone
+	if w := s.AgreedWindow(); !w.From.Equal(early) || !w.Until.Equal(route.Departure.Until) {
+		t.Fatalf("widened to the earlier departure alone: %+v", w)
 	}
 	// amending the window starts over: the acceptances answered the old one
 	amended := route
@@ -166,8 +167,86 @@ func TestADepartureOutsideTheWindowAwaitsTheCustomersAnswer(t *testing.T) {
 	}
 }
 
+// V2.110, after the review: an acceptance is of its date. A later carriage departing at another date asks again even
+// inside an earlier accepted range, and its refusal counts; a carriage departing at an accepted date carries the
+// acceptance; amending the window back does not revive an answer given since; a carriage of a consolidation the
+// shipment has left awaits nothing until the new one's capacity is linked.
+func TestAnAcceptanceIsOfItsDate(t *testing.T) {
+	s, route, at, capacity := attached(t)
+	later := route.Departure.Until.Add(5 * 24 * time.Hour)   // the customer accepts this
+	between := route.Departure.Until.Add(3 * 24 * time.Hour) // inside what the acceptance widened, but another date
+	step := func(n int) time.Time { return at.Add(time.Duration(n) * time.Minute) }
+	if _, err := s.LinkCapacity(capacity(1, later), "ops-1", step(1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AnswerDateChange(1, AnswerAccepted, "mail-1", "ops-1", step(2)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.LinkCapacity(capacity(2, between), "ops-1", step(3)); err != nil {
+		t.Fatal(err)
+	}
+	if link, refused, awaiting := s.AwaitingAnswer(); !awaiting || refused || link.No != 2 {
+		t.Fatalf("another date inside the earlier acceptance asks again: %+v %v %v", link, refused, awaiting)
+	}
+	if err := s.AnswerDateChange(2, AnswerRefused, "mail-2", "ops-1", step(4)); err != nil {
+		t.Fatal(err)
+	}
+	if _, refused, awaiting := s.AwaitingAnswer(); !awaiting || !refused {
+		t.Fatalf("the refusal counts: refused %v, awaiting %v", refused, awaiting)
+	}
+	if w := s.AgreedWindow(); !w.Until.Equal(route.Departure.Until) {
+		t.Fatalf("a refused carriage widens nothing: %+v", w)
+	}
+	// back to the accepted date under a new capacity version: the acceptance carries
+	if _, err := s.LinkCapacity(capacity(3, later), "ops-1", step(5)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, awaiting := s.AwaitingAnswer(); awaiting {
+		t.Fatal("the accepted date again awaits")
+	}
+	if w := s.AgreedWindow(); !w.Until.Equal(later.Add(time.Microsecond)) {
+		t.Fatalf("the accepted date carried: %+v", w)
+	}
+	// amend the window, refuse under it, amend it back: the acceptance given under the first window does not revive
+	if err := s.AnswerDateChange(3, AnswerAccepted, "mail-3", "ops-1", step(6)); err != nil {
+		t.Fatal(err)
+	}
+	moved := route
+	moved.Departure = kernel.ValidityInterval{From: route.Departure.From, Until: route.Departure.Until.Add(time.Hour)}
+	if err := s.AmendPlan(moved, "the customer moved the window", "planner-1", step(7)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AnswerDateChange(3, AnswerRefused, "mail-4", "ops-1", step(8)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AmendPlan(route, "back to the first window", "planner-1", step(9)); err != nil {
+		t.Fatal(err)
+	}
+	if _, refused, awaiting := s.AwaitingAnswer(); !awaiting || refused {
+		t.Fatalf("after the window is amended back: refused %v, awaiting %v", refused, awaiting)
+	}
+	if _, err := RestoreShipment(s.State()); err != nil {
+		t.Fatal(err)
+	}
+
+	// the shipment moves to C-2: C-1's carriage is not its carriage any more
+	m := Membership{ConsolidationID: "C-2", EntryNo: 1, Revision: 2, AttachedAt: step(10), Mode: ModeSea, Origin: route.Origin, Destination: route.Destination}
+	if err := s.RecordConsolAttachment(m, "planner-1", step(10)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, awaiting := s.AwaitingAnswer(); awaiting {
+		t.Fatal("the old consolidation's carriage awaits")
+	}
+	if err := s.AnswerDateChange(3, AnswerAccepted, "mail-5", "ops-1", step(11)); !errors.Is(err, ErrNothingToAnswer) {
+		t.Fatalf("an answer to the old consolidation's carriage: %v", err)
+	}
+	if w := s.AgreedWindow(); !w.Until.Equal(route.Departure.Until) {
+		t.Fatalf("the agreed window without a carriage: %+v", w)
+	}
+}
+
 // A stored answer dated after the next link was made, or before its own link, does not restore; a cancelled shipment
-// or one whose packs all departed links nothing.
+// links nothing, and one whose packs all departed is linked and answered (its bill may be issued after the departure).
 func TestCapacityLinksRestoreOnlyAsRecorded(t *testing.T) {
 	s, route, at, capacity := attached(t)
 	outside := route.Departure.Until.Add(48 * time.Hour)
@@ -196,15 +275,22 @@ func TestCapacityLinksRestoreOnlyAsRecorded(t *testing.T) {
 		t.Fatalf("links not numbered from 1: %v", err)
 	}
 
-	// all packs departed: the carriage to come is none
+	// all packs departed on a later vessel: the link and the customer's answer are still recorded
 	d, route2, at2, capacity2 := attached(t)
 	e := LoadEvidence{Lots: 1, ReceiptComplete: true, Received: CargoScope{Packs: 4, GrossWeight: kg(400)}, ConsolidationID: "C-1",
 		Tendered: CargoScope{Packs: 4, GrossWeight: kg(400)}, Departed: 4}
 	if _, err := d.RecordEvidence(e, "ops-1", at2); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.LinkCapacity(capacity2(1, route2.Departure.From), "ops-1", at2); !errors.Is(err, ErrDeparted) {
+	departedLate := route2.Departure.Until.Add(24 * time.Hour)
+	if _, err := d.LinkCapacity(capacity2(1, departedLate), "ops-1", at2); err != nil {
 		t.Fatalf("a departed shipment: %v", err)
+	}
+	if err := d.AnswerDateChange(1, AnswerAccepted, "mail-late", "ops-1", at2.Add(time.Minute)); err != nil {
+		t.Fatalf("an answer after the departure: %v", err)
+	}
+	if w := d.AgreedWindow(); !w.Contains(departedLate) {
+		t.Fatalf("the agreed window after the departure: %+v", w)
 	}
 	c, route3, at3, capacity3 := attached(t)
 	if err := c.Cancel("the customer cancelled", "planner-1", at3); err != nil {
