@@ -31,11 +31,14 @@ var (
 	ErrCreditHold        = errors.New("doc: DOC_CREDIT_HOLD: FIN holds the ordering party's credit (C7)")
 	ErrCreditUndecided   = errors.New("doc: DOC_CREDIT_UNDECIDED: FIN has no credit decision; issuing needs a credit override with a reason (C7, OD-3)")
 	ErrIssuanceBlocked   = errors.New("doc: DOC_ISSUANCE_BLOCKED: the legal entity holds no issuance authority in force for the kind, place and airline (OD-10)")
-	ErrIssuerNotVerified = errors.New("doc: the issuing legal entity is not VERIFIED in ORG")
-	ErrInvalidAuthority  = errors.New("doc: invalid issuance authority")
-	ErrOriginalsOut      = errors.New("doc: DOC_ORIGINALS_OUT: an original of the valid version is still out")
-	ErrNoTemplate        = errors.New("doc: DOC_NO_TEMPLATE: no template renders a document of this kind yet")
-	ErrNumberIssued      = errors.New("doc: DOC_NUMBER_ISSUED: another shipment or movement of the legal entity was issued the number; a number is issued for one of them only (G08-04)")
+	// ErrDateChangeUnanswered (V2.110, the owner's decision of 2026-11-26): the house departs outside the window the
+	// customer agreed to, and its bill is not issued until the customer's answer is recorded.
+	ErrDateChangeUnanswered = errors.New("doc: DOC_DATE_CHANGE_UNANSWERED: the house departs outside the window the customer agreed to; record the customer's answer in FUL, refresh the house and finalize the movement again, then refresh the draft")
+	ErrIssuerNotVerified    = errors.New("doc: the issuing legal entity is not VERIFIED in ORG")
+	ErrInvalidAuthority     = errors.New("doc: invalid issuance authority")
+	ErrOriginalsOut         = errors.New("doc: DOC_ORIGINALS_OUT: an original of the valid version is still out")
+	ErrNoTemplate           = errors.New("doc: DOC_NO_TEMPLATE: no template renders a document of this kind yet")
+	ErrNumberIssued         = errors.New("doc: DOC_NUMBER_ISSUED: another shipment or movement of the legal entity was issued the number; a number is issued for one of them only (G08-04)")
 )
 
 // Kind is a document kind; DOC V0.1 issues air waybills only.

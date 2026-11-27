@@ -13,8 +13,10 @@ import (
 	bentopg "go.idp.xyz/idp-bento-go/postgres"
 	bentooutbox "go.idp.xyz/idp-bento-go/postgres/outbox"
 	bentorepo "go.idp.xyz/idp-bento-go/repository"
+	bookapi "go.idp.xyz/idp-cargo/internal/contexts/book/api"
 	comapi "go.idp.xyz/idp-cargo/internal/contexts/com/api"
 	"go.idp.xyz/idp-cargo/internal/contexts/ful/api"
+	bookacl "go.idp.xyz/idp-cargo/internal/contexts/ful/internal/adapters/book"
 	comacl "go.idp.xyz/idp-cargo/internal/contexts/ful/internal/adapters/com"
 	phyacl "go.idp.xyz/idp-cargo/internal/contexts/ful/internal/adapters/phy"
 	"go.idp.xyz/idp-cargo/internal/contexts/ful/internal/adapters/postgres"
@@ -38,6 +40,17 @@ type Module struct {
 	locations application.Locations         // location reference data (F2); nil until wired
 	consols   application.ConsolMemberships // PHY's ConsolMembership v1 (V0.4); nil until wired
 	evidence  application.PhysicalEvidence  // PHY's PhysicalLoadEvidence v1 (V0.4); nil until wired
+	bookings  application.CarrierCapacity   // BOOK's CarrierBooking v1 (V2.110); nil until wired
+}
+
+// WithCarrierBookings gives FUL BOOK's CarrierBooking v1, which it reads before linking a shipment's main carriage
+// to a booking's capacity (V2.110). Without it LinkCarrierCapacity is refused.
+func WithCarrierBookings(q bookapi.Queries) Option {
+	return func(m *Module) {
+		if q != nil {
+			m.bookings = bookacl.Capacity{BOOK: q}
+		}
+	}
 }
 
 // WithPhysicalEvidence gives FUL PHY's PhysicalLoadEvidence v1 (relationship 8), which it reads before
@@ -87,6 +100,8 @@ var (
 	_ api.OceanOperationPlanQueries = (*Module)(nil)
 	_ api.OceanEvidenceQueries      = (*Module)(nil)
 	_ api.OceanOperationQueries     = (*Module)(nil)
+	_ api.CapacityCommands          = (*Module)(nil)
+	_ api.ExecutionQueries          = (*Module)(nil)
 )
 
 // New assembles FUL. com answers which obligation versions a shipment may plan; the composition root
@@ -202,6 +217,79 @@ func (m *Module) RecordConsolDetachment(ctx context.Context, cmd api.RecordConso
 	return toReceipt(receipt, err)
 }
 
+func (m *Module) LinkCarrierCapacity(ctx context.Context, cmd api.LinkCarrierCapacity) (api.Receipt, error) {
+	receipt, err := application.LinkCarrierCapacity{Deps: m.deps(cmd.TenantID, cmd.CommandID), Bookings: m.bookings}.Handle(ctx,
+		application.LinkCarrierCapacityCommand{CommandID: cmd.CommandID, Scope: scope(cmd.TenantID, cmd.ActorID),
+			ShipmentID: domain.ShipmentID(cmd.ShipmentID), ExpectedRevision: cmd.ExpectedRevision, BookingID: cmd.BookingID, Line: cmd.Line,
+			OccurredAt: stored(cmd.OccurredAt)})
+	return toReceipt(receipt, err)
+}
+
+func (m *Module) RecordCustomerDateAnswer(ctx context.Context, cmd api.RecordCustomerDateAnswer) (api.Receipt, error) {
+	receipt, err := application.RecordCustomerDateAnswer{Deps: m.deps(cmd.TenantID, cmd.CommandID)}.Handle(ctx,
+		application.RecordCustomerDateAnswerCommand{CommandID: cmd.CommandID, Scope: scope(cmd.TenantID, cmd.ActorID),
+			ShipmentID: domain.ShipmentID(cmd.ShipmentID), ExpectedRevision: cmd.ExpectedRevision, LinkNo: cmd.LinkNo, Answer: cmd.Answer,
+			EvidenceRef: cmd.EvidenceRef, OccurredAt: stored(cmd.OccurredAt)})
+	return toReceipt(receipt, err)
+}
+
+// GetShipmentExecution answers a shipment's execution next to its plan (V2.110).
+func (m *Module) GetShipmentExecution(ctx context.Context, q api.GetShipmentExecution) (api.ShipmentExecution, error) {
+	shipment, revision, err := m.shipment(ctx, api.GetShipmentPlanSnapshot{TenantID: q.TenantID, ShipmentID: q.ShipmentID})
+	if err != nil {
+		return api.ShipmentExecution{}, err
+	}
+	st, plan := shipment.State(), shipment.Latest()
+	out := api.ShipmentExecution{TenantID: string(st.TenantID), ShipmentID: string(st.ShipmentID), Revision: revision, Status: string(st.Status),
+		PlanVersion: plan.No, TransportMode: string(plan.Route.Mode), DepartureWindow: plan.Route.Departure, AgreedWindow: shipment.AgreedWindow(),
+		ExecutionStatus: string(shipment.Execution())}
+	if st.Status != domain.ShipmentCancelled {
+		out.PlannedPacks = plan.Scope.Packs
+	}
+	if a, ok := shipment.Attachment(domain.StageMain); ok {
+		out.ConsolidationID = a.ConsolidationID
+	}
+	for _, l := range shipment.Links() {
+		link := api.CapacityLink{LinkNo: l.No, PlanVersion: l.PlanNo, BookingID: l.BookingID, BookingRevision: l.BookingRevision,
+			ConsolidationID: l.ConsolidationID, CapacityVersion: l.CapacityVersion, Line: l.Line, CarrierReference: l.CarrierReference,
+			OutsideWindow: !plan.Route.Departure.Contains(l.Departure()), LinkedBy: l.By, LinkedAt: l.At}
+		for _, g := range l.Legs {
+			link.Legs = append(link.Legs, api.CapacityLeg{Loading: g.Loading, Discharge: g.Discharge, Flight: g.Flight, Vessel: g.Vessel, Voyage: g.Voyage,
+				ETD: g.ETD, ETA: g.ETA})
+		}
+		counting, _ := shipment.Answer(l.No)
+		for _, a := range shipment.Answers() {
+			if a.LinkNo == l.No {
+				link.Answers = append(link.Answers, api.DateAnswer{AnswerNo: a.No, Answer: a.Answer, EvidenceRef: a.EvidenceRef, Window: a.Window,
+					Counts: a.No == counting.No, AnsweredBy: a.By, AnsweredAt: a.At})
+			}
+		}
+		out.Links = append(out.Links, link)
+		out.CurrentLink = l.No
+	}
+	_, out.Refused, out.AwaitingCustomer = shipment.AwaitingAnswer()
+	if v, ok := shipment.LatestEvidence(); ok {
+		out.EvidenceVersion, out.DepartedPacks, out.ArrivedPacks, out.OffloadedPacks = v.No, v.Evidence.Departed, v.Evidence.Arrived, v.Evidence.Offloaded
+	}
+	return out, nil
+}
+
+// ListDateChangesAwaitingCustomer answers the shipments whose current capacity link departs outside the window the
+// customer agreed to, for a work list (V2.110).
+func (m *Module) ListDateChangesAwaitingCustomer(ctx context.Context, q api.ListDateChangesAwaitingCustomer) ([]api.DateChangeAwaitingCustomer, error) {
+	got, err := application.ListDateChangesAwaitingCustomer{Tx: bento.TenantTransactor{DB: m.db, Tenant: q.TenantID},
+		Shipments: postgres.ShipmentStore{DB: m.db}, Linked: postgres.ShipmentStore{DB: m.db}}.Handle(ctx, domain.TenantID(q.TenantID), q.ConsolidationID)
+	if err != nil {
+		return nil, classify(err)
+	}
+	out := []api.DateChangeAwaitingCustomer{}
+	for _, a := range got {
+		out = append(out, api.DateChangeAwaitingCustomer{ShipmentID: string(a.Shipment.ID()), Revision: a.Revision, ConsolidationID: a.Link.ConsolidationID,
+			LinkNo: a.Link.No, BookingID: a.Link.BookingID, Departure: a.Link.Departure(), AgreedWindow: a.Shipment.AgreedWindow(), Refused: a.Refused})
+	}
+	return out, nil
+}
+
 // GetLoadIntent answers LoadIntent v1 for PHY: the shipment's current plan with the package type of every part
 // and its current consol attachment on the main carriage.
 func (m *Module) GetLoadIntent(ctx context.Context, q api.GetShipmentPlanSnapshot) (api.LoadIntent, error) {
@@ -250,8 +338,9 @@ func (m *Module) GetAirOperationPlan(ctx context.Context, q api.GetShipmentPlanS
 	plan := api.AirOperationPlan{TenantID: intent.TenantID, ShipmentID: intent.ShipmentID, Revision: intent.Revision, Status: intent.Status,
 		PlanVersion: intent.PlanVersion, CustomerPartyID: intent.CustomerPartyID, LegalEntityID: intent.LegalEntityID, TransportMode: intent.TransportMode,
 		Origin: intent.Origin, Destination: intent.Destination, OriginIATA: intent.OriginIATA, DestinationIATA: intent.DestinationIATA,
-		LocationEdition: intent.LocationEdition, DepartureWindow: intent.DepartureWindow, Packs: intent.Packs, GrossWeight: intent.GrossWeight,
-		Volume: intent.Volume, Parts: intent.Parts, Stage: intent.Stage, ConsolidationID: intent.ConsolidationID, MembershipEntryNo: intent.MembershipEntryNo}
+		LocationEdition: intent.LocationEdition, DepartureWindow: intent.DepartureWindow, AgreedWindow: shipment.AgreedWindow(), Packs: intent.Packs,
+		GrossWeight: intent.GrossWeight, Volume: intent.Volume, Parts: intent.Parts, Stage: intent.Stage, ConsolidationID: intent.ConsolidationID,
+		MembershipEntryNo: intent.MembershipEntryNo}
 	if a, ok := shipment.Attachment(domain.StageMain); ok && a.ConsolidationID == intent.ConsolidationID {
 		plan.MembershipRevision = a.MembershipRevision
 	}
@@ -281,8 +370,8 @@ func (m *Module) GetOceanOperationPlan(ctx context.Context, q api.GetShipmentPla
 	plan := api.OceanOperationPlan{TenantID: intent.TenantID, ShipmentID: intent.ShipmentID, Revision: intent.Revision, Status: intent.Status,
 		PlanVersion: intent.PlanVersion, CustomerPartyID: intent.CustomerPartyID, LegalEntityID: intent.LegalEntityID, TransportMode: intent.TransportMode,
 		ContainerMode: intent.ContainerMode, Origin: intent.Origin, Destination: intent.Destination, LocationEdition: intent.LocationEdition,
-		DepartureWindow: intent.DepartureWindow, Packs: intent.Packs, GrossWeight: intent.GrossWeight, Volume: intent.Volume, Parts: intent.Parts,
-		Stage: intent.Stage, ConsolidationID: intent.ConsolidationID, MembershipEntryNo: intent.MembershipEntryNo}
+		DepartureWindow: intent.DepartureWindow, AgreedWindow: shipment.AgreedWindow(), Packs: intent.Packs, GrossWeight: intent.GrossWeight,
+		Volume: intent.Volume, Parts: intent.Parts, Stage: intent.Stage, ConsolidationID: intent.ConsolidationID, MembershipEntryNo: intent.MembershipEntryNo}
 	if a, ok := shipment.Attachment(domain.StageMain); ok && a.ConsolidationID == intent.ConsolidationID {
 		plan.MembershipRevision = a.MembershipRevision
 	}
@@ -453,7 +542,8 @@ func classify(err error) error {
 		errors.Is(err, kernel.ErrOutsideRecordWindow),
 		errors.Is(err, domain.ErrConsolPlanMismatch), errors.Is(err, domain.ErrNotAttached), errors.Is(err, application.ErrMembershipMismatch),
 		errors.Is(err, domain.ErrShipmentCancelled), errors.Is(err, domain.ErrDeparted), errors.Is(err, domain.ErrInvalidEvidence),
-		errors.Is(err, application.ErrEvidenceUnavailable):
+		errors.Is(err, application.ErrEvidenceUnavailable),
+		errors.Is(err, domain.ErrCapacityMismatch), errors.Is(err, domain.ErrNothingToAnswer), errors.Is(err, application.ErrCapacityUnavailable):
 		kind = api.ErrRejected
 	default:
 		return err

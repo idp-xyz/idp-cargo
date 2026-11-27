@@ -3,6 +3,7 @@
 package bootstrap
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 	bookapi "go.idp.xyz/idp-cargo/internal/contexts/book/api"
 	docapi "go.idp.xyz/idp-cargo/internal/contexts/doc/api"
 	finapi "go.idp.xyz/idp-cargo/internal/contexts/fin/api"
+	fulapi "go.idp.xyz/idp-cargo/internal/contexts/ful/api"
 	seaapi "go.idp.xyz/idp-cargo/internal/contexts/sea/api"
 	"go.idp.xyz/idp-cargo/internal/kernel"
 )
@@ -120,12 +122,23 @@ func TestBoxBIsRolledToALaterVesselAndSailsInAMovementOfItsOwnWithEveryContext(t
 		}
 	}
 	// H04's draft follows its container by an ordinary refresh, with no movement named (the owner's decision: a bill not
-	// issued moves to the new voyage by itself); H05's names OM-2, as a transfer does
+	// issued moves to the new voyage by itself); H05's names OM-2, as a transfer does. EVER GLORY sails after H04's and
+	// H05's departure window, so DOC issues neither until the customer's answer is recorded (V2.110, the owner's decision
+	// of 2026-11-26): FUL follows the roll to BK-3, the customer accepts, SEA takes the agreed window and finalizes OM-2
+	// again, and the drafts are refreshed on that version and issued.
 	for _, h := range []string{"H04", "H05"} {
 		d.refreshBill(bills[h], 2, map[string]string{"H04": "", "H05": "OM-2"}[h], 41)
 		d.approve(bills[h], 3, 41)
-		d.must("issue "+h, d.issue(bills[h], 4, 42))
-		if doc, v := d.bill(bills[h]); doc.State != docapi.StateIssued || doc.MovementID != "OM-2" || doc.ConsolidationID != "C-1" || v.Doc.Source.Version != 1 ||
+		if err := d.issue(bills[h], 4, 42); err == nil || !strings.Contains(err.Error(), "DOC_DATE_CHANGE_UNANSWERED") {
+			t.Fatalf("step 4, %s's bill before the customer's answer: %v", h, err)
+		}
+	}
+	d.acceptLaterVessel("OM-2", "BK-3", 0, 43, "SH-H04", "SH-H05")
+	for _, h := range []string{"H04", "H05"} {
+		d.refreshBill(bills[h], 4, "", 45)
+		d.approve(bills[h], 5, 45)
+		d.must("issue "+h, d.issue(bills[h], 6, 46))
+		if doc, v := d.bill(bills[h]); doc.State != docapi.StateIssued || doc.MovementID != "OM-2" || doc.ConsolidationID != "C-1" || v.Doc.Source.Version != 2 ||
 			!v.Doc.OnBoardAt.Equal(d.hours(40)) {
 			t.Fatalf("step 4, %s: %+v %+v", h, doc, v.Doc)
 		}
@@ -226,9 +239,65 @@ func TestBoxBIsRolledUnderTheSameBookingToItsSecondLineWithEveryContext(t *testi
 		!strings.EqualFold(f2.MasterBillNumber, "linu2612000778") {
 		t.Fatalf("the facts: %+v / %+v", shown(f1), shown(f2))
 	}
+	// EVER GLORY sails after H04's window: its bill waits for the customer's answer (V2.110), recorded against line 2
 	id := d.prepare("SH-H04", "OM-2", 41)
-	d.must("issue H04's bill", d.issue(id, 2, 42))
-	if doc, v := d.bill(id); doc.State != docapi.StateIssued || doc.MovementID != "OM-2" || !v.Doc.OnBoardAt.Equal(d.hours(40)) {
+	if err := d.issue(id, 2, 42); err == nil || !strings.Contains(err.Error(), "DOC_DATE_CHANGE_UNANSWERED") {
+		t.Fatalf("H04's bill before the customer's answer: %v", err)
+	}
+	d.acceptLaterVessel("OM-2", "BK-1", 2, 43, "SH-H04")
+	if hs := d.facts("OM-2").Houses; len(hs) != 2 || hs[0].ShipmentID != "SH-H04" || hs[0].WindowDrift || !hs[1].WindowDrift {
+		t.Fatalf("OM-2's houses after H04's customer answered and H05's did not: %+v", hs)
+	}
+	d.refreshBill(id, 2, "", 45)
+	d.approve(id, 3, 45)
+	d.must("issue H04's bill", d.issue(id, 4, 46))
+	if doc, v := d.bill(id); doc.State != docapi.StateIssued || doc.MovementID != "OM-2" || !v.Doc.OnBoardAt.Equal(d.hours(40)) || v.Doc.Source.Version != 2 {
 		t.Fatalf("H04's bill: %+v %+v", doc, v.Doc)
+	}
+}
+
+// acceptLaterVessel follows a roll for the houses (V2.110): FUL links each house's main carriage to the booking and line
+// it sails on now, which departs after its window; FUL's work list of C-1 shows it until the customer accepts the later
+// vessel; SEA then takes the window the customer agreed to, refreshing each house in the movement, and finalizes the
+// movement again, with none of the houses drifting.
+func (d *loadingDay) acceptLaterVessel(movement, booking string, line, hour int, shipments ...string) {
+	d.t.Helper()
+	execution := func(s string) fulapi.ShipmentExecution {
+		e, err := d.ful.GetShipmentExecution(d.ctx, fulapi.GetShipmentExecution{TenantID: d.tenant, ShipmentID: s})
+		d.must("FUL's execution of "+s, err)
+		return e
+	}
+	for _, s := range shipments {
+		_, err := d.ful.LinkCarrierCapacity(d.ctx, fulapi.LinkCarrierCapacity{CommandID: "link-" + s + "-" + booking, TenantID: d.tenant, ActorID: "ops-1",
+			ShipmentID: s, ExpectedRevision: execution(s).Revision, BookingID: booking, Line: line, OccurredAt: d.hours(hour)})
+		d.must("FUL follows "+s+" to "+booking, err)
+	}
+	awaiting, err := d.ful.ListDateChangesAwaitingCustomer(d.ctx, fulapi.ListDateChangesAwaitingCustomer{TenantID: d.tenant, ConsolidationID: "C-1"})
+	d.must("FUL's work list", err)
+	for _, s := range shipments {
+		if !slices.ContainsFunc(awaiting, func(a fulapi.DateChangeAwaitingCustomer) bool { return a.ShipmentID == s && a.BookingID == booking }) {
+			d.t.Fatalf("%s is not on FUL's work list: %+v", s, awaiting)
+		}
+		e := execution(s)
+		_, err = d.ful.RecordCustomerDateAnswer(d.ctx, fulapi.RecordCustomerDateAnswer{CommandID: "answer-" + s + "-" + booking, TenantID: d.tenant, ActorID: "ops-1",
+			ShipmentID: s, ExpectedRevision: e.Revision, LinkNo: e.CurrentLink, Answer: fulapi.AnswerAccepted,
+			EvidenceRef: "the customer's mail accepting the later vessel", OccurredAt: d.hours(hour)})
+		d.must("the customer's answer for "+s, err)
+		if e = execution(s); e.AwaitingCustomer {
+			d.t.Fatalf("%s still awaits the customer: %+v", s, e)
+		}
+	}
+	for _, s := range shipments {
+		m, err := d.sea.GetOceanMovement(d.ctx, seaapi.GetOceanMovement{TenantID: d.tenant, MovementID: movement})
+		d.must(movement, err)
+		_, err = d.sea.RefreshHouseBillFacts(d.ctx, seaapi.RefreshHouseBillFacts{CommandID: "agreed-" + s, TenantID: d.tenant, ActorID: "ops-1", MovementID: movement,
+			ExpectedRevision: m.Revision, ShipmentID: s, OccurredAt: d.hours(hour + 1)})
+		d.must("SEA takes the agreed window of "+s, err)
+	}
+	d.finalizeOf(movement, "fin-"+movement+"-agreed", hour+1)
+	for _, h := range d.facts(movement).Houses {
+		if h.WindowDrift && slices.Contains(shipments, h.ShipmentID) {
+			d.t.Fatalf("%s drifts in %s's facts after the customer's answer", h.ShipmentID, movement)
+		}
 	}
 }

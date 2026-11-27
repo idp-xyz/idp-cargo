@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand/v2"
@@ -202,6 +203,18 @@ func TestWindowDrift(t *testing.T) {
 	}
 	if !m.WindowDrift(m.Houses()[0]) {
 		t.Fatal("a flight after the window drifts")
+	}
+	// V2.110: the customer accepts the later flight; FUL's agreed window holds it, and a refresh takes the window alone
+	agreed := plan("SH-1", 2)
+	agreed.Window.Until = t0.Add(100*time.Hour + time.Microsecond)
+	if err := m.Refresh(agreed, "ops-1", t0.Add(3*time.Hour)); err != nil {
+		t.Fatalf("a refresh of the window alone: %v", err)
+	}
+	if h := m.Houses()[0]; m.WindowDrift(h) || !h.Window.Until.Equal(agreed.Window.Until) || h.HAWB != "H1" {
+		t.Fatalf("after the refresh: %+v", h)
+	}
+	if err := m.Refresh(agreed, "ops-1", t0.Add(4*time.Hour)); !errors.Is(err, ErrNothingToRefresh) {
+		t.Fatalf("the same window again: %v", err)
 	}
 }
 
@@ -484,7 +497,15 @@ func TestFinalizeDocFacts(t *testing.T) {
 	if err := m.LinkBooking(booking(3, t0.Add(100*time.Hour)), "ops-1", at.Add(5*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.Finalize([]Plan{ready("SH-1"), rescreened}, "ops-2", at.Add(6*time.Minute)); !errors.Is(err, ErrNotFinalizable) {
+	// Since V2.110 a flight outside a house's window no longer refuses the movement: the facts say the house drifts, and
+	// DOC issues no HAWB of it until the customer's answer is recorded (the owner's decision of 2026-11-26).
+	if err := m.Finalize([]Plan{ready("SH-1"), rescreened}, "ops-2", at.Add(6*time.Minute)); err != nil {
 		t.Fatalf("a flight outside the houses' window: %v", err)
+	}
+	publishedVersion, _, _ := m.LatestDocFacts()
+	var published DocFacts
+	if err := json.Unmarshal(publishedVersion.Content, &published); err != nil || len(published.Houses) != 2 || !published.Houses[0].WindowDrift ||
+		!published.Houses[1].WindowDrift || !strings.Contains(string(publishedVersion.Content), `"window_drift":true`) {
+		t.Fatalf("the houses drift in the facts: %s %v", publishedVersion.Content, err)
 	}
 }

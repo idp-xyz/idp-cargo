@@ -332,6 +332,9 @@ type DocHouse struct {
 	OrderIDs               []string       `json:"order_ids"`
 	GoodsDescription       string         `json:"goods_description,omitempty"`
 	Containers             []DocBreakdown `json:"containers"`
+	// WindowDrift (V2.110): the first leg's ETD lies outside the window the customer agreed to (FUL's AgreedWindow);
+	// DOC issues no bill of the house while it does.
+	WindowDrift bool `json:"window_drift,omitempty"`
 }
 
 // DocBreakdown is a house's packs in one container.

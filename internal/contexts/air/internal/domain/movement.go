@@ -395,7 +395,7 @@ func (m *Movement) Refresh(p Plan, by string, at time.Time) error {
 	if err != nil {
 		return err
 	}
-	if p.PlanVersion == m.state.Entries[i].PlanVersion && sameMeasures(f, m.state.Entries[i].Facts) {
+	if p.PlanVersion == m.state.Entries[i].PlanVersion && sameMeasures(f, m.state.Entries[i].Facts) && sameWindow(p.Window, m.state.Entries[i].Window) {
 		return ErrNothingToRefresh
 	}
 	if err = m.changeable(by, at); err != nil {
@@ -544,7 +544,14 @@ func (m *Movement) Totals() (pieces, grams, cm3, chargeable int64) {
 	return pieces, grams, cm3, chargeable
 }
 
-// WindowDrift reports whether a house's departure window no longer contains the current first flight's ETD.
+// sameWindow reports whether FUL's window is the one the entry froze: the window the customer agreed to changes when
+// the customer accepts a departure outside it (FUL V2.110), and a refresh takes it.
+func sameWindow(a, b kernel.ValidityInterval) bool {
+	return a.From.Equal(b.From) && a.Until.Equal(b.Until)
+}
+
+// WindowDrift reports whether a house's departure window (the one the customer agreed to, since V2.110) no longer
+// contains the current first flight's ETD.
 func (m *Movement) WindowDrift(e Entry) bool {
 	segments := m.Current().Segments
 	return len(segments) > 0 && !e.Window.Contains(segments[0].ETD)

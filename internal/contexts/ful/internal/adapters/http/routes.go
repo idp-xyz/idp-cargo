@@ -19,7 +19,9 @@ type Service interface {
 	api.Commands
 	api.ConsolAttachmentCommands
 	api.LoadEvidenceCommands
+	api.CapacityCommands
 	api.Queries
+	api.ExecutionQueries
 }
 
 // Kinds maps FUL's error kinds to statuses.
@@ -45,4 +47,9 @@ func Register(r *httpapi.Routes, s Service) {
 	httpapi.Command(r, k, op("POST", "/v1/shipments/{shipment_id}/consol-attachments", "RecordConsolAttachment", api.ActionRecordConsolAttachment, "Record PHY's attachment to a consolidation (after PHY attached it)"), s.RecordConsolAttachment)
 	httpapi.Command(r, k, op("POST", "/v1/shipments/{shipment_id}/consol-detachments", "RecordConsolDetachment", api.ActionRecordConsolDetachment, "Record PHY's detachment (after PHY detached or transferred it)"), s.RecordConsolDetachment)
 	httpapi.Command(r, k, op("POST", "/v1/shipments/{shipment_id}/load-evidence", "RecordVerifiedLoadEvidence", api.ActionRecordVerifiedLoadEvidence, "Take PHY's latest verified load evidence"), s.RecordVerifiedLoadEvidence)
+	// V2.110: the main carriage's capacity and the customer's answer to a departure outside the window.
+	httpapi.Command(r, k, op("POST", "/v1/shipments/{shipment_id}/capacity-links", "LinkCarrierCapacity", api.ActionLinkCarrierCapacity, "Link the main carriage to BOOK's capacity of its consolidation (again after a carrier's change)"), s.LinkCarrierCapacity)
+	httpapi.Command(r, k, op("POST", "/v1/shipments/{shipment_id}/date-answers", "RecordCustomerDateAnswer", api.ActionRecordCustomerDateAnswer, "Record the customer's answer to a departure outside the window"), s.RecordCustomerDateAnswer)
+	httpapi.Query(r, k, op("GET", "/v1/shipments/{shipment_id}/execution", "GetShipmentExecution", "", "A shipment's execution next to its plan: capacity links, the customer's answers, departed packs"), s.GetShipmentExecution)
+	httpapi.Query(r, k, op("GET", "/v1/date-changes-awaiting-customer", "ListDateChangesAwaitingCustomer", "", "Shipments whose departure lies outside the window the customer agreed to"), s.ListDateChangesAwaitingCustomer)
 }

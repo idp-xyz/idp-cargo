@@ -48,6 +48,7 @@ type FactsHouse struct {
 	Security        string
 	Screenings      []Screening
 	Parts           []FactsPart
+	WindowDrift     bool // V2.110: the first flight departs outside the window the customer agreed to
 }
 
 type FactsPart struct {

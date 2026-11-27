@@ -69,6 +69,8 @@ type OceanHouse struct {
 	Goods      string
 	OrderIDs   []string
 	Containers []OceanHouseContainer
+	// WindowDrift (V2.110): the first leg departs outside the window the customer agreed to.
+	WindowDrift bool
 }
 
 type OceanHouseContainer struct {

@@ -23,10 +23,14 @@ const (
 	ScopeContainer = "CONTAINER"
 
 	// Blocking kinds.
-	PendHousePlanNotRead      = "HOUSE_PLAN_NOT_READ"
-	PendHouseNotReported      = "HOUSE_NOT_REPORTED"
-	PendFULBehind             = "FUL_BEHIND_PHY"
-	PendHouseStale            = "HOUSE_STALE"
+	PendHousePlanNotRead = "HOUSE_PLAN_NOT_READ"
+	PendHouseNotReported = "HOUSE_NOT_REPORTED"
+	PendFULBehind        = "FUL_BEHIND_PHY"
+	PendHouseStale       = "HOUSE_STALE"
+	// PendHouseWindow (V2.110): FUL's window the customer agreed to is not the one SEA froze, the house's facts are. It
+	// blocks the finalization, which publishes each house's drift for DOC, and not the stuffing (the owner's decision of
+	// 2026-11-26: packing carries on).
+	PendHouseWindow           = "HOUSE_WINDOW_CHANGED"
 	PendContainerNoSeal       = "CONTAINER_NO_SEAL"
 	PendHousesDisagree        = "HOUSES_DISAGREE_ON_SEAL"
 	PendSealNotOnContainer    = "PHY_SEAL_NOT_ON_CONTAINER"
@@ -44,10 +48,13 @@ const (
 	WarnReturnDatedAfterReseal     = "RETURN_DATED_AFTER_RESEAL"
 	WarnCarrierLoadingBeforeReseal = "CARRIER_LOADING_BEFORE_RESEAL"
 	WarnCarrierConflictReleased    = "CARRIER_LOADING_CONFLICT_RELEASED"
+	// WarnDateChangeUnanswered (V2.110): the house's first leg departs outside the window the customer agreed to; DOC
+	// issues no bill of it until the customer's answer is recorded in FUL and the house refreshed.
+	WarnDateChangeUnanswered = "DATE_CHANGE_UNANSWERED"
 )
 
 func houseStage(kind string) bool {
-	return kind == PendHousePlanNotRead || kind == PendHouseNotReported || kind == PendFULBehind || kind == PendHouseStale
+	return kind == PendHousePlanNotRead || kind == PendHouseNotReported || kind == PendFULBehind || kind == PendHouseStale || kind == PendHouseWindow
 }
 
 // PendingItems lists everything pending on the movement, as Finalize reads it: FUL's plans of the live houses (read
@@ -57,18 +64,31 @@ func houseStage(kind string) bool {
 func (m *Movement) PendingItems(plans []Plan, visits []VisitState) []PendingItem {
 	items := m.houseItems(plans)
 	if m.state.Kind != KindOwn {
-		return items
+		return append(items, m.driftItems()...)
 	}
 	live := liveVisits(visits)
 	cont, warns := m.containerItems(m.Houses(), live)
-	return append(append(items, cont...), warns...)
+	return append(append(append(items, cont...), warns...), m.driftItems()...)
+}
+
+// driftItems warns of each live house whose first leg departs outside the window the customer agreed to (V2.110).
+func (m *Movement) driftItems() []PendingItem {
+	var out []PendingItem
+	for _, h := range m.Houses() {
+		if m.WindowDrift(h) {
+			out = append(out, PendingItem{Kind: WarnDateChangeUnanswered, Scope: ScopeHouse, SubjectID: h.ShipmentID,
+				Message: fmt.Sprintf("%s %s departs outside the window the customer agreed to; record the customer's answer in FUL and refresh the house, "+
+					"or DOC issues no bill of it", h.HBL, h.ShipmentID)})
+		}
+	}
+	return out
 }
 
 // CheckHouses checks FUL's plans of the movement's live houses against what SEA froze, as Finalize and the stuffing of
 // a container need them: the first blocking item of the houses is the refusal, which wraps refusal.
 func (m *Movement) CheckHouses(plans []Plan, refusal error) error {
 	for _, it := range m.houseItems(plans) {
-		if it.Blocking {
+		if it.Blocking && (it.Kind != PendHouseWindow || refusal == ErrNotFinalizable) {
 			return fmt.Errorf("%w: %s", refusal, it.Message)
 		}
 	}
@@ -103,6 +123,9 @@ func (m *Movement) houseItems(plans []Plan) []PendingItem {
 		}
 		if f, err := facts(p); err != nil || p.PlanVersion != h.PlanVersion || !sameMeasures(f, h.Facts) {
 			add(h, PendHouseStale, fmt.Sprintf("STALE_HOUSE: FUL reports newer facts of %s %s; refresh it first", h.HBL, h.ShipmentID))
+		} else if !sameWindow(p.Window, h.Window) {
+			add(h, PendHouseWindow, fmt.Sprintf("STALE_HOUSE: FUL reports another window the customer agreed to for %s %s; refresh it before the movement is finalized",
+				h.HBL, h.ShipmentID))
 		}
 	}
 	return out

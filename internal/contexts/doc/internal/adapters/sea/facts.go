@@ -66,7 +66,7 @@ func (f Facts) Latest(ctx context.Context, tenant doc.TenantID, movement string)
 	}
 	for _, h := range got.Houses {
 		house := doc.OceanHouse{ShipmentID: h.ShipmentID, HBL: h.HBL, Packs: h.Packs, Package: h.PackageType, GrossGrams: h.GrossWeightGrams,
-			VolumeCm3: h.VolumeCubicCentimetres, Goods: h.GoodsDescription, OrderIDs: append([]string(nil), h.OrderIDs...)}
+			VolumeCm3: h.VolumeCubicCentimetres, Goods: h.GoodsDescription, OrderIDs: append([]string(nil), h.OrderIDs...), WindowDrift: h.WindowDrift}
 		for _, c := range h.Containers {
 			house.Containers = append(house.Containers, doc.OceanHouseContainer{VisitID: c.VisitID, Number: c.ContainerNumber, Packs: c.Packs,
 				GrossGrams: c.GrossWeightGrams, VolumeCm3: c.VolumeCubicCentimetres})

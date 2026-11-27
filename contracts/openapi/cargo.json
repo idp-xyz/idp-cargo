@@ -301,6 +301,9 @@
           },
           "volume": {
             "$ref": "#/components/schemas/kernel.Quantity"
+          },
+          "window_drift": {
+            "type": "boolean"
           }
         },
         "type": "object"
@@ -7328,6 +7331,154 @@
         },
         "type": "object"
       },
+      "ful.CapacityLeg": {
+        "additionalProperties": false,
+        "properties": {
+          "discharge": {
+            "$ref": "#/components/schemas/kernel.LocationCode"
+          },
+          "eta": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "etd": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "flight": {
+            "type": "string"
+          },
+          "loading": {
+            "$ref": "#/components/schemas/kernel.LocationCode"
+          },
+          "vessel": {
+            "type": "string"
+          },
+          "voyage": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "ful.CapacityLink": {
+        "additionalProperties": false,
+        "properties": {
+          "answers": {
+            "items": {
+              "$ref": "#/components/schemas/ful.DateAnswer"
+            },
+            "type": "array"
+          },
+          "booking_id": {
+            "type": "string"
+          },
+          "booking_revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "capacity_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "carrier_reference": {
+            "type": "string"
+          },
+          "consolidation_id": {
+            "type": "string"
+          },
+          "legs": {
+            "items": {
+              "$ref": "#/components/schemas/ful.CapacityLeg"
+            },
+            "type": "array"
+          },
+          "line": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "link_no": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "linked_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "linked_by": {
+            "type": "string"
+          },
+          "outside_window": {
+            "type": "boolean"
+          },
+          "plan_version": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "ful.DateAnswer": {
+        "additionalProperties": false,
+        "properties": {
+          "answer": {
+            "type": "string"
+          },
+          "answer_no": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "answered_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "answered_by": {
+            "type": "string"
+          },
+          "counts": {
+            "type": "boolean"
+          },
+          "evidence_ref": {
+            "type": "string"
+          },
+          "window": {
+            "$ref": "#/components/schemas/kernel.ValidityInterval"
+          }
+        },
+        "type": "object"
+      },
+      "ful.DateChangeAwaitingCustomer": {
+        "additionalProperties": false,
+        "properties": {
+          "agreed_window": {
+            "$ref": "#/components/schemas/kernel.ValidityInterval"
+          },
+          "booking_id": {
+            "type": "string"
+          },
+          "consolidation_id": {
+            "type": "string"
+          },
+          "departure": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "link_no": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "refused": {
+            "type": "boolean"
+          },
+          "revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "shipment_id": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "ful.PlannedPart": {
         "additionalProperties": false,
         "properties": {
@@ -7375,6 +7526,80 @@
             "type": "integer"
           },
           "shipment_id": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "ful.ShipmentExecution": {
+        "additionalProperties": false,
+        "properties": {
+          "agreed_window": {
+            "$ref": "#/components/schemas/kernel.ValidityInterval"
+          },
+          "arrived_packs": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "awaiting_customer": {
+            "type": "boolean"
+          },
+          "consolidation_id": {
+            "type": "string"
+          },
+          "current_link": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "departed_packs": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "departure_window": {
+            "$ref": "#/components/schemas/kernel.ValidityInterval"
+          },
+          "evidence_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "execution_status": {
+            "type": "string"
+          },
+          "links": {
+            "items": {
+              "$ref": "#/components/schemas/ful.CapacityLink"
+            },
+            "type": "array"
+          },
+          "offloaded_packs": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "plan_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "planned_packs": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "refused": {
+            "type": "boolean"
+          },
+          "revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "shipment_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "transport_mode": {
             "type": "string"
           }
         },
@@ -9954,7 +10179,7 @@
   "info": {
     "description": "Cargo's HTTP API. Every /v1 call carries a bearer token; the tenant and the actor come only from it. A command carries Idempotency-Key (its command id) and, when it changes a resource at a revision, If-Match \"n\"; it states its business time in occurred_at. Errors are RFC 9457 problems with a business code.",
     "title": "IDP Cargo API",
-    "version": "2.109"
+    "version": "2.110"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -15650,6 +15875,57 @@
         ],
         "x-calls": "ListCutOffsDue",
         "x-permission": "book:Read"
+      }
+    },
+    "/v1/date-changes-awaiting-customer": {
+      "get": {
+        "operationId": "ful.ListDateChangesAwaitingCustomer",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "consolidation_id",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "items": {
+                      "items": {
+                        "$ref": "#/components/schemas/ful.DateChangeAwaitingCustomer"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Shipments whose departure lies outside the window the customer agreed to",
+        "tags": [
+          "ful"
+        ],
+        "x-calls": "ListDateChangesAwaitingCustomer",
+        "x-permission": "ful:Read"
       }
     },
     "/v1/discrepancies": {
@@ -32172,6 +32448,99 @@
         "x-permission": "ful:CancelShipment"
       }
     },
+    "/v1/shipments/{shipment_id}/capacity-links": {
+      "post": {
+        "operationId": "ful.LinkCarrierCapacity",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "shipment_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "booking_id": {
+                    "type": "string"
+                  },
+                  "line": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ful.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Link the main carriage to BOOK's capacity of its consolidation (again after a carrier's change)",
+        "tags": [
+          "ful"
+        ],
+        "x-calls": "LinkCarrierCapacity",
+        "x-permission": "ful:LinkCarrierCapacity"
+      }
+    },
     "/v1/shipments/{shipment_id}/confirm": {
       "post": {
         "operationId": "ful.ConfirmShipmentPlan",
@@ -32436,6 +32805,102 @@
         "x-permission": "ful:RecordConsolDetachment"
       }
     },
+    "/v1/shipments/{shipment_id}/date-answers": {
+      "post": {
+        "operationId": "ful.RecordCustomerDateAnswer",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "shipment_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the command id: the same key with the same body returns the first receipt",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "the revision the command expects, \"n\"",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "answer": {
+                    "type": "string"
+                  },
+                  "evidence_ref": {
+                    "type": "string"
+                  },
+                  "link_no": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "occurred_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ful.Receipt"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Record the customer's answer to a departure outside the window",
+        "tags": [
+          "ful"
+        ],
+        "x-calls": "RecordCustomerDateAnswer",
+        "x-permission": "ful:RecordCustomerDateAnswer"
+      }
+    },
     "/v1/shipments/{shipment_id}/documents": {
       "get": {
         "operationId": "doc.ListDocumentsForShipment",
@@ -32486,6 +32951,57 @@
         ],
         "x-calls": "ListDocumentsForShipment",
         "x-permission": "doc:Read"
+      }
+    },
+    "/v1/shipments/{shipment_id}/execution": {
+      "get": {
+        "operationId": "ful.GetShipmentExecution",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "shipment_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ful.ShipmentExecution"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "ETag": {
+                "description": "the revision, \"n\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "A shipment's execution next to its plan: capacity links, the customer's answers, departed packs",
+        "tags": [
+          "ful"
+        ],
+        "x-calls": "GetShipmentExecution",
+        "x-permission": "ful:Read"
       }
     },
     "/v1/shipments/{shipment_id}/load-evidence": {

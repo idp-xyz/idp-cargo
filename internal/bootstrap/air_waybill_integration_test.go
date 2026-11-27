@@ -132,6 +132,21 @@ func TestHouseWaybillsUnderTheMasterWithEveryContext(t *testing.T) {
 		!m.Flights[0].ETD.Equal(retimed) || len(m.Houses) != 2 {
 		t.Fatalf("relinked: %+v %v", m.Flights, err)
 	}
+	// FUL follows the retimed flight (V2.110): SH-A's main carriage links to BK-1's capacity version 2, MU587 from PVG, still
+	// within its window, so nothing awaits the customer.
+	e, err := fulModule.GetShipmentExecution(ctx, fulapi.GetShipmentExecution{TenantID: tenant, ShipmentID: "SH-A"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = fulModule.LinkCarrierCapacity(ctx, fulapi.LinkCarrierCapacity{CommandID: "ful-link-A", TenantID: tenant, ActorID: "ops-1", ShipmentID: "SH-A",
+		ExpectedRevision: e.Revision, BookingID: "BK-1", OccurredAt: hours(14)}); err != nil {
+		t.Fatal(err)
+	}
+	if e, err = fulModule.GetShipmentExecution(ctx, fulapi.GetShipmentExecution{TenantID: tenant, ShipmentID: "SH-A"}); err != nil || len(e.Links) != 1 ||
+		e.Links[0].CapacityVersion != 2 || e.Links[0].Legs[0].Flight != "MU587" || !e.Links[0].Legs[0].ETD.Equal(retimed) || e.Links[0].Legs[0].Loading.Code != "CNPVG" ||
+		e.Links[0].ConsolidationID != "C-1" || e.TransportMode != fulapi.ModeAir || e.AwaitingCustomer {
+		t.Fatalf("FUL's link of SH-A: %+v %v", e, err)
+	}
 
 	// House B is rolled to C-2: PHY transfers it, FUL records it, AIR ends it under MAWB 1 and associates it under
 	// C-2's MAWB with the HAWB it has.

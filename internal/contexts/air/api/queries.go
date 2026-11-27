@@ -218,6 +218,7 @@ type DocHouse struct {
 	SecurityStatus   string          // SecuritySPX
 	Screenings       []Screening
 	Parts            []DocPart
+	WindowDrift      bool // V2.110: the first flight departs outside the window the customer agreed to; DOC issues no HAWB of it
 }
 
 // DocPart is a part of a house in a finalized version, with the goods description of its order line.

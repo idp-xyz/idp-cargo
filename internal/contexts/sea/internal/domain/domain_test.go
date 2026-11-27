@@ -267,6 +267,27 @@ func TestMasterBillReferences(t *testing.T) {
 	}
 }
 
+// V2.110: FUL's window the customer agreed to is part of what a house froze, so a refresh takes it alone, under the same
+// HBL, and the same window again is nothing to refresh.
+func TestARefreshTakesTheAgreedWindow(t *testing.T) {
+	m := open(t, booking(1))
+	p := plan("SH-1", "C-1", 1)
+	if err := m.Associate(p, "H1", "ops", at); err != nil {
+		t.Fatal(err)
+	}
+	agreed := p
+	agreed.Window.Until = p.Window.Until.Add(48 * time.Hour)
+	if err := m.Refresh(agreed, "ops", at.Add(time.Hour)); err != nil {
+		t.Fatalf("a refresh of the window alone: %v", err)
+	}
+	if h := m.Houses()[0]; h.HBL != "H1" || !h.Window.Until.Equal(agreed.Window.Until) || h.Start != StartRefreshed {
+		t.Fatalf("after the refresh: %+v", h)
+	}
+	if err := m.Refresh(agreed, "ops", at.Add(2*time.Hour)); !errors.Is(err, ErrNothingToRefresh) {
+		t.Fatalf("the same window again: %v", err)
+	}
+}
+
 func TestHouseBills(t *testing.T) {
 	m := open(t, booking(1))
 	for name, change := range map[string]func(*Plan){
