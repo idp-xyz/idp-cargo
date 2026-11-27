@@ -7479,6 +7479,65 @@
         },
         "type": "object"
       },
+      "ful.FlightPieces": {
+        "additionalProperties": false,
+        "properties": {
+          "arrived": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "departed": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "offloaded": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "transport": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "ful.PiecesAwaitingFlight": {
+        "additionalProperties": false,
+        "properties": {
+          "consolidation_id": {
+            "type": "string"
+          },
+          "departed_packs": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "flights": {
+            "items": {
+              "$ref": "#/components/schemas/ful.FlightPieces"
+            },
+            "type": "array"
+          },
+          "offloaded_packs": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "pieces": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "planned_packs": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "shipment_id": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "ful.PlannedPart": {
         "additionalProperties": false,
         "properties": {
@@ -7544,6 +7603,10 @@
           "awaiting_customer": {
             "type": "boolean"
           },
+          "awaiting_later_flight": {
+            "format": "int64",
+            "type": "integer"
+          },
           "consolidation_id": {
             "type": "string"
           },
@@ -7564,6 +7627,12 @@
           },
           "execution_status": {
             "type": "string"
+          },
+          "flights": {
+            "items": {
+              "$ref": "#/components/schemas/ful.FlightPieces"
+            },
+            "type": "array"
           },
           "links": {
             "items": {
@@ -10179,7 +10248,7 @@
   "info": {
     "description": "Cargo's HTTP API. Every /v1 call carries a bearer token; the tenant and the actor come only from it. A command carries Idempotency-Key (its command id) and, when it changes a resource at a revision, If-Match \"n\"; it states its business time in occurred_at. Errors are RFC 9457 problems with a business code.",
     "title": "IDP Cargo API",
-    "version": "2.110"
+    "version": "2.111"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -31182,6 +31251,57 @@
         ],
         "x-calls": "SuspendParty",
         "x-permission": "org:SuspendParty"
+      }
+    },
+    "/v1/pieces-awaiting-flight": {
+      "get": {
+        "operationId": "ful.ListPiecesAwaitingFlight",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "consolidation_id",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "items": {
+                      "items": {
+                        "$ref": "#/components/schemas/ful.PiecesAwaitingFlight"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "a problem"
+          }
+        },
+        "summary": "Shipments with pieces offloaded and not departed since",
+        "tags": [
+          "ful"
+        ],
+        "x-calls": "ListPiecesAwaitingFlight",
+        "x-permission": "ful:Read"
       }
     },
     "/v1/quotes": {

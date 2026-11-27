@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	app "go.idp.xyz/idp-cargo/internal/contexts/ful/internal/application"
@@ -105,6 +106,16 @@ func (e Evidence) Evidence(ctx context.Context, tenant ful.TenantID, shipment fu
 		tenderedVolume.add(t.Volume)
 		tenderedVolume.unknown = tenderedVolume.unknown || (t.LoadedPacks > 0 && t.Volume.Unit == "")
 		out.Departed, out.Arrived, out.Offloaded = out.Departed+t.Departed, out.Arrived+t.Arrived, out.Offloaded+t.Offloaded
+		for _, f := range t.Flights { // one flight over the consolidation's tenders, in the order first reported
+			i := slices.IndexFunc(out.Flights, func(o ful.Flight) bool { return o.Transport == f.Transport })
+			if i < 0 {
+				out.Flights = append(out.Flights, ful.Flight{Transport: f.Transport})
+				i = len(out.Flights) - 1
+			}
+			out.Flights[i].Departed += f.Departed
+			out.Flights[i].Arrived += f.Arrived
+			out.Flights[i].Offloaded += f.Offloaded
+		}
 	}
 	if !receivedWeight.unknown {
 		out.Received.GrossWeight = receivedWeight.q

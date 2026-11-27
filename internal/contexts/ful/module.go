@@ -270,6 +270,37 @@ func (m *Module) GetShipmentExecution(ctx context.Context, q api.GetShipmentExec
 	_, out.Refused, out.AwaitingCustomer = shipment.AwaitingAnswer()
 	if v, ok := shipment.LatestEvidence(); ok {
 		out.EvidenceVersion, out.DepartedPacks, out.ArrivedPacks, out.OffloadedPacks = v.No, v.Evidence.Departed, v.Evidence.Arrived, v.Evidence.Offloaded
+		out.Flights = flightPieces(v.Evidence.Flights)
+	}
+	out.AwaitingLaterFlight = shipment.AwaitingLaterFlight()
+	return out, nil
+}
+
+func flightPieces(flights []domain.Flight) []api.FlightPieces {
+	var out []api.FlightPieces
+	for _, f := range flights {
+		out = append(out, api.FlightPieces{Transport: f.Transport, Departed: f.Departed, Arrived: f.Arrived, Offloaded: f.Offloaded})
+	}
+	return out
+}
+
+// ListPiecesAwaitingFlight answers the shipments with pieces offloaded and not departed since, for a work list (V2.111).
+func (m *Module) ListPiecesAwaitingFlight(ctx context.Context, q api.ListPiecesAwaitingFlight) ([]api.PiecesAwaitingFlight, error) {
+	got, err := application.ListPiecesAwaitingFlight{Tx: bento.TenantTransactor{DB: m.db, Tenant: q.TenantID}, Shipments: postgres.ShipmentStore{DB: m.db},
+		Offloaded: postgres.ShipmentStore{DB: m.db}}.Handle(ctx, domain.TenantID(q.TenantID), q.ConsolidationID)
+	if err != nil {
+		return nil, classify(err)
+	}
+	out := []api.PiecesAwaitingFlight{}
+	for _, a := range got {
+		row := api.PiecesAwaitingFlight{ShipmentID: string(a.Shipment.ID()), Revision: a.Revision, Pieces: a.Pieces, PlannedPacks: a.Shipment.Latest().Scope.Packs}
+		if at, ok := a.Shipment.Attachment(domain.StageMain); ok {
+			row.ConsolidationID = at.ConsolidationID
+		}
+		if v, ok := a.Shipment.LatestEvidence(); ok {
+			row.DepartedPacks, row.OffloadedPacks, row.Flights = v.Evidence.Departed, v.Evidence.Offloaded, flightPieces(v.Evidence.Flights)
+		}
+		out = append(out, row)
 	}
 	return out, nil
 }

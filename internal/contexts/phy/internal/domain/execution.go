@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/big"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -1550,55 +1551,118 @@ type HousePieces struct {
 	Offloaded int64
 }
 
-// HousePieces attributes the carrier's evidence to a house of the tender. Each fact counts its largest report
-// per flight or voyage, summed over flights (a house split over two flights; N1 has direct flights only). A
-// house's own reports count as they are. Otherwise a master report covers the house: all its live pieces when
-// the master's pieces cover the whole tender, its live pieces less its own offloaded ones when they cover the
-// tender less the pieces offloaded from named houses, and none when PHY cannot tell which houses they were (an
-// offload reported for the master alone names no house).
+// FlightPieces are a house's pieces on one flight or voyage of a tender, as the carrier's evidence shows them (V2.111).
+// A flight is its transport as reported: an air flight is written with its date as IATA's status messages write it,
+// such as MU587/02DEC, so that the same flight number on another day is another flight.
+type FlightPieces struct {
+	Transport string
+	HousePieces
+}
+
+// HousePieces attributes the carrier's evidence to a house of the tender: its pieces on each flight or voyage added up
+// (HouseFlights).
 func (x *LoadExecution) HousePieces(shipment ShipmentID) HousePieces {
+	var out HousePieces
+	for _, f := range x.HouseFlights(shipment) {
+		out.Departed += f.Departed
+		out.Arrived += f.Arrived
+		out.Offloaded += f.Offloaded
+	}
+	return out
+}
+
+// HouseFlights attributes the carrier's evidence to a house of the tender, flight by flight in the order they were
+// first reported (since V2.111; until then the house's own reports over all flights, else the master's over all
+// flights). On each flight a fact counts its largest report (the same departure reported by the airline and the
+// ground handler is one departure). The house's own report on a flight counts as it is. Otherwise the master's report
+// on the flight covers the house when PHY can tell which pieces it was: all its live pieces when the master's departure
+// covers the tender; its live pieces less those offloaded from it on the flight when it covers the tender less the
+// pieces offloaded from named houses there (the airline flew all but those); the pieces still to fly of it when it
+// covers all the pieces offloaded from named houses on earlier flights and not departed since (the airline flew them
+// on a later flight under the same master); and none when PHY cannot tell (an offload reported for the master alone
+// names no house). An arrival reported for the master covers the house's live pieces when it covers the tender, and
+// its pieces departed on the flight when it covers all the pieces departed on it. A house's departed and arrived
+// pieces never add up to more than its live pieces: a later flight takes what the earlier left. Offloaded pieces are
+// the house's own reports. Flights with nothing of the house are left out.
+func (x *LoadExecution) HouseFlights(shipment ShipmentID) []FlightPieces {
+	return x.flights()[shipment]
+}
+
+func (x *LoadExecution) flights() map[ShipmentID][]FlightPieces {
 	type key struct {
 		fact      CarrierFact
 		shipment  ShipmentID
 		transport string
 	}
+	var transports []string
 	largest := map[key]int64{}
 	for _, e := range x.state.CarrierEvidence {
+		if !slices.Contains(transports, e.Transport) {
+			transports = append(transports, e.Transport)
+		}
 		k := key{e.Fact, e.ShipmentID, e.Transport}
 		largest[k] = max(largest[k], e.Pieces)
 	}
-	sum := func(fact CarrierFact, of func(ShipmentID) bool) int64 {
-		var n int64
-		for k, pieces := range largest {
-			if k.fact == fact && of(k.shipment) {
-				n += pieces
+	var houses []ShipmentID
+	live := map[ShipmentID]int64{}
+	for _, line := range x.state.Lines {
+		if _, seen := live[line.ShipmentID]; !seen {
+			if n := x.LiveFor(line.ShipmentID); n > 0 {
+				houses = append(houses, line.ShipmentID)
+				live[line.ShipmentID] = n
 			}
 		}
-		return n
 	}
-	house := func(s ShipmentID) bool { return s == shipment }
-	master := func(s ShipmentID) bool { return s == "" }
-	anyHouse := func(s ShipmentID) bool { return s != "" }
-	live, tendered := x.LiveFor(shipment), x.Tendered()
-	own := HousePieces{Departed: sum(CarrierDeparted, house), Arrived: sum(CarrierArrived, house), Offloaded: sum(CarrierOffloaded, house)}
-	offloaded := sum(CarrierOffloaded, anyHouse)
-	cover := func(masterPieces int64) int64 {
-		switch {
-		case masterPieces <= 0 || live == 0:
-			return 0
-		case masterPieces >= tendered:
-			return live
-		case masterPieces >= tendered-offloaded:
-			return max(live-own.Offloaded, 0)
+	tendered := x.Tendered()
+	departed, arrived, offloaded := map[ShipmentID]int64{}, map[ShipmentID]int64{}, map[ShipmentID]int64{}
+	out := map[ShipmentID][]FlightPieces{}
+	for _, t := range transports {
+		master := func(f CarrierFact) int64 { return largest[key{f, "", t}] }
+		own := func(f CarrierFact, h ShipmentID) int64 { return largest[key{f, h, t}] }
+		var named, waiting int64
+		toFly := map[ShipmentID]int64{}
+		for _, h := range houses {
+			named += own(CarrierOffloaded, h)
+			toFly[h] = max(0, min(offloaded[h], live[h]-departed[h]))
+			waiting += toFly[h]
 		}
-		return 0
-	}
-	out := own
-	if out.Departed == 0 {
-		out.Departed = cover(sum(CarrierDeparted, master))
-	}
-	if out.Arrived == 0 {
-		out.Arrived = cover(sum(CarrierArrived, master))
+		dep := map[ShipmentID]int64{}
+		var depAll int64
+		for _, h := range houses {
+			m := master(CarrierDeparted)
+			switch d := own(CarrierDeparted, h); {
+			case d > 0:
+				dep[h] = d
+			case m <= 0:
+			case m >= tendered:
+				dep[h] = live[h]
+			case named > 0 && m >= tendered-named:
+				dep[h] = live[h] - own(CarrierOffloaded, h)
+			case waiting > 0 && m >= waiting:
+				dep[h] = toFly[h]
+			}
+			dep[h] = max(0, min(dep[h], live[h]-departed[h]))
+			depAll += dep[h]
+		}
+		for _, h := range houses {
+			var arr int64
+			m := master(CarrierArrived)
+			switch a := own(CarrierArrived, h); {
+			case a > 0:
+				arr = a
+			case m <= 0:
+			case m >= tendered:
+				arr = live[h]
+			case depAll > 0 && m >= depAll:
+				arr = dep[h]
+			}
+			arr = max(0, min(arr, live[h]-arrived[h]))
+			off := own(CarrierOffloaded, h)
+			departed[h], arrived[h], offloaded[h] = departed[h]+dep[h], arrived[h]+arr, offloaded[h]+off
+			if dep[h] > 0 || arr > 0 || off > 0 {
+				out[h] = append(out[h], FlightPieces{Transport: t, HousePieces: HousePieces{Departed: dep[h], Arrived: arr, Offloaded: off}})
+			}
+		}
 	}
 	return out
 }

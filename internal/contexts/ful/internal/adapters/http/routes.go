@@ -52,4 +52,6 @@ func Register(r *httpapi.Routes, s Service) {
 	httpapi.Command(r, k, op("POST", "/v1/shipments/{shipment_id}/date-answers", "RecordCustomerDateAnswer", api.ActionRecordCustomerDateAnswer, "Record the customer's answer to a departure outside the window"), s.RecordCustomerDateAnswer)
 	httpapi.Query(r, k, op("GET", "/v1/shipments/{shipment_id}/execution", "GetShipmentExecution", "", "A shipment's execution next to its plan: capacity links, the customer's answers, departed packs"), s.GetShipmentExecution)
 	httpapi.Query(r, k, op("GET", "/v1/date-changes-awaiting-customer", "ListDateChangesAwaitingCustomer", "", "Shipments whose departure lies outside the window the customer agreed to"), s.ListDateChangesAwaitingCustomer)
+	// V2.111: pieces the airline offloaded, until they depart on a later flight or are re-planned.
+	httpapi.Query(r, k, op("GET", "/v1/pieces-awaiting-flight", "ListPiecesAwaitingFlight", "", "Shipments with pieces offloaded and not departed since"), s.ListPiecesAwaitingFlight)
 }
