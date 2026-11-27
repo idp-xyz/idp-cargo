@@ -144,7 +144,8 @@ func (w *world) plan(shipment, consolidation string, version int) {
 	defer w.mu.Unlock()
 	w.plans[shipment] = fulapi.OceanOperationPlan{ShipmentID: shipment, Revision: int64(version + 2), Status: fulapi.StatusPlanned, PlanVersion: version,
 		LegalEntityID: "LE", TransportMode: fulapi.ModeSea, ContainerMode: fulapi.ContainerLCL, Origin: unlocode("CNSHG"), Destination: unlocode("DEHAM"),
-		DepartureWindow: kernel.ValidityInterval{From: w.at.Add(48 * time.Hour), Until: w.at.Add(120 * time.Hour)}, Packs: 6, GrossWeight: kg(300),
+		DepartureWindow: kernel.ValidityInterval{From: w.at.Add(48 * time.Hour), Until: w.at.Add(120 * time.Hour)},
+		AgreedWindow:    kernel.ValidityInterval{From: w.at.Add(48 * time.Hour), Until: w.at.Add(120 * time.Hour)}, Packs: 6, GrossWeight: kg(300),
 		Volume: kernel.Quantity{Unit: "DMQ", Amount: 2400}, Stage: fulapi.StageMain, ConsolidationID: consolidation, MembershipEntryNo: 1, MembershipRevision: 1,
 		Parts: []fulapi.LoadIntentPart{{ObligationID: "OB-" + shipment, ObligationVersion: 1, OrderID: "O-" + shipment, Packs: 6, PackageType: "CT",
 			GrossWeight: kg(300), GoodsDescription: "Furniture parts in cartons"}}}

@@ -274,6 +274,25 @@ type IssueGate struct {
 	AuthorityVersion int64
 }
 
+// houseDrifts reports whether the facts' house of the shipment departs outside the window the customer agreed to, with
+// its HBL or HAWB.
+func (g IssueGate) houseDrifts(sea bool, shipment string) (string, bool) {
+	if sea {
+		for _, h := range g.Ocean.Houses {
+			if h.ShipmentID == shipment {
+				return h.HBL, h.WindowDrift
+			}
+		}
+		return "", false
+	}
+	for _, h := range g.Facts.Houses {
+		if h.ShipmentID == shipment {
+			return h.HAWB, h.WindowDrift
+		}
+	}
+	return "", false
+}
+
 // Issue issues the approved version.
 func (d *Document) Issue(g IssueGate, by string, at time.Time) error {
 	if d.state.State != StateApproved {
@@ -400,6 +419,7 @@ func (d *Document) issue(g IssueGate, by string, at time.Time) error {
 	if d.state.Kind.SeaHouse() {
 		notLoaded = g.Ocean.houseNotLoaded(d.state.ShipmentID)
 	}
+	number, drifting := g.houseDrifts(d.state.Kind.SeaHouse(), d.state.ShipmentID)
 	switch {
 	case !g.IssuerVerified:
 		return ErrIssuerNotVerified
@@ -409,6 +429,8 @@ func (d *Document) issue(g IssueGate, by string, at time.Time) error {
 		return notLoaded
 	case !d.state.Kind.SeaHouse() && (!g.Facts.Final || g.Facts.MovementID != src.MovementID || g.Facts.Version != src.Version || g.Facts.SHA256 != src.SHA256):
 		return fmt.Errorf("%w: built on AirDocFacts version %d, AIR's latest is %d (final %v)", ErrSourceStale, src.Version, g.Facts.Version, g.Facts.Final)
+	case d.state.Kind.House() && drifting:
+		return fmt.Errorf("%w: house %s", ErrDateChangeUnanswered, number)
 	case !identifier(g.AuthorityID) || g.AuthorityVersion < 1:
 		return ErrIssuanceBlocked
 	}

@@ -532,6 +532,12 @@ func facts(p Plan) (Facts, error) {
 }
 
 // sameMeasures reports whether two facts document the same quantities and the same sealed containers.
+// sameWindow reports whether FUL's window is the one the entry froze: the window the customer agreed to changes when
+// the customer accepts a departure outside it (FUL V2.110), and a refresh takes it.
+func sameWindow(a, b kernel.ValidityInterval) bool {
+	return a.From.Equal(b.From) && a.Until.Equal(b.Until)
+}
+
 func sameMeasures(a, b Facts) bool {
 	return a.Packs == b.Packs && a.GrossWeight == b.GrossWeight && a.Volume == b.Volume && a.Basis == b.Basis &&
 		slices.EqualFunc(a.Stuffings, b.Stuffings, Stuffing.same)
@@ -583,7 +589,7 @@ func (m *Movement) Refresh(p Plan, by string, at time.Time) error {
 		return fmt.Errorf("%w: FUL reports %s at plan version %d, revision %d, older than the entry's %d, %d", ErrInvalidChange, p.ShipmentID,
 			p.PlanVersion, p.Revision, m.state.Entries[i].PlanVersion, m.state.Entries[i].FULRevision)
 	}
-	if p.PlanVersion == m.state.Entries[i].PlanVersion && sameMeasures(f, m.state.Entries[i].Facts) {
+	if p.PlanVersion == m.state.Entries[i].PlanVersion && sameMeasures(f, m.state.Entries[i].Facts) && sameWindow(p.Window, m.state.Entries[i].Window) {
 		return ErrNothingToRefresh
 	}
 	if err = m.changeable(by, at); err != nil {

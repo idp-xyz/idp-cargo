@@ -42,7 +42,8 @@ func (f Facts) Latest(ctx context.Context, tenant doc.TenantID, movement string)
 	}
 	for _, h := range got.Houses {
 		house := doc.FactsHouse{ShipmentID: h.ShipmentID, HAWB: h.HAWB, PlanVersion: h.PlanVersion, EvidenceVersion: h.EvidenceVersion, Pieces: h.Pieces,
-			GrossGrams: h.GrossWeight.Amount, VolumeCm3: h.Volume.Amount, ChargeableGrams: h.ChargeableWeight.Amount, Security: h.SecurityStatus}
+			GrossGrams: h.GrossWeight.Amount, VolumeCm3: h.Volume.Amount, ChargeableGrams: h.ChargeableWeight.Amount, Security: h.SecurityStatus,
+			WindowDrift: h.WindowDrift}
 		for _, s := range h.Screenings {
 			house.Screenings = append(house.Screenings, doc.Screening{LotID: s.LotID, Outcome: s.Outcome, Screener: s.Screener, Method: s.Method,
 				Reference: s.Reference, ScreenedAt: s.ScreenedAt.UTC()})

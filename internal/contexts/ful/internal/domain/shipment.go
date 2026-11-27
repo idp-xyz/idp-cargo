@@ -59,6 +59,9 @@ const (
 	eventConsolDetachmentRecorded = "ShipmentConsolDetachmentRecorded.v1"
 	eventLoadEvidenceRecorded     = "ShipmentLoadEvidenceRecorded.v1"
 	eventExecutionStatusChanged   = "ShipmentExecutionStatusChanged.v1"
+	// stage 4 (V2.110)
+	eventCapacityLinked     = "ShipmentCapacityLinked.v1"
+	eventDateAnswerRecorded = "ShipmentDateAnswerRecorded.v1"
 )
 
 // Event carries identifiers only; the Outbox adapter maps it to a Bento envelope.
@@ -72,6 +75,7 @@ type Event struct {
 	Stage             string // events about a consol attachment or load evidence (V0.4)
 	ConsolidationID   string
 	EvidenceNo        int // events about load evidence (V0.4)
+	LinkNo            int // events about a capacity link or the customer's answer to it (V2.110)
 }
 
 // ObligationRef is a COM obligation version as FUL plans it, taken from ObligationSnapshot v2: the order
@@ -188,6 +192,8 @@ type ShipmentState struct {
 	CancelReason    string
 	Attachments     []ConsolAttachment // FUL V0.4, in the order recorded
 	Evidence        []EvidenceVersion  // FUL V0.4, PHY's verified evidence in the order recorded
+	Links           []CapacityLink     // V2.110, the main carriage's capacity links in the order made
+	Answers         []DateAnswer       // V2.110, the customer's answers to departures outside the window
 }
 
 // Shipment is the aggregate root. Plan versions and confirmations are only added; a planned obligation
@@ -202,6 +208,8 @@ type Shipment struct {
 	// persisted consol attachments ended since, by index
 	endedAttachments []int
 	evidence         int // evidence versions already persisted
+	links            int // capacity links already persisted
+	answers          int // date answers already persisted
 	pending          []Event
 }
 
@@ -472,6 +480,12 @@ func (s *Shipment) Stamp(entered time.Time) {
 	for i := s.evidence; i < len(s.state.Evidence); i++ {
 		s.state.Evidence[i].EnteredAt = entered.UTC()
 	}
+	for i := s.links; i < len(s.state.Links); i++ {
+		s.state.Links[i].EnteredAt = entered.UTC()
+	}
+	for i := s.answers; i < len(s.state.Answers); i++ {
+		s.state.Answers[i].EnteredAt = entered.UTC()
+	}
 }
 
 // changeable checks who changes the shipment and that nothing recorded for it is later than at.
@@ -521,6 +535,12 @@ func (s *Shipment) lastChange() time.Time {
 	}
 	for _, v := range s.state.Evidence {
 		last = later(last, v.At)
+	}
+	for _, l := range s.state.Links {
+		last = later(last, l.At)
+	}
+	for _, a := range s.state.Answers {
+		last = later(last, a.At)
 	}
 	return later(last, s.state.CancelledAt)
 }
@@ -572,8 +592,10 @@ func RestoreShipment(st ShipmentState) (*Shipment, error) {
 	st.Confirmations = append([]Confirmation(nil), st.Confirmations...)
 	st.Attachments = append([]ConsolAttachment(nil), st.Attachments...)
 	st.Evidence = append([]EvidenceVersion(nil), st.Evidence...)
+	st.Links = append([]CapacityLink(nil), st.Links...)
+	st.Answers = append([]DateAnswer(nil), st.Answers...)
 	s := &Shipment{state: st, obligations: len(st.Obligations), plans: len(st.Plans), confirmations: len(st.Confirmations),
-		attachments: len(st.Attachments), evidence: len(st.Evidence)}
+		attachments: len(st.Attachments), evidence: len(st.Evidence), links: len(st.Links), answers: len(st.Answers)}
 	if err := s.validate(); err != nil {
 		return nil, err
 	}
@@ -629,6 +651,9 @@ func (s *Shipment) validate() error {
 	if err := s.validateAttachments(); err != nil {
 		return err
 	}
+	if err := s.validateLinks(); err != nil {
+		return err
+	}
 	return s.validateEvidence()
 }
 
@@ -640,6 +665,8 @@ func (s *Shipment) State() ShipmentState {
 	st.Confirmations = append([]Confirmation(nil), st.Confirmations...)
 	st.Attachments = append([]ConsolAttachment(nil), st.Attachments...)
 	st.Evidence = append([]EvidenceVersion(nil), st.Evidence...)
+	st.Links = append([]CapacityLink(nil), st.Links...)
+	st.Answers = append([]DateAnswer(nil), st.Answers...)
 	return st
 }
 
@@ -677,6 +704,7 @@ func (s *Shipment) Acknowledge() {
 	s.obligations, s.plans, s.confirmations = len(s.state.Obligations), len(s.state.Plans), len(s.state.Confirmations)
 	s.attachments = len(s.state.Attachments)
 	s.evidence = len(s.state.Evidence)
+	s.links, s.answers = len(s.state.Links), len(s.state.Answers)
 }
 
 func (s *Shipment) record(kind string, at time.Time, ob *ObligationRef) {

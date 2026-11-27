@@ -174,6 +174,56 @@ type RecordVerifiedLoadEvidence struct {
 	OccurredAt       time.Time
 }
 
+// LinkCarrierCapacity links the shipment's main carriage to BOOK's confirmed capacity (CarrierBooking v1; stage 4,
+// V2.110): a booking CONFIRMED with a current capacity version, allocated to the consolidation FUL records the shipment
+// attached to, of the plan's mode. Line names the capacity line, 0 the booking's only one. FUL freezes the booking,
+// its revision, capacity version and line, the carrier's reference and the legs with their estimated departures and
+// arrivals, and keeps every link: run it again after BOOK records a carrier's change (schedule change, rollover,
+// reduction, split) or when the shipment's cargo moves to another booking, such as a container rolled to another
+// movement. The same carriage as the current link changes nothing and keeps the revision. A shipment whose packs all
+// departed links none. A departure outside the plan's departure window awaits the customer's answer
+// (RecordCustomerDateAnswer).
+type LinkCarrierCapacity struct {
+	CommandID        string
+	TenantID         string
+	ActorID          string
+	ShipmentID       string
+	ExpectedRevision int64
+	BookingID        string
+	Line             int
+	OccurredAt       time.Time
+}
+
+// RecordCustomerDateAnswer records the customer's answer to the current capacity link, whose first departure lies
+// outside the plan's departure window (the owner's decision of 2026-11-26): ACCEPTED or REFUSED, with the evidence of
+// it. An accepted departure widens the window the customer agreed to (AgreedWindow in AirOperationPlan v1 and
+// OceanOperationPlan v1); AIR and SEA take it when the house is refreshed, and DOC issues the house's bill once it holds
+// the departure. A refusal keeps the window: the operator books other capacity, or the customer amends the plan. An
+// answer counts while the plan's departure window is the one it answered.
+type RecordCustomerDateAnswer struct {
+	CommandID        string
+	TenantID         string
+	ActorID          string
+	ShipmentID       string
+	ExpectedRevision int64
+	LinkNo           int
+	Answer           string // AnswerAccepted or AnswerRefused
+	EvidenceRef      string
+	OccurredAt       time.Time
+}
+
+// Customer answers to a departure outside the window.
+const (
+	AnswerAccepted = "ACCEPTED"
+	AnswerRefused  = "REFUSED"
+)
+
+// CapacityCommands link a shipment's main carriage to BOOK's capacity and record the customer's answers (V2.110).
+type CapacityCommands interface {
+	LinkCarrierCapacity(ctx context.Context, cmd LinkCarrierCapacity) (Receipt, error)
+	RecordCustomerDateAnswer(ctx context.Context, cmd RecordCustomerDateAnswer) (Receipt, error)
+}
+
 // LoadEvidenceCommands records PHY's verified evidence in a shipment (FUL V0.4).
 type LoadEvidenceCommands interface {
 	RecordVerifiedLoadEvidence(ctx context.Context, cmd RecordVerifiedLoadEvidence) (Receipt, error)
@@ -223,6 +273,8 @@ const (
 	ActionRecordConsolAttachment        = "RecordConsolAttachment"
 	ActionRecordConsolDetachment        = "RecordConsolDetachment"
 	ActionRecordVerifiedLoadEvidence    = "RecordVerifiedLoadEvidence"
+	ActionLinkCarrierCapacity           = "LinkCarrierCapacity"
+	ActionRecordCustomerDateAnswer      = "RecordCustomerDateAnswer"
 )
 
 // Authorizer decides whether a verified actor may perform a shipment action. The identity and policy

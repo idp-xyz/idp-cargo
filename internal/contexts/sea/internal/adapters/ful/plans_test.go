@@ -39,7 +39,8 @@ func stuffed() fulapi.OceanOperationPlan {
 	kg := func(n int64) kernel.Quantity { return kernel.Quantity{Unit: "KGM", Amount: n} }
 	return fulapi.OceanOperationPlan{TenantID: "T", ShipmentID: "SH-1", Revision: 5, Status: fulapi.StatusPlanned, PlanVersion: 2, CustomerPartyID: "party-1",
 		LegalEntityID: "LE", TransportMode: fulapi.ModeSea, ContainerMode: fulapi.ContainerLCL, Origin: unlocode("CNSHG"), Destination: unlocode("DEHAM"),
-		LocationEdition: "E1", DepartureWindow: kernel.ValidityInterval{From: sealed, Until: sealed.Add(48 * time.Hour)}, Packs: 6, GrossWeight: kg(300),
+		LocationEdition: "E1", DepartureWindow: kernel.ValidityInterval{From: sealed, Until: sealed.Add(48 * time.Hour)},
+		AgreedWindow: kernel.ValidityInterval{From: sealed, Until: sealed.Add(48 * time.Hour)}, Packs: 6, GrossWeight: kg(300),
 		Volume: kernel.Quantity{Unit: "DMQ", Amount: 2400}, Stage: fulapi.StageMain, ConsolidationID: "C-1", MembershipEntryNo: 1, MembershipRevision: 1,
 		Parts: []fulapi.LoadIntentPart{{ObligationID: "OB-1", ObligationVersion: 1, OrderID: "O-1", Packs: 6, PackageType: "CT", GrossWeight: kg(300),
 			GoodsDescription: "Furniture parts"}},
@@ -75,9 +76,15 @@ func TestPlanAsSEAFreezesIt(t *testing.T) {
 	}
 	// an open-ended departure window stays open-ended
 	open := stuffed()
-	open.DepartureWindow.Until = time.Time{}
+	open.DepartureWindow.Until, open.AgreedWindow.Until = time.Time{}, time.Time{}
 	if got, err = (Plans{FUL: stub{plan: open}}).Plan(ctx, "T", "SH-1"); err != nil || !got.Window.Until.IsZero() {
 		t.Fatalf("an open-ended window: %+v %v", got.Window, err)
+	}
+	// the house is held to the window the customer agreed to (V2.110), not the plan's
+	agreed := stuffed()
+	agreed.AgreedWindow.Until = sealed.Add(96 * time.Hour)
+	if got, err = (Plans{FUL: stub{plan: agreed}}).Plan(ctx, "T", "SH-1"); err != nil || !got.Window.Until.Equal(sealed.Add(96*time.Hour).Truncate(time.Microsecond)) {
+		t.Fatalf("the agreed window: %+v %v", got.Window, err)
 	}
 }
 

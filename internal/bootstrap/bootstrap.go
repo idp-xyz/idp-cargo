@@ -9,6 +9,7 @@ import (
 	"errors"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -48,8 +49,9 @@ type Config struct {
 
 // Platform holds the connection pool that all transaction owners share.
 type Platform struct {
-	pool   *pgxpool.Pool
-	schema string
+	pool     *pgxpool.Pool
+	schema   string
+	bookings bookQueries // the BOOK module assembled last on this platform, for FUL (V2.110)
 }
 
 // Open connects to PostgreSQL and checks the Bento schema.
@@ -156,10 +158,13 @@ func (p *Platform) PHY(ful fulapi.LoadIntentQueries, auth phyapi.Authorizer, opt
 // FULAndPHY assembles FUL and PHY, which read each other's query sides: PHY reads FUL's LoadIntent v1 before it
 // attaches or closes (relationship 7), and FUL reads PHY's ConsolMembership v1 before it records an attachment
 // and PhysicalLoadEvidence v1 before it records load evidence (relationship 8). Neither writes to the other; the
-// API client runs the steps (T6).
-func (p *Platform) FULAndPHY(com comapi.Queries, fulAuth fulapi.Authorizer, phyAuth phyapi.Authorizer) (*ful.Module, *phy.Module, error) {
+// API client runs the steps (T6). Since V2.110 FUL reads BOOK's CarrierBooking v1 before it links a shipment's main
+// carriage to a booking's capacity: from the BOOK module assembled on this platform, which may come after FUL (all of
+// them read the same database). opts configure FUL further.
+func (p *Platform) FULAndPHY(com comapi.Queries, fulAuth fulapi.Authorizer, phyAuth phyapi.Authorizer, opts ...ful.Option) (*ful.Module, *phy.Module, error) {
 	forward := &phyQueries{}
-	fulModule, err := p.FUL(com, fulAuth, ful.WithConsolMemberships(forward), ful.WithPhysicalEvidence(forward))
+	fulModule, err := p.FUL(com, fulAuth, append([]ful.Option{ful.WithConsolMemberships(forward), ful.WithPhysicalEvidence(forward),
+		ful.WithCarrierBookings(&p.bookings)}, opts...)...)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -202,7 +207,66 @@ func (p *Platform) BOOK(org orgapi.Queries, auth bookapi.Authorizer, opts ...boo
 	if err != nil {
 		return nil, err
 	}
-	return book.New(db, org, auth, append([]book.Option{book.WithLocations(locations)}, opts...)...)
+	m, err := book.New(db, org, auth, append([]book.Option{book.WithLocations(locations)}, opts...)...)
+	if err == nil {
+		p.bookings.module.Store(m)
+	}
+	return m, err
+}
+
+// bookQueries forwards FUL's reads of CarrierBooking v1 to the BOOK module assembled on the platform, which may come
+// after FUL.
+type bookQueries struct {
+	module atomic.Pointer[book.Module]
+}
+
+var errBookNotAssembled = errors.New("bootstrap: BOOK is not assembled")
+
+func (b *bookQueries) get() (*book.Module, error) {
+	if m := b.module.Load(); m != nil {
+		return m, nil
+	}
+	return nil, errBookNotAssembled
+}
+
+func (b *bookQueries) GetCarrierBooking(ctx context.Context, q bookapi.GetCarrierBooking) (bookapi.CarrierBooking, error) {
+	m, err := b.get()
+	if err != nil {
+		return bookapi.CarrierBooking{}, err
+	}
+	return m.GetCarrierBooking(ctx, q)
+}
+
+func (b *bookQueries) ListCapacityForConsumer(ctx context.Context, q bookapi.ListCapacityForConsumer) ([]bookapi.CarrierBooking, error) {
+	m, err := b.get()
+	if err != nil {
+		return nil, err
+	}
+	return m.ListCapacityForConsumer(ctx, q)
+}
+
+func (b *bookQueries) FindBookingByCarrierReference(ctx context.Context, q bookapi.FindBookingByCarrierReference) (bookapi.CarrierBooking, error) {
+	m, err := b.get()
+	if err != nil {
+		return bookapi.CarrierBooking{}, err
+	}
+	return m.FindBookingByCarrierReference(ctx, q)
+}
+
+func (b *bookQueries) ListBookingsAwaitingCarrier(ctx context.Context, q bookapi.ListBookingsAwaitingCarrier) ([]bookapi.BookingSummary, error) {
+	m, err := b.get()
+	if err != nil {
+		return nil, err
+	}
+	return m.ListBookingsAwaitingCarrier(ctx, q)
+}
+
+func (b *bookQueries) ListCutOffsDue(ctx context.Context, q bookapi.ListCutOffsDue) ([]bookapi.CutOffDue, error) {
+	m, err := b.get()
+	if err != nil {
+		return nil, err
+	}
+	return m.ListCutOffsDue(ctx, q)
 }
 
 // AIR assembles the AIR bounded context. book answers CarrierBooking v1 (relationship 5) and ful AirOperationPlan

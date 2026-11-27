@@ -284,7 +284,7 @@ func docFactsView(tenant string, v domain.DocFactsVersion, current bool) api.Air
 	for _, h := range f.Houses {
 		d := api.DocHouse{ShipmentID: h.ShipmentID, HAWB: h.HAWB, PlanVersion: h.PlanVersion, EvidenceVersion: h.EvidenceVersion, Basis: h.Basis,
 			Pieces: h.Pieces, GrossWeight: grams(h.GrossWeightGrams), Volume: cubicCentimetres(h.VolumeCubicCentimetres),
-			ChargeableWeight: grams(h.ChargeableGrams), SecurityStatus: h.SecurityStatus, Screenings: screenings(h.Screenings)}
+			ChargeableWeight: grams(h.ChargeableGrams), SecurityStatus: h.SecurityStatus, Screenings: screenings(h.Screenings), WindowDrift: h.WindowDrift}
 		for _, p := range h.Parts {
 			d.Parts = append(d.Parts, api.DocPart{ObligationID: p.ObligationID, ObligationVersion: p.ObligationVersion, OrderID: p.OrderID, Packs: p.Packs,
 				PackageType: p.PackageType, GoodsDescription: p.GoodsDescription})

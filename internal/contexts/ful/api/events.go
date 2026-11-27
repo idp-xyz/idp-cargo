@@ -17,6 +17,9 @@ const (
 	ShipmentConsolDetachmentRecorded = "ShipmentConsolDetachmentRecorded.v1"
 	ShipmentLoadEvidenceRecorded     = "ShipmentLoadEvidenceRecorded.v1"
 	ShipmentExecutionStatusChanged   = "ShipmentExecutionStatusChanged.v1"
+	// stage 4 (V2.110)
+	ShipmentCapacityLinked     = "ShipmentCapacityLinked.v1"
+	ShipmentDateAnswerRecorded = "ShipmentDateAnswerRecorded.v1"
 )
 
 // EventPayload is the JSON payload of every FUL event: identifiers only. SubjectID is the shipment;
@@ -31,4 +34,5 @@ type EventPayload struct {
 	Stage             string `json:"stage,omitempty"`
 	ConsolidationID   string `json:"consolidation_id,omitempty"`
 	EvidenceNo        int    `json:"evidence_no,omitempty"`
+	LinkNo            int    `json:"link_no,omitempty"` // events about a capacity link or the customer's answer to it
 }

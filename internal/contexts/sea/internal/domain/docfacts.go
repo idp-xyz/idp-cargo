@@ -83,6 +83,10 @@ type DocHouse struct {
 	OrderIDs               []string       `json:"order_ids"`
 	GoodsDescription       string         `json:"goods_description,omitempty"`
 	Containers             []DocBreakdown `json:"containers"`
+	// WindowDrift (V2.110): the first leg's ETD lies outside the window the customer agreed to; DOC issues no bill of the
+	// house until the customer's answer is recorded in FUL and the house refreshed. Left out when false, so that
+	// versions published before keep their content.
+	WindowDrift bool `json:"window_drift,omitempty"`
 }
 
 // DocBreakdown is a house's packs in one container.
@@ -256,7 +260,7 @@ func (m *Movement) oceanDocFacts(version int, houses []Entry, visits []VisitStat
 			return OceanDocFacts{}, fmt.Errorf("%w: %s %s weight or volume", ErrNotFinalizable, h.HBL, h.ShipmentID)
 		}
 		d := DocHouse{ShipmentID: h.ShipmentID, HBL: h.HBL, PlanVersion: h.PlanVersion, Packs: h.Facts.Packs, GrossWeightGrams: g,
-			VolumeCubicCentimetres: v, OrderIDs: []string{}, Containers: []DocBreakdown{}}
+			VolumeCubicCentimetres: v, OrderIDs: []string{}, Containers: []DocBreakdown{}, WindowDrift: m.WindowDrift(h)}
 		seen := map[string]bool{}
 		var descriptions []string
 		packageType, mixed := "", false

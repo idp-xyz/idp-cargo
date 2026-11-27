@@ -135,7 +135,8 @@ func (w *world) plan(shipment, consolidation string, version int) {
 	kg := kernel.Quantity{Unit: "KGM", Amount: 300}
 	w.plans[shipment] = fulapi.AirOperationPlan{ShipmentID: shipment, Revision: int64(version + 2), Status: fulapi.StatusPlanned, PlanVersion: version,
 		LegalEntityID: "LE", TransportMode: fulapi.ModeAir, Origin: unlocode("CNPVG"), Destination: unlocode("USJFK"), OriginIATA: "PVG", DestinationIATA: "JFK",
-		DepartureWindow: kernel.ValidityInterval{From: w.at.Add(48 * time.Hour), Until: w.at.Add(120 * time.Hour)}, Packs: 6, GrossWeight: kg,
+		DepartureWindow: kernel.ValidityInterval{From: w.at.Add(48 * time.Hour), Until: w.at.Add(120 * time.Hour)},
+		AgreedWindow:    kernel.ValidityInterval{From: w.at.Add(48 * time.Hour), Until: w.at.Add(120 * time.Hour)}, Packs: 6, GrossWeight: kg,
 		Volume: kernel.Quantity{Unit: "DMQ", Amount: 2400}, Stage: fulapi.StageMain, ConsolidationID: consolidation, MembershipEntryNo: 1, MembershipRevision: 1,
 		Parts: []fulapi.LoadIntentPart{{ObligationID: "OB-" + shipment, ObligationVersion: 1, OrderID: "O-" + shipment, Packs: 6, PackageType: "CT", GrossWeight: kg}}}
 }

@@ -90,6 +90,11 @@ type DocHouse struct {
 	SecurityStatus         string      `json:"security_status"`
 	Screenings             []Screening `json:"screenings"`
 	Parts                  []DocPart   `json:"parts"`
+	// WindowDrift (V2.110): the first flight's ETD lies outside the window the customer agreed to. Since V2.110 the
+	// movement is finalized with it (until then a house drifting refused the finalization) and DOC issues no HAWB of the
+	// house until the customer's answer is recorded in FUL and the house refreshed. Left out when false, so that
+	// versions published before keep their content.
+	WindowDrift bool `json:"window_drift,omitempty"`
 }
 
 type DocPart struct {
@@ -145,7 +150,7 @@ func (m *Movement) Finalize(current []Plan, by string, at time.Time) error {
 			return fmt.Errorf("%w: STALE_HOUSE: FUL no longer reports %s %s as AIR froze it (%v); once FUL's plan is confirmed, refresh the house, or end its association",
 				ErrNotFinalizable, h.HAWB, h.ShipmentID, err)
 		}
-		if f, err := facts(p); err != nil || p.PlanVersion != h.PlanVersion || !sameMeasures(f, h.Facts) {
+		if f, err := facts(p); err != nil || p.PlanVersion != h.PlanVersion || !sameMeasures(f, h.Facts) || !sameWindow(p.Window, h.Window) {
 			return fmt.Errorf("%w: STALE_HOUSE: FUL reports newer facts of %s %s; refresh it first", ErrNotFinalizable, h.HAWB, h.ShipmentID)
 		}
 		f := h.Facts
@@ -160,8 +165,6 @@ func (m *Movement) Finalize(current []Plan, by string, at time.Time) error {
 		case f.Volume.Amount < 1:
 			return fmt.Errorf("%w: %s %s has no measured volume, so neither it nor the master has a chargeable weight; PHY measures it first",
 				ErrNotFinalizable, h.HAWB, h.ShipmentID)
-		case m.WindowDrift(h):
-			return fmt.Errorf("%w: WINDOW_DRIFT: %s %s does not depart within its window; FUL re-plans it first", ErrNotFinalizable, h.HAWB, h.ShipmentID)
 		}
 		for _, s := range f.Screenings {
 			if s.Outcome != "PASSED" && s.Outcome != "NOT_REQUIRED" {
@@ -212,7 +215,8 @@ func (m *Movement) docFacts(version int) DocFacts {
 		g, _ := Grams(h.Facts.GrossWeight)
 		v, _ := CubicCentimetres(h.Facts.Volume)
 		d := DocHouse{ShipmentID: h.ShipmentID, HAWB: h.HAWB, PlanVersion: h.PlanVersion, EvidenceVersion: h.Facts.Evidence, Basis: h.Facts.Basis,
-			Pieces: h.Facts.Pieces, GrossWeightGrams: g, VolumeCubicCentimetres: v, ChargeableGrams: h.Facts.ChargeableGrams, SecurityStatus: SecuritySPX}
+			Pieces: h.Facts.Pieces, GrossWeightGrams: g, VolumeCubicCentimetres: v, ChargeableGrams: h.Facts.ChargeableGrams, SecurityStatus: SecuritySPX,
+			WindowDrift: m.WindowDrift(h)}
 		for _, s := range h.Facts.Screenings {
 			s.ScreenedAt = s.ScreenedAt.UTC()
 			d.Screenings = append(d.Screenings, s)

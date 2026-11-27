@@ -152,20 +152,23 @@ type LoadIntent struct {
 // the lots' latest measures once every lot completed receipt, else empty; with the security state of the cargo
 // and the execution status. It carries no names.
 type AirOperationPlan struct {
-	TenantID           string
-	ShipmentID         string
-	Revision           int64
-	Status             string
-	PlanVersion        int
-	CustomerPartyID    string
-	LegalEntityID      string
-	TransportMode      string
-	Origin             kernel.LocationCode
-	Destination        kernel.LocationCode
-	OriginIATA         string
-	DestinationIATA    string
-	LocationEdition    string
-	DepartureWindow    kernel.ValidityInterval
+	TenantID        string
+	ShipmentID      string
+	Revision        int64
+	Status          string
+	PlanVersion     int
+	CustomerPartyID string
+	LegalEntityID   string
+	TransportMode   string
+	Origin          kernel.LocationCode
+	Destination     kernel.LocationCode
+	OriginIATA      string
+	DestinationIATA string
+	LocationEdition string
+	DepartureWindow kernel.ValidityInterval
+	// AgreedWindow (V2.110) is the window the customer agreed to: DepartureWindow widened to the departures the customer
+	// accepted (RecordCustomerDateAnswer). AIR and SEA hold the house to it.
+	AgreedWindow       kernel.ValidityInterval
 	Packs              int64
 	GrossWeight        kernel.Quantity
 	Volume             kernel.Quantity
@@ -195,19 +198,22 @@ type AirOperationPlan struct {
 // before V2.60 carry none until FUL records the evidence again). It carries no names. Like AirOperationPlan v1 it
 // answers any shipment, with its TransportMode, so that SEA can end the association of a house planned elsewhere.
 type OceanOperationPlan struct {
-	TenantID           string
-	ShipmentID         string
-	Revision           int64
-	Status             string
-	PlanVersion        int
-	CustomerPartyID    string
-	LegalEntityID      string
-	TransportMode      string // ModeSea
-	ContainerMode      string // N1-PHY OD-9: LCL or FCL; empty when not planned
-	Origin             kernel.LocationCode
-	Destination        kernel.LocationCode
-	LocationEdition    string
-	DepartureWindow    kernel.ValidityInterval
+	TenantID        string
+	ShipmentID      string
+	Revision        int64
+	Status          string
+	PlanVersion     int
+	CustomerPartyID string
+	LegalEntityID   string
+	TransportMode   string // ModeSea
+	ContainerMode   string // N1-PHY OD-9: LCL or FCL; empty when not planned
+	Origin          kernel.LocationCode
+	Destination     kernel.LocationCode
+	LocationEdition string
+	DepartureWindow kernel.ValidityInterval
+	// AgreedWindow (V2.110) is the window the customer agreed to: DepartureWindow widened to the departures the customer
+	// accepted (RecordCustomerDateAnswer). AIR and SEA hold the house to it.
+	AgreedWindow       kernel.ValidityInterval
 	Packs              int64
 	GrossWeight        kernel.Quantity
 	Volume             kernel.Quantity
@@ -319,4 +325,103 @@ type LoadIntentQueries interface {
 type Queries interface {
 	GetShipmentPlanSnapshot(ctx context.Context, q GetShipmentPlanSnapshot) (ShipmentPlanSnapshot, error)
 	GetShipmentPlanSnapshotV2(ctx context.Context, q GetShipmentPlanSnapshot) (ShipmentPlanSnapshotV2, error)
+}
+
+// GetShipmentExecution asks for a shipment's execution next to its plan (V2.110).
+type GetShipmentExecution struct {
+	TenantID   string
+	ShipmentID string
+}
+
+// CapacityLeg is a confirmed leg of a capacity link: the carrier's flight or vessel and voyage, the loading and
+// discharge places, and the carrier's estimated departure and arrival (ETA zero when the carrier gave none).
+type CapacityLeg struct {
+	Loading   kernel.LocationCode
+	Discharge kernel.LocationCode
+	Flight    string
+	Vessel    string
+	Voyage    string
+	ETD       time.Time
+	ETA       time.Time
+}
+
+// CapacityLink is one link of the main carriage to a booking's capacity, with the customer's answers to it.
+// OutsideWindow says whether its first departure lies outside the plan's departure window as it is now.
+type CapacityLink struct {
+	LinkNo           int
+	PlanVersion      int // the plan version it was made under
+	BookingID        string
+	BookingRevision  int64
+	ConsolidationID  string
+	CapacityVersion  int
+	Line             int
+	CarrierReference string
+	Legs             []CapacityLeg
+	OutsideWindow    bool
+	Answers          []DateAnswer
+	LinkedBy         string
+	LinkedAt         time.Time
+}
+
+// DateAnswer is the customer's answer to a link's departure outside the window, with the window it answered; it
+// counts while the plan's window is that one (Counts).
+type DateAnswer struct {
+	AnswerNo    int
+	Answer      string
+	EvidenceRef string
+	Window      kernel.ValidityInterval
+	Counts      bool
+	AnsweredBy  string
+	AnsweredAt  time.Time
+}
+
+// ShipmentExecution is a shipment's execution next to its plan: the plan's departure window and the window the
+// customer agreed to, the current consol attachment, the capacity links, whether the current link awaits the
+// customer's answer (or was refused), and what PHY's latest verified evidence shows.
+type ShipmentExecution struct {
+	TenantID         string
+	ShipmentID       string
+	Revision         int64
+	Status           string
+	PlanVersion      int
+	TransportMode    string
+	DepartureWindow  kernel.ValidityInterval
+	AgreedWindow     kernel.ValidityInterval
+	ConsolidationID  string // empty when FUL records no attachment on the main carriage
+	Links            []CapacityLink
+	CurrentLink      int  // 0 when the shipment has none
+	AwaitingCustomer bool // the current link departs outside the agreed window
+	Refused          bool // and the customer's answer that counts refused it
+	PlannedPacks     int64
+	ExecutionStatus  string
+	EvidenceVersion  int
+	DepartedPacks    int64
+	ArrivedPacks     int64
+	OffloadedPacks   int64
+}
+
+// ListDateChangesAwaitingCustomer asks for the shipments whose current capacity link departs outside the window the
+// customer agreed to, for a work list: of one consolidation they are attached to, or of the tenant when
+// ConsolidationID is empty; at most 200, by shipment id.
+type ListDateChangesAwaitingCustomer struct {
+	TenantID        string
+	ConsolidationID string
+}
+
+// DateChangeAwaitingCustomer is a row of ListDateChangesAwaitingCustomer.
+type DateChangeAwaitingCustomer struct {
+	ShipmentID      string
+	Revision        int64
+	ConsolidationID string
+	LinkNo          int
+	BookingID       string
+	Departure       time.Time
+	AgreedWindow    kernel.ValidityInterval
+	Refused         bool
+}
+
+// ExecutionQueries are FUL's reads of a shipment's execution (V2.110).
+type ExecutionQueries interface {
+	GetShipmentExecution(ctx context.Context, q GetShipmentExecution) (ShipmentExecution, error)
+	ListDateChangesAwaitingCustomer(ctx context.Context, q ListDateChangesAwaitingCustomer) ([]DateChangeAwaitingCustomer, error)
 }

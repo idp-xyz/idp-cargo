@@ -28,7 +28,7 @@ func (p Plans) Plan(ctx context.Context, tenant air.TenantID, shipment string) (
 		return air.Plan{}, fmt.Errorf("%w: FUL answered for another shipment or stage", app.ErrUnknownShipment)
 	}
 	out := air.Plan{ShipmentID: shipment, Revision: got.Revision, Status: got.Status, PlanVersion: got.PlanVersion, LegalEntityID: got.LegalEntityID,
-		Mode: got.TransportMode, Origin: got.Origin, Destination: got.Destination, Window: got.DepartureWindow, Pieces: got.Packs,
+		Mode: got.TransportMode, Origin: got.Origin, Destination: got.Destination, Window: got.AgreedWindow, Pieces: got.Packs,
 		GrossWeight: got.GrossWeight, Volume: got.Volume, ConsolidationID: got.ConsolidationID, EvidenceVersion: got.EvidenceVersion,
 		MeasuredBasis: got.MeasuredBasis, MeasuredPieces: got.MeasuredPacks, MeasuredWeight: got.MeasuredGrossWeight, MeasuredVolume: got.MeasuredVolume,
 		Security: got.SecurityStatus}

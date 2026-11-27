@@ -190,6 +190,68 @@ func (e evidenceRow) version() ful.EvidenceVersion {
 			OpenDiscrepancies: e.OpenDiscrepancies, Screenings: screenings, Stuffings: stuffings}}
 }
 
+type linkRow struct {
+	LinkNo           int       `json:"link_no"`
+	Stage            string    `json:"stage"`
+	PlanNo           int       `json:"plan_no"`
+	BookingID        string    `json:"booking_id"`
+	BookingRevision  int64     `json:"booking_revision"`
+	TransportMode    string    `json:"transport_mode"`
+	ConsolidationID  string    `json:"consolidation_id"`
+	CapacityVersion  int       `json:"capacity_version"`
+	LineNo           int       `json:"line_no"`
+	CarrierReference string    `json:"carrier_reference"`
+	LinkedBy         string    `json:"linked_by"`
+	LinkedAt         time.Time `json:"linked_at"`
+	EnteredAt        time.Time `json:"entered_at"`
+	Legs             []struct {
+		LoadingScheme   string    `json:"loading_scheme"`
+		LoadingCode     string    `json:"loading_code"`
+		DischargeScheme string    `json:"discharge_scheme"`
+		DischargeCode   string    `json:"discharge_code"`
+		Flight          string    `json:"flight"`
+		Vessel          string    `json:"vessel"`
+		Voyage          string    `json:"voyage"`
+		ETD             time.Time `json:"etd"`
+		ETA             time.Time `json:"eta"`
+	} `json:"legs"`
+}
+
+func (l linkRow) link() ful.CapacityLink {
+	out := ful.CapacityLink{No: l.LinkNo, Stage: l.Stage, PlanNo: l.PlanNo, By: l.LinkedBy, At: utc(l.LinkedAt), EnteredAt: utc(l.EnteredAt),
+		Capacity: ful.Capacity{BookingID: l.BookingID, BookingRevision: l.BookingRevision, Mode: ful.TransportMode(l.TransportMode),
+			ConsolidationID: l.ConsolidationID, CapacityVersion: l.CapacityVersion, Line: l.LineNo, CarrierReference: l.CarrierReference}}
+	for _, g := range l.Legs {
+		out.Legs = append(out.Legs, ful.CapacityLeg{Loading: location(g.LoadingScheme, g.LoadingCode), Discharge: location(g.DischargeScheme, g.DischargeCode),
+			Flight: g.Flight, Vessel: g.Vessel, Voyage: g.Voyage, ETD: utc(g.ETD), ETA: utc(g.ETA)})
+	}
+	return out
+}
+
+type answerRow struct {
+	AnswerNo    int       `json:"answer_no"`
+	LinkNo      int       `json:"link_no"`
+	Answer      string    `json:"answer"`
+	EvidenceRef string    `json:"evidence_ref"`
+	WindowFrom  time.Time `json:"window_from"`
+	WindowUntil time.Time `json:"window_until"`
+	AnsweredBy  string    `json:"answered_by"`
+	AnsweredAt  time.Time `json:"answered_at"`
+	EnteredAt   time.Time `json:"entered_at"`
+}
+
+func location(scheme, code string) kernel.LocationCode {
+	return kernel.LocationCode{Scheme: kernel.LocationScheme(scheme), Code: code}
+}
+
+// place returns a location's scheme and code for two nullable columns.
+func place(l kernel.LocationCode) (any, any) {
+	if l.IsZero() {
+		return nil, nil
+	}
+	return string(l.Scheme), l.Code
+}
+
 type confirmationRow struct {
 	PlanNo      int       `json:"plan_no"`
 	ConfirmedBy string    `json:"confirmed_by"`
@@ -225,7 +287,7 @@ func readShipment(ctx context.Context, q queryRower, tenant ful.TenantID, id ful
 	var cancelledBy, cancelReason *string
 	var cancelledAt *time.Time
 	var revision int64
-	var obligationJSON, planJSON, confirmationJSON, attachmentJSON, evidenceJSON []byte
+	var obligationJSON, planJSON, confirmationJSON, attachmentJSON, evidenceJSON, linkJSON, answerJSON []byte
 	err := q.QueryRow(ctx, `SELECT s.customer_party_id, s.legal_entity_id, s.status, s.cancelled_by, s.cancelled_at, s.cancel_reason, s.revision,
         (SELECT coalesce(json_agg(o ORDER BY o.entry_no), '[]') FROM cargo_ful.shipment_obligation o
           WHERE o.tenant_id=s.tenant_id AND o.shipment_id=s.shipment_id),
@@ -240,10 +302,16 @@ func readShipment(ctx context.Context, q queryRower, tenant ful.TenantID, id ful
               WHERE x.tenant_id=e.tenant_id AND x.shipment_id=e.shipment_id AND x.evidence_no=e.evidence_no),
             'stuffings', (SELECT coalesce(jsonb_agg(to_jsonb(x) ORDER BY x.stuffing_no), '[]') FROM cargo_ful.shipment_load_evidence_stuffing x
               WHERE x.tenant_id=e.tenant_id AND x.shipment_id=e.shipment_id AND x.evidence_no=e.evidence_no)) ORDER BY e.evidence_no), '[]')
-          FROM cargo_ful.shipment_load_evidence e WHERE e.tenant_id=s.tenant_id AND e.shipment_id=s.shipment_id)
+          FROM cargo_ful.shipment_load_evidence e WHERE e.tenant_id=s.tenant_id AND e.shipment_id=s.shipment_id),
+        (SELECT coalesce(json_agg(to_jsonb(l) || jsonb_build_object('legs',
+            (SELECT coalesce(jsonb_agg(to_jsonb(g) ORDER BY g.leg_no), '[]') FROM cargo_ful.shipment_capacity_link_leg g
+              WHERE g.tenant_id=l.tenant_id AND g.shipment_id=l.shipment_id AND g.link_no=l.link_no)) ORDER BY l.link_no), '[]')
+          FROM cargo_ful.shipment_capacity_link l WHERE l.tenant_id=s.tenant_id AND l.shipment_id=s.shipment_id),
+        (SELECT coalesce(json_agg(d ORDER BY d.answer_no), '[]') FROM cargo_ful.shipment_date_answer d
+          WHERE d.tenant_id=s.tenant_id AND d.shipment_id=s.shipment_id)
       FROM cargo_ful.shipment s WHERE s.tenant_id=$1 AND s.shipment_id=$2`, string(tenant), string(id)).Scan(
 		&st.CustomerPartyID, &st.LegalEntityID, &status, &cancelledBy, &cancelledAt, &cancelReason, &revision,
-		&obligationJSON, &planJSON, &confirmationJSON, &attachmentJSON, &evidenceJSON)
+		&obligationJSON, &planJSON, &confirmationJSON, &attachmentJSON, &evidenceJSON, &linkJSON, &answerJSON)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, 0, bentorepo.ErrNotFound
 	}
@@ -255,10 +323,20 @@ func readShipment(ctx context.Context, q queryRower, tenant ful.TenantID, id ful
 	var confirmations []confirmationRow
 	var attachments []attachmentRow
 	var evidence []evidenceRow
+	var links []linkRow
+	var answers []answerRow
 	if err = errors.Join(json.Unmarshal(obligationJSON, &obligations), json.Unmarshal(planJSON, &plans),
 		json.Unmarshal(confirmationJSON, &confirmations), json.Unmarshal(attachmentJSON, &attachments),
-		json.Unmarshal(evidenceJSON, &evidence)); err != nil {
+		json.Unmarshal(evidenceJSON, &evidence), json.Unmarshal(linkJSON, &links), json.Unmarshal(answerJSON, &answers)); err != nil {
 		return nil, 0, err
+	}
+	for _, l := range links {
+		st.Links = append(st.Links, l.link())
+	}
+	for _, a := range answers {
+		st.Answers = append(st.Answers, ful.DateAnswer{No: a.AnswerNo, LinkNo: a.LinkNo, Answer: a.Answer, EvidenceRef: a.EvidenceRef,
+			Window: kernel.ValidityInterval{From: utc(a.WindowFrom), Until: utc(a.WindowUntil)}, By: a.AnsweredBy, At: utc(a.AnsweredAt),
+			EnteredAt: utc(a.EnteredAt)})
 	}
 	for _, e := range evidence {
 		st.Evidence = append(st.Evidence, e.version())
@@ -466,7 +544,62 @@ func (s ShipmentStore) writeAdded(ctx context.Context, q bentopg.Executor, shipm
 			}
 		}
 	}
+	for _, l := range shipment.AddedLinks() {
+		if _, err := q.Exec(ctx, `INSERT INTO cargo_ful.shipment_capacity_link (tenant_id,shipment_id,link_no,stage,plan_no,booking_id,booking_revision,
+            transport_mode,consolidation_id,capacity_version,line_no,carrier_reference,linked_by,linked_at,entered_at)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+			string(st.TenantID), string(st.ShipmentID), l.No, l.Stage, l.PlanNo, l.BookingID, l.BookingRevision, string(l.Mode), l.ConsolidationID,
+			l.CapacityVersion, l.Line, orNull(l.CarrierReference), l.By, l.At, l.EnteredAt); err != nil {
+			return err
+		}
+		for i, g := range l.Legs {
+			loadingScheme, loadingCode := place(g.Loading)
+			dischargeScheme, dischargeCode := place(g.Discharge)
+			if _, err := q.Exec(ctx, `INSERT INTO cargo_ful.shipment_capacity_link_leg (tenant_id,shipment_id,link_no,leg_no,loading_scheme,loading_code,
+                discharge_scheme,discharge_code,flight,vessel,voyage,etd,eta) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+				string(st.TenantID), string(st.ShipmentID), l.No, i+1, loadingScheme, loadingCode, dischargeScheme, dischargeCode,
+				orNull(g.Flight), orNull(g.Vessel), orNull(g.Voyage), g.ETD, orNull(g.ETA)); err != nil {
+				return err
+			}
+		}
+	}
+	for _, a := range shipment.AddedAnswers() {
+		if _, err := q.Exec(ctx, `INSERT INTO cargo_ful.shipment_date_answer (tenant_id,shipment_id,answer_no,link_no,answer,evidence_ref,
+            window_from,window_until,answered_by,answered_at,entered_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+			string(st.TenantID), string(st.ShipmentID), a.No, a.LinkNo, a.Answer, a.EvidenceRef, orNull(a.Window.From), orNull(a.Window.Until),
+			a.By, a.At, a.EnteredAt); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// LinkedShipments lists the shipments that are not cancelled and hold a capacity link, by id: those attached on the
+// main carriage to the consolidation, or all of the tenant when it is empty; at most limit.
+func (s ShipmentStore) LinkedShipments(ctx context.Context, tenant ful.TenantID, consolidation string, limit int) ([]ful.ShipmentID, error) {
+	q, err := s.DB.ReadExecutor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := q.Query(ctx, `SELECT s.shipment_id FROM cargo_ful.shipment s
+      WHERE s.tenant_id=$1 AND s.status <> 'CANCELLED'
+        AND EXISTS (SELECT 1 FROM cargo_ful.shipment_capacity_link l WHERE l.tenant_id=s.tenant_id AND l.shipment_id=s.shipment_id)
+        AND ($2 = '' OR EXISTS (SELECT 1 FROM cargo_ful.shipment_consol_attachment a WHERE a.tenant_id=s.tenant_id AND a.shipment_id=s.shipment_id
+          AND a.stage='MAIN' AND a.ended_at IS NULL AND a.consolidation_id=$2))
+      ORDER BY s.shipment_id LIMIT $3`, string(tenant), consolidation, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ful.ShipmentID
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, ful.ShipmentID(id))
+	}
+	return out, rows.Err()
 }
 
 // PlannedElsewhere returns the sum of the live parts other shipments plan of an obligation, in their units.

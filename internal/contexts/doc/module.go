@@ -418,7 +418,7 @@ func classify(err error) error {
 	case errors.Is(err, domain.ErrInvalidDocument), errors.Is(err, domain.ErrInvalidTransition), errors.Is(err, domain.ErrInvalidChange),
 		errors.Is(err, domain.ErrSourceNotFinal), errors.Is(err, domain.ErrSourceStale), errors.Is(err, domain.ErrMasterMismatch),
 		errors.Is(err, domain.ErrPartiesDiverge), errors.Is(err, domain.ErrIncomplete), errors.Is(err, domain.ErrNotLocked),
-		errors.Is(err, domain.ErrCreditHold), errors.Is(err, domain.ErrCreditUndecided), errors.Is(err, domain.ErrIssuanceBlocked),
+		errors.Is(err, domain.ErrCreditHold), errors.Is(err, domain.ErrCreditUndecided), errors.Is(err, domain.ErrIssuanceBlocked), errors.Is(err, domain.ErrDateChangeUnanswered),
 		errors.Is(err, domain.ErrIssuerNotVerified), errors.Is(err, domain.ErrInvalidAuthority), errors.Is(err, domain.ErrNumberIssued),
 		errors.Is(err, domain.ErrOriginalsOut), errors.Is(err, domain.ErrNoTemplate),
 		errors.Is(err, domain.ErrNotDispatchable), errors.Is(err, domain.ErrTransferBlocked), errors.Is(err, domain.ErrTransferNotReserved),

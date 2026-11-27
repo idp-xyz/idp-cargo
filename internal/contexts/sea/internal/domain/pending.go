@@ -101,7 +101,7 @@ func (m *Movement) houseItems(plans []Plan) []PendingItem {
 			add(h, PendFULBehind, fmt.Sprintf("FUL has not recorded PHY's latest facts of %s %s; record them in FUL, and refresh the house if SEA then reports it STALE_HOUSE", h.HBL, h.ShipmentID))
 			continue
 		}
-		if f, err := facts(p); err != nil || p.PlanVersion != h.PlanVersion || !sameMeasures(f, h.Facts) {
+		if f, err := facts(p); err != nil || p.PlanVersion != h.PlanVersion || !sameMeasures(f, h.Facts) || !sameWindow(p.Window, h.Window) {
 			add(h, PendHouseStale, fmt.Sprintf("STALE_HOUSE: FUL reports newer facts of %s %s; refresh it first", h.HBL, h.ShipmentID))
 		}
 	}

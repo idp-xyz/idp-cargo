@@ -83,7 +83,8 @@ var covered = []coverage{
 	{context: "ful", module: (*ful.Module)(nil), interfaces: []reflect.Type{
 		reflect.TypeFor[fulapi.Commands](), reflect.TypeFor[fulapi.ConsolAttachmentCommands](), reflect.TypeFor[fulapi.LoadEvidenceCommands](),
 		reflect.TypeFor[fulapi.Queries](), reflect.TypeFor[fulapi.OceanOperationQueries](), reflect.TypeFor[fulapi.AirOperationPlanQueries](),
-		reflect.TypeFor[fulapi.LoadIntentQueries](), reflect.TypeFor[fulapi.CostDriverQueries](),
+		reflect.TypeFor[fulapi.LoadIntentQueries](), reflect.TypeFor[fulapi.CostDriverQueries](), reflect.TypeFor[fulapi.CapacityCommands](),
+		reflect.TypeFor[fulapi.ExecutionQueries](),
 	}, internal: map[string]string{
 		"GetShipmentPlanSnapshot":  "the first plan snapshot; a person reads v2",
 		"GetOceanOperationPlan":    "SEA's read of a house's plan and evidence",

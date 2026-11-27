@@ -33,7 +33,8 @@ func (p Plans) Plan(ctx context.Context, tenant sea.TenantID, shipment string) (
 	// the entry that froze it.
 	out := sea.Plan{ShipmentID: shipment, Revision: got.Revision, Status: got.Status, PlanVersion: got.PlanVersion, LegalEntityID: got.LegalEntityID,
 		Mode: got.TransportMode, ContainerMode: got.ContainerMode, Origin: got.Origin, Destination: got.Destination,
-		Window: kernel.ValidityInterval{From: micro(got.DepartureWindow.From), Until: micro(got.DepartureWindow.Until)},
+		// The window the customer agreed to (FUL V2.110): the plan's, widened to the departures the customer accepted.
+		Window: kernel.ValidityInterval{From: micro(got.AgreedWindow.From), Until: micro(got.AgreedWindow.Until)},
 		Packs:  got.Packs, GrossWeight: got.GrossWeight, Volume: got.Volume, ConsolidationID: got.ConsolidationID, EvidenceVersion: got.EvidenceVersion,
 		MeasuredBasis: got.MeasuredBasis, MeasuredPacks: got.MeasuredPacks, MeasuredWeight: got.MeasuredGrossWeight, MeasuredVolume: got.MeasuredVolume}
 	for _, part := range got.Parts {

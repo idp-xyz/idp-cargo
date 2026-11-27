@@ -39,10 +39,13 @@ func FULEnvelope(commandID string, e ful.Event, recordedAt time.Time) (eventing.
 	if e.EvidenceNo != 0 {
 		key += "\x00evidence\x00" + strconv.Itoa(e.EvidenceNo)
 	}
+	if e.LinkNo != 0 { // V2.110
+		key += "\x00link\x00" + strconv.Itoa(e.LinkNo)
+	}
 	digest := sha256.Sum256([]byte(key))
 	payload, err := json.Marshal(api.EventPayload{TenantID: string(e.TenantID), SubjectID: e.SubjectID,
 		ObligationID: string(e.ObligationID), ObligationVersion: e.ObligationVersion, Stage: e.Stage, ConsolidationID: e.ConsolidationID,
-		EvidenceNo: e.EvidenceNo})
+		EvidenceNo: e.EvidenceNo, LinkNo: e.LinkNo})
 	if err != nil {
 		return eventing.Envelope{}, err
 	}
