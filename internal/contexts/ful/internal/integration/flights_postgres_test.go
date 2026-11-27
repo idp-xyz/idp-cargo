@@ -98,6 +98,9 @@ func TestEvidenceFlightsOnPostgres(t *testing.T) {
 		{"a version's flights add up to its pieces", "shipment_load_evidence_flights_add_up", "23514", []string{newVersion,
 			`INSERT INTO cargo_ful.shipment_load_evidence_flight (tenant_id,shipment_id,evidence_no,flight_no,transport,departed,arrived,offloaded)
               VALUES ($1,'SH-1',3,1,'MU587/01DEC',3,0,1)`}},
+		{"a flight is named in PHY's form", "shipment_load_evidence_flight_transport_check", "23514", []string{newVersion,
+			`INSERT INTO cargo_ful.shipment_load_evidence_flight (tenant_id,shipment_id,evidence_no,flight_no,transport,departed,arrived,offloaded)
+              VALUES ($1,'SH-1',3,1,E'\\tMU587',2,0,1)`}},
 		{"a flight has pieces", "shipment_load_evidence_flight_pieces", "23514", []string{newVersion,
 			`INSERT INTO cargo_ful.shipment_load_evidence_flight (tenant_id,shipment_id,evidence_no,flight_no,transport,departed,arrived,offloaded)
               VALUES ($1,'SH-1',3,1,'MU587/01DEC',0,0,0)`}},

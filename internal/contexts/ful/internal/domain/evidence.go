@@ -105,7 +105,7 @@ func (e LoadEvidence) flightsAddUp() bool {
 	var dep, arr, off int64
 	seen := map[string]bool{}
 	for _, f := range e.Flights {
-		if !text(f.Transport) || seen[f.Transport] || f.Departed < 0 || f.Arrived < 0 || f.Offloaded < 0 || f.Departed+f.Arrived+f.Offloaded == 0 {
+		if !flightForm.MatchString(f.Transport) || seen[f.Transport] || f.Departed < 0 || f.Arrived < 0 || f.Offloaded < 0 || f.Departed+f.Arrived+f.Offloaded == 0 {
 			return false
 		}
 		seen[f.Transport] = true
@@ -114,16 +114,20 @@ func (e LoadEvidence) flightsAddUp() bool {
 	return dep == e.Departed && arr == e.Arrived && off == e.Offloaded
 }
 
-// AwaitingLaterFlight is the pieces offloaded from the shipment that have not departed since: the airline flies them
-// on a later flight under the same master, or the forwarder re-plans them (V2.111). None once its planned packs all
-// departed.
+// AwaitingLaterFlight is the pieces offloaded from the shipment that have not departed (or arrived) since: the airline
+// flies them on a later flight under the same master, or the forwarder re-plans them (V2.111). It counts what was
+// tendered and is planned, so none once those have all departed or arrived.
 func (s *Shipment) AwaitingLaterFlight() int64 {
 	v, ok := s.LatestEvidence()
 	if !ok || s.state.Status == ShipmentCancelled || v.Evidence.Offloaded == 0 {
 		return 0
 	}
-	return max(0, min(v.Evidence.Offloaded, s.Latest().Scope.Packs-v.Evidence.Departed))
+	done := max(v.Evidence.Departed, v.Evidence.Arrived)
+	return max(0, min(v.Evidence.Offloaded, v.Evidence.Tendered.Packs-done, s.Latest().Scope.Packs-done))
 }
+
+// flightForm is PHY's form of a flight or voyage reference.
+var flightForm = regexp.MustCompile(`^[0-9A-Z][0-9A-Z /._-]{0,34}$`)
 
 // Stuffing is a sealed container of the consolidation FUL records the shipment attached to, with the shipment's
 // live packs in it as PHY measures them (lines measured for themselves as measured, apportioned lines at their

@@ -142,7 +142,7 @@ func TestThePhysicalModelEmitsThePublishedEventTypes(t *testing.T) {
 		x.Close(ev("TR-1"), "ops", at)); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err = x.RecordCarrierEvidence(domain.CarrierEvidence{Fact: domain.CarrierOffloaded, Pieces: 1, Transport: "MU587", Evidence: ev("FSU-1")}, "ops", at); err != nil {
+	if _, _, err = x.RecordCarrierEvidence(domain.CarrierEvidence{Fact: domain.CarrierOffloaded, Pieces: 1, Transport: "MU587/01DEC", Evidence: ev("FSU-1")}, "ops", at); err != nil {
 		t.Fatal(err)
 	}
 	if err = errors.Join(x.ResolveDiscrepancy(1, domain.ResolvedByAccepted, "", "flies on MU589 under the same MAWB", "ops", at),

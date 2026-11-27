@@ -54,6 +54,40 @@ func TestFlightsAddUpAndOffloadedPiecesAwaitALaterFlight(t *testing.T) {
 	if _, err := RestoreShipment(s.State()); err != nil {
 		t.Fatal(err)
 	}
+	// after the review: what was tendered and what arrived count too. Tendered short: 2 of the 4 planned, 1 offloaded and
+	// flown the next day: nothing awaits although the plan holds 4.
+	short, route2 := planned(t)
+	if err := short.RecordConsolAttachment(Membership{ConsolidationID: "C-1", EntryNo: 1, Revision: 1, AttachedAt: at, Mode: ModeSea,
+		Origin: route2.Origin, Destination: route2.Destination}, "ops", at); err != nil {
+		t.Fatal(err)
+	}
+	tendered := base
+	tendered.Tendered = CargoScope{Packs: 2, GrossWeight: kg(200)}
+	tendered.Departed, tendered.Offloaded = 2, 1
+	tendered.Flights = []Flight{{Transport: "MU587/01DEC", Departed: 1, Offloaded: 1}, {Transport: "MU587/02DEC", Departed: 1}}
+	if _, err := short.RecordEvidence(tendered, "ops", at); err != nil {
+		t.Fatal(err)
+	}
+	if n := short.AwaitingLaterFlight(); n != 0 {
+		t.Fatalf("all tendered flew: %d awaiting", n)
+	}
+	// an arrival recorded for the offloaded pieces without their later departure: nothing awaits
+	arrived := base
+	arrived.Departed, arrived.Arrived, arrived.Offloaded = 2, 4, 2
+	arrived.Flights = []Flight{{Transport: "MU587/01DEC", Departed: 2, Arrived: 2, Offloaded: 2}, {Transport: "MU587/02DEC", Arrived: 2}}
+	if _, err := short.RecordEvidence(arrived, "ops", at.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if n := short.AwaitingLaterFlight(); n != 0 {
+		t.Fatalf("all arrived: %d awaiting", n)
+	}
+	// a flight reference is PHY's form
+	odd := base
+	odd.Departed, odd.Flights = 1, []Flight{{Transport: "\tMU587", Departed: 1}}
+	if _, err := short.RecordEvidence(odd, "ops", at.Add(2*time.Minute)); !errors.Is(err, ErrInvalidEvidence) {
+		t.Fatalf("a flight reference not of PHY's form: %v", err)
+	}
+
 	// evidence without flights keeps the digest it had before V2.111
 	plain := base
 	if plain.Digest() == first.Digest() || len(plain.Flights) != 0 {

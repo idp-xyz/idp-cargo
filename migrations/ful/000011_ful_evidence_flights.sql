@@ -2,15 +2,16 @@
 -- With every load evidence version, the shipment's pieces on each flight or voyage of the consolidation's tenders, as PHY
 -- attributes the carrier's evidence flight by flight (PhysicalLoadEvidence v1): the transport as reported (an air flight
 -- with its date, such as MU587/02DEC), and the pieces departed, arrived and offloaded on it, in the order PHY first
--- reported them. The flights of a version add up to its departed, arrived and offloaded pieces. Rows are immutable and
--- written with their evidence version. Versions recorded before keep none.
+-- reported them. The flights of a version add up to its departed, arrived and offloaded pieces. FUL keeps flights only
+-- when the carriage was split over flights or offloaded. Rows are immutable and written with their evidence version.
+-- Versions recorded before keep none.
 
 CREATE TABLE cargo_ful.shipment_load_evidence_flight (
  tenant_id text NOT NULL,
  shipment_id text NOT NULL,
  evidence_no integer NOT NULL,
  flight_no integer NOT NULL CHECK (flight_no > 0),
- transport text NOT NULL CHECK (length(btrim(transport)) BETWEEN 1 AND 500),
+ transport text NOT NULL CHECK (transport ~ '^[0-9A-Z][0-9A-Z /._-]{0,34}$'),
  departed bigint NOT NULL CHECK (departed >= 0),
  arrived bigint NOT NULL CHECK (arrived >= 0),
  offloaded bigint NOT NULL CHECK (offloaded >= 0),

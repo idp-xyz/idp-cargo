@@ -621,8 +621,8 @@ func (s ShipmentStore) LinkedShipments(ctx context.Context, tenant ful.TenantID,
 	return out, rows.Err()
 }
 
-// OffloadedShipments lists the shipments that are not cancelled and whose latest load evidence shows offloaded pieces,
-// by id after after: those attached on the main carriage to the consolidation, or all of the tenant when it is empty;
+// OffloadedShipments lists the shipments that are not cancelled and whose latest load evidence shows offloaded pieces
+// with tendered and planned pieces neither departed nor arrived, by id after after: those attached on the main carriage to the consolidation, or all of the tenant when it is empty;
 // at most limit.
 func (s ShipmentStore) OffloadedShipments(ctx context.Context, tenant ful.TenantID, consolidation string, after ful.ShipmentID, limit int) ([]ful.ShipmentID, error) {
 	q, err := s.DB.ReadExecutor(ctx)
@@ -631,8 +631,10 @@ func (s ShipmentStore) OffloadedShipments(ctx context.Context, tenant ful.Tenant
 	}
 	rows, err := q.Query(ctx, `SELECT s.shipment_id FROM cargo_ful.shipment s
       WHERE s.tenant_id=$1 AND s.status <> 'CANCELLED' AND s.shipment_id > $4
-        AND (SELECT e.offloaded FROM cargo_ful.shipment_load_evidence e WHERE e.tenant_id=s.tenant_id AND e.shipment_id=s.shipment_id
-          ORDER BY e.evidence_no DESC LIMIT 1) > 0
+        AND EXISTS (SELECT 1 FROM (SELECT e.offloaded, e.departed, e.arrived, e.tendered_packs FROM cargo_ful.shipment_load_evidence e
+            WHERE e.tenant_id=s.tenant_id AND e.shipment_id=s.shipment_id ORDER BY e.evidence_no DESC LIMIT 1) l
+          WHERE l.offloaded > 0 AND greatest(l.departed, l.arrived) < least(l.tendered_packs, (SELECT p.scope_packs FROM cargo_ful.shipment_plan_version p
+            WHERE p.tenant_id=s.tenant_id AND p.shipment_id=s.shipment_id ORDER BY p.plan_no DESC LIMIT 1)))
         AND ($2 = '' OR EXISTS (SELECT 1 FROM cargo_ful.shipment_consol_attachment a WHERE a.tenant_id=s.tenant_id AND a.shipment_id=s.shipment_id
           AND a.stage='MAIN' AND a.ended_at IS NULL AND a.consolidation_id=$2))
       ORDER BY s.shipment_id LIMIT $3`, string(tenant), consolidation, limit, string(after))

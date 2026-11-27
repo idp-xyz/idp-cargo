@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -96,5 +97,32 @@ func TestSealedContainersAreRelayed(t *testing.T) {
 		Lines: []int{1, 4}, Seal: "SEAL-1", SealSHA256: digest, SealedAt: at.Add(-30 * time.Minute)}}
 	if err != nil || !reflect.DeepEqual(e.Stuffings, want) || e.Tendered.Packs != 4 {
 		t.Fatalf("stuffings %+v, tendered %+v (%v)", e.Stuffings, e.Tendered, err)
+	}
+}
+
+// V2.111: the flights of the consolidation's tenders are summed by flight, in the order first reported; one flight
+// with nothing offloaded is not kept, so that the shipment's evidence keeps its digest.
+func TestFlightsAreKeptWhenTheCarriageWasSplitOrOffloaded(t *testing.T) {
+	ctx := context.Background()
+	tender := func(id string, flights ...phyapi.FlightPieces) phyapi.TenderEvidence {
+		x := phyapi.TenderEvidence{ExecutionID: id, ConsolidationID: "C-1", State: phyapi.ExecutionClosed, LoadedPacks: 3, Flights: flights}
+		for _, f := range flights {
+			x.Departed, x.Arrived, x.Offloaded = x.Departed+f.Departed, x.Arrived+f.Arrived, x.Offloaded+f.Offloaded
+		}
+		return x
+	}
+	one := Evidence{PHY: evidenceStub{got: phyapi.PhysicalLoadEvidence{TenantID: "T", ShipmentID: "SH-1",
+		Tenders: []phyapi.TenderEvidence{tender("X-1", phyapi.FlightPieces{Transport: "MU587/01DEC", Departed: 3})}}}}
+	got, err := one.Evidence(ctx, "T", "SH-1", "C-1", true)
+	if err != nil || got.Departed != 3 || got.Flights != nil {
+		t.Fatalf("one flight, nothing offloaded: %+v %v", got, err)
+	}
+	split := Evidence{PHY: evidenceStub{got: phyapi.PhysicalLoadEvidence{TenantID: "T", ShipmentID: "SH-1", Tenders: []phyapi.TenderEvidence{
+		tender("X-1", phyapi.FlightPieces{Transport: "MU587/01DEC", Departed: 2, Offloaded: 1}, phyapi.FlightPieces{Transport: "MU587/02DEC", Departed: 1}),
+		tender("X-2", phyapi.FlightPieces{Transport: "MU587/01DEC", Departed: 3})}}}}
+	got, err = split.Evidence(ctx, "T", "SH-1", "C-1", true)
+	want := []ful.Flight{{Transport: "MU587/01DEC", Departed: 5, Offloaded: 1}, {Transport: "MU587/02DEC", Departed: 1}}
+	if err != nil || got.Departed != 6 || got.Offloaded != 1 || !slices.Equal(got.Flights, want) {
+		t.Fatalf("split over two tenders: %+v %v", got.Flights, err)
 	}
 }

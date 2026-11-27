@@ -2,6 +2,7 @@ package domain
 
 import (
 	"errors"
+	"fmt"
 	"slices"
 	"testing"
 	"time"
@@ -84,13 +85,11 @@ func TestTheOffloadedPiecesFlyOnTheNextFlight(t *testing.T) {
 		}
 	}
 
-	// the same flight number without its date is one flight: the second report is the first's again (largest counts)
+	// an air flight without its date is refused: the same flight number on another day is another flight
 	y := twoHouses(t)
-	reportOn(t, y, CarrierDeparted, "", 10, "MU587", "M-1")
-	reportOn(t, y, CarrierOffloaded, "SH-1", 2, "MU587", "H-1")
-	reportOn(t, y, CarrierDeparted, "", 2, "MU587", "M-2")
-	if p := y.HousePieces("SH-1"); p.Departed != 4 {
-		t.Fatalf("one flight number, no dates: %+v", p)
+	if _, _, err := y.RecordCarrierEvidence(CarrierEvidence{Fact: CarrierDeparted, Pieces: 10, Transport: "MU587",
+		Evidence: Evidence{Source: "MU", Reference: "M-1", OccurredAt: t0.Add(6 * time.Hour)}}, "ops", t0.Add(6*time.Hour)); !errors.Is(err, ErrInvalidCarrier) {
+		t.Fatalf("an undated air flight: %v", err)
 	}
 
 	// what the airline reports beyond a house's pieces is never more than its live pieces, over all flights
@@ -99,5 +98,94 @@ func TestTheOffloadedPiecesFlyOnTheNextFlight(t *testing.T) {
 	reportOn(t, z, CarrierDeparted, "SH-1", 5, "MU587/02DEC", "H-6")
 	if f := z.HouseFlights("SH-1"); len(f) != 2 || f[0].Departed != 5 || f[1].Departed != 1 || z.HousePieces("SH-1").Departed != 6 {
 		t.Fatalf("a house's flights capped at its pieces: %+v", f)
+	}
+}
+
+// reportAt records a carrier report that occurred at a given hour after t0, entered at hour 60.
+func reportAt(t *testing.T, x *LoadExecution, fact CarrierFact, shipment ShipmentID, pieces int64, flight, ref string, hour int) {
+	t.Helper()
+	if _, _, err := x.RecordCarrierEvidence(CarrierEvidence{Fact: fact, ShipmentID: shipment, Pieces: pieces, Transport: flight,
+		Evidence: Evidence{Source: "MU", Reference: ref, OccurredAt: t0.Add(time.Duration(hour) * time.Hour)}}, "ops", t0.Add(60*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// flightsAddUp checks that a house's flights add up to its totals.
+func flightsAddUp(t *testing.T, label string, x *LoadExecution, h ShipmentID) {
+	t.Helper()
+	var sum HousePieces
+	for _, f := range x.HouseFlights(h) {
+		sum.Departed, sum.Arrived, sum.Offloaded = sum.Departed+f.Departed, sum.Arrived+f.Arrived, sum.Offloaded+f.Offloaded
+	}
+	if sum != x.HousePieces(h) {
+		t.Fatalf("%s: %s's flights %+v do not add up to %+v", label, h, x.HouseFlights(h), x.HousePieces(h))
+	}
+}
+
+// After the review of V2.111: a house's totals are never less than the rule over all flights gave before, the pieces a
+// later master report flew are given to a house only when PHY can tell they were its pieces, and flights are taken in the
+// carrier's order.
+func TestFlightsNeverCountLessThanTheWholeTender(t *testing.T) {
+	type report struct {
+		fact     CarrierFact
+		shipment ShipmentID
+		pieces   int64
+		flight   string
+		hour     int
+	}
+	for _, c := range []struct {
+		name    string
+		reports []report
+		want    map[ShipmentID]HousePieces
+		flights map[ShipmentID][]string
+	}{
+		{"an offload reported for the master alone", []report{{CarrierDeparted, "", 10, "MU587/01DEC", 6}, {CarrierOffloaded, "", 2, "MU587/01DEC", 6},
+			{CarrierDeparted, "", 2, "MU587/02DEC", 30}},
+			map[ShipmentID]HousePieces{"SH-1": {Departed: 6}, "SH-2": {Departed: 6}},
+			map[ShipmentID][]string{"SH-1": {"MU587/02DEC"}, "SH-2": {"MU587/02DEC"}}},
+		{"the master split over two flights, nothing offloaded", []report{{CarrierDeparted, "", 10, "MU587/01DEC", 6}, {CarrierDeparted, "", 2, "MU587/02DEC", 30}},
+			map[ShipmentID]HousePieces{"SH-1": {Departed: 6}, "SH-2": {Departed: 6}}, nil},
+		{"offloads named and unnamed: later flights are no house's", []report{{CarrierDeparted, "", 8, "MU587/01DEC", 6}, {CarrierOffloaded, "SH-1", 2, "MU587/01DEC", 6},
+			{CarrierOffloaded, "", 2, "MU587/01DEC", 6}, {CarrierDeparted, "", 2, "MU587/02DEC", 30}, {CarrierDeparted, "", 2, "MU587/03DEC", 54}},
+			map[ShipmentID]HousePieces{"SH-1": {Departed: 6, Offloaded: 2}, "SH-2": {Departed: 6}},
+			map[ShipmentID][]string{"SH-1": {"MU587/01DEC", "MU587/03DEC"}, "SH-2": {"MU587/03DEC"}}},
+		{"the next flight recorded first", []report{{CarrierDeparted, "", 2, "MU587/02DEC", 30}, {CarrierDeparted, "", 10, "MU587/01DEC", 6},
+			{CarrierOffloaded, "SH-1", 2, "MU587/01DEC", 6}},
+			map[ShipmentID]HousePieces{"SH-1": {Departed: 6, Offloaded: 2}, "SH-2": {Departed: 6}},
+			map[ShipmentID][]string{"SH-1": {"MU587/01DEC", "MU587/02DEC"}, "SH-2": {"MU587/01DEC"}}},
+		{"one house's offload flown over two later flights", []report{{CarrierDeparted, "", 10, "MU587/01DEC", 6}, {CarrierOffloaded, "SH-1", 2, "MU587/01DEC", 6},
+			{CarrierDeparted, "", 1, "MU587/02DEC", 30}, {CarrierOffloaded, "SH-1", 1, "MU587/02DEC", 30}, {CarrierDeparted, "", 1, "MU587/03DEC", 54}},
+			map[ShipmentID]HousePieces{"SH-1": {Departed: 6, Offloaded: 3}, "SH-2": {Departed: 6}},
+			map[ShipmentID][]string{"SH-1": {"MU587/01DEC", "MU587/02DEC", "MU587/03DEC"}}},
+		{"two houses' offloads flown in parts", []report{{CarrierDeparted, "", 8, "MU587/01DEC", 6}, {CarrierOffloaded, "SH-1", 2, "MU587/01DEC", 6},
+			{CarrierOffloaded, "SH-2", 2, "MU587/01DEC", 6}, {CarrierDeparted, "", 2, "MU587/02DEC", 30}, {CarrierDeparted, "", 2, "MU587/03DEC", 54}},
+			map[ShipmentID]HousePieces{"SH-1": {Departed: 6, Offloaded: 2}, "SH-2": {Departed: 6, Offloaded: 2}},
+			map[ShipmentID][]string{"SH-1": {"MU587/01DEC", "MU587/03DEC"}, "SH-2": {"MU587/01DEC", "MU587/03DEC"}}},
+		{"an arrival counts no piece that has not departed", []report{{CarrierDeparted, "", 10, "MU587/01DEC", 6}, {CarrierOffloaded, "SH-1", 2, "MU587/01DEC", 6},
+			{CarrierArrived, "", 12, "MU587/01DEC", 20}},
+			map[ShipmentID]HousePieces{"SH-1": {Departed: 4, Arrived: 4, Offloaded: 2}, "SH-2": {Departed: 6, Arrived: 6}}, nil},
+	} {
+		x := twoHouses(t)
+		for i, r := range c.reports {
+			reportAt(t, x, r.fact, r.shipment, r.pieces, r.flight, fmt.Sprintf("R-%d", i), r.hour)
+		}
+		for h, want := range c.want {
+			if got := x.HousePieces(h); got != want {
+				t.Errorf("%s: %s %+v, want %+v (flights %+v)", c.name, h, got, want, x.HouseFlights(h))
+			}
+			if got, before := x.HousePieces(h), x.wholeTender(h); got.Departed < min(before.Departed, x.LiveFor(h)) {
+				t.Errorf("%s: %s departed %d, fewer than the rule over all flights (%d)", c.name, h, got.Departed, before.Departed)
+			}
+			flightsAddUp(t, c.name, x, h)
+		}
+		for h, want := range c.flights {
+			var got []string
+			for _, f := range x.HouseFlights(h) {
+				got = append(got, f.Transport)
+			}
+			if !slices.Equal(got, want) {
+				t.Errorf("%s: %s's flights %v, want %v (%+v)", c.name, h, got, want, x.HouseFlights(h))
+			}
+		}
 	}
 }

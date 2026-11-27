@@ -117,6 +117,11 @@ func (e Evidence) Evidence(ctx context.Context, tenant ful.TenantID, shipment fu
 			out.Flights[i].Offloaded += f.Offloaded
 		}
 	}
+	if len(out.Flights) == 1 && out.Offloaded == 0 {
+		// one flight with nothing offloaded says nothing the totals do not: FUL keeps flights only when the carriage was
+		// split or offloaded (V2.111), so that the evidence of every other shipment keeps its digest
+		out.Flights = nil
+	}
 	if !receivedWeight.unknown {
 		out.Received.GrossWeight = receivedWeight.q
 	}
