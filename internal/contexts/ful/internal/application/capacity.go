@@ -97,10 +97,10 @@ func (h RecordCustomerDateAnswer) Handle(ctx context.Context, c RecordCustomerDa
 	})
 }
 
-// LinkedShipments lists the ids of the shipments that are not cancelled and hold a capacity link, by id: those
-// attached on the main carriage to a consolidation, or all of the tenant when it is empty; at most limit.
+// LinkedShipments lists the ids of the shipments that are not cancelled and hold a capacity link, by id after after:
+// those attached on the main carriage to a consolidation, or all of the tenant when it is empty; at most limit.
 type LinkedShipments interface {
-	LinkedShipments(ctx context.Context, tenant ful.TenantID, consolidation string, limit int) ([]ful.ShipmentID, error)
+	LinkedShipments(ctx context.Context, tenant ful.TenantID, consolidation string, after ful.ShipmentID, limit int) ([]ful.ShipmentID, error)
 }
 
 // AwaitingCustomer is a shipment whose current link departs outside the window the customer agreed to.
@@ -111,8 +111,8 @@ type AwaitingCustomer struct {
 	Refused  bool
 }
 
-// ListDateChangesAwaitingCustomer reads the linked shipments, without locking them, and keeps those awaiting the
-// customer's answer.
+// ListDateChangesAwaitingCustomer reads the linked shipments a page at a time, without locking them, and keeps those
+// awaiting the customer's answer, up to maxAwaiting of them.
 type ListDateChangesAwaitingCustomer struct {
 	Tx        TxRunner
 	Shipments ShipmentStore
@@ -139,21 +139,28 @@ func (h ListDateChangesAwaitingCustomer) Handle(ctx context.Context, tenant ful.
 	}
 	var out []AwaitingCustomer
 	err := h.Tx.WithinTransaction(ctx, func(txCtx context.Context) error {
-		ids, err := h.Linked.LinkedShipments(txCtx, tenant, consolidation, maxAwaiting)
-		if err != nil {
-			return err
-		}
-		for _, id := range ids {
-			s, revision, err := h.Shipments.Read(txCtx, tenant, id)
+		var after ful.ShipmentID
+		for len(out) < maxAwaiting {
+			ids, err := h.Linked.LinkedShipments(txCtx, tenant, consolidation, after, maxAwaiting)
 			if err != nil {
 				return err
 			}
-			if a, ok := s.Attachment(ful.StageMain); consolidation != "" && (!ok || a.ConsolidationID != consolidation) {
-				continue
+			for _, id := range ids {
+				s, revision, err := h.Shipments.Read(txCtx, tenant, id)
+				if err != nil {
+					return err
+				}
+				if a, ok := s.Attachment(ful.StageMain); consolidation != "" && (!ok || a.ConsolidationID != consolidation) {
+					continue
+				}
+				if link, refused, awaiting := s.AwaitingAnswer(); awaiting && len(out) < maxAwaiting {
+					out = append(out, AwaitingCustomer{Shipment: s, Revision: revision, Link: link, Refused: refused})
+				}
 			}
-			if link, refused, awaiting := s.AwaitingAnswer(); awaiting {
-				out = append(out, AwaitingCustomer{Shipment: s, Revision: revision, Link: link, Refused: refused})
+			if len(ids) < maxAwaiting {
+				break
 			}
+			after = ids[len(ids)-1]
 		}
 		return nil
 	})

@@ -574,19 +574,19 @@ func (s ShipmentStore) writeAdded(ctx context.Context, q bentopg.Executor, shipm
 	return nil
 }
 
-// LinkedShipments lists the shipments that are not cancelled and hold a capacity link, by id: those attached on the
-// main carriage to the consolidation, or all of the tenant when it is empty; at most limit.
-func (s ShipmentStore) LinkedShipments(ctx context.Context, tenant ful.TenantID, consolidation string, limit int) ([]ful.ShipmentID, error) {
+// LinkedShipments lists the shipments that are not cancelled and hold a capacity link, by id after after: those
+// attached on the main carriage to the consolidation, or all of the tenant when it is empty; at most limit.
+func (s ShipmentStore) LinkedShipments(ctx context.Context, tenant ful.TenantID, consolidation string, after ful.ShipmentID, limit int) ([]ful.ShipmentID, error) {
 	q, err := s.DB.ReadExecutor(ctx)
 	if err != nil {
 		return nil, err
 	}
 	rows, err := q.Query(ctx, `SELECT s.shipment_id FROM cargo_ful.shipment s
-      WHERE s.tenant_id=$1 AND s.status <> 'CANCELLED'
+      WHERE s.tenant_id=$1 AND s.status <> 'CANCELLED' AND s.shipment_id > $4
         AND EXISTS (SELECT 1 FROM cargo_ful.shipment_capacity_link l WHERE l.tenant_id=s.tenant_id AND l.shipment_id=s.shipment_id)
         AND ($2 = '' OR EXISTS (SELECT 1 FROM cargo_ful.shipment_consol_attachment a WHERE a.tenant_id=s.tenant_id AND a.shipment_id=s.shipment_id
           AND a.stage='MAIN' AND a.ended_at IS NULL AND a.consolidation_id=$2))
-      ORDER BY s.shipment_id LIMIT $3`, string(tenant), consolidation, limit)
+      ORDER BY s.shipment_id LIMIT $3`, string(tenant), consolidation, limit, string(after))
 	if err != nil {
 		return nil, err
 	}
