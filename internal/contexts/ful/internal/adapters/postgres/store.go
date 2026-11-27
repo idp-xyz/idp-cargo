@@ -160,6 +160,12 @@ type evidenceRow struct {
 		SealSHA256      string    `json:"seal_sha256"`
 		SealedAt        time.Time `json:"sealed_at"`
 	} `json:"stuffings"`
+	Flights []struct {
+		Transport string `json:"transport"`
+		Departed  int64  `json:"departed"`
+		Arrived   int64  `json:"arrived"`
+		Offloaded int64  `json:"offloaded"`
+	} `json:"flights"`
 	ExecutionStatus string    `json:"execution_status"`
 	DepartedFinal   int64     `json:"departed_final"`
 	RecordedBy      string    `json:"recorded_by"`
@@ -179,6 +185,10 @@ func (e evidenceRow) version() ful.EvidenceVersion {
 			Scope: ful.CargoScope{Packs: s.Packs, GrossWeight: quantity(s.GrossWeightUnit, s.GrossWeight), Volume: quantity(s.VolumeUnit, s.Volume)},
 			Lines: s.LineNos, Seal: s.Seal, SealSHA256: s.SealSHA256, SealedAt: utc(s.SealedAt)})
 	}
+	var flights []ful.Flight
+	for _, f := range e.Flights {
+		flights = append(flights, ful.Flight{Transport: f.Transport, Departed: f.Departed, Arrived: f.Arrived, Offloaded: f.Offloaded})
+	}
 	return ful.EvidenceVersion{No: e.EvidenceNo, Digest: e.Digest, Execution: ful.ExecutionStatus(e.ExecutionStatus), Final: e.DepartedFinal, By: e.RecordedBy,
 		At: utc(e.RecordedAt), EnteredAt: utc(e.EnteredAt), Evidence: ful.LoadEvidence{Lots: e.Lots, ReceiptComplete: e.ReceiptComplete,
 			Received: ful.CargoScope{Packs: e.ReceivedPacks, GrossWeight: quantity(e.ReceivedWeightUnit, e.ReceivedWeight),
@@ -187,7 +197,7 @@ func (e evidenceRow) version() ful.EvidenceVersion {
 			Tendered: ful.CargoScope{Packs: e.TenderedPacks, GrossWeight: quantity(e.TenderedWeightUnit, e.TenderedWeight),
 				Volume: quantity(e.TenderedVolumeUnit, e.TenderedVolume)},
 			Departed: e.Departed, Arrived: e.Arrived, Offloaded: e.Offloaded, Security: ful.Security(e.Security),
-			OpenDiscrepancies: e.OpenDiscrepancies, Screenings: screenings, Stuffings: stuffings}}
+			OpenDiscrepancies: e.OpenDiscrepancies, Screenings: screenings, Stuffings: stuffings, Flights: flights}}
 }
 
 type linkRow struct {
@@ -301,6 +311,8 @@ func readShipment(ctx context.Context, q queryRower, tenant ful.TenantID, id ful
             (SELECT coalesce(jsonb_agg(to_jsonb(x) ORDER BY x.screening_no), '[]') FROM cargo_ful.shipment_load_evidence_screening x
               WHERE x.tenant_id=e.tenant_id AND x.shipment_id=e.shipment_id AND x.evidence_no=e.evidence_no),
             'stuffings', (SELECT coalesce(jsonb_agg(to_jsonb(x) ORDER BY x.stuffing_no), '[]') FROM cargo_ful.shipment_load_evidence_stuffing x
+              WHERE x.tenant_id=e.tenant_id AND x.shipment_id=e.shipment_id AND x.evidence_no=e.evidence_no),
+            'flights', (SELECT coalesce(jsonb_agg(to_jsonb(x) ORDER BY x.flight_no), '[]') FROM cargo_ful.shipment_load_evidence_flight x
               WHERE x.tenant_id=e.tenant_id AND x.shipment_id=e.shipment_id AND x.evidence_no=e.evidence_no)) ORDER BY e.evidence_no), '[]')
           FROM cargo_ful.shipment_load_evidence e WHERE e.tenant_id=s.tenant_id AND e.shipment_id=s.shipment_id),
         (SELECT coalesce(json_agg(to_jsonb(l) || jsonb_build_object('legs',
@@ -543,6 +555,13 @@ func (s ShipmentStore) writeAdded(ctx context.Context, q bentopg.Executor, shipm
 				return err
 			}
 		}
+		for i, fl := range e.Flights {
+			if _, err := q.Exec(ctx, `INSERT INTO cargo_ful.shipment_load_evidence_flight (tenant_id,shipment_id,evidence_no,flight_no,transport,departed,
+                arrived,offloaded) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, string(st.TenantID), string(st.ShipmentID), v.No, i+1, fl.Transport, fl.Departed,
+				fl.Arrived, fl.Offloaded); err != nil {
+				return err
+			}
+		}
 	}
 	for _, l := range shipment.AddedLinks() {
 		if _, err := q.Exec(ctx, `INSERT INTO cargo_ful.shipment_capacity_link (tenant_id,shipment_id,link_no,stage,plan_no,booking_id,booking_revision,
@@ -584,6 +603,38 @@ func (s ShipmentStore) LinkedShipments(ctx context.Context, tenant ful.TenantID,
 	rows, err := q.Query(ctx, `SELECT s.shipment_id FROM cargo_ful.shipment s
       WHERE s.tenant_id=$1 AND s.status <> 'CANCELLED' AND s.shipment_id > $4
         AND EXISTS (SELECT 1 FROM cargo_ful.shipment_capacity_link l WHERE l.tenant_id=s.tenant_id AND l.shipment_id=s.shipment_id)
+        AND ($2 = '' OR EXISTS (SELECT 1 FROM cargo_ful.shipment_consol_attachment a WHERE a.tenant_id=s.tenant_id AND a.shipment_id=s.shipment_id
+          AND a.stage='MAIN' AND a.ended_at IS NULL AND a.consolidation_id=$2))
+      ORDER BY s.shipment_id LIMIT $3`, string(tenant), consolidation, limit, string(after))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ful.ShipmentID
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, ful.ShipmentID(id))
+	}
+	return out, rows.Err()
+}
+
+// OffloadedShipments lists the shipments that are not cancelled and whose latest load evidence shows offloaded pieces
+// with tendered and planned pieces neither departed nor arrived, by id after after: those attached on the main carriage to the consolidation, or all of the tenant when it is empty;
+// at most limit.
+func (s ShipmentStore) OffloadedShipments(ctx context.Context, tenant ful.TenantID, consolidation string, after ful.ShipmentID, limit int) ([]ful.ShipmentID, error) {
+	q, err := s.DB.ReadExecutor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := q.Query(ctx, `SELECT s.shipment_id FROM cargo_ful.shipment s
+      WHERE s.tenant_id=$1 AND s.status <> 'CANCELLED' AND s.shipment_id > $4
+        AND EXISTS (SELECT 1 FROM (SELECT e.offloaded, e.departed, e.arrived, e.tendered_packs FROM cargo_ful.shipment_load_evidence e
+            WHERE e.tenant_id=s.tenant_id AND e.shipment_id=s.shipment_id ORDER BY e.evidence_no DESC LIMIT 1) l
+          WHERE l.offloaded > 0 AND greatest(l.departed, l.arrived) < least(l.tendered_packs, (SELECT p.scope_packs FROM cargo_ful.shipment_plan_version p
+            WHERE p.tenant_id=s.tenant_id AND p.shipment_id=s.shipment_id ORDER BY p.plan_no DESC LIMIT 1)))
         AND ($2 = '' OR EXISTS (SELECT 1 FROM cargo_ful.shipment_consol_attachment a WHERE a.tenant_id=s.tenant_id AND a.shipment_id=s.shipment_id
           AND a.stage='MAIN' AND a.ended_at IS NULL AND a.consolidation_id=$2))
       ORDER BY s.shipment_id LIMIT $3`, string(tenant), consolidation, limit, string(after))

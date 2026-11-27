@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 
@@ -122,58 +121,101 @@ type ListDateChangesAwaitingCustomer struct {
 const maxAwaiting = 200
 
 func (h ListDateChangesAwaitingCustomer) Handle(ctx context.Context, tenant ful.TenantID, consolidation string) ([]AwaitingCustomer, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
+	var out []AwaitingCustomer
+	var page func(context.Context, ful.TenantID, string, ful.ShipmentID, int) ([]ful.ShipmentID, error)
+	if h.Linked != nil {
+		page = h.Linked.LinkedShipments
 	}
-	if h.Tx == nil || h.Shipments == nil || h.Linked == nil {
-		return nil, ErrMissingDependency
+	err := scanShipments(ctx, h.Tx, h.Shipments, tenant, consolidation, page, func(s *ful.Shipment, revision int64) bool {
+		if link, refused, awaiting := s.AwaitingAnswer(); awaiting {
+			out = append(out, AwaitingCustomer{Shipment: s, Revision: revision, Link: link, Refused: refused})
+		}
+		return len(out) < maxAwaiting
+	}, h.Linked == nil)
+	return out, err
+}
+
+// OffloadedShipments lists the ids of the shipments that are not cancelled and whose latest load evidence shows
+// offloaded pieces, by id after after: those attached on the main carriage to a consolidation, or all of the tenant
+// when it is empty; at most limit (V2.111).
+type OffloadedShipments interface {
+	OffloadedShipments(ctx context.Context, tenant ful.TenantID, consolidation string, after ful.ShipmentID, limit int) ([]ful.ShipmentID, error)
+}
+
+// AwaitingFlight is a shipment with pieces offloaded and not departed since.
+type AwaitingFlight struct {
+	Shipment *ful.Shipment
+	Revision int64
+	Pieces   int64
+}
+
+// ListPiecesAwaitingFlight reads the offloaded shipments a page at a time, without locking them, and keeps those with
+// pieces still to fly, up to maxAwaiting of them.
+type ListPiecesAwaitingFlight struct {
+	Tx        TxRunner
+	Shipments ShipmentStore
+	Offloaded OffloadedShipments
+}
+
+func (h ListPiecesAwaitingFlight) Handle(ctx context.Context, tenant ful.TenantID, consolidation string) ([]AwaitingFlight, error) {
+	var out []AwaitingFlight
+	var page func(context.Context, ful.TenantID, string, ful.ShipmentID, int) ([]ful.ShipmentID, error)
+	if h.Offloaded != nil {
+		page = h.Offloaded.OffloadedShipments
+	}
+	err := scanShipments(ctx, h.Tx, h.Shipments, tenant, consolidation, page, func(s *ful.Shipment, revision int64) bool {
+		if n := s.AwaitingLaterFlight(); n > 0 {
+			out = append(out, AwaitingFlight{Shipment: s, Revision: revision, Pieces: n})
+		}
+		return len(out) < maxAwaiting
+	}, h.Offloaded == nil)
+	return out, err
+}
+
+// scanShipments reads the shipments page lists, a page at a time and by id, in one transaction without locks, keeping
+// those attached to the consolidation when one is given, and hands each to keep until keep says enough.
+func scanShipments(ctx context.Context, tx TxRunner, shipments ShipmentStore, tenant ful.TenantID, consolidation string,
+	page func(context.Context, ful.TenantID, string, ful.ShipmentID, int) ([]ful.ShipmentID, error), keep func(*ful.Shipment, int64) bool, missing bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if tx == nil || shipments == nil || page == nil || missing {
+		return ErrMissingDependency
 	}
 	if tenant == "" {
-		return nil, ErrUnauthenticated
+		return ErrUnauthenticated
 	}
 	if consolidation != "" && !identifierLike(consolidation) {
-		return nil, ErrInvalidQuery
+		return ErrInvalidQuery
 	}
-	if scoped, ok := h.Tx.(interface{ TenantScope() string }); ok && scoped.TenantScope() != string(tenant) {
-		return nil, ErrUnauthorized
+	if scoped, ok := tx.(interface{ TenantScope() string }); ok && scoped.TenantScope() != string(tenant) {
+		return ErrUnauthorized
 	}
-	var out []AwaitingCustomer
-	err := h.Tx.WithinTransaction(ctx, func(txCtx context.Context) error {
+	return tx.WithinTransaction(ctx, func(txCtx context.Context) error {
 		var after ful.ShipmentID
-		for len(out) < maxAwaiting {
-			ids, err := h.Linked.LinkedShipments(txCtx, tenant, consolidation, after, maxAwaiting)
+		for {
+			ids, err := page(txCtx, tenant, consolidation, after, maxAwaiting)
 			if err != nil {
 				return err
 			}
 			for _, id := range ids {
-				s, revision, err := h.Shipments.Read(txCtx, tenant, id)
+				s, revision, err := shipments.Read(txCtx, tenant, id)
 				if err != nil {
 					return err
 				}
 				if a, ok := s.Attachment(ful.StageMain); consolidation != "" && (!ok || a.ConsolidationID != consolidation) {
 					continue
 				}
-				if link, refused, awaiting := s.AwaitingAnswer(); awaiting && len(out) < maxAwaiting {
-					out = append(out, AwaitingCustomer{Shipment: s, Revision: revision, Link: link, Refused: refused})
+				if !keep(s, revision) {
+					return nil
 				}
 			}
 			if len(ids) < maxAwaiting {
-				break
+				return nil
 			}
 			after = ids[len(ids)-1]
 		}
-		return nil
 	})
-	slices.SortFunc(out, func(a, b AwaitingCustomer) int {
-		switch {
-		case a.Shipment.ID() < b.Shipment.ID():
-			return -1
-		case a.Shipment.ID() > b.Shipment.ID():
-			return 1
-		}
-		return 0
-	})
-	return out, err
 }
 
 func identifierLike(s string) bool { return s != "" && len(s) <= 128 && strings.TrimSpace(s) == s }

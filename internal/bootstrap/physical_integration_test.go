@@ -163,7 +163,7 @@ func TestShortloadReceivedTenderedAndReconciledWithEveryContext(t *testing.T) {
 	must(phyModule.CloseLoadExecution(ctx, phyapi.CloseLoadExecution{CommandID: "tender-receipt", TenantID: tenant, ActorID: "ops-1", ExecutionID: "X-1",
 		ExpectedRevision: 4, Evidence: evidence("PVG-EASTERN", "JJD-20261111-0042", 19), OccurredAt: hours(19)}))
 	must(phyModule.RecordCarrierLoadEvidence(ctx, phyapi.RecordCarrierLoadEvidence{CommandID: "departed", TenantID: tenant, ActorID: "ops-1",
-		ExecutionID: "X-1", ExpectedRevision: 5, Fact: phyapi.CarrierDeparted, Pieces: 11, GrossWeight: kg(550), Transport: "MU587",
+		ExecutionID: "X-1", ExpectedRevision: 5, Fact: phyapi.CarrierDeparted, Pieces: 11, GrossWeight: kg(550), Transport: "MU587/01DEC",
 		Evidence: evidence("MU-CARGO", "FSU-DEP-781-12345675", 20), OccurredAt: hours(20)}))
 	must(phyModule.ReconcileConsolidation(ctx, phyapi.ReconcileConsolidation{CommandID: "reconcile", TenantID: tenant, ActorID: "ops-1",
 		ConsolidationID: "C-1", ExpectedRevision: 2, OccurredAt: hours(21)}))

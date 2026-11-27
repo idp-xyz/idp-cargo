@@ -398,6 +398,38 @@ type ShipmentExecution struct {
 	DepartedPacks    int64
 	ArrivedPacks     int64
 	OffloadedPacks   int64
+	// Flights (V2.111) are the shipment's pieces on each flight or voyage, as PHY attributes the carrier's evidence;
+	// AwaitingLaterFlight is the pieces offloaded and not departed since.
+	Flights             []FlightPieces
+	AwaitingLaterFlight int64
+}
+
+// FlightPieces are a shipment's departed, arrived and offloaded pieces on one flight or voyage (an air flight with its
+// date, such as MU587/02DEC).
+type FlightPieces struct {
+	Transport string
+	Departed  int64
+	Arrived   int64
+	Offloaded int64
+}
+
+// ListPiecesAwaitingFlight asks for the shipments with pieces offloaded and not departed since, for a work list: of one
+// consolidation they are attached to, or of the tenant when ConsolidationID is empty; at most 200, by shipment id.
+type ListPiecesAwaitingFlight struct {
+	TenantID        string
+	ConsolidationID string
+}
+
+// PiecesAwaitingFlight is a row of ListPiecesAwaitingFlight.
+type PiecesAwaitingFlight struct {
+	ShipmentID      string
+	Revision        int64
+	ConsolidationID string
+	Pieces          int64 // offloaded and not departed since
+	PlannedPacks    int64
+	DepartedPacks   int64
+	OffloadedPacks  int64
+	Flights         []FlightPieces
 }
 
 // ListDateChangesAwaitingCustomer asks for the shipments whose current capacity link departs outside the window the
@@ -424,4 +456,5 @@ type DateChangeAwaitingCustomer struct {
 type ExecutionQueries interface {
 	GetShipmentExecution(ctx context.Context, q GetShipmentExecution) (ShipmentExecution, error)
 	ListDateChangesAwaitingCustomer(ctx context.Context, q ListDateChangesAwaitingCustomer) ([]DateChangeAwaitingCustomer, error)
+	ListPiecesAwaitingFlight(ctx context.Context, q ListPiecesAwaitingFlight) ([]PiecesAwaitingFlight, error)
 }

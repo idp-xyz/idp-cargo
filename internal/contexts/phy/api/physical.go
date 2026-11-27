@@ -379,7 +379,7 @@ type RecordCarrierLoadEvidence struct {
 	ShipmentID       string // empty for the master
 	Pieces           int64
 	GrossWeight      kernel.Quantity // zero when the carrier gave none
-	Transport        string          // flight or voyage, such as MU5101
+	Transport        string          // flight or voyage; an air flight with its date as IATA writes it, such as MU5101/02DEC (V2.111)
 	Evidence         Evidence
 	OccurredAt       time.Time
 }
@@ -735,26 +735,38 @@ type LotEvidence struct {
 // reworked will). FIN's close comparison today notices a moved figure because the house's recorded quantity differs
 // from the one PHY's basis gives now, and asks for a new apportionment.
 type TenderEvidence struct {
-	ExecutionID       string
-	Revision          int64
-	ConsolidationID   string
-	Kind              string
-	State             string
-	Facility          Facility
-	LoadUnitNo        int    // the container of a STUFFING (PHY V0.3), whose seal is the closing evidence
-	LoadUnitType      string // its ISO 6346 size-type (PHY V0.3)
-	LoadedPacks       int64
-	GrossWeight       kernel.Quantity
-	Volume            kernel.Quantity
-	Departed          int64
-	Arrived           int64
-	Offloaded         int64
+	ExecutionID     string
+	Revision        int64
+	ConsolidationID string
+	Kind            string
+	State           string
+	Facility        Facility
+	LoadUnitNo      int    // the container of a STUFFING (PHY V0.3), whose seal is the closing evidence
+	LoadUnitType    string // its ISO 6346 size-type (PHY V0.3)
+	LoadedPacks     int64
+	GrossWeight     kernel.Quantity
+	Volume          kernel.Quantity
+	Departed        int64
+	Arrived         int64
+	Offloaded       int64
+	// Flights (V2.111) are the shipment's departed, arrived and offloaded pieces on each flight or voyage, in the order
+	// first reported; Departed, Arrived and Offloaded are their sums. A flight is its transport as reported, an air flight
+	// with its date (MU587/02DEC).
+	Flights           []FlightPieces
 	Lines             []LoadLine
 	ClosedAt          time.Time
 	CloseEvidence     Evidence
 	Reworks           []Rework // of a stuffing, with the broken seals; a stuffing in REWORK has no close evidence
 	CarrierEvidence   []CarrierEvidence
 	OpenDiscrepancies []LoadingDiscrepancy
+}
+
+// FlightPieces are a shipment's pieces on one flight or voyage of a tender, as the carrier's evidence shows them.
+type FlightPieces struct {
+	Transport string
+	Departed  int64
+	Arrived   int64
+	Offloaded int64
 }
 
 // PhysicalLoadEvidence is PhysicalLoadEvidence v1 (relationship 8, PHY -> FUL): a shipment's verified physical

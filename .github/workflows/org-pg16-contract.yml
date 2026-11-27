@@ -103,6 +103,7 @@ jobs:
           GRANT SELECT,INSERT ON cargo_ful.shipment_consol_attachment TO cargo_app;
           GRANT SELECT,INSERT ON cargo_ful.shipment_load_evidence,cargo_ful.shipment_load_evidence_screening,cargo_ful.shipment_load_evidence_stuffing TO cargo_app;
           GRANT SELECT,INSERT ON cargo_ful.shipment_capacity_link,cargo_ful.shipment_capacity_link_leg,cargo_ful.shipment_date_answer TO cargo_app;
+          GRANT SELECT,INSERT ON cargo_ful.shipment_load_evidence_flight TO cargo_app;
           GRANT UPDATE (ended_by,ended_at,end_reason,end_entered_at) ON cargo_ful.shipment_consol_attachment TO cargo_app;
           GRANT SELECT,INSERT,UPDATE ON cargo_phy.consolidation,cargo_phy.consol_membership TO cargo_app;
           GRANT SELECT,INSERT ON cargo_phy.consolidation_version,cargo_phy.membership_entry,cargo_phy.membership_entry_part,cargo_phy.command_receipt TO cargo_app;

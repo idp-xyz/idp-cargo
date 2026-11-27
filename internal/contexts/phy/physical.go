@@ -240,6 +240,9 @@ func (m *Module) GetPhysicalLoadEvidence(ctx context.Context, q api.GetPhysicalL
 		t.LoadedPacks, t.GrossWeight, t.Volume = r.Execution.HouseMeasureAllotted(shipment, byID, allotment)
 		pieces := r.Execution.HousePieces(shipment)
 		t.Departed, t.Arrived, t.Offloaded = pieces.Departed, pieces.Arrived, pieces.Offloaded
+		for _, f := range r.Execution.HouseFlights(shipment) {
+			t.Flights = append(t.Flights, api.FlightPieces{Transport: f.Transport, Departed: f.Departed, Arrived: f.Arrived, Offloaded: f.Offloaded})
+		}
 		for _, e := range v.CarrierEvidence {
 			if e.ShipmentID == "" || e.ShipmentID == q.ShipmentID {
 				t.CarrierEvidence = append(t.CarrierEvidence, e)

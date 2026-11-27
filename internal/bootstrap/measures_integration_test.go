@@ -239,7 +239,7 @@ func TestMeasuresReachTheHouseWaybillWithEveryContext(t *testing.T) {
 
 	// The airline's departure: DEPARTED in FUL, which no longer cancels the shipment; nothing for AIR to refresh.
 	phyOK(phyModule.RecordCarrierLoadEvidence(ctx, phyapi.RecordCarrierLoadEvidence{CommandID: "departed", TenantID: tenant, ActorID: "ops-1",
-		ExecutionID: "X-1", ExpectedRevision: 4, Fact: phyapi.CarrierDeparted, Pieces: 6, Transport: "MU587",
+		ExecutionID: "X-1", ExpectedRevision: 4, Fact: phyapi.CarrierDeparted, Pieces: 6, Transport: "MU587/01DEC",
 		Evidence: evidence("MU-CARGO", "FSU-DEP-1", 20), OccurredAt: hours(20)}))
 	recordEvidence("ful-departed", 20)
 	if plan, err := fulModule.GetAirOperationPlan(ctx, fulapi.GetShipmentPlanSnapshot{TenantID: tenant, ShipmentID: "SH-A"}); err != nil ||

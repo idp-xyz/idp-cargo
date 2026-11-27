@@ -143,7 +143,7 @@ func TestCargoLotsAndTenderOnPostgres(t *testing.T) {
 	at = f.at.Add(6 * time.Hour)
 	carrier := func(command string, expected int64, fact, shipment string, pieces int64, ref string) (api.Receipt, error) {
 		return f.module.RecordCarrierLoadEvidence(ctx, api.RecordCarrierLoadEvidence{CommandID: command, TenantID: f.tenant, ActorID: "ops-1",
-			ExecutionID: "X-1", ExpectedRevision: expected, Fact: fact, ShipmentID: shipment, Pieces: pieces, Transport: "MU587",
+			ExecutionID: "X-1", ExpectedRevision: expected, Fact: fact, ShipmentID: shipment, Pieces: pieces, Transport: "MU587/01DEC",
 			Evidence: api.Evidence{Source: "MU-CARGO", Reference: ref, OccurredAt: at}, OccurredAt: at})
 	}
 	r, err = carrier("departed", 5, api.CarrierDeparted, "", 11, "FSU-DEP-1")

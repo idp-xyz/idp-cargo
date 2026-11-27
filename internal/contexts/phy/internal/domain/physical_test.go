@@ -209,7 +209,7 @@ func TestLoadExecutionTender(t *testing.T) {
 	if err := x.ReleaseHold(1, ev("DG-OK", at), "", "ops", at); err != nil || x.Current() != ExecutionLoading {
 		t.Fatalf("the last release resumes loading: %v", err)
 	}
-	if _, _, err := x.RecordCarrierEvidence(CarrierEvidence{Fact: CarrierDeparted, Pieces: 5, Transport: "MU587", Evidence: ev("FSU-1", at)}, "ops", at); !errors.Is(err, ErrInvalidTransition) {
+	if _, _, err := x.RecordCarrierEvidence(CarrierEvidence{Fact: CarrierDeparted, Pieces: 5, Transport: "MU587/01DEC", Evidence: ev("FSU-1", at)}, "ops", at); !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("carrier evidence follows the tender: %v", err)
 	}
 	if err := x.Close(ev("TR-1", at), "ops", at); err != nil {
@@ -218,7 +218,7 @@ func TestLoadExecutionTender(t *testing.T) {
 	if err := c.Reopen("late cargo", "ops", at, x.Tendered(), Stuffed{}); !errors.Is(err, ErrExecutionsClosed) {
 		t.Fatalf("no reopen after the tender: %v", err)
 	}
-	departed := CarrierEvidence{Fact: CarrierDeparted, Pieces: 4, Transport: "MU587", Evidence: Evidence{Source: "CARGO-IMP", Reference: "FSU-DEP-1", OccurredAt: at}}
+	departed := CarrierEvidence{Fact: CarrierDeparted, Pieces: 4, Transport: "MU587/01DEC", Evidence: Evidence{Source: "CARGO-IMP", Reference: "FSU-DEP-1", OccurredAt: at}}
 	no, added, err := x.RecordCarrierEvidence(departed, "ops", at)
 	if err != nil || no != 1 || !added {
 		t.Fatalf("departed: %d %v %v", no, added, err)
@@ -231,7 +231,7 @@ func TestLoadExecutionTender(t *testing.T) {
 	if _, _, err = x.RecordCarrierEvidence(other, "ops", at); !errors.Is(err, ErrEvidenceReused) {
 		t.Fatalf("the same reference with other content: %v", err)
 	}
-	offloaded := CarrierEvidence{Fact: CarrierOffloaded, Pieces: 2, Transport: "MU587", Evidence: Evidence{Source: "CARGO-IMP", Reference: "FSU-DIS-1", OccurredAt: at}}
+	offloaded := CarrierEvidence{Fact: CarrierOffloaded, Pieces: 2, Transport: "MU587/01DEC", Evidence: Evidence{Source: "CARGO-IMP", Reference: "FSU-DIS-1", OccurredAt: at}}
 	if _, _, err = x.RecordCarrierEvidence(offloaded, "ops", at); err != nil {
 		t.Fatal(err)
 	}
@@ -399,7 +399,7 @@ func TestPhysicalDeadEndsAreOpen(t *testing.T) {
 		t.Fatalf("the packs completing the lot take its measure: %+v", got)
 	}
 	for _, src := range []string{"MU-CARGO", "PVG-HANDLER"} {
-		e := CarrierEvidence{Fact: CarrierDeparted, Pieces: 6, Transport: "MU587", Evidence: Evidence{Source: src, Reference: "DEP-1", OccurredAt: at}}
+		e := CarrierEvidence{Fact: CarrierDeparted, Pieces: 6, Transport: "MU587/01DEC", Evidence: Evidence{Source: src, Reference: "DEP-1", OccurredAt: at}}
 		if _, _, err := x.RecordCarrierEvidence(e, "ops", at); err != nil {
 			t.Fatal(err)
 		}
@@ -477,23 +477,23 @@ func TestEvidenceForFUL(t *testing.T) {
 	if p := x.HousePieces("SH-1"); p != (HousePieces{}) {
 		t.Fatalf("nothing reported: %+v", p)
 	}
-	report(x, CarrierDeparted, "", 4, "MU587", "M-1")
+	report(x, CarrierDeparted, "", 4, "MU587/01DEC", "M-1")
 	if p := x.HousePieces("SH-1"); p.Departed != 0 {
 		t.Fatalf("4 of 6 departed, not attributable: %+v", p)
 	}
-	report(x, CarrierOffloaded, "SH-1", 2, "MU587", "H-1")
+	report(x, CarrierOffloaded, "SH-1", 2, "MU587/01DEC", "H-1")
 	if p := x.HousePieces("SH-1"); p.Departed != 4 || p.Offloaded != 2 {
 		t.Fatalf("the master covers the tender less the offloaded: %+v", p)
 	}
-	report(x, CarrierDeparted, "", 2, "MU589", "M-2")
-	report(x, CarrierArrived, "", 6, "MU587", "M-3")
+	report(x, CarrierDeparted, "", 2, "MU589/02DEC", "M-2")
+	report(x, CarrierArrived, "", 6, "MU587/01DEC", "M-3")
 	if p := x.HousePieces("SH-1"); p.Departed != 6 || p.Arrived != 6 {
 		t.Fatalf("the offloaded pieces flew on MU589: %+v", p)
 	}
 	own := tendered(t)
-	report(own, CarrierDeparted, "SH-1", 5, "MU587", "H-5")
-	report(own, CarrierDeparted, "SH-1", 5, "MU587", "H-5B") // the same departure from a second source
-	report(own, CarrierDeparted, "SH-1", 1, "MU589", "H-6")
+	report(own, CarrierDeparted, "SH-1", 5, "MU587/01DEC", "H-5")
+	report(own, CarrierDeparted, "SH-1", 5, "MU587/01DEC", "H-5B") // the same departure from a second source
+	report(own, CarrierDeparted, "SH-1", 1, "MU589/02DEC", "H-6")
 	if p := own.HousePieces("SH-1"); p.Departed != 6 {
 		t.Fatalf("the house's own reports, largest per flight, summed: %+v", p)
 	}
@@ -526,8 +526,8 @@ func TestEvidenceForFUL(t *testing.T) {
 		t.Fatalf("a line weighed at 110 kg and the other 4 packs taking the rest of the lot's 312 kg: %d %+v", packs, w)
 	}
 	masterOnly := tendered(t)
-	report(masterOnly, CarrierDeparted, "", 4, "MU587", "MO-1")
-	report(masterOnly, CarrierOffloaded, "", 2, "MU587", "MO-2")
+	report(masterOnly, CarrierDeparted, "", 4, "MU587/01DEC", "MO-1")
+	report(masterOnly, CarrierOffloaded, "", 2, "MU587/01DEC", "MO-2")
 	if p := masterOnly.HousePieces("SH-1"); p.Departed != 0 {
 		t.Fatalf("an offload reported for the master names no house: %+v", p)
 	}
